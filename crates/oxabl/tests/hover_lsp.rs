@@ -119,6 +119,8 @@ const FRAG: &str = "interval = 1.\ncompare = 2.\ncText = SUBSTRING(cText, 1, 2).
 /// declare.
 const OPAQUE: &str = "CLASS app.Opaque INHERITS app.Missing:\n\
     \x20   METHOD PUBLIC VOID M():\n\
+    \x20       DEFINE VARIABLE aList AS INTEGER EXTENT 3 NO-UNDO.\n\
+    \x20       interval = Extent(aList).\n\
     \x20       interval = 1.\n\
     \x20       compare = 2.\n\
     \x20       interval = SUBSTRING(\"ab\", 1, 1).\n\
@@ -126,6 +128,30 @@ const OPAQUE: &str = "CLASS app.Opaque INHERITS app.Missing:\n\
     \x20       interval = LOOKUP(\"a\", \"a,b\").\n\
     \x20   END METHOD.\n\
     END CLASS.\n";
+
+/// Classes whose ancestors were all read, so no inherited method hides a
+/// built-in function.
+const KNOWN: &str = "CLASS app.Known INHERITS app.Circle:\n\
+    \x20   METHOD PUBLIC VOID M():\n\
+    \x20       DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n\
+    \x20       c = SUBSTRING(\"ab\", 1, 1).\n\
+    \x20       c = STRING(Compare(1, \"=\", 2, \"CASE-SENSITIVE\")).\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+const PLAIN: &str = "USING Progress.Lang.*.\n\
+    CLASS app.Plain INHERITS Object:\n\
+    \x20   METHOD PUBLIC VOID M():\n\
+    \x20       DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n\
+    \x20       c = SUBSTRING(\"ab\", 1, 1).\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// A program with an include that no file supplies, which may declare a
+/// function named like a built-in.
+const MISSING_INCLUDE: &str = "{missing.i}\n\
+    DEFINE VARIABLE i AS INTEGER NO-UNDO.\n\
+    i = Compare(1, \"=\", 2, \"CASE-SENSITIVE\").\n\
+    i = LOOKUP(\"a\", \"a,b\").\n";
 
 /// A root that declares a name an include then uses.
 const CTX: &str = "DEFINE VARIABLE iBefore AS INTEGER NO-UNDO.\n{uses.i}\n";
@@ -159,6 +185,9 @@ impl Workspace {
             ("lib/dup.p", "MESSAGE \"two\".\n"),
             ("app/Base.cls", BASE),
             ("app/Circle.cls", CIRCLE),
+            ("app/Known.cls", KNOWN),
+            ("app/Plain.cls", PLAIN),
+            ("miss.p", MISSING_INCLUDE),
         ];
         for (name, text) in files {
             let path = root.join(name);
@@ -646,7 +675,13 @@ fn a_class_with_an_unread_ancestor_does_not_guess_built_in_functions() {
 
     // Names an ancestor that no file supplies may declare: a property, or a
     // method with the name of an unreserved built-in function.
-    for needle in ["interval =", "compare =", "Compare(", "SUBSTRING("] {
+    for needle in [
+        "interval =",
+        "compare =",
+        "Compare(",
+        "SUBSTRING(",
+        "Extent(",
+    ] {
         assert_eq!(
             hover(&mut session, &opaque, OPAQUE, needle, 0),
             None,
@@ -655,6 +690,43 @@ fn a_class_with_an_unread_ancestor_does_not_guess_built_in_functions() {
     }
     // A reserved name is no routine's.
     let found = markdown(&mut session, &opaque, OPAQUE, "LOOKUP(", 0);
+    assert!(found.starts_with("**LOOKUP function**"), "{found}");
+}
+
+#[test]
+fn a_class_whose_ancestors_were_read_shows_built_in_functions() {
+    let ws = Workspace::new();
+    let mut session = Session::start(&ws.root);
+    for (file, text, needles) in [
+        ("app/Known.cls", KNOWN, &["SUBSTRING(", "Compare("][..]),
+        ("app/Plain.cls", PLAIN, &["SUBSTRING("][..]),
+    ] {
+        let path = ws.path(file);
+        session.open(&path, text);
+        for needle in needles {
+            let found = markdown(&mut session, &path, text, needle, 0);
+            let title = format!(
+                "**{} function**",
+                needle.trim_end_matches('(').to_uppercase()
+            );
+            assert!(found.starts_with(&title), "{file} `{needle}`: {found}");
+        }
+    }
+}
+
+#[test]
+fn a_program_with_an_unread_include_does_not_guess_built_in_functions() {
+    let ws = Workspace::new();
+    let miss = ws.path("miss.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&miss, MISSING_INCLUDE);
+
+    assert_eq!(
+        hover(&mut session, &miss, MISSING_INCLUDE, "Compare(", 0),
+        None,
+        "the missing include may declare `Compare`"
+    );
+    let found = markdown(&mut session, &miss, MISSING_INCLUDE, "LOOKUP(", 0);
     assert!(found.starts_with("**LOOKUP function**"), "{found}");
 }
 

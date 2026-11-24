@@ -1,7 +1,7 @@
 //! Indentation regressions where a construct's own layout bled into the depth of
 //! the lines around it: comments in blocks that end with `CATCH`/`FINALLY`, a
 //! `FIELDS`/`EXCEPT` phrase in `FOR EACH`, a statement after `WHEN … THEN` or
-//! `OTHERWISE`, and a leading file comment.
+//! `OTHERWISE`, a leading file comment, and the accessors of a property.
 //!
 //! Every case is written with `\t` marking one indent level and is checked at
 //! indent sizes 3 and 4: already-formatted input is left alone, and the output
@@ -248,5 +248,98 @@ fn leading_file_comment_before_procedure_with_parameters_stays_at_column_zero() 
 fn trigger_block_after_function_with_parameters_keeps_its_depth() {
     assert_stable(
         "FUNCTION f RETURNS INTEGER (INPUT piN AS INTEGER):\n\tRETURN 1.\nEND FUNCTION.\nON CHOOSE OF b IN FRAME fr\nDO:\n\tIF x THEN\n\t\tMESSAGE 1.\n\t/* c */\n\tMESSAGE 2.\nEND.\n",
+    );
+}
+
+// --- property accessors -----------------------------------------------------
+
+#[test]
+fn property_accessor_layouts_are_left_alone() {
+    assert_stable(
+        "CLASS Probe:\n\
+         \tDEFINE PROPERTY A AS INTEGER NO-UNDO GET():\n\
+         \t\tRETURN 1.\n\
+         \tEND GET.\n\
+         \tDEFINE PROPERTY B AS INTEGER NO-UNDO\n\
+         \t\tGET(): RETURN 1. END GET.\n\
+         \t\tPRIVATE SET(INPUT v AS INTEGER): END SET.\n\
+         \tDEFINE PROPERTY C AS INTEGER NO-UNDO\n\
+         \t\t/* before get */\n\
+         \t\tGET():\n\
+         \t\t\t/* in get */\n\
+         \t\t\tIF TRUE THEN DO:\n\
+         \t\t\t\tRETURN 1.\n\
+         \t\t\tEND.\n\
+         \t\t\tRETURN 2.\n\
+         \t\tEND GET. SET(INPUT v AS INTEGER):\n\
+         \t\t\tv = 1.\n\
+         \t\t\t/* after body */\n\
+         \t\tEND SET.\n\
+         \tDEFINE PROPERTY E AS INTEGER NO-UNDO\n\
+         \t\tGET():\n\
+         \t\t\t// only a comment\n\
+         \t\tEND GET.\n\
+         \tDEFINE PROPERTY X AS INTEGER NO-UNDO\n\
+         \t\tGET.\n\
+         \t\tSET.\n\
+         END CLASS.\n",
+    );
+}
+
+#[test]
+fn property_accessor_bodies_and_ends_follow_their_head() {
+    assert_formats(
+        "CLASS Probe:\n\
+         DEFINE PUBLIC STATIC PROPERTY P AS INTEGER NO-UNDO\n\
+         \tGET():\n\
+         RETURN 1.\n\
+         END GET.\n\
+         /* setter */\n\
+         \tSET(INPUT v AS INTEGER):\n\
+         DO:\n\
+         v = 1.\n\
+         END.\n\
+         END SET.\n\
+         END CLASS.\n",
+        "CLASS Probe:\n\
+         \tDEFINE PUBLIC STATIC PROPERTY P AS INTEGER NO-UNDO\n\
+         \t\tGET():\n\
+         \t\t\tRETURN 1.\n\
+         \t\tEND GET.\n\
+         \t\t/* setter */\n\
+         \t\tSET(INPUT v AS INTEGER):\n\
+         \t\t\tDO:\n\
+         \t\t\t\tv = 1.\n\
+         \t\t\tEND.\n\
+         \t\tEND SET.\n\
+         END CLASS.\n",
+    );
+}
+
+#[test]
+fn comment_before_an_accessor_takes_the_column_of_its_head() {
+    // The accessor heads keep their offset from the `DEFINE` line, two levels,
+    // so they are not at the walk's body depth.
+    assert_formats(
+        "CLASS Probe:\n\
+         DEFINE PROPERTY P AS INTEGER NO-UNDO\n\
+         \t\tGET():\n\
+         RETURN 1.\n\
+         END GET.\n\
+         /* setter */\n\
+         \t\tSET(INPUT v AS INTEGER):\n\
+         v = 1.\n\
+         END SET.\n\
+         END CLASS.\n",
+        "CLASS Probe:\n\
+         \tDEFINE PROPERTY P AS INTEGER NO-UNDO\n\
+         \t\t\tGET():\n\
+         \t\t\t\tRETURN 1.\n\
+         \t\t\tEND GET.\n\
+         \t\t\t/* setter */\n\
+         \t\t\tSET(INPUT v AS INTEGER):\n\
+         \t\t\t\tv = 1.\n\
+         \t\t\tEND SET.\n\
+         END CLASS.\n",
     );
 }

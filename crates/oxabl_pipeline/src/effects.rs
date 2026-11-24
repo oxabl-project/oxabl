@@ -226,12 +226,7 @@ fn direct(config: &PipelineConfig, path: &Path, expansion: &Expansion) -> Option
     if !program.errors.is_empty() {
         incomplete.push(oxabl_effects::EffectUnknown::RecoveredParse);
     }
-    if !expanded.unresolved_includes().is_empty()
-        || !expanded.nested_unresolved_includes().is_empty()
-        || !expanded.unreadable_includes().is_empty()
-        || !expanded.text_losses().is_empty()
-        || !expanded.elided_include_offsets().is_empty()
-    {
+    if expanded.lost_include_text() {
         incomplete.push(oxabl_effects::EffectUnknown::UnexpandedInclude);
     }
     Some(Direct {

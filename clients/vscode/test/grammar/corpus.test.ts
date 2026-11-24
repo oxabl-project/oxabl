@@ -90,6 +90,18 @@ describe("grammar regexes", () => {
     }
     expect(failures, failures.join("\n")).toEqual([]);
   });
+
+  it("no match or begin regex starts with a look-behind", () => {
+    // Oniguruma tries such a regex at every position of every line. Lead with `{{boundary}}`
+    // or `{{non-boundary}}` in the template instead (docs/design/vscode-extension.md).
+    const regexes: { path: string; source: string }[] = [];
+    grammarRegexes(JSON.parse(grammarJson), "$", regexes);
+    const failures = regexes
+      .filter(({ path }) => path.endsWith(".match") || path.endsWith(".begin"))
+      .filter(({ source }) => /^(?:\(\?i\))?(?:\((?:\?:)?)*\(\?<[=!]/.test(source))
+      .map(({ path, source }) => `${path}: ${source.slice(0, 80)}`);
+    expect(failures, failures.join("\n")).toEqual([]);
+  });
 });
 
 describe("corpus", () => {

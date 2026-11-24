@@ -586,13 +586,59 @@ fn load_schema(
 }
 
 /// The `.df` files a configuration names, directories expanded.
+///
+/// A file that the entries name more than once (as itself and through its
+/// directory, or by two spellings) is loaded once, at its last place, with a
+/// warning: every reader of the list (the analysis, the build, the schema
+/// browser) then sees one order. The last place keeps what reading the file at
+/// every place gave, because a later read of a file replaces what an earlier
+/// read of it declared. Two names with different stems are two databases,
+/// also when they resolve to one file, so both stay.
 fn schema_files(
     config: &WorkspaceConfig,
     root: &Path,
     schema_path: Option<&PathBuf>,
     warnings: &mut Vec<ConfigWarning>,
 ) -> Vec<PathBuf> {
-    let entries: Vec<PathBuf> = match schema_path {
+    let mut named: Vec<((PathBuf, String), PathBuf)> = Vec::new();
+    for entry in &schema_entries(config, root, schema_path) {
+        for file in expand_schema_entry(entry, warnings) {
+            let path = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+            let stem = file
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            named.push(((path, stem), file));
+        }
+    }
+    let mut last = std::collections::HashMap::new();
+    for (at, (key, _)) in named.iter().enumerate() {
+        last.insert(key.clone(), at);
+    }
+    let mut files = Vec::with_capacity(last.len());
+    for (at, (key, file)) in named.iter().enumerate() {
+        let kept = last[key];
+        if kept == at {
+            files.push(file.clone());
+        } else {
+            warnings.push(ConfigWarning::SchemaPath(format!(
+                "`{}` is named more than once (last as `{}`); it is loaded once, at its last place",
+                file.display(),
+                named[kept].1.display()
+            )));
+        }
+    }
+    files
+}
+
+/// The schema entries as written, anchored: `--schema`, or else
+/// `[workspace.schema].files`.
+fn schema_entries(
+    config: &WorkspaceConfig,
+    root: &Path,
+    schema_path: Option<&PathBuf>,
+) -> Vec<PathBuf> {
+    match schema_path {
         Some(path) => vec![path.clone()],
         None => config
             .workspace
@@ -601,12 +647,56 @@ fn schema_files(
             .iter()
             .map(|f| anchor_to(root, f))
             .collect(),
-    };
-    let mut files: Vec<PathBuf> = Vec::new();
-    for entry in &entries {
-        files.extend(expand_schema_entry(entry, warnings));
     }
-    files
+}
+
+/// What the `oxabl.toml` above an anchor says about the schema, for a client
+/// that reads the `.df` files itself (the schema browser).
+pub(crate) enum SchemaSources {
+    /// No `oxabl.toml` above the anchor.
+    NoConfig { searched_from: PathBuf },
+    /// An `oxabl.toml` that cannot be read or parsed.
+    Unreadable { config: PathBuf, message: String },
+    /// The `.df` files it names, directories expanded, in load order, and the
+    /// warnings of the expansion.
+    Files {
+        config: PathBuf,
+        files: Vec<PathBuf>,
+        /// The entries as written, anchored: files and directories.
+        entries: Vec<PathBuf>,
+        warnings: Vec<ConfigWarning>,
+        decoding: SourceDecoding,
+    },
+}
+
+/// The `.df` files that [`PipelineConfig::resolve_for_editor`] loads for
+/// `anchor`, found by the same discovery and expansion. Nothing is read but
+/// `oxabl.toml` and the schema directories.
+pub(crate) fn schema_sources(anchor: &Path) -> SchemaSources {
+    let start = start_dir(anchor);
+    let Some(root) = find_workspace_root(&start) else {
+        return SchemaSources::NoConfig {
+            searched_from: start,
+        };
+    };
+    let config_path = root.join("oxabl.toml");
+    match WorkspaceConfig::from_path(&root) {
+        Err(message) => SchemaSources::Unreadable {
+            config: config_path,
+            message,
+        },
+        Ok(config) => {
+            let mut warnings = Vec::new();
+            let files = schema_files(&config, &root, None, &mut warnings);
+            SchemaSources::Files {
+                config: config_path,
+                files,
+                entries: schema_entries(&config, &root, None),
+                warnings,
+                decoding: config.workspace.sources.decoding(),
+            }
+        }
+    }
 }
 
 /// Resolve like [`resolve_from_config`], but leave the schema empty and

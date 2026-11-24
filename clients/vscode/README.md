@@ -98,7 +98,10 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   that it cannot format safely byte for byte unchanged.
 - **Live diagnostics.** Lint and semantic diagnostics show in the Problems
   panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
-  applies at once, with no reload.
+  applies at once, with no reload. A finding of the `strict.handles` and
+  `strict.nulls` rules lists the statements on its path under it, such as
+  the `FIND ... NO-ERROR` that may leave a buffer empty or the create of a
+  handle that leaks. Click one to go to it, also in an include file.
 - **Include context.** An include file (`.i`) has no meaning alone: a
   variable it declares is used or unused only in a file that includes it. An
   open include starts in fragment mode, and the status bar says
@@ -120,6 +123,21 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   edits of the file and of its includes, and a change of `oxabl.toml`, refresh
   the view. The top of the view says when the expansion is reduced (an include
   that was not found, a cyclic include, the depth limit) or failed.
+
+- **ABL Schema view.** The Explorer has an **ABL Schema** view of the `.df`
+  files that `[workspace.schema]` in `oxabl.toml` names, with no database
+  connection: each file is a database, with its tables, their fields and
+  indexes, and its sequences. The filter button (or **oxabl: Filter Schema**)
+  keeps the tables and fields whose name, label or description holds the text,
+  and a table also by its dump name; it ignores case. Click a field, index or
+  sequence to open the `.df` at its `ADD` line. The context menu has **Open in
+  .df**, **Copy Name** and **Copy table.field**. The icon on a table opens a
+  page with its fields and indexes. The view follows changes of the `.df`
+  files and of `oxabl.toml`, also outside the workspace folder. With no
+  schema configured, the view says why. A warning above the tree names a
+  schema directory without a `.df`, and a database with problems (an
+  `UPDATE`, `DROP` or `RENAME` that oxabl does not apply, a field of an
+  unknown table) shows them at its top.
 
 Without an `oxabl.toml`, the language server does not format and does not
 report diagnostics, and it shows no message about it. Add an `oxabl.toml` to

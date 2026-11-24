@@ -178,7 +178,7 @@ pub fn program_signatures_at(
         let program = Parser::new(&tokens, source).parse_program();
         program
             .is_ok()
-            .then(|| ProgramSignatures::of(&program.statements, &tokens))
+            .then(|| ProgramSignatures::of(&program.statements))
     }
     let Some(written) = parse(source) else {
         return (None, Vec::new());

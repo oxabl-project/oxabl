@@ -627,6 +627,7 @@ mod tests {
                         name: id("out"),
                         type_source: TypeSource::Explicit(DataType::Integer),
                         no_undo: false,
+                        extent: None,
                     },
                 }),
                 assign("out", 40),

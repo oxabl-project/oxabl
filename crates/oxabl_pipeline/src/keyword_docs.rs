@@ -1199,7 +1199,7 @@ pub(crate) static KEYWORD_DOCS: &[KeywordDoc] = &[
         title: "ENUM statement",
         kind: DocKind::Statement,
         url: "https://docs-be.progress.com/bundle/abl-reference/page/ENUM-statement.html",
-        reserved: true,
+        reserved: false,
     },
     KeywordDoc {
         words: &["ERROR"],
@@ -1241,14 +1241,14 @@ pub(crate) static KEYWORD_DOCS: &[KeywordDoc] = &[
         title: "EXTENT function",
         kind: DocKind::Function,
         url: "https://docs-be.progress.com/bundle/abl-reference/page/EXTENT-function.html",
-        reserved: true,
+        reserved: false,
     },
     KeywordDoc {
         words: &["EXTENT"],
         title: "EXTENT statement",
         kind: DocKind::Statement,
         url: "https://docs-be.progress.com/bundle/abl-reference/page/EXTENT-statement.html",
-        reserved: true,
+        reserved: false,
     },
     KeywordDoc {
         words: &["FILE-INFO"],
@@ -3215,7 +3215,7 @@ pub(crate) static KEYWORD_DOCS: &[KeywordDoc] = &[
         title: "VALIDATE statement",
         kind: DocKind::Statement,
         url: "https://docs-be.progress.com/bundle/abl-reference/page/VALIDATE-statement.html",
-        reserved: true,
+        reserved: false,
     },
     KeywordDoc {
         words: &["VAR"],

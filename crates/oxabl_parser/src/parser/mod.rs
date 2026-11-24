@@ -15,14 +15,15 @@ mod tests;
 use oxabl_ast::{
     AccessModifier, Comment, CommentKind, DataType, Expression, ExpressionKind, GenericClass,
     HandleParamKind, HandlePassingOptions, Identifier, NodeId, NodeIdAllocator, ParameterDirection,
-    ParameterType, SkippedTail, Span, Statement, StatementKind, TypeArgument, TypeArguments,
-    TypeSource,
+    ParameterExtent, ParameterType, SkippedTail, Span, Statement, StatementKind, TypeArgument,
+    TypeArguments, TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
+use std::collections::HashSet;
 
 /// An error encountered during parsing, with a human-readable message and source [`Span`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParseError {
     pub message: String,
     pub span: Span,
@@ -207,9 +208,18 @@ pub struct Parser<'a> {
     /// enough, and the rest of a deep nest would fill
     /// [`MAX_ERRORS`](Self::MAX_ERRORS).
     too_deep_recorded: bool,
+    /// The first nesting or chain limit error the parse met. A rewind can drop
+    /// the error it recorded, so [`parse_program`](Self::parse_program) reports
+    /// this one when no limit error is left.
+    limit_error: Option<ParseError>,
     /// Whether the cursor is in the body of an INTERFACE, where a METHOD
     /// signature ends at its period and has no body.
     in_interface: bool,
+    /// Token indexes after a `CREATE` whose parse failed and was skipped. A
+    /// failed CREATE is parsed again when a block around it rewinds, and its
+    /// trigger blocks hold the CREATEs after it, so without this the work
+    /// doubled with each nested CREATE.
+    failed_creates: HashSet<usize>,
 }
 
 impl<'a> Parser<'a> {
@@ -236,7 +246,9 @@ impl<'a> Parser<'a> {
             nesting: 0,
             chain: 0,
             too_deep_recorded: false,
+            limit_error: None,
             in_interface: false,
+            failed_creates: HashSet::new(),
         }
     }
 
@@ -295,15 +307,17 @@ impl<'a> Parser<'a> {
 
     #[cold]
     #[inline(never)]
-    fn too_long(&self) -> ParseError {
-        ParseError {
+    fn too_long(&mut self) -> ParseError {
+        let err = ParseError {
             message: format!(
                 "{}{} operators; oxabl does not parse this statement",
                 Self::TOO_LONG,
                 Self::MAX_CHAIN
             ),
             span: self.current_span(),
-        }
+        };
+        self.limit_error.get_or_insert_with(|| err.clone());
+        err
     }
 
     const TOO_DEEP: &'static str = "Nesting is deeper than ";
@@ -311,15 +325,17 @@ impl<'a> Parser<'a> {
 
     #[cold]
     #[inline(never)]
-    fn too_deep(&self) -> ParseError {
-        ParseError {
+    fn too_deep(&mut self) -> ParseError {
+        let err = ParseError {
             message: format!(
                 "{}{} levels; oxabl does not parse this statement",
                 Self::TOO_DEEP,
                 Self::MAX_NESTING
             ),
             span: self.current_span(),
-        }
+        };
+        self.limit_error.get_or_insert_with(|| err.clone());
+        err
     }
 
     /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and wrap a
@@ -428,6 +444,11 @@ impl<'a> Parser<'a> {
             }
         }
 
+        if let Some(err) = self.limit_error.take()
+            && !self.errors.iter().any(Self::is_limit_error)
+        {
+            self.errors.push(err);
+        }
         // Drain the accumulator: it holds both top-level errors recorded above
         // and any per-statement errors recovered inside block bodies during the
         // parse_statement calls. This preserves the aggregate error-reporting
@@ -514,12 +535,16 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn is_limit_error(err: &ParseError) -> bool {
+        err.message.starts_with(Self::TOO_DEEP) || err.message.starts_with(Self::TOO_LONG)
+    }
+
     /// Record a recovered parse error in the accumulator, capping the total at
     /// [`MAX_ERRORS`](Self::MAX_ERRORS) so pathological input cannot grow the
     /// vector without bound. Errors past the cap are dropped (the parse still
     /// terminates because recovery always makes forward progress).
     fn record_error(&mut self, err: ParseError) {
-        if err.message.starts_with(Self::TOO_DEEP) || err.message.starts_with(Self::TOO_LONG) {
+        if Self::is_limit_error(&err) {
             if self.too_deep_recorded {
                 return;
             }
@@ -710,11 +735,10 @@ impl<'a> Parser<'a> {
                 self.advance(); // consume EDITING
                 self.advance(); // consume ':'
                 // The editing body recurses through `parse_statement`, which
-                // overwrites the enclosing statement's harvest anchor. This is
-                // the only path between a `parse_statement` anchor store and the
-                // matching `skipped_stmt` read that recurses, so the save and
-                // restore live here — on a cold path — rather than in the
-                // funnel, which every statement pays for.
+                // overwrites the enclosing statement's harvest anchor. The save
+                // and restore live here — on a cold path, as for a failed CREATE
+                // `TRIGGERS:` block — rather than in the funnel, which every
+                // statement pays for.
                 let outer_anchor = self.stmt_start_token;
                 let _ = self.parse_block_body();
                 self.stmt_start_token = outer_anchor;
@@ -2198,15 +2222,7 @@ impl<'a> Parser<'a> {
                 if self.looks_like_type_only_param() {
                     let type_start = self.current_span().start;
                     let data_type = self.parse_data_type()?;
-                    if self.check(Kind::Extent) {
-                        self.advance();
-                        if self.check(Kind::IntegerLiteral)
-                            || self.check(Kind::Preprop)
-                            || self.check(Kind::IncludeArgReference)
-                        {
-                            self.advance();
-                        }
-                    }
+                    let extent = self.parse_extent_clause();
                     let no_undo = if self.check(Kind::NoUndo) {
                         self.advance();
                         true
@@ -2230,6 +2246,7 @@ impl<'a> Parser<'a> {
                                 name,
                                 type_source: TypeSource::Explicit(data_type),
                                 no_undo,
+                                extent,
                             },
                         },
                     ));
@@ -2241,7 +2258,10 @@ impl<'a> Parser<'a> {
                 }
 
                 let name = self.parse_identifier()?;
-                let type_source = self.parse_type_source()?;
+                let (type_source, mut extent) = self.parse_type_source_with_extent()?;
+                if matches!(type_source, TypeSource::Like { .. }) {
+                    extent = self.parse_extent_clause();
+                }
                 let no_undo = if self.check(Kind::NoUndo) {
                     self.advance();
                     true
@@ -2257,6 +2277,7 @@ impl<'a> Parser<'a> {
                             name,
                             type_source,
                             no_undo,
+                            extent,
                         },
                     },
                 ));
@@ -2325,6 +2346,15 @@ impl<'a> Parser<'a> {
     /// Parse `AS type | LIKE field` for DEFINE VARIABLE and DEFINE PARAMETER contexts.
     /// Consumes the `AS` or `LIKE` keyword and the following type/identifier.
     fn parse_type_source(&mut self) -> ParseResult<TypeSource> {
+        self.parse_type_source_with_extent()
+            .map(|(source, _)| source)
+    }
+
+    /// Like [`Self::parse_type_source`], also returning the `EXTENT` clause
+    /// that follows an `AS` type.
+    fn parse_type_source_with_extent(
+        &mut self,
+    ) -> ParseResult<(TypeSource, Option<ParameterExtent>)> {
         if self.check(Kind::Like) {
             self.advance(); // consume LIKE
             let source = self.parse_qualified_identifier()?;
@@ -2336,21 +2366,41 @@ impl<'a> Parser<'a> {
                     self.advance();
                 }
             }
-            Ok(TypeSource::Like { source })
+            Ok((TypeSource::Like { source }, None))
         } else {
             self.expect_kind(Kind::KwAs, "Expected AS or LIKE")?;
             let data_type = self.parse_data_type()?;
-            // Consume optional EXTENT [n] clause (e.g. AS CHAR EXTENT 2 or AS HANDLE EXTENT {&N})
-            if self.check(Kind::Extent) {
+            let extent = self.parse_extent_clause();
+            Ok((TypeSource::Explicit(data_type), extent))
+        }
+    }
+
+    /// Consume an optional `EXTENT [n]` clause (`AS CHAR EXTENT 2`,
+    /// `AS HANDLE EXTENT {&N}`).
+    fn parse_extent_clause(&mut self) -> Option<ParameterExtent> {
+        if !self.check(Kind::Extent) {
+            return None;
+        }
+        self.advance();
+        let tok = self.peek().clone();
+        let span = Span {
+            start: tok.start as u32,
+            end: tok.end as u32,
+        };
+        match tok.kind {
+            Kind::IntegerLiteral => {
                 self.advance();
-                if self.check(Kind::IntegerLiteral)
-                    || self.check(Kind::Preprop)
-                    || self.check(Kind::IncludeArgReference)
-                {
-                    self.advance();
-                }
+                Some(
+                    self.source[tok.start..tok.end]
+                        .parse::<u32>()
+                        .map_or(ParameterExtent::Unresolved(span), ParameterExtent::Fixed),
+                )
             }
-            Ok(TypeSource::Explicit(data_type))
+            Kind::Preprop | Kind::IncludeArgReference => {
+                self.advance();
+                Some(ParameterExtent::Unresolved(span))
+            }
+            _ => Some(ParameterExtent::Indeterminate),
         }
     }
 

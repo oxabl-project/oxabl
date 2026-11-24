@@ -12,6 +12,7 @@ import { shouldRestartForConfigChange } from "./config";
 import { ExpandedUnits } from "./expandedUnit";
 import { IncluderContexts } from "./includerContext";
 import { installRecordPath, isManaged } from "./install";
+import { SchemaBrowser } from "./schemaView";
 import { registerUpdates } from "./updates";
 
 let client: LanguageClient | undefined;
@@ -23,6 +24,7 @@ let builds: BuildController;
 let cli: CliManager;
 let includerContexts: IncluderContexts;
 let expandedUnits: ExpandedUnits;
+let schema: SchemaBrowser;
 /** `path@version` of binaries known to support `--yield`. */
 const capable = new Set<string>();
 /** `path@version` of binaries that were too old, for which the message was shown. */
@@ -52,9 +54,11 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     () => client,
     (uri) => expandedUnits.refreshSource(uri),
   );
+  schema = new SchemaBrowser(() => client);
   context.subscriptions.push(
     log,
     expandedUnits,
+    schema,
     includerContexts,
     vscode.commands.registerCommand("oxabl.showExpandedUnit", () => expandedUnits.show()),
     vscode.commands.registerCommand("oxabl.selectIncluderContext", () => includerContexts.select()),
@@ -193,6 +197,7 @@ async function startClient(): Promise<void> {
     client = undefined;
   }
   includerContexts.reset();
+  schema.serverChanged();
 }
 
 /** Stop the running client, if any. Safe to call when nothing is running. */

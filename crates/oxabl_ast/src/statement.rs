@@ -1547,6 +1547,8 @@ pub enum ParameterType {
         name: Identifier,
         type_source: TypeSource,
         no_undo: bool,
+        /// `EXTENT [n]` after the type; `None` for a scalar.
+        extent: Option<ParameterExtent>,
     },
     /// Handle-based parameter: TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE
     Handle {
@@ -1559,6 +1561,18 @@ pub enum ParameterType {
         name: Identifier,
         target: Identifier,
     },
+}
+
+/// The `EXTENT` clause of a variable parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterExtent {
+    /// `EXTENT` with no size.
+    Indeterminate,
+    /// `EXTENT n`.
+    Fixed(u32),
+    /// A size the parser cannot read, such as an unexpanded `{&NAME}`. Two
+    /// such clauses are never known to be equal.
+    Unresolved(Span),
 }
 
 /// Discriminant for handle-based parameter types.

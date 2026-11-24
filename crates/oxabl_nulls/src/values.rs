@@ -3,7 +3,9 @@ use oxabl_ast::{
     DataType, Expression, ExpressionKind as E, Literal, NodeId, OnAction, OnKind,
     ParameterDirection, ParameterType, Span, Statement, StatementKind as S, TypeSource,
 };
-use oxabl_flow::dataflow::{Analysis, Direction, Limits, Solution, default_budget, solve_bounded};
+use oxabl_flow::dataflow::{
+    Analysis, BitSet, Direction, Limits, Solution, default_budget, solve_bounded,
+};
 use oxabl_flow::{Cfg, Edge, EdgeKind, FileFlow, NodeIx, NodeKind, UnitId};
 use oxabl_scope::{BufferId, ReadKind, UpdateKind};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -30,6 +32,39 @@ pub struct ValueUse {
     pub name: String,
     /// An arithmetic result reaches a store or display; otherwise a condition.
     pub propagation: bool,
+    /// Where the `?` may come from, in source order. Found for the uses that
+    /// [`FileNulls::first_values`](crate::FileNulls::first_values) and
+    /// [`FileNulls::first_field_values`](crate::FileNulls::first_field_values)
+    /// give; `None` for the other uses, when the search ran past its work
+    /// budget, and when it cannot account for every path that brings the `?`.
+    pub sources: Option<Vec<ValueSource>>,
+}
+
+/// A statement on a path to a [`ValueUse`] where its value may become `?`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueSource {
+    /// The statement (the whole block for a block header or the unit start),
+    /// the pair of an `ASSIGN`, or the condition of a test.
+    pub at: Span,
+    pub kind: ValueSourceKind,
+}
+
+/// How a [`ValueSource`] gives `?`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ValueSourceKind {
+    /// The declaration: the variable starts at `?`.
+    Declaration,
+    /// An assignment that may store `?`.
+    Assignment,
+    /// A test after which the value is `?` on one branch.
+    Test,
+    /// A statement that reads the record whose field may hold `?`.
+    RecordRead,
+    /// The start of the unit: the record comes from outside it. The span is
+    /// the definition of a parameter, shared or trigger buffer, or the unit
+    /// header for a buffer of an outer unit.
+    UnitStart,
 }
 
 /// The value of a local variable before a flow node.
@@ -80,6 +115,12 @@ struct Variable {
     key: String,
     initial: u8,
     constant: Option<i64>,
+    /// The declaration of a local.
+    declared: Option<Span>,
+    /// For a field whose buffer may hold a record when the unit starts (a
+    /// parameter, shared or trigger buffer, or one of an outer unit): where
+    /// that record comes from.
+    entry: Option<Span>,
 }
 struct Problem<'a> {
     statements: FxHashMap<NodeId, &'a Statement>,
@@ -318,6 +359,10 @@ const TRACKED_LIMIT: usize = 256;
 /// The most work the solve of one unit may do (see [`Fact::cost`]). Past it
 /// the unit is Unknown.
 const WORK_LIMIT: usize = 1_000_000;
+/// The most work the search for the sources of the uses of one unit may do,
+/// in the same units. It replays the statements on the paths to the uses
+/// about once each, as the solve does, with a test per use.
+const SEARCH_LIMIT: usize = 2 * WORK_LIMIT;
 
 /// The keys of the locals, or of the fields given by `spans`, that a
 /// condition, comparison or loop limit reads.
@@ -685,6 +730,17 @@ impl Problem<'_> {
             }
         }
     }
+    /// Whether the condition of a choice in `e` reads variable `i`.
+    fn chooses_on(&self, e: &Expression, i: usize) -> bool {
+        let mut found = false;
+        walk(e, &mut |e| {
+            if let E::IfThenElse(c, ..) = &e.kind {
+                walk(c, &mut |c| found |= self.variable(c) == Some(i));
+            }
+        });
+        found
+    }
+
     fn propagates_variable(&self, e: &Expression, i: usize) -> bool {
         if self.variable(e) == Some(i) {
             return true;
@@ -1304,6 +1360,7 @@ impl Problem<'_> {
                 at: e.span,
                 name: self.variables[i].name.clone(),
                 propagation,
+                sources: None,
             });
         }
     }
@@ -1586,6 +1643,557 @@ impl Problem<'_> {
     }
 }
 
+impl Problem<'_> {
+    /// The uses statement `s` makes, judged against the fact `f` before it.
+    fn statement_uses(&self, s: &Statement, f: &Fact, unit: UnitId, out: &mut Vec<ValueUse>) {
+        if let Some(c) = self.condition(s) {
+            self.use_var(c, f, unit, false, out);
+            self.sinks(c, f, unit, false, out);
+        }
+        match &s.kind {
+            S::Assignment { value, .. } => self.sinks(value, f, unit, true, out),
+            S::Assign { assignments } => {
+                let mut f = f.clone();
+                for a in assignments {
+                    if !self.when_values.contains(&a.value.id) {
+                        self.sinks(&a.value, &f, unit, true, out);
+                    }
+                    self.assign(&a.target, &a.value, &mut f);
+                }
+            }
+            S::Display { items, .. } => {
+                for i in items {
+                    match &i.when_condition {
+                        Some(w) if self.fields_only => {
+                            let mut shown = f.clone();
+                            self.narrow(w, true, &mut shown);
+                            self.sinks(&i.expression, &shown, unit, true, out);
+                        }
+                        _ => self.sinks(&i.expression, f, unit, true, out),
+                    }
+                }
+            }
+            S::Message { items, .. } | S::Put { items, .. } | S::Export { items, .. } => {
+                for e in items {
+                    self.sinks(e, f, unit, true, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The variable a use reads.
+    fn used_variable(&self, u: &ValueUse) -> Option<usize> {
+        if self.fields_only {
+            self.field_spans.get(&(u.at.start, u.at.end)).copied()
+        } else {
+            lookup(&self.names, &u.name)
+        }
+    }
+
+    /// Fill [`ValueUse::sources`] for the uses of `uses`, the uses of one
+    /// unit, that [`first_uses`] selects; `nodes` gives the node of each.
+    /// Returns the sort keys of the uses it searched for.
+    fn add_sources(
+        &self,
+        cfg: &Cfg,
+        solution: &Solution<Fact>,
+        reachable: &BitSet,
+        uses: &mut [ValueUse],
+        nodes: &[NodeIx],
+    ) -> Vec<UseKey> {
+        // The selection of `FileNulls::first_values`, over the order the
+        // uses end up in.
+        let mut sorted: Vec<&ValueUse> = uses.iter().collect();
+        sorted.sort_by_key(|u| use_key(u));
+        let selected: FxHashSet<UseKey> = first_uses(sorted).map(use_key).collect();
+        // One use can sit in several nodes (the copies of a `FINALLY` block).
+        let mut order: Vec<(UseKey, usize, Vec<NodeIx>)> = Vec::new();
+        for (u, &n) in uses.iter().zip(nodes) {
+            let key = use_key(u);
+            if !selected.contains(&key) {
+                continue;
+            }
+            let Some(i) = self.used_variable(u) else {
+                continue;
+            };
+            match order.iter_mut().find(|(k, ..)| *k == key) {
+                Some((.., at)) if !at.contains(&n) => at.push(n),
+                Some(_) => {}
+                None => order.push((key, i, vec![n])),
+            }
+        }
+        let mut walk = Walk {
+            cfg,
+            solution,
+            reachable,
+            after: vec![None; cfg.edges().len()],
+            writes: vec![None; cfg.node_count()],
+            seen: BitSet::new_empty(cfg.node_count()),
+            touched: Vec::new(),
+            budget: SEARCH_LIMIT,
+        };
+        let mut answers = FxHashMap::default();
+        for (key, i, nodes) in &order {
+            let mut all = Some(Vec::new());
+            for &n in nodes {
+                match (self.sources(&mut walk, n, *i, *key), &mut all) {
+                    (Some(found), Some(all)) => all.extend(found),
+                    _ => {
+                        all = None;
+                        break;
+                    }
+                }
+            }
+            if let Some(all) = &mut all {
+                all.sort_by_key(|s| (s.at.start, s.at.end));
+                all.dedup();
+            }
+            answers.insert(*key, all);
+        }
+        for u in uses.iter_mut() {
+            if let Some(found) = answers.get(&use_key(u)) {
+                u.sources = found.clone();
+            }
+        }
+        order.into_iter().map(|(key, ..)| key).collect()
+    }
+
+    /// Where the `?` of variable `i` read at `at` before node `n` may come
+    /// from: the writes before it in the same statement, and a backward walk
+    /// over the edges that carry it, which stops at each step that gives it.
+    /// `None` when the walk cannot account for the `?` or its budget is spent.
+    fn sources(
+        &self,
+        walk: &mut Walk<'_>,
+        n: NodeIx,
+        i: usize,
+        key: UseKey,
+    ) -> Option<Vec<ValueSource>> {
+        let at = Span {
+            start: key.0,
+            end: key.1,
+        };
+        let before = walk.solution.before(n);
+        if before.dead() {
+            return None;
+        }
+        let mut found = Vec::new();
+        let node = walk.cfg.node(n);
+        let s = node.stmt.and_then(|id| self.statements.get(&id))?;
+        // A use in pair `k` of an `ASSIGN` reads what the pairs before it left.
+        let pair = match &s.kind {
+            S::Assign { assignments } => assignments
+                .iter()
+                .position(|a| a.value.span.start <= at.start && at.end <= a.value.span.end),
+            _ => None,
+        };
+        if let Some(k) = pair {
+            let writes = self.writes(walk, n)?;
+            let earlier = writes.iter().filter(|w| w.pair.is_some_and(|p| p < k));
+            if !carried(earlier, i, &mut found) {
+                // An earlier pair replaced the value: it is the whole cause,
+                // and a pair that gave no `?` explains nothing.
+                return (!found.is_empty()).then_some(found);
+            }
+        }
+        // The statement may make the value `?` itself, by a test it narrows
+        // the use under: the use stays when the `?` from before is gone.
+        let before = walk.solution.before(n);
+        let mut probe = before.clone();
+        if before[i] & QUESTION != 0 {
+            walk.budget = walk
+                .budget
+                .checked_sub(before.cost() * self.width(walk.cfg, n))?;
+            probe.drop_source(i);
+        }
+        let mut again = Vec::new();
+        if !probe.dead() {
+            self.statement_uses(s, &probe, walk.cfg.id(), &mut again);
+        }
+        if again.iter().any(|u| use_key(u) == key) && found.is_empty() {
+            found.push(self.source_at(walk.cfg, n, Some(at))?);
+        }
+        if before[i] & QUESTION == 0 {
+            return (!found.is_empty()).then_some(found);
+        }
+        for &t in &walk.touched {
+            walk.seen.remove(t);
+        }
+        walk.touched.clear();
+        walk.seen.insert(n.index());
+        walk.touched.push(n.index());
+        let mut stack = vec![n];
+        while let Some(s) = stack.pop() {
+            if s == walk.cfg.entry() && walk.solution.before(s)[i] & QUESTION != 0 {
+                let v = &self.variables[i];
+                if let Some(at) = v.declared {
+                    found.push(ValueSource {
+                        at,
+                        kind: ValueSourceKind::Declaration,
+                    });
+                } else if let Some(at) = v.entry {
+                    found.push(ValueSource {
+                        at,
+                        kind: ValueSourceKind::UnitStart,
+                    });
+                }
+                // Otherwise the buffer holds no record when the unit starts:
+                // a read raises an error, it does not give `?`.
+            }
+            let cfg = walk.cfg;
+            for (index, e) in cfg.predecessors_indexed(s) {
+                let from = e.from;
+                let before = walk.solution.before(from);
+                if !walk.reachable.contains(from.index()) || before.dead() {
+                    continue;
+                }
+                walk.budget = walk.budget.checked_sub(1)?;
+                if self.after(walk, index, e)?[i] & QUESTION == 0 {
+                    continue;
+                }
+                let was = walk.solution.before(from)[i] & QUESTION != 0;
+                let mut gives = Vec::new();
+                self.writes(walk, from)?;
+                let refills = self.head_refills(cfg, e);
+                let writes = walk.writes[from.index()].as_deref().unwrap_or_default();
+                walk.budget = walk.budget.checked_sub(writes.len() + refills.len())?;
+                let written = writes.iter().chain(&refills).any(|w| w.var == i);
+                let carries = if written {
+                    carried(writes.iter().chain(&refills), i, &mut gives) && was
+                } else {
+                    was
+                };
+                // A test may also give `?` on this edge by itself, from a value
+                // it did not know: the `?` stays when the one from before goes.
+                let tested = !written
+                    && (!was
+                        || self.tests(cfg, from, i) && {
+                            let before = walk.solution.before(from);
+                            walk.budget = walk.budget.checked_sub(before.cost())?;
+                            let mut probe = before.clone();
+                            probe.drop_source(i);
+                            !probe.dead() && {
+                                self.transfer_edge(cfg, from, e, &mut probe);
+                                !probe.dead() && probe[i] & QUESTION != 0
+                            }
+                        });
+                if tested {
+                    gives.push(self.source_at(cfg, from, None)?);
+                }
+                if gives.is_empty() && !carries {
+                    // The model gives `?` here for a reason this walk does
+                    // not see: no answer rather than a partial one.
+                    return None;
+                }
+                found.extend(gives);
+                if carries && walk.seen.insert(from.index()) {
+                    walk.touched.push(from.index());
+                    stack.push(from);
+                }
+            }
+        }
+        // A reported use has a cause: none found is no answer.
+        (!found.is_empty()).then_some(found)
+    }
+
+    /// The values after edge `e`, computed once per unit. The transfer of a
+    /// statement costs its fact once per pair it writes.
+    fn after<'w>(&self, walk: &'w mut Walk<'_>, index: usize, e: &Edge) -> Option<&'w [u8]> {
+        if walk.after[index].is_none() {
+            let before = walk.solution.before(e.from);
+            let cost = before.cost() * self.width(walk.cfg, e.from);
+            walk.budget = walk.budget.checked_sub(cost)?;
+            let mut f = before.clone();
+            self.transfer_edge(walk.cfg, e.from, e, &mut f);
+            if f.dead() {
+                f.values.fill(0);
+            }
+            walk.after[index] = Some(f.values);
+        }
+        walk.after[index].as_deref()
+    }
+
+    /// Whether the condition of the statement at `n` names variable `i`: only
+    /// such a test can make it `?`.
+    fn tests(&self, cfg: &Cfg, n: NodeIx, i: usize) -> bool {
+        let Some(c) = cfg
+            .node(n)
+            .stmt
+            .and_then(|id| self.statements.get(&id))
+            .and_then(|s| self.condition(s))
+        else {
+            return false;
+        };
+        let mut names = false;
+        walk(self.view(c), &mut |e| names |= self.variable(e) == Some(i));
+        names
+    }
+
+    /// The number of `ASSIGN` pairs of the statement at `n`, at least 1: the
+    /// fact-sized steps of its transfer.
+    fn width(&self, cfg: &Cfg, n: NodeIx) -> usize {
+        match cfg
+            .node(n)
+            .stmt
+            .and_then(|id| self.statements.get(&id))
+            .map(|s| &s.kind)
+        {
+            Some(S::Assign { assignments }) => assignments.len(),
+            _ => 1,
+        }
+    }
+
+    /// The refills of a `FOR` header on the way into its body along `e`,
+    /// which come after the writes of its statement.
+    fn head_refills(&self, cfg: &Cfg, e: &Edge) -> Vec<Write> {
+        let node = cfg.node(e.from);
+        if self.fields_only
+            && node.kind == NodeKind::Head
+            && matches!(e.kind, EdgeKind::LoopBody | EdgeKind::Normal)
+            && let Some(s) = node.stmt.and_then(|id| self.statements.get(&id))
+            && let Some(fx) = self.effects.get(&s.id)
+        {
+            return fx
+                .body_refill
+                .iter()
+                .map(|&var| Write::refill(var, s.span))
+                .collect();
+        }
+        Vec::new()
+    }
+
+    /// The writes of the statement at node `n`, computed once per unit by a
+    /// replay of the statement over the fact before it.
+    fn writes<'w>(&self, walk: &'w mut Walk<'_>, n: NodeIx) -> Option<&'w [Write]> {
+        if walk.writes[n.index()].is_none() {
+            let before = walk.solution.before(n);
+            walk.budget = walk.budget.checked_sub(1)?;
+            if self.replays(walk.cfg, n, before) {
+                // `replay` evaluates each pair three times and assigns it once.
+                let cost = 4 * before.cost() * self.width(walk.cfg, n);
+                walk.budget = walk.budget.checked_sub(cost)?;
+            }
+            let writes = self.replay(walk.cfg, n, before);
+            walk.writes[n.index()] = Some(writes);
+        }
+        walk.writes[n.index()].as_deref()
+    }
+
+    /// Whether [`Problem::replay`] does any work at `n`: a statement with an
+    /// assignment, or with field effects in a field run.
+    fn replays(&self, cfg: &Cfg, n: NodeIx, before: &Fact) -> bool {
+        let node = cfg.node(n);
+        if !matches!(node.kind, NodeKind::Stmt | NodeKind::Head) || before.dead() {
+            return false;
+        }
+        let Some(s) = node.stmt.and_then(|id| self.statements.get(&id)) else {
+            return false;
+        };
+        matches!(s.kind, S::Assignment { .. } | S::Assign { .. })
+            || (self.fields_only && self.effects.contains_key(&s.id))
+    }
+
+    /// Replay the statement at `n` from `before`, as [`Problem::step`] runs it,
+    /// and note what each assignment and record read does to its variable.
+    fn replay(&self, cfg: &Cfg, n: NodeIx, before: &Fact) -> Vec<Write> {
+        let node = cfg.node(n);
+        let mut out = Vec::new();
+        if !matches!(node.kind, NodeKind::Stmt | NodeKind::Head) || before.dead() {
+            return out;
+        }
+        let Some(s) = node.stmt.and_then(|id| self.statements.get(&id)) else {
+            return out;
+        };
+        let pairs: Vec<(&Expression, &Expression)> = match &s.kind {
+            S::Assignment { target, value } => vec![(target, value)],
+            S::Assign { assignments } => {
+                assignments.iter().map(|a| (&a.target, &a.value)).collect()
+            }
+            _ => Vec::new(),
+        };
+        let effects = self.effects.get(&s.id).filter(|_| self.fields_only);
+        if pairs.is_empty() && effects.is_none() {
+            return out;
+        }
+        let mut f = before.clone();
+        if !keeps_buffers(s) {
+            self.forget_buffers(&mut f);
+        }
+        for (k, (target, value)) in pairs.into_iter().enumerate() {
+            self.forget_calls(value, &mut f);
+            if let Some(var) = self.variable(target)
+                && !f.dead()
+            {
+                let old = f.values[var];
+                let (gives, keeps) = if self.when_values.contains(&value.id) {
+                    (false, false)
+                } else {
+                    // What the pair stores when the variable was known, and
+                    // whether its `?` reaches the result: the result differs
+                    // between a `?` and a value nothing is known about.
+                    let mut stored = [0; 3];
+                    for (slot, value_of_var) in stored.iter_mut().zip([KNOWN, QUESTION, UNKNOWN]) {
+                        f.values[var] = value_of_var;
+                        *slot = self.eval(value, &f);
+                    }
+                    f.values[var] = old;
+                    // A choice that tests the variable can store another `?`
+                    // only because the variable was `?`; the list would then
+                    // miss this pair, so it keeps nothing.
+                    (
+                        stored[0] & QUESTION != 0,
+                        old & QUESTION != 0
+                            && stored[1] & QUESTION != 0
+                            && stored[1] != stored[2]
+                            && !self.chooses_on(value, var),
+                    )
+                };
+                out.push(Write {
+                    var,
+                    pair: Some(k),
+                    at: Span {
+                        start: target.span.start,
+                        end: value.span.end.max(target.span.end),
+                    },
+                    kind: ValueSourceKind::Assignment,
+                    gives,
+                    keeps,
+                });
+            }
+            self.assign(target, value, &mut f);
+        }
+        if let Some(fx) = effects {
+            for &var in &fx.forget {
+                out.push(Write {
+                    var,
+                    pair: None,
+                    at: s.span,
+                    kind: ValueSourceKind::RecordRead,
+                    gives: false,
+                    keeps: false,
+                });
+            }
+            out.extend(fx.refill.iter().map(|&var| Write::refill(var, s.span)));
+        }
+        out
+    }
+
+    /// The step at node `n` as a source: a test that left the value `?`, or
+    /// the `WHEN` of the `DISPLAY` item that holds the use at `use_at`.
+    /// `None` for any other statement: no source is named that the walk
+    /// cannot vouch for.
+    fn source_at(&self, cfg: &Cfg, n: NodeIx, use_at: Option<Span>) -> Option<ValueSource> {
+        let node = cfg.node(n);
+        let s = node.stmt.and_then(|id| self.statements.get(&id))?;
+        let inside = |e: &Expression, at: Span| e.span.start <= at.start && at.end <= e.span.end;
+        if let Some(c) = self.condition(s)
+            && use_at.is_none_or(|at| inside(c, at))
+        {
+            return Some(ValueSource {
+                at: c.span,
+                kind: ValueSourceKind::Test,
+            });
+        }
+        if let (S::Display { items, .. }, Some(at)) = (&s.kind, use_at) {
+            let when = items
+                .iter()
+                .find(|i| inside(&i.expression, at))?
+                .when_condition
+                .as_ref()?;
+            return Some(ValueSource {
+                at: when.span,
+                kind: ValueSourceKind::Test,
+            });
+        }
+        None
+    }
+}
+
+/// Walk `writes` back from the last, for variable `i`: add each write that
+/// gives `?` to `found`, and stop at the first that does not keep the `?`
+/// before it. Whether the `?` from before `writes` survives them.
+fn carried<'w>(
+    writes: impl DoubleEndedIterator<Item = &'w Write>,
+    i: usize,
+    found: &mut Vec<ValueSource>,
+) -> bool {
+    for w in writes.rev().filter(|w| w.var == i) {
+        if w.gives {
+            found.push(ValueSource {
+                at: w.at,
+                kind: w.kind,
+            });
+        }
+        if !w.keeps {
+            return false;
+        }
+    }
+    true
+}
+
+/// What one step does to one variable.
+#[derive(Debug, Clone, Copy)]
+struct Write {
+    var: usize,
+    /// The `ASSIGN` pair, from 0; `None` for a record read.
+    pair: Option<usize>,
+    at: Span,
+    kind: ValueSourceKind,
+    /// It may store `?` when the variable was known just before.
+    gives: bool,
+    /// The `?` the variable held just before may survive it.
+    keeps: bool,
+}
+
+impl Write {
+    /// A read of the record that holds field `var`: it may be `?` again.
+    fn refill(var: usize, at: Span) -> Self {
+        Write {
+            var,
+            pair: None,
+            at,
+            kind: ValueSourceKind::RecordRead,
+            gives: true,
+            keeps: false,
+        }
+    }
+}
+
+/// What the source walks over one unit share.
+struct Walk<'s> {
+    cfg: &'s Cfg,
+    solution: &'s Solution<Fact>,
+    reachable: &'s BitSet,
+    /// The values after each edge, by its index, computed once.
+    after: Vec<Option<Vec<u8>>>,
+    /// The writes of each node's statement, computed once.
+    writes: Vec<Option<Vec<Write>>>,
+    /// The nodes one walk visited, cleared through `touched`.
+    seen: BitSet,
+    touched: Vec<usize>,
+    /// The work left: one unit per edge visit and per write read, and for
+    /// each statement replayed or transferred its fact once per pair.
+    budget: usize,
+}
+
+/// The order of the uses, and their identity: span and kind.
+pub(crate) type UseKey = (u32, u32, bool);
+
+pub(crate) fn use_key(u: &ValueUse) -> UseKey {
+    (u.at.start, u.at.end, u.propagation)
+}
+
+/// The first use per unit, variable and kind of `uses`, in [`use_key`]
+/// order: the uses after it repeat the same source.
+pub(crate) fn first_uses<'a>(
+    uses: impl IntoIterator<Item = &'a ValueUse>,
+) -> impl Iterator<Item = &'a ValueUse> {
+    let mut seen = FxHashSet::default();
+    uses.into_iter()
+        .filter(move |u| seen.insert((u.unit, u.name.to_ascii_lowercase(), u.propagation)))
+}
+
 /// The values of the `ASSIGN` pairs of `all` that a `WHEN` follows. The parser
 /// drops the condition, so it reads the tokens.
 fn when_values(all: &[&Statement], tokens: &[oxabl_lexer::Token]) -> FxHashSet<NodeId> {
@@ -1852,6 +2460,7 @@ fn analyze_inspect(
     }
     let mut out = Vec::new();
     let mut facts = Vec::new();
+    let mut searched = FxHashSet::default();
     let by_id: FxHashMap<NodeId, &Statement> = all.iter().map(|s| (s.id, *s)).collect();
     let mut by_unit: FxHashMap<UnitId, Vec<&Statement>> = FxHashMap::default();
     for s in local_all {
@@ -1891,11 +2500,27 @@ fn analyze_inspect(
             by_unit.get(&cfg.id()).map_or(&[][..], Vec::as_slice)
         };
         for v in own_fields.flatten().iter().flat_map(|u| &u.vars) {
+            let entry = fields.and_then(|input| {
+                let buffer = input.scopes.buffer(v.buffer);
+                if buffer.is_external() {
+                    buffer
+                        .defined
+                        .or((cfg.unit().kind != oxabl_flow::UnitKind::Main)
+                            .then_some(cfg.unit().span))
+                } else if buffer.owner != cfg.id() && cfg.unit().kind != oxabl_flow::UnitKind::Main
+                {
+                    Some(cfg.unit().span)
+                } else {
+                    None
+                }
+            });
             p.variables.push(Variable {
                 name: v.name.clone(),
                 key: v.key.clone(),
                 initial: FIELD,
                 constant: None,
+                declared: None,
+                entry,
             });
         }
         for s in locals {
@@ -1947,6 +2572,8 @@ fn analyze_inspect(
                     name: name.name.clone(),
                     key: name.name.to_ascii_lowercase(),
                     initial,
+                    declared: Some(s.span),
+                    entry: None,
                     constant: if written.contains(&name.name.to_ascii_lowercase()) {
                         None
                     } else {
@@ -2046,6 +2673,8 @@ fn analyze_inspect(
         };
         inspect(cfg, &p, &solution);
         let reachable = cfg.reachable();
+        let unit_uses = out.len();
+        let mut use_nodes = Vec::new();
         for (n, node) in cfg.nodes() {
             if !reachable.contains(n.index())
                 || !matches!(node.kind, NodeKind::Stmt | NodeKind::Head)
@@ -2059,41 +2688,16 @@ fn analyze_inspect(
             if f.dead() {
                 continue;
             }
-            if let Some(c) = p.condition(s) {
-                p.use_var(c, f, cfg.id(), false, &mut out);
-                p.sinks(c, f, cfg.id(), false, &mut out);
-            }
-            match &s.kind {
-                S::Assignment { value, .. } => p.sinks(value, f, cfg.id(), true, &mut out),
-                S::Assign { assignments } => {
-                    let mut f = f.clone();
-                    for a in assignments {
-                        if !p.when_values.contains(&a.value.id) {
-                            p.sinks(&a.value, &f, cfg.id(), true, &mut out);
-                        }
-                        p.assign(&a.target, &a.value, &mut f);
-                    }
-                }
-                S::Display { items, .. } => {
-                    for i in items {
-                        match &i.when_condition {
-                            Some(w) if p.fields_only => {
-                                let mut shown = f.clone();
-                                p.narrow(w, true, &mut shown);
-                                p.sinks(&i.expression, &shown, cfg.id(), true, &mut out);
-                            }
-                            _ => p.sinks(&i.expression, f, cfg.id(), true, &mut out),
-                        }
-                    }
-                }
-                S::Message { items, .. } | S::Put { items, .. } | S::Export { items, .. } => {
-                    for e in items {
-                        p.sinks(e, f, cfg.id(), true, &mut out);
-                    }
-                }
-                _ => {}
-            }
+            p.statement_uses(s, f, cfg.id(), &mut out);
+            use_nodes.resize(out.len() - unit_uses, n);
         }
+        searched.extend(p.add_sources(
+            cfg,
+            &solution,
+            &reachable,
+            &mut out[unit_uses..],
+            &use_nodes,
+        ));
         if fields.is_some() {
             continue;
         }
@@ -2107,8 +2711,12 @@ fn analyze_inspect(
             exhausted: false,
         });
     }
-    out.sort_by_key(|u| (u.at.start, u.at.end, u.propagation));
-    out.dedup_by_key(|u| (u.at.start, u.at.end, u.propagation));
+    out.sort_by_key(use_key);
+    out.dedup_by_key(|u| use_key(u));
+    debug_assert!(
+        first_uses(&out).all(|u| searched.contains(&use_key(u))),
+        "every use that `first_values` gives had its sources searched"
+    );
     (out, facts)
 }
 
@@ -2126,12 +2734,16 @@ mod tests {
                     key: "a".into(),
                     initial: UNKNOWN,
                     constant: None,
+                    declared: None,
+                    entry: None,
                 },
                 Variable {
                     name: "b".into(),
                     key: "b".into(),
                     initial: UNKNOWN,
                     constant: None,
+                    declared: None,
+                    entry: None,
                 },
             ],
             names: [("a".into(), 0), ("b".into(), 1)].into_iter().collect(),

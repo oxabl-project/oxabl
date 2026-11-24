@@ -11,7 +11,7 @@
   ],
   "repository": {
     "builtin-function-call": {
-      "match": "(?i)(?<![\\w#$%&.-])(?:(?:a(?:bs(?:o(?:l(?:u(?:te?)?)?)?)?|ccum|dd-interval|lias|mbig(?:u(?:o(?:us?)?)?)?|sc|udit-enabled|vail(?:a(?:b(?:le?)?)?)?)|b(?:ase64-(?:decode|encode)|ig-endian|ox|uffer-(?:group-(?:id|name)|partition-id|tenant-(?:id|name)))|c(?:a(?:n-(?:do|find|query|set)|ps|st)|hr|o(?:depage-convert|mpare|nnected|unt-of)|urrent-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|result-row|value))|d(?:a(?:t(?:a(?:-source-modified|servers)|e(?:time(?:-tz)?)?)|y)|b(?:-remote-host|co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|e(?:c(?:i(?:m(?:al?)?)?|rypt)?|fined)|ynamic-(?:c(?:ast|urrent-value)|enum|function|invoke|ne(?:w|xt-value)|property))|e(?:n(?:c(?:ode|rypt)|t(?:ered|ry))|rror|time|x(?:p|tent))|f(?:i(?:ll|rst(?:-of)?|x-codepage)|rame-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))|g(?:ateways?|e(?:nerate-(?:pbe-(?:key|salt)|random-key|uuid)|t-(?:b(?:its|yte(?:-order|s)?)|c(?:lass|o(?:depages?|llations?))|d(?:b-client|ouble)|effective-tenant-(?:id|name)|float|int64|long|pointer-value|s(?:hort|ize|tring)|unsigned-(?:long|short)))|o-pend(?:i(?:ng?)?)?|uid)|h(?:a(?:ndle|sh-code)|ex-(?:decode|encode)|ost-byte-order)|i(?:n(?:dex|put|t(?:64|e(?:g(?:er?)?|rval)?)?)|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|co(?:depage-fixed|lumn-codepage)|db-multi-tenant|lead-byte)|o-date))|k(?:blabel|ey(?:code|func(?:t(?:i(?:on?)?)?)?|label|word(?:-all)?))|l(?:ast(?:-of|key)?|c|dbname|e(?:ft-trim|ngth)|i(?:brary|ne-count(?:er?)?|st-(?:events|query-attrs|set-attrs|widgets)|ttle-endian)|o(?:cked|g(?:i(?:c(?:al?)?)?)?|okup|wer))|m(?:ax(?:i(?:m(?:um?)?)?)?|d5-digest|e(?:mber|ssage-(?:digest|lines))|in(?:i(?:m(?:um?)?)?)?|onth|time)|n(?:e(?:w|xt-value)|o(?:rmalize|w)|um-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries|results))|o(?:psys|s-(?:d(?:ir|rives?)|error|getenv)|verlay)|p(?:age-(?:num(?:b(?:er?)?)?|size)|dbname|ro(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|ess-architecture)|gr(?:am-name|ess)|msgs|path|vers(?:i(?:on?)?)?)|ut-(?:b(?:its|ytes?)|double|float|int64|long|s(?:hort|tring)|unsigned-(?:long|short)))|qu(?:ery-off-end|oter)|r(?:-index|a(?:ndom|w)|e(?:c(?:id|ord-length)|jected|place|t(?:ry|urn-val(?:ue?)?))|gb-value|ight-trim|o(?:und|w(?:-state|id)))|s(?:creen-lines|dbname|e(?:arch|ek|t(?:-(?:byte-order|db-client|effective-tenant|pointer-value|size)|user(?:id?)?))|ha1-digest|qrt|sl-server-name|tring|u(?:bst(?:i(?:t(?:u(?:te?)?)?)?|r(?:i(?:ng?)?)?)?|per))|t(?:e(?:nant-(?:id|name(?:-to-id)?)|rm(?:i(?:n(?:al?)?)?)?)|ime(?:zone)?|o(?:-rowid|day)|r(?:ansaction|im|unc(?:a(?:te?)?)?)|ype-of)|u(?:nbox|pper|ser(?:id?)?)|val(?:id-(?:event|handle|object)|ue)|w(?:eekday|idget-h(?:a(?:n(?:d(?:le?)?)?)?)?)|year))(?=\\s*\\()",
+      "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(?:(?:a(?:bs(?:o(?:l(?:u(?:te?)?)?)?)?|ccum|dd-interval|lias|mbig(?:u(?:o(?:us?)?)?)?|sc|udit-enabled|vail(?:a(?:b(?:le?)?)?)?)|b(?:ase64-(?:decode|encode)|ig-endian|ox|uffer-(?:group-(?:id|name)|partition-id|tenant-(?:id|name)))|c(?:a(?:n-(?:do|find|query|set)|ps|st)|hr|o(?:depage-convert|mpare|nnected|unt-of)|urrent-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|result-row|value))|d(?:a(?:t(?:a(?:-source-modified|servers)|e(?:time(?:-tz)?)?)|y)|b(?:-remote-host|co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|e(?:c(?:i(?:m(?:al?)?)?|rypt)?|fined)|ynamic-(?:c(?:ast|urrent-value)|enum|function|invoke|ne(?:w|xt-value)|property))|e(?:n(?:c(?:ode|rypt)|t(?:ered|ry))|rror|time|x(?:p|tent))|f(?:i(?:ll|rst(?:-of)?|x-codepage)|rame-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))|g(?:ateways?|e(?:nerate-(?:pbe-(?:key|salt)|random-key|uuid)|t-(?:b(?:its|yte(?:-order|s)?)|c(?:lass|o(?:depages?|llations?))|d(?:b-client|ouble)|effective-tenant-(?:id|name)|float|int64|long|pointer-value|s(?:hort|ize|tring)|unsigned-(?:long|short)))|o-pend(?:i(?:ng?)?)?|uid)|h(?:a(?:ndle|sh-code)|ex-(?:decode|encode)|ost-byte-order)|i(?:n(?:dex|put|t(?:64|e(?:g(?:er?)?|rval)?)?)|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|co(?:depage-fixed|lumn-codepage)|db-multi-tenant|lead-byte)|o-date))|k(?:blabel|ey(?:code|func(?:t(?:i(?:on?)?)?)?|label|word(?:-all)?))|l(?:ast(?:-of|key)?|c|dbname|e(?:ft-trim|ngth)|i(?:brary|ne-count(?:er?)?|st-(?:events|query-attrs|set-attrs|widgets)|ttle-endian)|o(?:cked|g(?:i(?:c(?:al?)?)?)?|okup|wer))|m(?:ax(?:i(?:m(?:um?)?)?)?|d5-digest|e(?:mber|ssage-(?:digest|lines))|in(?:i(?:m(?:um?)?)?)?|onth|time)|n(?:e(?:w|xt-value)|o(?:rmalize|w)|um-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries|results))|o(?:psys|s-(?:d(?:ir|rives?)|error|getenv)|verlay)|p(?:age-(?:num(?:b(?:er?)?)?|size)|dbname|ro(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|ess-architecture)|gr(?:am-name|ess)|msgs|path|vers(?:i(?:on?)?)?)|ut-(?:b(?:its|ytes?)|double|float|int64|long|s(?:hort|tring)|unsigned-(?:long|short)))|qu(?:ery-off-end|oter)|r(?:-index|a(?:ndom|w)|e(?:c(?:id|ord-length)|jected|place|t(?:ry|urn-val(?:ue?)?))|gb-value|ight-trim|o(?:und|w(?:-state|id)))|s(?:creen-lines|dbname|e(?:arch|ek|t(?:-(?:byte-order|db-client|effective-tenant|pointer-value|size)|user(?:id?)?))|ha1-digest|qrt|sl-server-name|tring|u(?:bst(?:i(?:t(?:u(?:te?)?)?)?|r(?:i(?:ng?)?)?)?|per))|t(?:e(?:nant-(?:id|name(?:-to-id)?)|rm(?:i(?:n(?:al?)?)?)?)|ime(?:zone)?|o(?:-rowid|day)|r(?:ansaction|im|unc(?:a(?:te?)?)?)|ype-of)|u(?:nbox|pper|ser(?:id?)?)|val(?:id-(?:event|handle|object)|ue)|w(?:eekday|idget-h(?:a(?:n(?:d(?:le?)?)?)?)?)|year))(?=\\s*\\()",
       "name": "support.function.abl"
     },
     "code": {
@@ -91,7 +91,987 @@
       "name": "comment.block.abl",
       "patterns": [
         {
-          "include": "#comment-block"
+          "include": "#comment-block-2"
+        }
+      ]
+    },
+    "comment-block-10": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-11"
+        }
+      ]
+    },
+    "comment-block-11": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-12"
+        }
+      ]
+    },
+    "comment-block-12": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-13"
+        }
+      ]
+    },
+    "comment-block-13": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-14"
+        }
+      ]
+    },
+    "comment-block-14": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-15"
+        }
+      ]
+    },
+    "comment-block-15": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-16"
+        }
+      ]
+    },
+    "comment-block-16": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-17"
+        }
+      ]
+    },
+    "comment-block-17": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-18"
+        }
+      ]
+    },
+    "comment-block-18": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-19"
+        }
+      ]
+    },
+    "comment-block-19": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-20"
+        }
+      ]
+    },
+    "comment-block-2": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-3"
+        }
+      ]
+    },
+    "comment-block-20": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-21"
+        }
+      ]
+    },
+    "comment-block-21": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-22"
+        }
+      ]
+    },
+    "comment-block-22": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-23"
+        }
+      ]
+    },
+    "comment-block-23": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-24"
+        }
+      ]
+    },
+    "comment-block-24": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-25"
+        }
+      ]
+    },
+    "comment-block-25": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-26"
+        }
+      ]
+    },
+    "comment-block-26": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-27"
+        }
+      ]
+    },
+    "comment-block-27": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-28"
+        }
+      ]
+    },
+    "comment-block-28": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-29"
+        }
+      ]
+    },
+    "comment-block-29": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-30"
+        }
+      ]
+    },
+    "comment-block-3": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-4"
+        }
+      ]
+    },
+    "comment-block-30": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-31"
+        }
+      ]
+    },
+    "comment-block-31": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-32"
+        }
+      ]
+    },
+    "comment-block-32": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-33"
+        }
+      ]
+    },
+    "comment-block-33": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-34"
+        }
+      ]
+    },
+    "comment-block-34": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-35"
+        }
+      ]
+    },
+    "comment-block-35": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-36"
+        }
+      ]
+    },
+    "comment-block-36": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-37"
+        }
+      ]
+    },
+    "comment-block-37": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-38"
+        }
+      ]
+    },
+    "comment-block-38": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-39"
+        }
+      ]
+    },
+    "comment-block-39": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-40"
+        }
+      ]
+    },
+    "comment-block-4": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-5"
+        }
+      ]
+    },
+    "comment-block-40": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-41"
+        }
+      ]
+    },
+    "comment-block-41": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-42"
+        }
+      ]
+    },
+    "comment-block-42": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-43"
+        }
+      ]
+    },
+    "comment-block-43": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-44"
+        }
+      ]
+    },
+    "comment-block-44": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-45"
+        }
+      ]
+    },
+    "comment-block-45": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-46"
+        }
+      ]
+    },
+    "comment-block-46": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-47"
+        }
+      ]
+    },
+    "comment-block-47": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-48"
+        }
+      ]
+    },
+    "comment-block-48": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-49"
+        }
+      ]
+    },
+    "comment-block-49": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-50"
+        }
+      ]
+    },
+    "comment-block-5": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-6"
+        }
+      ]
+    },
+    "comment-block-50": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "match": "/\\*"
+        }
+      ]
+    },
+    "comment-block-6": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-7"
+        }
+      ]
+    },
+    "comment-block-7": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-8"
+        }
+      ]
+    },
+    "comment-block-8": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-9"
+        }
+      ]
+    },
+    "comment-block-9": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-10"
         }
       ]
     },
@@ -174,7 +1154,7 @@
               ]
             }
           },
-          "match": "(?i)(?<![\\w#$%&.-])(inherits|implements)\\s+([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:\\s*,\\s*[A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*)*)"
+          "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(inherits|implements)\\s+([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:\\s*,\\s*[A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*)*)"
         },
         {
           "captures": {
@@ -327,7 +1307,7 @@
               "name": "variable.parameter.abl"
             }
           },
-          "match": "(?i)(?<![\\w#$%&.-])(input|output|input-o(?:u(?:t(?:p(?:ut?)?)?)?)?)\\s+([A-Za-z_][\\w#$%&-]*)(?=\\s+(?:as|like)(?![\\w#$%&-]))"
+          "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(input|output|input-o(?:u(?:t(?:p(?:ut?)?)?)?)?)\\s+([A-Za-z_][\\w#$%&-]*)(?=\\s+(?:as|like)(?![\\w#$%&-]))"
         },
         {
           "captures": {
@@ -338,18 +1318,18 @@
               "name": "entity.name.variable.field.abl"
             }
           },
-          "match": "(?i)(?<![\\w#$%&.-])(field|index)\\s+([A-Za-z_][\\w#$%&-]*)"
+          "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(field|index)\\s+([A-Za-z_][\\w#$%&-]*)"
         }
       ]
     },
     "function-call": {
-      "match": "(?<![\\w#$%&.-])[A-Za-z_][\\w#$%&-]*(?=\\()",
+      "match": "(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])[A-Za-z_][\\w#$%&-]*(?=\\()",
       "name": "entity.name.function.abl"
     },
     "identifier": {
       "patterns": [
         {
-          "match": "(?<![\\w#$%&-])[A-Za-z_][\\w#$%&-]*",
+          "match": "(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&-])[A-Za-z_][\\w#$%&-]*",
           "name": "variable.other.abl"
         },
         {
@@ -372,6 +1352,1143 @@
         }
       },
       "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-2"
+        }
+      ]
+    },
+    "include-10": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-11"
+        }
+      ]
+    },
+    "include-11": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-12"
+        }
+      ]
+    },
+    "include-12": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-13"
+        }
+      ]
+    },
+    "include-13": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-14"
+        }
+      ]
+    },
+    "include-14": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-15"
+        }
+      ]
+    },
+    "include-15": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-16"
+        }
+      ]
+    },
+    "include-16": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-17"
+        }
+      ]
+    },
+    "include-17": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-18"
+        }
+      ]
+    },
+    "include-18": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-19"
+        }
+      ]
+    },
+    "include-19": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-20"
+        }
+      ]
+    },
+    "include-2": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-3"
+        }
+      ]
+    },
+    "include-20": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-21"
+        }
+      ]
+    },
+    "include-21": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-22"
+        }
+      ]
+    },
+    "include-22": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-23"
+        }
+      ]
+    },
+    "include-23": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-24"
+        }
+      ]
+    },
+    "include-24": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-25"
+        }
+      ]
+    },
+    "include-25": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-26"
+        }
+      ]
+    },
+    "include-26": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-27"
+        }
+      ]
+    },
+    "include-27": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-28"
+        }
+      ]
+    },
+    "include-28": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-29"
+        }
+      ]
+    },
+    "include-29": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-30"
+        }
+      ]
+    },
+    "include-3": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-4"
+        }
+      ]
+    },
+    "include-30": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-31"
+        }
+      ]
+    },
+    "include-31": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-32"
+        }
+      ]
+    },
+    "include-32": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-33"
+        }
+      ]
+    },
+    "include-33": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-34"
+        }
+      ]
+    },
+    "include-34": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-35"
+        }
+      ]
+    },
+    "include-35": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-36"
+        }
+      ]
+    },
+    "include-36": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-37"
+        }
+      ]
+    },
+    "include-37": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-38"
+        }
+      ]
+    },
+    "include-38": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-39"
+        }
+      ]
+    },
+    "include-39": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-40"
+        }
+      ]
+    },
+    "include-4": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-5"
+        }
+      ]
+    },
+    "include-40": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-41"
+        }
+      ]
+    },
+    "include-41": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-42"
+        }
+      ]
+    },
+    "include-42": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-43"
+        }
+      ]
+    },
+    "include-43": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-44"
+        }
+      ]
+    },
+    "include-44": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-45"
+        }
+      ]
+    },
+    "include-45": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-46"
+        }
+      ]
+    },
+    "include-46": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-47"
+        }
+      ]
+    },
+    "include-47": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-48"
+        }
+      ]
+    },
+    "include-48": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-49"
+        }
+      ]
+    },
+    "include-49": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-50"
+        }
+      ]
+    },
+    "include-5": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-6"
+        }
+      ]
+    },
+    "include-50": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "match": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])"
+        }
+      ]
+    },
+    "include-6": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-7"
+        }
+      ]
+    },
+    "include-7": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-8"
+        }
+      ]
+    },
+    "include-8": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-9"
+        }
+      ]
+    },
+    "include-9": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-10"
+        }
+      ]
+    },
+    "include-arguments": {
       "patterns": [
         {
           "captures": {
@@ -399,9 +2516,6 @@
         },
         {
           "include": "#preprocessor-references"
-        },
-        {
-          "include": "#include"
         },
         {
           "include": "#strings"
@@ -445,7 +2559,7 @@
           "name": "variable.language.abl"
         }
       },
-      "match": "(?i)(?<![\\w#$%&.-])(?:((?:false|no|true|yes))|((?:and|not|or))|((?:eq|g(?:e|t)|l(?:e|t)|ne))|((?:begins|contains|matches))|(mod(?:u(?:lo?)?)?)|((?:ca(?:se|tch)|do|e(?:ach|lse|nd)|f(?:inally|or)|if|leave|next|otherwise|quit|re(?:peat|t(?:ry|urn))|stop|th(?:en|row)|undo|wh(?:en|ile)))|((?:b(?:lob|yte)|c(?:har(?:a(?:c(?:t(?:er?)?)?)?)?|lob|om-handle)|d(?:at(?:aset-handle|e(?:time(?:-tz)?)?)|ec(?:i(?:m(?:al?)?)?)?|ouble)|float|handle|int(?:64|e(?:g(?:er?)?)?)?|lo(?:g(?:i(?:c(?:al?)?)?)?|ng(?:char)?)|memptr|r(?:aw|ecid|owid)|short|table-handle|unsigned-(?:byte|int(?:64|eger)|long|short)|void|widget-handle))|((?:abstract|final|global|input(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|no(?:-undo|n-serializable)|o(?:utput|verride)|p(?:ackage-pr(?:ivate|otected)|r(?:ivate|otected)|ublic)|s(?:erializable|hared|tatic)))|((?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))|((?:a(?:bs(?:o(?:l(?:u(?:te?)?)?)?)?|ccum(?:u(?:l(?:a(?:te?)?)?)?)?|d(?:d(?:-(?:buffer|c(?:alc-column|olumns-from)|events-procedure|fi(?:elds-from|rst)|index-field|l(?:ast|ike-(?:column|field|index))|new-(?:field|index)|s(?:chema-location|uper-procedure)))?|m-data|vise)|ggregate|l(?:ert-box|ias|l(?:ow-(?:column-searching|prev-deserialization|replication))?|ter|ways-on-top)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|si-only|y(?:where)?)|pp(?:end|l(?:-(?:alert(?:-(?:b(?:o(?:x(?:es?)?)?)?)?)?|context-id)|ication|y)|server-(?:info|password|userid))|rray-message|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|k-overwrite|s(?:embly|ign)|ync(?:-request-(?:count|handle)|hronous))?|t(?:t(?:ached-pairlist|r(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?))?|u(?:dit-e(?:nabled|vent-context)|t(?:h(?:entication-failed|orization)|o(?:-(?:comp(?:l(?:e(?:t(?:i(?:on?)?)?)?)?)?|end(?:-key|key)|go|ind(?:e(?:nt?)?)?|re(?:size|t(?:u(?:rn?)?)?)|synchronize|z(?:ap?)?)|matic)))|v(?:ail(?:a(?:b(?:l(?:e(?:-formats)?)?)?)?)?|e(?:r(?:a(?:ge?)?)?)?|g))|b(?:a(?:ck(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?|wards?)?|se(?:-(?:ade|key)|64-(?:decode|encode))|tch(?:-(?:m(?:o(?:de?)?)?|size)?)?)|e(?:fore-(?:h(?:i(?:de?)?)?|table)|gin-event-group|ll|tween)|gc(?:o(?:l(?:or?)?)?)?|i(?:g-endian|n(?:ary|d(?:-where)?))|l(?:ank|ock-(?:iteration-display|lev(?:el?)?))|o(?:rder-(?:b(?:o(?:t(?:t(?:o(?:m(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)?)?)?)?)?|l(?:e(?:f(?:t(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)?)?)?|r(?:i(?:g(?:h(?:t(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)?)?)?)?|t(?:o(?:p(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)?)?)|x(?:-select(?:a(?:b(?:le?)?)?)?)?)|r(?:eak|owse)|u(?:ffer(?:-(?:c(?:hars|o(?:mpare|py)|reate)|delete|field|handle|lines|name|partition-id|release|value))?|ttons?)|y(?:-(?:pointer|reference|va(?:lue|riant-pointer)))?)|c(?:a(?:che-size|ll(?:-(?:name|type))?|n(?:-(?:create|d(?:elete|o(?:-domain-support)?)|find|query|read|set|write)|cel-b(?:reak|utton))|ps|reful-paint|s(?:e-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?|t))|decl|enter(?:ed?)?|h(?:a(?:ined|racter_length)|eck|oose|r)|l(?:ass(?:-type)?|ear(?:-(?:appl-context|log|s(?:elect(?:i(?:on?)?)?|ort-arrows?)))?|ient-(?:connection-id|principal|t(?:ty|ype)|workstation)|ose(?:-log)?)|o(?:depage-convert|l(?:-of|late|o(?:n(?:-align(?:ed?)?)?|r)|u(?:m(?:n(?:-(?:bgcolor|dcolor|f(?:gcolor|ont)|lab(?:el?)?|movable|of|pfcolor|re(?:ad-only|sizable)|scrolling)|s)?)?)?)?|m(?:bo-box|mand|p(?:ares?|i(?:le?)?)?)|n(?:fig-name|nect(?:ed)?|structor|t(?:e(?:nts|xt(?:-(?:help(?:-(?:file|id))?|popup))?)|rol(?:-(?:box|frame))?)|vert(?:-(?:3d-colors|to-offs(?:et?)?))?)|py-(?:dataset|lob|sax-attributes|temp-table)|unt(?:-of)?)|r(?:c-value|eate(?:-(?:like(?:-sequential)?|node-namespace|result-list-entry|test-file))?)|ur(?:rent(?:-(?:c(?:hanged|olumn)|env(?:i(?:r(?:o(?:n(?:m(?:e(?:nt?)?)?)?)?)?)?)?|iteration|lang(?:u(?:a(?:ge?)?)?)?|query|r(?:e(?:quest-info|s(?:ponse-info|ult-row))|ow-modified)|value)|_date)?|s(?:o(?:r(?:-(?:char|line|offset))?)?)?))|d(?:a(?:t(?:a(?:-(?:bind|entry-ret(?:u(?:rn?)?)?|rel(?:a(?:t(?:i(?:on?)?)?)?)?|source(?:-(?:complete-map|modified|rowid))?|t(?:y(?:pe?)?)?)|base|se(?:rvers|t))|e-f(?:o(?:r(?:m(?:at?)?)?)?)?)|y)|b(?:-(?:context|references)|co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de(?:-(?:error|i(?:d|tem)?|name|topic))?|e(?:b(?:lank|ug-(?:alert|list))|c(?:imals|lare(?:-namespace)?|rypt)|f(?:ault(?:-(?:bu(?:ffer-handle|tton)|commit|ex(?:t(?:e(?:n(?:s(?:i(?:on?)?)?)?)?)?)?|untranslatable|value))?|i(?:n(?:e(?:-user-event-manager|d)?)?)?)?|l(?:e(?:gate|t(?:e(?:-(?:c(?:har|urrent-row)|line|result-list-entry|selected-rows?))?)?)?|imiter)?|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|elect(?:-(?:focused-row|rows|selected-row)|ion)|tructor))|i(?:alog-box|ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|r|s(?:able(?:-(?:auto-zap|dump-triggers|load-triggers)|d)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:a(?:y(?:-(?:message|t(?:y(?:pe?)?)?))?)?)?)?|tinct))|o(?:main-(?:description|name|type)|s|wn)|r(?:ag-enabled|op(?:-(?:down(?:-list)?|file-notify|target))?)|s-close-cursor|ump|ynamic-(?:enum|function|invoke|new))|e(?:cho|d(?:ge(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|it(?:-(?:c(?:an-(?:paste|undo)|lear|opy|ut)|paste|undo)|ing|or))|mpty(?:-temp-table)?|n(?:able(?:d-fields)?|c(?:ode(?:-domain-access-code)?|rypt(?:-audit-mac-key|ion-salt)?)|d(?:-(?:document|e(?:lement|vent-group)|file-drop|key|move|r(?:esize|ow-resize)|user-prompt)|key)|t(?:ered|ity-expansion-limit|ry)|um)|rror(?:-(?:col(?:u(?:mn?)?)?|object|row|stack-trace))?|scape|time|vent(?:-(?:group-id|handler(?:-context)?|procedure(?:-context)?|t(?:y(?:pe?)?)?)|s)?|x(?:c(?:ept|lusive(?:-(?:id|l(?:o(?:ck?)?)?|web-user)?)?)|ecute|i(?:sts|t-code)|p(?:andable|licit|ort(?:-principal)?)?|te(?:n(?:ded|t)|rnal)))|f(?:etch(?:-selected-row)?|gc(?:o(?:l(?:or?)?)?)?|i(?:elds?|l(?:e(?:-(?:create-(?:date|time)|mod-(?:date|time)|name|off(?:s(?:et?)?)?|size|type))?|l(?:-in)?|ters)|nd(?:-(?:by-rowid|c(?:ase-sensitive|urrent)|first|global|last|next-occurrence|prev-occurrence|select|unique|wrap-around)|er)?|rst(?:-(?:asynch-request|c(?:hild|olumn)|form|o(?:bject|f)|proc(?:e(?:d(?:u(?:re?)?)?)?)?|server|tab-i(?:t(?:em?)?)?))?|t-last-column|xed-only)|lat-button|o(?:cused-row(?:-selected)?|nt|r(?:ce-file|eign-key-hidden|m(?:-long-input|at?)?|wards?))|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|spa(?:c(?:i(?:ng?)?)?)?|val(?:ue?)?|x|y))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?|ur(?:r(?:e(?:nt?)?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|u(?:ll-(?:height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|pathn(?:a(?:me?)?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|nction(?:-call-type)?))|g(?:ateways?|e(?:nerate-(?:pbe-(?:key|salt)|random-key|uuid)|t(?:-(?:attr(?:-call-type|ibute-node)|b(?:inary-data|lue(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|rowse-column|uffer-handle|yte)|c(?:allback-proc-(?:context|name)|gi-(?:l(?:ist|ong-value)|value)|lass|o(?:depages?|llations|nfig-value)|urrent)|d(?:ouble|ropped-file|ynamic)|error-(?:column|row)|f(?:i(?:le(?:-(?:name|offset?))?|rst)|loat)|green(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|i(?:n(?:dex-by-(?:namespace-name|qname)|t64)|teration)|key-val(?:ue?)?|l(?:ast|o(?:calname-by-index|ng))|message|n(?:ext|umber)|p(?:ointer-value|r(?:ev|inters|operty))|qname-by-index|r(?:e(?:d(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|positioned-row)|gb-value)|s(?:elected(?:-(?:w(?:i(?:d(?:g(?:et?)?)?)?)?)?)?|hort|i(?:gnature|ze)|tring)|t(?:ab-item|ext-(?:height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|ype-by-(?:index|namespace-name|qname))|u(?:nsigned-(?:long|short)|ri-by-index)|value-by-(?:index|namespace-name|qname)|wait-state)|byte)?)|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|id-(?:factor-(?:h(?:o(?:r(?:i(?:z(?:o(?:n(?:t(?:al?)?)?)?)?)?)?)?)?|v(?:e(?:r(?:t(?:i(?:c(?:al?)?)?)?)?)?)?)|snap|unit-(?:height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|visible)|oup)|uid)|h(?:a(?:s-records|ving)|e(?:ader|ight(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|lp|x-(?:decode|encode))|id(?:den|e)|o(?:ri(?:z(?:o(?:n(?:t(?:al?)?)?)?)?)?|st-byte-order)|tml-(?:charset|end-of-(?:line|page)|frame-(?:begin|end)|header-(?:begin|end)|title-(?:begin|end)))|i(?:m(?:age(?:-(?:down|insensitive|size(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?|up))?|mediate-display|p(?:lements|ort(?:-principal)?))|n(?:-handle|crement-exclusive-id|d(?:ex(?:-(?:hint|information)|ed-reposition)?|icator)|fo(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|herit(?:-(?:bgc(?:o(?:l(?:or?)?)?)?|fgc(?:o(?:l(?:or?)?)?)?)|s)|it(?:i(?:a(?:l(?:-(?:dir|filter)|ize-document-type)?)?)?)?|ner-(?:chars|lines)|put-value|sert(?:-(?:attribute|b(?:a(?:c(?:k(?:t(?:ab?)?)?)?)?)?|file|row|string|t(?:ab?)?))?|t(?:er(?:face|nal-entries)|o)|voke)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|class?|json|lead-byte|open|par(?:ameter-set|titioned?)|row-selected|selected|xml))?|tem(?:s-per-row)?)|join(?:-by-sqldb)?|k(?:blabel|e(?:ep-(?:connection-open|frame-z(?:-(?:o(?:r(?:d(?:er?)?)?)?)?)?|messages|security-cache|tab-order)|y(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|c(?:ache-join|ode)|func(?:t(?:i(?:on?)?)?)?|label|s|word(?:-all)?)))|l(?:a(?:bel(?:-(?:bgc(?:o(?:l(?:or?)?)?)?|dc(?:o(?:l(?:or?)?)?)?|f(?:gc(?:o(?:l(?:or?)?)?)?|ont)|pfc(?:o(?:l(?:or?)?)?)?)|s-have-colons)?|ndscape|rge(?:-to-small)?|st(?:-(?:asynch-request|batch|child|form|key|o(?:bject|f)|proce(?:d(?:u(?:re?)?)?)?|server|tab-i(?:t(?:em?)?)?)|key)?)|c|dbname|e(?:ft-(?:align(?:ed?)?|trim)|ngth)|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|st(?:-(?:events|item(?:-pairs|s)|property-names|query-attrs|set-attrs|widgets)|i(?:ng?)?)|t(?:eral-question|tle-endian))|o(?:ad(?:-(?:domains|i(?:con|mage(?:-(?:down|insensitive|up))?)|mouse-p(?:o(?:i(?:n(?:t(?:er?)?)?)?)?)?|picture|small-icon))?|c(?:a(?:l-(?:name|version-info)|tor-(?:column-number|line-number|public-id|system-id|type))|k(?:-registration|ed))|g(?:-audit-event|in-(?:expiration-timestamp|host|state))|ok(?:ahead|up)))|m(?:a(?:nual-highlight|p|r(?:gin-(?:extra|height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|k-(?:new|row-state))|x(?:-(?:button|chars|data-guess|height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?|rows|size|val(?:ue?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|i(?:m(?:ize|u(?:m(?:-level)?)?)?)?)?)|d5-digest|e(?:m(?:ber|ptr-to-node-value)|nu(?:-(?:bar|item|k(?:ey?)?|m(?:o(?:u(?:se?)?)?)?)|bar)?|rge-by-field|ssage(?:-(?:area(?:-font)?|lines))?|thod)|in(?:-(?:button|column-width-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)|height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|size|val(?:ue?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|i(?:m(?:um?)?)?)?|o(?:nth|use(?:-p(?:o(?:i(?:n(?:t(?:er?)?)?)?)?)?)?|v(?:able|e-(?:after(?:-(?:t(?:a(?:b(?:-(?:i(?:t(?:em?)?)?)?)?)?)?)?)?|befor(?:e(?:-(?:t(?:a(?:b(?:-(?:i(?:t(?:em?)?)?)?)?)?)?)?)?)?|col(?:u(?:mn?)?)?|to-(?:b(?:o(?:t(?:t(?:om?)?)?)?)?|eof|t(?:op?)?))))|pe|time|u(?:lti(?:-compile|ple(?:-key)?|tasking-interval)|st-exist))|n(?:a(?:mespace-(?:prefix|uri)|tive)|e(?:eds-(?:appserver-prompt|prompt)|sted|w(?:-(?:instance|row))?|xt-(?:column|prompt|rowid|sibling|tab-i(?:t(?:em?)?)?|value))|o(?:-(?:a(?:pply|rray-message|ssign|ttr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|uto-validate)|b(?:ind-where|ox)|c(?:on(?:sole|vert(?:-3d-colors)?)|urrent-value)|d(?:ebug|rag)|e(?:cho|mpty-space|rror)|f(?:i(?:ll?)?|ocus)?|h(?:elp|ide)|in(?:dex-hint|herit-(?:bgc(?:o(?:l(?:or?)?)?)?|fgc(?:o(?:l(?:or?)?)?)?))|join-by-sqldb|keycache-join|l(?:abels?|o(?:bs|ck|okahead))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|row-markers|s(?:crollbar-vertical|eparat(?:e-connection|ors))|tab-stop|und(?:e(?:r(?:l(?:i(?:ne?)?)?)?)?)?|val(?:i(?:d(?:a(?:te?)?)?)?)?|w(?:ait|ord-wrap))|de-value-to-memptr|n(?:amespace-schema-location|e)|rmalize|t-active|w)|u(?:ll|m(?:-(?:ali(?:a(?:s(?:es?)?)?)?|bu(?:ffers|t(?:t(?:o(?:ns?)?)?)?)|co(?:l(?:u(?:m(?:ns?)?)?)?|pies)|d(?:bs|ropped-files)|entries|f(?:ields|ormats)|ite(?:ms|rations)|l(?:ines|ocked-col(?:u(?:m(?:ns?)?)?)?)|messages|parameters|re(?:ferences|placed|sults)|selected(?:-(?:rows|w(?:i(?:d(?:g(?:e(?:ts?)?)?)?)?)?)?)?|t(?:abs|o-retain)|visible-columns)|eric(?:-f(?:o(?:r(?:m(?:at?)?)?)?)?)?)))|o(?:bject|ctet-length|ff?|k(?:-cancel)?|ld|n(?:-frame(?:-(?:b(?:o(?:r(?:d(?:er?)?)?)?)?)?)?)?|p(?:en|sys|tion(?:s-file)?)|rd(?:ered-join|inal)|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir|rives?)|error|getenv|rename)|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|size|top|wid(?:th?)?)|d)?|r(?:am(?:e(?:t(?:er?)?)?)?|ent-(?:fields-(?:after|before)|id-(?:field|relation))|se-status|tial-key)|s(?:cal|sword-field)|use)|be-(?:hash-alg(?:o(?:r(?:i(?:t(?:hm?)?)?)?)?)?|key-rounds)|dbname|ersist(?:e(?:n(?:t(?:-cache-disabled)?)?)?)?|ixels(?:-per-(?:col(?:u(?:mn?)?)?|row))?|o(?:pup-(?:m(?:e(?:nu?)?)?|o(?:n(?:ly?)?)?)|rtrait)|r(?:e(?:cision|fer-dataset|p(?:are-string|ro(?:c(?:e(?:ss?)?)?|p))|sel(?:e(?:ct?)?)?|v(?:-(?:column|sibling|tab-i(?:t(?:em?)?)?))?)|i(?:mary|nter(?:-(?:control-handle|hdc|name|port|setup))?|v(?:ate-d(?:a(?:ta?)?)?|ileges))|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?|text(?:-buffer)?)|e(?:d(?:u(?:r(?:e(?:-(?:call-type|type))?)?)?)?|ss)?)|gr(?:am-name|ess(?:-s(?:o(?:u(?:r(?:ce?)?)?)?)?)?)|m(?:pt(?:-f(?:or?)?)?|sgs)|p(?:ath|erty)|vers(?:i(?:on?)?)?|xy-(?:password|userid)))|u(?:bli(?:c-id|sh(?:ed-events)?)|t(?:-(?:byte|double|float|int64|key-val(?:ue?)?|long|s(?:hort|tring)|unsigned-long)|byte)?))|qu(?:e(?:ry(?:-(?:close|o(?:ff-end|pen)|prepare|tuning))?|stion)|oter)|r(?:-index|a(?:dio-(?:buttons|set)|ndom|w-transfer)|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:a(?:d(?:-(?:available|exact-num|file|json|only|xml)|key)|l)|c(?:ord-length|t(?:a(?:n(?:g(?:le?)?)?)?)?|ursive)|f(?:erence-only|resh(?:-audit-policy)?)|gister-domain|l(?:ation-fields|ease)|move-(?:events-procedure|super-procedure)|p(?:lace(?:-selection-text)?|osition(?:-(?:backward|forward|mode|to-row(?:id)?))?)|quest(?:-info)?|s(?:iza(?:b(?:le?)?)?|ponse-info|tart-row(?:id)?)|t(?:ain(?:-shape)?|ry-cancel|urn(?:-(?:ins(?:e(?:r(?:t(?:ed?)?)?)?)?|to-start-dir?|val(?:u(?:e(?:-data-type)?)?)?)|s))|v(?:er(?:se-from|t)|oke))|gb-value|ight-(?:aligned|trim)|o(?:u(?:nd|tine-level)|w(?:-(?:height-(?:chars|pixels)|markers|of|resizable))?)|u(?:le|n(?:-procedure)?))|s(?:a(?:ve(?:-(?:as|file))?|x-(?:attributes|comple(?:te?)?|parse(?:-(?:first|next)|r-error)?|r(?:eader|unning)|uninitialized|write(?:-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)|r)))|c(?:hema(?:-(?:location|marshal|path))?|r(?:een(?:-(?:io|lines|val(?:ue?)?))?|oll(?:-(?:bars|delta|offset|to-(?:current-row|i(?:t(?:em?)?)?|selected-row))|able|bar-(?:h(?:o(?:r(?:i(?:z(?:o(?:n(?:t(?:al?)?)?)?)?)?)?)?)?|v(?:e(?:r(?:t(?:i(?:c(?:al?)?)?)?)?)?)?)|ed-row-pos(?:i(?:t(?:i(?:on?)?)?)?)?|ing)?))|dbname|e(?:a(?:l-timestamp|rch(?:-(?:self|targer))?)|ction|ek|lect(?:-(?:all|focused-row|next-row|prev-row|row)|able|ion(?:-(?:end|list|start|text))?)?|n(?:d(?:-sql(?:-(?:s(?:t(?:a(?:t(?:e(?:m(?:e(?:nt?)?)?)?)?)?)?)?)?)?)?|sitive)|parat(?:e-connection|or-fgcolor)|r(?:ialize-(?:hidden|name)|ver(?:-(?:connection-(?:bound(?:-request)?|context|id)|operating-mode|socket))?)|ssion-id|t(?:-(?:a(?:ppl-context|ttr(?:-call-type|ibute-node))|b(?:lue(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|reak|uffers)|c(?:allback|lient|o(?:mmit|ntents)|urrent-value)|d(?:b-client|ynamic)|event-manager-option|green(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|input-source|o(?:ption|utput-destination)|p(?:arameter|ointer-value|roperty)|r(?:e(?:d(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|positioned-row)|gb-value|ollback)|s(?:election|ize|ort-arrow)|wait-state)|user(?:id?)?)?)|h(?:a(?:1-digest|re(?:-(?:l(?:o(?:ck?)?)?)?)?)|ow-(?:in-taskbar|stats?))|i(?:de-lab(?:e(?:l(?:-h(?:a(?:n(?:d(?:le?)?)?)?)?|s)?)?)?|gnature(?:-value)?|lent|mple|ngle(?:-run)?|ze(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|kip(?:-deleted-record)?|lider|mall(?:-(?:icon|title)|int)|o(?:ap-header(?:-entryref)?|cket|me|rt(?:-(?:ascending|number))?|urce)|pace|q(?:l|rt)|sl-server-name|t(?:a(?:rt(?:-(?:document|element|move|r(?:esize|ow-resize)))?|t(?:e-detail|us(?:-area(?:-font)?)?))|dcall|o(?:p-(?:after|object|parsing)|red-proc(?:e(?:d(?:u(?:re?)?)?)?)?)|r(?:e(?:am(?:-(?:handle|io))?|tch-to-fit)|i(?:ct-entity-resolution|ng(?:-(?:value|xref))?)))|u(?:b(?:-(?:ave(?:r(?:a(?:ge?)?)?)?|count|m(?:aximum|e(?:nu?)?|in(?:i(?:m(?:um?)?)?)?)?|total)?|s(?:cribe|t(?:i(?:t(?:u(?:te?)?)?)?|r(?:i(?:ng?)?)?)?))|m|p(?:er-procedures|press-(?:namespace-processing|w(?:a(?:r(?:n(?:i(?:n(?:gs?)?)?)?)?)?)?)))|y(?:mmetric-(?:encryption-(?:algorithm|iv|key)|support)|stem-(?:alert(?:-(?:b(?:o(?:x(?:es?)?)?)?)?)?|dialog|help|id)))|t(?:a(?:b(?:-(?:position|stop)|le(?:-(?:number|scan))?)|rget)|e(?:mp-(?:dir(?:e(?:c(?:t(?:o(?:ry?)?)?)?)?)?|table(?:-prepare)?)|rm(?:i(?:n(?:a(?:l|te)?)?)?)?|xt(?:-(?:cursor|se(?:g-grow|lected)))?)|hr(?:e(?:ad-safe|e-d)|ough|u)|i(?:c-marks|me(?:-source)?|tle(?:-(?:bgc(?:o(?:l(?:or?)?)?)?|dc(?:o(?:l(?:or?)?)?)?|f(?:gc(?:o(?:l(?:or?)?)?)?|o(?:nt?)?)))?)|o(?:-rowid|day|ggle-box|oltip|p(?:-(?:nav-query|only)|ic)|tal)?|r(?:a(?:iling|ns(?:-init-procedure|action(?:-mode)?|parent)?)|i(?:ggers?|m)|unc(?:a(?:te?)?)?)|ype-of)|u(?:n(?:b(?:ox|uff(?:e(?:r(?:ed?)?)?)?)|derl(?:i(?:ne?)?)?|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que(?:-(?:id|match))?|x)|l(?:ess-hidden|oad)|subscribe)|p(?:date(?:-attribute)?)?|rl-(?:decode|encode|password|userid)|s(?:e(?:-(?:dict-exps|filename|index|revvideo|text|underline|widget-pool)|r(?:-id|id))?|ing))|v(?:6frame|a(?:l(?:id(?:-(?:event|handle|object)|at(?:e(?:-(?:domain-access-code|expression|message|seal))?|ion-enabled))|ue(?:-changed|s)?)|r(?:i(?:a(?:b(?:le?)?)?)?)?)|er(?:bose|t(?:i(?:c(?:al?)?)?)?)|i(?:ew(?:-(?:as|first-column-on-reopen))?|rtual-(?:height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|sible))|w(?:ait(?:-for)?|eekday|here|i(?:d(?:get(?:-(?:e(?:n(?:t(?:er?)?)?)?|id|l(?:e(?:a(?:ve?)?)?)?|pool))?|th(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|n(?:ame|ormal)|s(?:ta(?:te?)?|ystem)))?|th)|or(?:d-(?:index|wrap)|k(?:-(?:area-(?:height-pixels|width-pixels|x|y)|tab(?:le?)?)|file))|rite(?:-(?:c(?:data|haracters|omment)|data-element|e(?:mpty-element|ntity-ref|xternal-dtd)|fragment|json|message|processing-instruction|status|xml(?:schema)?))?)|x(?:-(?:document|noderef|of)|code|ml-(?:data-type|entity-expansion-limit|node-(?:name|type)|s(?:chema-path|trict-entity-resolution|uppress-namespace-processing))|ref(?:-xml)?)|y(?:-of|e(?:ar(?:-offset)?|s-no(?:-cancel)?)))))(?![\\w#$%&-]|\\.[A-Za-z_])"
+      "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(?:((?:false|no|true|yes))|((?:and|not|or))|((?:eq|g(?:e|t)|l(?:e|t)|ne))|((?:begins|contains|matches))|(mod(?:u(?:lo?)?)?)|((?:ca(?:se|tch)|do|e(?:ach|lse|nd)|f(?:inally|or)|if|leave|next|otherwise|quit|re(?:peat|t(?:ry|urn))|stop|th(?:en|row)|undo|wh(?:en|ile)))|((?:b(?:lob|yte)|c(?:har(?:a(?:c(?:t(?:er?)?)?)?)?|lob|om-handle)|d(?:at(?:aset-handle|e(?:time(?:-tz)?)?)|ec(?:i(?:m(?:al?)?)?)?|ouble)|float|handle|int(?:64|e(?:g(?:er?)?)?)?|lo(?:g(?:i(?:c(?:al?)?)?)?|ng(?:char)?)|memptr|r(?:aw|ecid|owid)|short|table-handle|unsigned-(?:byte|int(?:64|eger)|long|short)|void|widget-handle))|((?:abstract|final|global|input(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|no(?:-undo|n-serializable)|o(?:utput|verride)|p(?:ackage-pr(?:ivate|otected)|r(?:ivate|otected)|ublic)|s(?:erializable|hared|tatic)))|((?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))|((?:a(?:bs(?:o(?:l(?:u(?:te?)?)?)?)?|ccum(?:u(?:l(?:a(?:te?)?)?)?)?|d(?:d(?:-(?:buffer|c(?:alc-column|olumns-from)|events-procedure|fi(?:elds-from|rst)|index-field|l(?:ast|ike-(?:column|field|index))|new-(?:field|index)|s(?:chema-location|uper-procedure)))?|m-data|vise)|ggregate|l(?:ert-box|ias|l(?:ow-(?:column-searching|prev-deserialization|replication))?|ter|ways-on-top)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|si-only|y(?:where)?)|pp(?:end|l(?:-(?:alert(?:-(?:b(?:o(?:x(?:es?)?)?)?)?)?|context-id)|ication|y)|server-(?:info|password|userid))|rray-message|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|k-overwrite|s(?:embly|ign)|ync(?:-request-(?:count|handle)|hronous))?|t(?:t(?:ached-pairlist|r(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?))?|u(?:dit-e(?:nabled|vent-context)|t(?:h(?:entication-failed|orization)|o(?:-(?:comp(?:l(?:e(?:t(?:i(?:on?)?)?)?)?)?|end(?:-key|key)|go|ind(?:e(?:nt?)?)?|re(?:size|t(?:u(?:rn?)?)?)|synchronize|z(?:ap?)?)|matic)))|v(?:ail(?:a(?:b(?:l(?:e(?:-formats)?)?)?)?)?|e(?:r(?:a(?:ge?)?)?)?|g))|b(?:a(?:ck(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?|wards?)?|se(?:-(?:ade|key)|64-(?:decode|encode))|tch(?:-(?:m(?:o(?:de?)?)?|size)?)?)|e(?:fore-(?:h(?:i(?:de?)?)?|table)|gin-event-group|ll|tween)|gc(?:o(?:l(?:or?)?)?)?|i(?:g-endian|n(?:ary|d(?:-where)?))|l(?:ank|ock-(?:iteration-display|lev(?:el?)?))|o(?:rder-(?:b(?:o(?:t(?:t(?:o(?:m(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)?)?)?)?)?|l(?:e(?:f(?:t(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)?)?)?|r(?:i(?:g(?:h(?:t(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)?)?)?)?|t(?:o(?:p(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)?)?)|x(?:-select(?:a(?:b(?:le?)?)?)?)?)|r(?:eak|owse)|u(?:ffer(?:-(?:c(?:hars|o(?:mpare|py)|reate)|delete|field|handle|lines|name|partition-id|release|value))?|ttons?)|y(?:-(?:pointer|reference|va(?:lue|riant-pointer)))?)|c(?:a(?:che-size|ll(?:-(?:name|type))?|n(?:-(?:create|d(?:elete|o(?:-domain-support)?)|find|query|read|set|write)|cel-b(?:reak|utton))|ps|reful-paint|s(?:e-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?|t))|decl|enter(?:ed?)?|h(?:a(?:ined|racter_length)|eck|oose|r)|l(?:ass(?:-type)?|ear(?:-(?:appl-context|log|s(?:elect(?:i(?:on?)?)?|ort-arrows?)))?|ient-(?:connection-id|principal|t(?:ty|ype)|workstation)|ose(?:-log)?)|o(?:depage-convert|l(?:-of|late|o(?:n(?:-align(?:ed?)?)?|r)|u(?:m(?:n(?:-(?:bgcolor|dcolor|f(?:gcolor|ont)|lab(?:el?)?|movable|of|pfcolor|re(?:ad-only|sizable)|scrolling)|s)?)?)?)?|m(?:bo-box|mand|p(?:ares?|i(?:le?)?)?)|n(?:fig-name|nect(?:ed)?|structor|t(?:e(?:nts|xt(?:-(?:help(?:-(?:file|id))?|popup))?)|rol(?:-(?:box|frame))?)|vert(?:-(?:3d-colors|to-offs(?:et?)?))?)|py-(?:dataset|lob|sax-attributes|temp-table)|unt(?:-of)?)|r(?:c-value|eate(?:-(?:like(?:-sequential)?|node-namespace|result-list-entry|test-file))?)|ur(?:rent(?:-(?:c(?:hanged|olumn)|env(?:i(?:r(?:o(?:n(?:m(?:e(?:nt?)?)?)?)?)?)?)?|iteration|lang(?:u(?:a(?:ge?)?)?)?|query|r(?:e(?:quest-info|s(?:ponse-info|ult-row))|ow-modified)|value)|_date)?|s(?:o(?:r(?:-(?:char|line|offset))?)?)?))|d(?:a(?:t(?:a(?:-(?:bind|entry-ret(?:u(?:rn?)?)?|rel(?:a(?:t(?:i(?:on?)?)?)?)?|source(?:-(?:complete-map|modified|rowid))?|t(?:y(?:pe?)?)?)|base|se(?:rvers|t))|e-f(?:o(?:r(?:m(?:at?)?)?)?)?)|y)|b(?:-(?:context|references)|co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de(?:-(?:error|i(?:d|tem)?|name|topic))?|e(?:b(?:lank|ug-(?:alert|list))|c(?:imals|lare(?:-namespace)?|rypt)|f(?:ault(?:-(?:bu(?:ffer-handle|tton)|commit|ex(?:t(?:e(?:n(?:s(?:i(?:on?)?)?)?)?)?)?|untranslatable|value))?|i(?:n(?:e(?:-user-event-manager|d)?)?)?)?|l(?:e(?:gate|t(?:e(?:-(?:c(?:har|urrent-row)|line|result-list-entry|selected-rows?))?)?)?|imiter)?|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|elect(?:-(?:focused-row|rows|selected-row)|ion)|tructor))|i(?:alog-box|ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|r|s(?:able(?:-(?:auto-zap|dump-triggers|load-triggers)|d)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:a(?:y(?:-(?:message|t(?:y(?:pe?)?)?))?)?)?)?|tinct))|o(?:main-(?:description|name|type)|s|wn)|r(?:ag-enabled|op(?:-(?:down(?:-list)?|file-notify|target))?)|s-close-cursor|ump|ynamic-(?:enum|function|invoke|new))|e(?:cho|d(?:ge(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|it(?:-(?:c(?:an-(?:paste|undo)|lear|opy|ut)|paste|undo)|ing|or))|mpty(?:-temp-table)?|n(?:able(?:d-fields)?|c(?:ode(?:-domain-access-code)?|rypt(?:-audit-mac-key|ion-salt)?)|d(?:-(?:document|e(?:lement|vent-group)|file-drop|key|move|r(?:esize|ow-resize)|user-prompt)|key)|t(?:ered|ity-expansion-limit|ry)|um)|rror(?:-(?:col(?:u(?:mn?)?)?|object|row|stack-trace))?|scape|time|vent(?:-(?:group-id|handler(?:-context)?|procedure(?:-context)?|t(?:y(?:pe?)?)?)|s)?|x(?:c(?:ept|lusive(?:-(?:id|l(?:o(?:ck?)?)?|web-user)?)?)|ecute|i(?:sts|t-code)|p(?:andable|licit|ort(?:-principal)?)?|te(?:n(?:ded|t)|rnal)))|f(?:etch(?:-selected-row)?|gc(?:o(?:l(?:or?)?)?)?|i(?:elds?|l(?:e(?:-(?:create-(?:date|time)|mod-(?:date|time)|name|off(?:s(?:et?)?)?|size|type))?|l(?:-in)?|ters)|nd(?:-(?:by-rowid|c(?:ase-sensitive|urrent)|first|global|last|next-occurrence|prev-occurrence|select|unique|wrap-around)|er)?|rst(?:-(?:asynch-request|c(?:hild|olumn)|form|o(?:bject|f)|proc(?:e(?:d(?:u(?:re?)?)?)?)?|server|tab-i(?:t(?:em?)?)?))?|t-last-column|xed-only)|lat-button|o(?:cused-row(?:-selected)?|nt|r(?:ce-file|eign-key-hidden|m(?:-long-input|at?)?|wards?))|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|spa(?:c(?:i(?:ng?)?)?)?|val(?:ue?)?|x|y))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?|ur(?:r(?:e(?:nt?)?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|u(?:ll-(?:height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|pathn(?:a(?:me?)?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|nction(?:-call-type)?))|g(?:ateways?|e(?:nerate-(?:pbe-(?:key|salt)|random-key|uuid)|t(?:-(?:attr(?:-call-type|ibute-node)|b(?:inary-data|lue(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|rowse-column|uffer-handle|yte)|c(?:allback-proc-(?:context|name)|gi-(?:l(?:ist|ong-value)|value)|lass|o(?:depages?|llations|nfig-value)|urrent)|d(?:ouble|ropped-file|ynamic)|error-(?:column|row)|f(?:i(?:le(?:-(?:name|offset?))?|rst)|loat)|green(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|i(?:n(?:dex-by-(?:namespace-name|qname)|t64)|teration)|key-val(?:ue?)?|l(?:ast|o(?:calname-by-index|ng))|message|n(?:ext|umber)|p(?:ointer-value|r(?:ev|inters|operty))|qname-by-index|r(?:e(?:d(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|positioned-row)|gb-value)|s(?:elected(?:-(?:w(?:i(?:d(?:g(?:et?)?)?)?)?)?)?|hort|i(?:gnature|ze)|tring)|t(?:ab-item|ext-(?:height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|ype-by-(?:index|namespace-name|qname))|u(?:nsigned-(?:long|short)|ri-by-index)|value-by-(?:index|namespace-name|qname)|wait-state)|byte)?)|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|id-(?:factor-(?:h(?:o(?:r(?:i(?:z(?:o(?:n(?:t(?:al?)?)?)?)?)?)?)?)?|v(?:e(?:r(?:t(?:i(?:c(?:al?)?)?)?)?)?)?)|snap|unit-(?:height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|visible)|oup)|uid)|h(?:a(?:s-records|ving)|e(?:ader|ight(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|lp|x-(?:decode|encode))|id(?:den|e)|o(?:ri(?:z(?:o(?:n(?:t(?:al?)?)?)?)?)?|st-byte-order)|tml-(?:charset|end-of-(?:line|page)|frame-(?:begin|end)|header-(?:begin|end)|title-(?:begin|end)))|i(?:m(?:age(?:-(?:down|insensitive|size(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?|up))?|mediate-display|p(?:lements|ort(?:-principal)?))|n(?:-handle|crement-exclusive-id|d(?:ex(?:-(?:hint|information)|ed-reposition)?|icator)|fo(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|herit(?:-(?:bgc(?:o(?:l(?:or?)?)?)?|fgc(?:o(?:l(?:or?)?)?)?)|s)|it(?:i(?:a(?:l(?:-(?:dir|filter)|ize-document-type)?)?)?)?|ner-(?:chars|lines)|put-value|sert(?:-(?:attribute|b(?:a(?:c(?:k(?:t(?:ab?)?)?)?)?)?|file|row|string|t(?:ab?)?))?|t(?:er(?:face|nal-entries)|o)|voke)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|class?|json|lead-byte|open|par(?:ameter-set|titioned?)|row-selected|selected|xml))?|tem(?:s-per-row)?)|join(?:-by-sqldb)?|k(?:blabel|e(?:ep-(?:connection-open|frame-z(?:-(?:o(?:r(?:d(?:er?)?)?)?)?)?|messages|security-cache|tab-order)|y(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|c(?:ache-join|ode)|func(?:t(?:i(?:on?)?)?)?|label|s|word(?:-all)?)))|l(?:a(?:bel(?:-(?:bgc(?:o(?:l(?:or?)?)?)?|dc(?:o(?:l(?:or?)?)?)?|f(?:gc(?:o(?:l(?:or?)?)?)?|ont)|pfc(?:o(?:l(?:or?)?)?)?)|s-have-colons)?|ndscape|rge(?:-to-small)?|st(?:-(?:asynch-request|batch|child|form|key|o(?:bject|f)|proce(?:d(?:u(?:re?)?)?)?|server|tab-i(?:t(?:em?)?)?)|key)?)|c|dbname|e(?:ft-(?:align(?:ed?)?|trim)|ngth)|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|st(?:-(?:events|item(?:-pairs|s)|property-names|query-attrs|set-attrs|widgets)|i(?:ng?)?)|t(?:eral-question|tle-endian))|o(?:ad(?:-(?:domains|i(?:con|mage(?:-(?:down|insensitive|up))?)|mouse-p(?:o(?:i(?:n(?:t(?:er?)?)?)?)?)?|picture|small-icon))?|c(?:a(?:l-(?:name|version-info)|tor-(?:column-number|line-number|public-id|system-id|type))|k(?:-registration|ed))|g(?:-audit-event|in-(?:expiration-timestamp|host|state))|ok(?:ahead|up)))|m(?:a(?:nual-highlight|p|r(?:gin-(?:extra|height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|k-(?:new|row-state))|x(?:-(?:button|chars|data-guess|height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?|rows|size|val(?:ue?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|i(?:m(?:ize|u(?:m(?:-level)?)?)?)?)?)|d5-digest|e(?:m(?:ber|ptr-to-node-value)|nu(?:-(?:bar|item|k(?:ey?)?|m(?:o(?:u(?:se?)?)?)?)|bar)?|rge-by-field|ssage(?:-(?:area(?:-font)?|lines))?|thod)|in(?:-(?:button|column-width-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)|height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|size|val(?:ue?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|i(?:m(?:um?)?)?)?|o(?:nth|use(?:-p(?:o(?:i(?:n(?:t(?:er?)?)?)?)?)?)?|v(?:able|e-(?:after(?:-(?:t(?:a(?:b(?:-(?:i(?:t(?:em?)?)?)?)?)?)?)?)?|befor(?:e(?:-(?:t(?:a(?:b(?:-(?:i(?:t(?:em?)?)?)?)?)?)?)?)?)?|col(?:u(?:mn?)?)?|to-(?:b(?:o(?:t(?:t(?:om?)?)?)?)?|eof|t(?:op?)?))))|pe|time|u(?:lti(?:-compile|ple(?:-key)?|tasking-interval)|st-exist))|n(?:a(?:mespace-(?:prefix|uri)|tive)|e(?:eds-(?:appserver-prompt|prompt)|sted|w(?:-(?:instance|row))?|xt-(?:column|prompt|rowid|sibling|tab-i(?:t(?:em?)?)?|value))|o(?:-(?:a(?:pply|rray-message|ssign|ttr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|uto-validate)|b(?:ind-where|ox)|c(?:on(?:sole|vert(?:-3d-colors)?)|urrent-value)|d(?:ebug|rag)|e(?:cho|mpty-space|rror)|f(?:i(?:ll?)?|ocus)?|h(?:elp|ide)|in(?:dex-hint|herit-(?:bgc(?:o(?:l(?:or?)?)?)?|fgc(?:o(?:l(?:or?)?)?)?))|join-by-sqldb|keycache-join|l(?:abels?|o(?:bs|ck|okahead))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|row-markers|s(?:crollbar-vertical|eparat(?:e-connection|ors))|tab-stop|und(?:e(?:r(?:l(?:i(?:ne?)?)?)?)?)?|val(?:i(?:d(?:a(?:te?)?)?)?)?|w(?:ait|ord-wrap))|de-value-to-memptr|n(?:amespace-schema-location|e)|rmalize|t-active|w)|u(?:ll|m(?:-(?:ali(?:a(?:s(?:es?)?)?)?|bu(?:ffers|t(?:t(?:o(?:ns?)?)?)?)|co(?:l(?:u(?:m(?:ns?)?)?)?|pies)|d(?:bs|ropped-files)|entries|f(?:ields|ormats)|ite(?:ms|rations)|l(?:ines|ocked-col(?:u(?:m(?:ns?)?)?)?)|messages|parameters|re(?:ferences|placed|sults)|selected(?:-(?:rows|w(?:i(?:d(?:g(?:e(?:ts?)?)?)?)?)?)?)?|t(?:abs|o-retain)|visible-columns)|eric(?:-f(?:o(?:r(?:m(?:at?)?)?)?)?)?)))|o(?:bject|ctet-length|ff?|k(?:-cancel)?|ld|n(?:-frame(?:-(?:b(?:o(?:r(?:d(?:er?)?)?)?)?)?)?)?|p(?:en|sys|tion(?:s-file)?)|rd(?:ered-join|inal)|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir|rives?)|error|getenv|rename)|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|size|top|wid(?:th?)?)|d)?|r(?:am(?:e(?:t(?:er?)?)?)?|ent-(?:fields-(?:after|before)|id-(?:field|relation))|se-status|tial-key)|s(?:cal|sword-field)|use)|be-(?:hash-alg(?:o(?:r(?:i(?:t(?:hm?)?)?)?)?)?|key-rounds)|dbname|ersist(?:e(?:n(?:t(?:-cache-disabled)?)?)?)?|ixels(?:-per-(?:col(?:u(?:mn?)?)?|row))?|o(?:pup-(?:m(?:e(?:nu?)?)?|o(?:n(?:ly?)?)?)|rtrait)|r(?:e(?:cision|fer-dataset|p(?:are-string|ro(?:c(?:e(?:ss?)?)?|p))|sel(?:e(?:ct?)?)?|v(?:-(?:column|sibling|tab-i(?:t(?:em?)?)?))?)|i(?:mary|nter(?:-(?:control-handle|hdc|name|port|setup))?|v(?:ate-d(?:a(?:ta?)?)?|ileges))|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?|text(?:-buffer)?)|e(?:d(?:u(?:r(?:e(?:-(?:call-type|type))?)?)?)?|ss)?)|gr(?:am-name|ess(?:-s(?:o(?:u(?:r(?:ce?)?)?)?)?)?)|m(?:pt(?:-f(?:or?)?)?|sgs)|p(?:ath|erty)|vers(?:i(?:on?)?)?|xy-(?:password|userid)))|u(?:bli(?:c-id|sh(?:ed-events)?)|t(?:-(?:byte|double|float|int64|key-val(?:ue?)?|long|s(?:hort|tring)|unsigned-long)|byte)?))|qu(?:e(?:ry(?:-(?:close|o(?:ff-end|pen)|prepare|tuning))?|stion)|oter)|r(?:-index|a(?:dio-(?:buttons|set)|ndom|w-transfer)|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:a(?:d(?:-(?:available|exact-num|file|json|only|xml)|key)|l)|c(?:ord-length|t(?:a(?:n(?:g(?:le?)?)?)?)?|ursive)|f(?:erence-only|resh(?:-audit-policy)?)|gister-domain|l(?:ation-fields|ease)|move-(?:events-procedure|super-procedure)|p(?:lace(?:-selection-text)?|osition(?:-(?:backward|forward|mode|to-row(?:id)?))?)|quest(?:-info)?|s(?:iza(?:b(?:le?)?)?|ponse-info|tart-row(?:id)?)|t(?:ain(?:-shape)?|ry-cancel|urn(?:-(?:ins(?:e(?:r(?:t(?:ed?)?)?)?)?|to-start-dir?|val(?:u(?:e(?:-data-type)?)?)?)|s))|v(?:er(?:se-from|t)|oke))|gb-value|ight-(?:aligned|trim)|o(?:u(?:nd|tine-level)|w(?:-(?:height-(?:chars|pixels)|markers|of|resizable))?)|u(?:le|n(?:-procedure)?))|s(?:a(?:ve(?:-(?:as|file))?|x-(?:attributes|comple(?:te?)?|parse(?:-(?:first|next)|r-error)?|r(?:eader|unning)|uninitialized|write(?:-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)|r)))|c(?:hema(?:-(?:location|marshal|path))?|r(?:een(?:-(?:io|lines|val(?:ue?)?))?|oll(?:-(?:bars|delta|offset|to-(?:current-row|i(?:t(?:em?)?)?|selected-row))|able|bar-(?:h(?:o(?:r(?:i(?:z(?:o(?:n(?:t(?:al?)?)?)?)?)?)?)?)?|v(?:e(?:r(?:t(?:i(?:c(?:al?)?)?)?)?)?)?)|ed-row-pos(?:i(?:t(?:i(?:on?)?)?)?)?|ing)?))|dbname|e(?:a(?:l-timestamp|rch(?:-(?:self|targer))?)|ction|ek|lect(?:-(?:all|focused-row|next-row|prev-row|row)|able|ion(?:-(?:end|list|start|text))?)?|n(?:d(?:-sql(?:-(?:s(?:t(?:a(?:t(?:e(?:m(?:e(?:nt?)?)?)?)?)?)?)?)?)?)?|sitive)|parat(?:e-connection|or-fgcolor)|r(?:ialize-(?:hidden|name)|ver(?:-(?:connection-(?:bound(?:-request)?|context|id)|operating-mode|socket))?)|ssion-id|t(?:-(?:a(?:ppl-context|ttr(?:-call-type|ibute-node))|b(?:lue(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|reak|uffers)|c(?:allback|lient|o(?:mmit|ntents)|urrent-value)|d(?:b-client|ynamic)|event-manager-option|green(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|input-source|o(?:ption|utput-destination)|p(?:arameter|ointer-value|roperty)|r(?:e(?:d(?:-(?:v(?:a(?:l(?:ue?)?)?)?)?)?|positioned-row)|gb-value|ollback)|s(?:election|ize|ort-arrow)|wait-state)|user(?:id?)?)?)|h(?:a(?:1-digest|re(?:-(?:l(?:o(?:ck?)?)?)?)?)|ow-(?:in-taskbar|stats?))|i(?:de-lab(?:e(?:l(?:-h(?:a(?:n(?:d(?:le?)?)?)?)?|s)?)?)?|gnature(?:-value)?|lent|mple|ngle(?:-run)?|ze(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|kip(?:-deleted-record)?|lider|mall(?:-(?:icon|title)|int)|o(?:ap-header(?:-entryref)?|cket|me|rt(?:-(?:ascending|number))?|urce)|pace|q(?:l|rt)|sl-server-name|t(?:a(?:rt(?:-(?:document|element|move|r(?:esize|ow-resize)))?|t(?:e-detail|us(?:-area(?:-font)?)?))|dcall|o(?:p-(?:after|object|parsing)|red-proc(?:e(?:d(?:u(?:re?)?)?)?)?)|r(?:e(?:am(?:-(?:handle|io))?|tch-to-fit)|i(?:ct-entity-resolution|ng(?:-(?:value|xref))?)))|u(?:b(?:-(?:ave(?:r(?:a(?:ge?)?)?)?|count|m(?:aximum|e(?:nu?)?|in(?:i(?:m(?:um?)?)?)?)?|total)?|s(?:cribe|t(?:i(?:t(?:u(?:te?)?)?)?|r(?:i(?:ng?)?)?)?))|m|p(?:er-procedures|press-(?:namespace-processing|w(?:a(?:r(?:n(?:i(?:n(?:gs?)?)?)?)?)?)?)))|y(?:mmetric-(?:encryption-(?:algorithm|iv|key)|support)|stem-(?:alert(?:-(?:b(?:o(?:x(?:es?)?)?)?)?)?|dialog|help|id)))|t(?:a(?:b(?:-(?:position|stop)|le(?:-(?:number|scan))?)|rget)|e(?:mp-(?:dir(?:e(?:c(?:t(?:o(?:ry?)?)?)?)?)?|table(?:-prepare)?)|rm(?:i(?:n(?:a(?:l|te)?)?)?)?|xt(?:-(?:cursor|se(?:g-grow|lected)))?)|hr(?:e(?:ad-safe|e-d)|ough|u)|i(?:c-marks|me(?:-source)?|tle(?:-(?:bgc(?:o(?:l(?:or?)?)?)?|dc(?:o(?:l(?:or?)?)?)?|f(?:gc(?:o(?:l(?:or?)?)?)?|o(?:nt?)?)))?)|o(?:-rowid|day|ggle-box|oltip|p(?:-(?:nav-query|only)|ic)|tal)?|r(?:a(?:iling|ns(?:-init-procedure|action(?:-mode)?|parent)?)|i(?:ggers?|m)|unc(?:a(?:te?)?)?)|ype-of)|u(?:n(?:b(?:ox|uff(?:e(?:r(?:ed?)?)?)?)|derl(?:i(?:ne?)?)?|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que(?:-(?:id|match))?|x)|l(?:ess-hidden|oad)|subscribe)|p(?:date(?:-attribute)?)?|rl-(?:decode|encode|password|userid)|s(?:e(?:-(?:dict-exps|filename|index|revvideo|text|underline|widget-pool)|r(?:-id|id))?|ing))|v(?:6frame|a(?:l(?:id(?:-(?:event|handle|object)|at(?:e(?:-(?:domain-access-code|expression|message|seal))?|ion-enabled))|ue(?:-changed|s)?)|r(?:i(?:a(?:b(?:le?)?)?)?)?)|er(?:bose|t(?:i(?:c(?:al?)?)?)?)|i(?:ew(?:-(?:as|first-column-on-reopen))?|rtual-(?:height(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?|width(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|sible))|w(?:ait(?:-for)?|eekday|here|i(?:d(?:get(?:-(?:e(?:n(?:t(?:er?)?)?)?|id|l(?:e(?:a(?:ve?)?)?)?|pool))?|th(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?)?)?)|ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|n(?:ame|ormal)|s(?:ta(?:te?)?|ystem)))?|th)|or(?:d-(?:index|wrap)|k(?:-(?:area-(?:height-pixels|width-pixels|x|y)|tab(?:le?)?)|file))|rite(?:-(?:c(?:data|haracters|omment)|data-element|e(?:mpty-element|ntity-ref|xternal-dtd)|fragment|json|message|processing-instruction|status|xml(?:schema)?))?)|x(?:-(?:document|noderef|of)|code|ml-(?:data-type|entity-expansion-limit|node-(?:name|type)|s(?:chema-path|trict-entity-resolution|uppress-namespace-processing))|ref(?:-xml)?)|y(?:-of|e(?:ar(?:-offset)?|s-no(?:-cancel)?)))))(?![\\w#$%&-]|\\.[A-Za-z_])"
     },
     "label": {
       "captures": {
@@ -456,14 +2570,14 @@
           "name": "punctuation.separator.label.abl"
         }
       },
-      "match": "(?<=^[ \\t]{0,200})([A-Za-z_][\\w#$%&-]*)(:)(?=\\s|$)"
+      "match": "\\b(?<=^[ \\t]{0,200})([A-Za-z_][\\w#$%&-]*)(:)(?=\\s|$)"
     },
     "line-continuation": {
       "match": "~[ \\t]*(?:\\n|$)",
       "name": "constant.character.escape.line-continuation.abl"
     },
     "lock-phrase": {
-      "match": "(?i)(?<![\\w#$%&.-])(?:no|share|exclusive)[ \\t]+lock(?![\\w#$%&-])",
+      "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(?:no|share|exclusive)[ \\t]+lock(?![\\w#$%&-])",
       "name": "keyword.other.abl"
     },
     "member-access": {
@@ -495,15 +2609,15 @@
     "numbers": {
       "patterns": [
         {
-          "match": "(?<![\\w#$%&])\\d{1,4}/\\d{1,2}/\\d{1,4}(?![\\w#$%&])",
+          "match": "(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&])\\d{1,4}/\\d{1,2}/\\d{1,4}(?![\\w#$%&])",
           "name": "constant.numeric.date.abl"
         },
         {
-          "match": "(?<![\\w#$%&])(?:\\d+\\.\\d+|\\.\\d+)(?:-(?![\\w#$%&-]))?(?![\\w#$%&])",
+          "match": "(?:(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&])\\d+\\.\\d+|(?:\\B|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&])\\.\\d+)(?:-(?![\\w#$%&-]))?(?![\\w#$%&])",
           "name": "constant.numeric.decimal.abl"
         },
         {
-          "match": "(?<![\\w#$%&])\\d+(?:-(?![\\w#$%&-]))?(?![\\w#$%&])",
+          "match": "(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&])\\d+(?:-(?![\\w#$%&-]))?(?![\\w#$%&])",
           "name": "constant.numeric.integer.abl"
         },
         {
@@ -547,11 +2661,11 @@
               "name": "comment.line.preprocessor.analyze.abl"
             }
           },
-          "match": "(?i)(?<![\\w#$%&-])(&analyze-(?:suspend|resume))(?![\\w#$%&-])(.*)$",
+          "match": "(?i)(?:\\B|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&-])(&analyze-(?:suspend|resume))(?![\\w#$%&-])(.*)$",
           "name": "meta.preprocessor.analyze.abl"
         },
         {
-          "begin": "(?i)(?<![\\w#$%&-])(&glob(?:a(?:l(?:-(?:d(?:e(?:f(?:i(?:ne?)?)?)?)?)?)?)?)?|&scop(?:e(?:d(?:-(?:d(?:e(?:f(?:i(?:ne?)?)?)?)?)?)?)?)?)(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
+          "begin": "(?i)(?:\\B|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&-])(&glob(?:a(?:l(?:-(?:d(?:e(?:f(?:i(?:ne?)?)?)?)?)?)?)?)?|&scop(?:e(?:d(?:-(?:d(?:e(?:f(?:i(?:ne?)?)?)?)?)?)?)?)?)(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
           "beginCaptures": {
             "1": {
               "name": "keyword.control.directive.define.abl"
@@ -567,6 +2681,17 @@
               "include": "#line-continuation"
             },
             {
+              "captures": {
+                "1": {
+                  "name": "keyword.control.directive.define.abl"
+                },
+                "2": {
+                  "name": "entity.name.function.preprocessor.abl"
+                }
+              },
+              "match": "(?i)(?<![\\w#$%&-])(&glob(?:a(?:l(?:-(?:d(?:e(?:f(?:i(?:ne?)?)?)?)?)?)?)?)?|&scop(?:e(?:d(?:-(?:d(?:e(?:f(?:i(?:ne?)?)?)?)?)?)?)?)?)(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?"
+            },
+            {
               "include": "#code"
             }
           ]
@@ -580,11 +2705,11 @@
               "name": "entity.name.function.preprocessor.abl"
             }
           },
-          "match": "(?i)(?<![\\w#$%&-])(&undef(?:i(?:ne?)?)?)(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
+          "match": "(?i)(?:\\B|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&-])(&undef(?:i(?:ne?)?)?)(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
           "name": "meta.preprocessor.undefine.abl"
         },
         {
-          "begin": "(?i)(?<![\\w#$%&-])(&message)(?![\\w#$%&-])",
+          "begin": "(?i)(?:\\B|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&-])(&message)(?![\\w#$%&-])",
           "beginCaptures": {
             "1": {
               "name": "keyword.control.directive.message.abl"
@@ -603,11 +2728,11 @@
           ]
         },
         {
-          "match": "(?i)(?<![\\w#$%&-])&(?:if|then|elseif|else|endif)(?![\\w#$%&-])",
+          "match": "(?i)(?:\\B|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&-])&(?:if|then|elseif|else|endif)(?![\\w#$%&-])",
           "name": "keyword.control.directive.conditional.abl"
         },
         {
-          "match": "(?<![\\w#$%&-])&[A-Za-z][\\w-]*",
+          "match": "(?:\\B|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&-])&[A-Za-z][\\w-]*",
           "name": "keyword.control.directive.abl"
         }
       ]
@@ -738,7 +2863,7 @@
           "name": "variable.other.abl"
         }
       },
-      "match": "(?i)\\b(?<![#$%&.-])(?:((?:(?:find)(?![\\w#$%&-])(?:\\s+(?:first|last|next|prev|current)(?![\\w#$%&-]))?\\s+|(?:each|first|last|buffer|buffer-copy|buffer-compare|like)(?![\\w#$%&-])\\s+|(?:avail(?:a(?:b(?:le?)?)?)?|ambig(?:u(?:o(?:us?)?)?)?|locked)(?![\\w#$%&-])(?:\\s*\\(\\s*|\\s+)|(?:can-find|rowid|recid)\\s*\\(\\s*))(?!(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes)|(?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))(?![\\w#$%&-]))(?!(?:prev)(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])|((?:for)(?![\\w#$%&-])\\s+)((?!(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes)|(?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))(?![\\w#$%&-]))(?!(?:temp-table)(?![\\w#$%&-]))[A-Za-z_][\\w#$%&-]*(?![\\w#$%&-]|\\.[A-Za-z_])(?:\\s*,\\s*(?!(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes)|(?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))(?![\\w#$%&-]))[A-Za-z_][\\w#$%&-]*(?![\\w#$%&-]|\\.[A-Za-z_]))*)(?!\\s+(?:of)(?![\\w#$%&-]))|((?:of)(?![\\w#$%&-])\\s+)(?!(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes)|(?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])(?=\\s*(?:$|[,.:)]|/[*/]|(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes))(?![\\w#$%&-])|(?:exclusive(?:-(?:l(?:o(?:ck?)?)?)?)?|override)(?![\\w#$%&-])|(?:outer-join|left|table-scan|tenant-where|skip-group-duplicates)(?![\\w#$%&-])))|((?:create|del(?:e(?:te?)?)?|release|validate)(?![\\w#$%&-])\\s+)(?!(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes)|(?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))(?![\\w#$%&-]))(?!(?:widget-pool)(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])(?=\\s*(?:\\.(?:\\s|$)|(?:no-error|using|validate)(?![\\w#$%&-])|(?:for)\\s+tenant(?![\\w#$%&-]))))"
+      "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(?:((?:(?:find)(?![\\w#$%&-])(?:\\s+(?:first|last|next|prev|current)(?![\\w#$%&-]))?\\s+|(?:each|first|last|buffer|buffer-copy|buffer-compare|like)(?![\\w#$%&-])\\s+|(?:avail(?:a(?:b(?:le?)?)?)?|ambig(?:u(?:o(?:us?)?)?)?|locked)(?![\\w#$%&-])(?:\\s*\\(\\s*|\\s+)|(?:can-find|rowid|recid)\\s*\\(\\s*))(?!(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes)|(?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))(?![\\w#$%&-]))(?!(?:prev)(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])|((?:for)(?![\\w#$%&-])\\s+)((?!(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes)|(?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))(?![\\w#$%&-]))(?!(?:temp-table)(?![\\w#$%&-]))[A-Za-z_][\\w#$%&-]*(?![\\w#$%&-]|\\.[A-Za-z_])(?:\\s*,\\s*(?!(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes)|(?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))(?![\\w#$%&-]))[A-Za-z_][\\w#$%&-]*(?![\\w#$%&-]|\\.[A-Za-z_]))*)(?!\\s+(?:of)(?![\\w#$%&-]))|((?:of)(?![\\w#$%&-])\\s+)(?!(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes)|(?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])(?=\\s*(?:$|[,.:)]|/[*/]|(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes))(?![\\w#$%&-])|(?:exclusive(?:-(?:l(?:o(?:ck?)?)?)?)?|override)(?![\\w#$%&-])|(?:outer-join|left|table-scan|tenant-where|skip-group-duplicates)(?![\\w#$%&-])))|((?:create|del(?:e(?:te?)?)?|release|validate)(?![\\w#$%&-])\\s+)(?!(?:(?:a(?:c(?:cum(?:u(?:l(?:a(?:te?)?)?)?)?|tive-(?:form|window))|dd|l(?:ias|l|ter)|mbig(?:u(?:o(?:us?)?)?)?|n(?:alyze?|d|y)|pply|s(?:c(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?|sign|ynchronous)?|t(?:tr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?)?|u(?:dit-(?:control|policy)|t(?:horization|o-ret(?:u(?:rn?)?)?))|vail(?:a(?:b(?:le?)?)?)?)|b(?:ack(?:g(?:r(?:o(?:u(?:nd?)?)?)?)?)?|e(?:fore-h(?:i(?:de?)?)?|gins|ll|tween)|ig-endian|lank|reak|y)|c(?:a(?:ll|n-(?:do|find)|s(?:e(?:-sen(?:s(?:i(?:t(?:i(?:ve?)?)?)?)?)?)?|t))|enter(?:ed?)?|h(?:eck|r)|l(?:ear|ipboard)|o(?:debase-locator|l(?:o(?:n|r)|umn(?:-lab(?:el?)?|s))|mpiler|n(?:nected|trol)|py-lob|unt-of)|reate|ur(?:rent(?:-(?:changed|lang(?:u(?:a(?:ge?)?)?)?|window)|_date)?|s(?:or?)?))|d(?:ata(?:-(?:rel(?:a(?:t(?:i(?:on?)?)?)?)?|source)|base|se(?:rvers|t(?:-handle)?))|b(?:co(?:depage|llation)|name|param|rest(?:r(?:i(?:c(?:t(?:i(?:o(?:ns?)?)?)?)?)?)?)?|t(?:askid|ype)|vers(?:i(?:on?)?)?)|de|e(?:b(?:lank|ug(?:-list|ger))|c(?:imals|lare)|f(?:ault(?:-window)?|i(?:ne?)?)?|l(?:e(?:te?)?|imiter)?|sc(?:e(?:n(?:d(?:i(?:ng?)?)?)?)?)?)|i(?:ct(?:i(?:o(?:n(?:a(?:ry?)?)?)?)?)?|s(?:able(?:-auto-zap)?|con(?:n(?:e(?:ct?)?)?)?|p(?:l(?:ay?)?)?|tinct))|o(?:s|wn)?|rop|ynamic-(?:enum|function|invoke))|e(?:ach|diting|lse|n(?:able|code|d|try)|rror-stat(?:us?)?|scape|time|vent-procedure|x(?:c(?:ept|lusive(?:-(?:l(?:o(?:ck?)?)?)?)?)|ists|port))|f(?:alse|etch|i(?:elds?|l(?:e-info|l)|nd(?:-(?:case-sensitive|global|next-occurrence|prev-occurrence|select|wrap-around))?|rst(?:-of)?)|o(?:cus|nt|r(?:m(?:at?)?)?)|r(?:am(?:e(?:-(?:col|d(?:b|own)|fi(?:eld|le)|index?|line|name|row|val(?:ue?)?))?)?|om(?:-(?:c(?:h(?:a(?:rs?)?)?)?|p(?:i(?:x(?:e(?:ls?)?)?)?)?))?)|unction-call-type)|g(?:ateways?|et(?:-(?:attr-call-type|b(?:uffer-handle|yte)|co(?:depages?|llations)|error-(?:column|row)|file-(?:name|offset?)|key-val(?:ue?)?)|byte)|lobal|o-(?:on|pend(?:i(?:ng?)?)?)|r(?:a(?:nt|phic-e(?:d(?:ge?)?)?)|oup))|h(?:aving|e(?:ader|lp)|ide|ost-byte-order)|i(?:f|mport|n(?:d(?:ex|icator)|put(?:-o(?:u(?:t(?:p(?:ut?)?)?)?)?)?|sert|to)?|s(?:-(?:attr(?:-(?:s(?:p(?:a(?:ce?)?)?)?)?)?|lead-byte))?)|join|k(?:blabel|ey(?:-(?:code|func(?:t(?:i(?:on?)?)?)?|label)|code|func(?:t(?:i(?:on?)?)?)?|label|s|word))|l(?:a(?:bel|st(?:-(?:event?|key|of)|key)?)|dbname|eave|i(?:brary|ke(?:-sequential)?|ne-count(?:er?)?|sti(?:ng?)?|ttle-endian)|o(?:cked|g-manager|okup))|m(?:ap|e(?:mber|ssage(?:-lines)?)|ouse|pe)|n(?:e(?:w|xt(?:-prompt)?)|o(?:-(?:attr(?:-(?:l(?:i(?:st?)?)?|s(?:p(?:a(?:ce?)?)?)?)?)?|error|f(?:i(?:ll?)?|ocus)?|hide|l(?:abels?|o(?:bs|ck))|m(?:ap|es(?:s(?:a(?:ge?)?)?)?)|p(?:ause|refe(?:t(?:ch?)?)?)|undo|val(?:i(?:d(?:a(?:te?)?)?)?)?|wait)|t|w)?|u(?:ll|m-(?:ali(?:a(?:s(?:es?)?)?)?|dbs|entries)))|o(?:ff?|ld|n|p(?:en|sys|tion)|r|s-(?:append|c(?:o(?:mmand|py)|reate-dir)|d(?:elete|ir)|rename)|therwise|utput|verlay)|p(?:a(?:ge(?:-(?:bot(?:t(?:om?)?)?|num(?:b(?:er?)?)?|top))?|ram(?:e(?:t(?:er?)?)?)?|ssword-field|use)|dbname|ersist(?:e(?:nt?)?)?|ixels|r(?:eproc(?:e(?:ss?)?)?|ivileges|o(?:c(?:-(?:ha(?:n(?:d(?:le?)?)?)?|st(?:a(?:t(?:us?)?)?)?)|e(?:dure-call-type|ss))|filer|gr(?:am-name|ess)|m(?:pt-f(?:or?)?|sgs)|path|vers(?:i(?:on?)?)?))|ut(?:-(?:byte|key-val(?:ue?)?)|byte)?)|qu(?:ery(?:-(?:close|off-end|tuning))?|it)|r(?:-index|code-info(?:r(?:m(?:a(?:t(?:i(?:on?)?)?)?)?)?)?|e(?:ad(?:-(?:available|exact-num)|key)|c(?:id|t(?:a(?:n(?:g(?:le?)?)?)?)?)|lease|p(?:eat|osition(?:-(?:backward|forward|to-row(?:id)?))?)|t(?:ain|ry|urns?)|v(?:ert|oke))|owid|un)|s(?:a(?:ve|x-(?:comple(?:te?)?|parser-error|running|uninitialized|write-(?:begin|co(?:mplete|ntent)|e(?:lement|rror)|idle|tag)))|c(?:hema|r(?:een(?:-(?:io|lines))?|oll))|dbname|e(?:arch(?:-(?:self|targer))?|curity-policy|ek|l(?:ect|f)|ssion|t(?:-attr-call-type|user(?:id?)?)?)|h(?:are(?:-(?:l(?:o(?:ck?)?)?)?|d)?|ow-stats?)|ingle-run|kip(?:-deleted-record)?|ome|pace|t(?:atus|ream(?:-(?:handle|io))?)|ystem-dialog)|t(?:able(?:-number)?|e(?:rm(?:i(?:n(?:al?)?)?)?|xt(?:-cursor)?)|h(?:en|is-(?:object|procedure)|read-safe)|i(?:me|tle)|o(?:-rowid|p-only)?|r(?:ans(?:action)?|i(?:ggers?|m)|ue))|u(?:n(?:d(?:erl(?:i(?:ne?)?)?|o)|form(?:a(?:t(?:t(?:ed?)?)?)?)?|i(?:on|que|x))|p(?:date)?|s(?:e(?:-index|rid)|ing))|v(?:6frame|alue(?:-changed|s)?|iew(?:-as)?)|w(?:ait-for|h(?:e(?:n|re)|ile)|i(?:ndow(?:-(?:m(?:axim(?:i(?:z(?:ed?)?)?)?|inim(?:i(?:z(?:ed?)?)?)?)|normal))?|th)|ork(?:-tab(?:le?)?|file)|rite)|x(?:code|ref(?:-xml)?)|yes)|(?:a(?:ctive-(?:form|window)|udit-(?:control|policy))|c(?:lipboard|o(?:debase-locator|lor-table|m(?:-self|piler))|urrent-window)|d(?:e(?:bugger|fault-window)|slog-manager)|error-stat(?:us?)?|f(?:ile-info|o(?:cus|nt-table))|l(?:ast-event?|og-manager)|profiler|s(?:e(?:curity-policy|lf|ssion)|ource-procedure|uper)|t(?:arget-procedure|his-(?:object|procedure))|web-context))(?![\\w#$%&-]))(?!(?:widget-pool)(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])(?=\\s*(?:\\.(?:\\s|$)|(?:no-error|using|validate)(?![\\w#$%&-])|(?:for)\\s+tenant(?![\\w#$%&-]))))"
     },
     "run-target": {
       "captures": {
@@ -749,7 +2874,7 @@
           "name": "entity.name.function.abl"
         }
       },
-      "match": "(?i)(?<![\\w#$%&.-])(run)\\s+(?!(?:value|super)(?![\\w#$%&-]))([\\w#$%&/\\\\-]+(?:\\.[\\w#$%&/\\\\-]+)*)"
+      "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(run)\\s+(?!(?:value|super)(?![\\w#$%&-]))([\\w#$%&/\\\\-]+(?:\\.[\\w#$%&/\\\\-]+)*)"
     },
     "string-escapes": {
       "patterns": [
@@ -758,7 +2883,7 @@
           "name": "constant.character.escape.abl"
         },
         {
-          "match": "(?<!\\\\)\\\\[\"'](?![\\s),.+;:=]|$)",
+          "match": "\\\\(?<!\\\\\\\\)[\"'](?![\\s),.+;:=]|$)",
           "name": "constant.character.escape.abl"
         },
         {
@@ -833,11 +2958,11 @@
     "type-name": {
       "patterns": [
         {
-          "match": "(?i)(?<![\\w#$%&.-])(?:(?:b(?:lob|yte)|c(?:har(?:a(?:c(?:t(?:er?)?)?)?)?|lob|om-handle)|d(?:at(?:aset-handle|e(?:time(?:-tz)?)?)|ec(?:i(?:m(?:al?)?)?)?|ouble)|float|handle|int(?:64|e(?:g(?:er?)?)?)?|lo(?:g(?:i(?:c(?:al?)?)?)?|ng(?:char)?)|memptr|r(?:aw|ecid|owid)|short|table-handle|unsigned-(?:byte|int(?:64|eger)|long|short)|void|widget-handle))(?![\\w#$%&.-])",
+          "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(?:(?:b(?:lob|yte)|c(?:har(?:a(?:c(?:t(?:er?)?)?)?)?|lob|om-handle)|d(?:at(?:aset-handle|e(?:time(?:-tz)?)?)|ec(?:i(?:m(?:al?)?)?)?|ouble)|float|handle|int(?:64|e(?:g(?:er?)?)?)?|lo(?:g(?:i(?:c(?:al?)?)?)?|ng(?:char)?)|memptr|r(?:aw|ecid|owid)|short|table-handle|unsigned-(?:byte|int(?:64|eger)|long|short)|void|widget-handle))(?![\\w#$%&.-])",
           "name": "storage.type.abl"
         },
         {
-          "match": "(?i)(?<![\\w#$%&.-])(?:class|extent)(?![\\w#$%&.-])",
+          "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(?:class|extent)(?![\\w#$%&.-])",
           "name": "keyword.other.abl"
         },
         {
@@ -886,7 +3011,7 @@
               ]
             }
           },
-          "match": "(?i)(?<![\\w#$%&.-])(as|returns)\\s+(?:(class)\\s+)?([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:<[^>]*>)?)"
+          "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(as|returns)\\s+(?:(class)\\s+)?([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:<[^>]*>)?)"
         },
         {
           "captures": {
@@ -901,7 +3026,7 @@
               ]
             }
           },
-          "match": "(?i)(?<![\\w#$%&.-])(new)\\s+([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:<[^>]*>)?)(?=\\s*\\()"
+          "match": "(?i)(?:\\b|(?<=[\\x{b2}\\x{b3}\\x{b9}\\x{bc}-\\x{be}]))(?<![#$%&.-])(new)\\s+([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:<[^>]*>)?)(?=\\s*\\()"
         }
       ]
     }

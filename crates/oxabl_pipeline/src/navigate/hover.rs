@@ -130,7 +130,7 @@ impl Navigation<'_, '_> {
                 Resolution::Unresolved {
                     name,
                     reason: UnresolvedReason::External,
-                } => Some(self.builtin_function_hover(name.as_ref(), span, virt)),
+                } => Some(self.builtin_function_hover(*node, name.as_ref(), span, virt)),
                 Resolution::Unresolved { .. } => Some(None),
             },
             SiteTarget::Run(node) => match references.get(*node)? {
@@ -273,7 +273,13 @@ impl Navigation<'_, '_> {
     /// `interval` may be a variable or a property. There, a call may also be a
     /// user function of the includer or an inherited method (`Compare(...)`),
     /// so only a reserved name, which no routine can have, is a built-in.
-    fn builtin_function_hover(&self, name: &str, span: VirtualSpan, virt: u32) -> Option<String> {
+    fn builtin_function_hover(
+        &self,
+        node: oxabl_ast::NodeId,
+        name: &str,
+        span: VirtualSpan,
+        virt: u32,
+    ) -> Option<String> {
         let token = self.token_at(virt)?;
         if token.start != span.start as usize {
             return None;
@@ -288,31 +294,20 @@ impl Navigation<'_, '_> {
             return None;
         }
         let doc = find_doc(DocKind::Function, full_function_name(name))?;
-        if !doc.reserved && self.may_hide_routines(virt) {
+        if !doc.reserved && self.may_hide_routines(node) {
             return None;
         }
         Some(doc_markdown(doc))
     }
 
-    /// Whether a routine that this unit cannot see may have the name at
-    /// `virt`: the unit is an include analysed alone, or `virt` is in a class
-    /// that inherits another class than `Progress.Lang.Object`.
-    fn may_hide_routines(&self, virt: u32) -> bool {
-        if self.run.file().is_some_and(is_include_fragment) {
-            return true;
-        }
-        self.parsed().program.statements.iter().any(|statement| {
-            let StatementKind::Class {
-                inherits: Some(parent),
-                ..
-            } = &statement.kind
-            else {
-                return false;
-            };
-            statement.span.start <= virt
-                && virt < statement.span.end
-                && !parent.name.eq_ignore_ascii_case("Progress.Lang.Object")
-        })
+    /// Whether a routine that this unit cannot see may have the name of the
+    /// call `node`: the unit is an include analysed alone, it misses the text
+    /// of an include, or the call is in a class with an ancestor that was not
+    /// read.
+    fn may_hide_routines(&self, node: oxabl_ast::NodeId) -> bool {
+        self.run.file().is_some_and(is_include_fragment)
+            || self.expanded.lost_include_text()
+            || self.semantic.symbols.may_be_member_call(node)
     }
 
     /// The statement whose head holds the token at `virt`.

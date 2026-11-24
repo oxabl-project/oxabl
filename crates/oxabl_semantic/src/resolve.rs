@@ -28,9 +28,9 @@ use std::sync::Arc;
 
 use oxabl_ast::{
     AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind, FrameField,
-    HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType,
-    RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeArguments,
-    TypeSource, UsingSource,
+    HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterExtent,
+    ParameterType, RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget,
+    TypeArguments, TypeSource, UsingSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::is_builtin_function;
@@ -68,10 +68,20 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
                 ParameterDirection::Return => "return",
             };
             let shape = match param_type {
-                ParameterType::Variable { type_source, .. } => match type_source {
-                    TypeSource::Explicit(ty) => format!("value:{}", canonical_data_type(ty)),
+                ParameterType::Variable {
+                    type_source,
+                    extent,
+                    ..
+                } => match type_source {
+                    TypeSource::Explicit(ty) => {
+                        format!("value:{}{}", canonical_data_type(ty), extent_key(*extent))
+                    }
                     TypeSource::Like { source } => {
-                        format!("like:{}", source.name.to_ascii_lowercase())
+                        format!(
+                            "like:{}{}",
+                            source.name.to_ascii_lowercase(),
+                            extent_key(*extent)
+                        )
                     }
                 },
                 ParameterType::Handle { kind, passing, .. } => format!(
@@ -85,6 +95,18 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
             Some(format!("{direction}:{shape}"))
         })
         .collect()
+}
+
+/// Part of a method signature: array and scalar parameters differ, and so do
+/// arrays of different sizes. An extent the parser cannot read matches nothing,
+/// so an unknown size never reports a duplicate.
+fn extent_key(extent: Option<ParameterExtent>) -> String {
+    match extent {
+        None => String::new(),
+        Some(ParameterExtent::Indeterminate) => "[]".to_string(),
+        Some(ParameterExtent::Fixed(n)) => format!("[{n}]"),
+        Some(ParameterExtent::Unresolved(span)) => format!("[?{}]", span.start),
+    }
 }
 
 fn canonical_data_type(ty: &DataType) -> String {
@@ -270,6 +292,15 @@ pub fn declare_pass(
 /// The `&IF` statement and arm index a declaration sits in, outermost first.
 type ArmPath = Vec<(NodeId, u32)>;
 
+/// Whether two arm paths sit in different arms of one `&IF`, so only one of
+/// them compiles.
+fn exclusive(a: &ArmPath, b: &ArmPath) -> bool {
+    a.iter().any(|(pif, arm)| {
+        b.iter()
+            .any(|(other, other_arm)| other == pif && other_arm != arm)
+    })
+}
+
 struct Walker<'a> {
     ctx: &'a AnalysisContext<'a>,
     tree: ScopeTree,
@@ -279,6 +310,11 @@ struct Walker<'a> {
     arm_path: ArmPath,
     /// Arm path of each symbol declared inside an `&IF` arm.
     decl_arms: FxHashMap<SymbolId, ArmPath>,
+    /// The kind of each `TABLE FOR` / `DATASET FOR` parameter, and the arm
+    /// path of each direction it was given (also a `DATASET FOR` that names a
+    /// dataset of the scope), so a direction repeated where both can compile
+    /// still reports a duplicate.
+    table_params: FxHashMap<SymbolId, (HandleParamKind, Vec<(u32, ArmPath)>)>,
 }
 
 impl<'a> Walker<'a> {
@@ -293,19 +329,16 @@ impl<'a> Walker<'a> {
             diagnostics: Vec::new(),
             arm_path: Vec::new(),
             decl_arms: FxHashMap::default(),
+            table_params: FxHashMap::default(),
         }
     }
 
     /// Whether `prior` and a declaration made now sit in different arms of one
     /// `&IF`. Only one such arm is compiled, so they cannot collide.
     fn in_exclusive_arm(&self, prior: SymbolId) -> bool {
-        self.decl_arms.get(&prior).is_some_and(|prior_path| {
-            prior_path.iter().any(|(pif, arm)| {
-                self.arm_path
-                    .iter()
-                    .any(|(cur_pif, cur_arm)| cur_pif == pif && cur_arm != arm)
-            })
-        })
+        self.decl_arms
+            .get(&prior)
+            .is_some_and(|prior_path| exclusive(prior_path, &self.arm_path))
     }
 
     fn walk_block(&mut self, stmts: &[Statement], scope: ScopeId) {
@@ -338,10 +371,28 @@ impl<'a> Walker<'a> {
 
             // ---- Streams / Frames / Events --------------------------------
             StatementKind::DefineStream { name } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Streams, SymbolKind::Stream);
+                let routine = self.tree.var_binding_scope(scope);
+                // The compiler accepts a stream defined twice in one scope, as
+                // when the file and an include both define it.
+                let atom = fold_atom(&name.name);
+                if self
+                    .tree
+                    .get(routine)
+                    .get_in(NamespaceId::Streams, &atom)
+                    .is_none()
+                {
+                    self.declare_simple(
+                        stmt,
+                        routine,
+                        name,
+                        NamespaceId::Streams,
+                        SymbolKind::Stream,
+                    );
+                }
             }
             StatementKind::DefineFrame { name, fields, .. } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Frames, SymbolKind::Frame);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_simple(stmt, routine, name, NamespaceId::Frames, SymbolKind::Frame);
                 self.declare_frame_fields(stmt, scope, fields);
             }
             StatementKind::Form { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
@@ -350,7 +401,8 @@ impl<'a> Walker<'a> {
             }
             StatementKind::Message { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
             StatementKind::DefineWidget { name } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_simple(stmt, routine, name, NamespaceId::Values, SymbolKind::Widget);
             }
             StatementKind::DefineEvent {
                 access,
@@ -432,7 +484,8 @@ impl<'a> Walker<'a> {
                 let like = like_table
                     .as_ref()
                     .and_then(|t| self.record_source_of(t, scope));
-                self.declare_temp_table(stmt, scope, name, fields, like, flags);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_temp_table(stmt, routine, name, fields, like, flags);
             }
 
             // ---- Buffer ---------------------------------------------------
@@ -456,7 +509,8 @@ impl<'a> Walker<'a> {
                         .filter(|s| matches!(s, RecordSource::TempTable(_))),
                 };
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
-                self.declare_buffer(stmt, scope, name, flags, source);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_buffer(stmt, routine, name, flags, source);
             }
 
             // ---- Dataset / Data-source ------------------------------------
@@ -470,7 +524,7 @@ impl<'a> Walker<'a> {
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Values,
                     SymbolKind::Dataset,
@@ -482,7 +536,7 @@ impl<'a> Walker<'a> {
             StatementKind::DefineDataSource { name, .. } => {
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Values,
                     SymbolKind::DataSource,
@@ -499,9 +553,12 @@ impl<'a> Walker<'a> {
                 is_prototype,
                 ..
             } => {
+                // The routine is the external procedure's, also when the
+                // statement sits in a block. The body scope stays a child of
+                // `scope`, where the resolve pass looks for it.
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Procedures,
                     SymbolKind::Procedure,
@@ -530,9 +587,10 @@ impl<'a> Walker<'a> {
                 } else {
                     SymbolFlags::empty()
                 };
+                // Bound like a `PROCEDURE`: to the routine, not the block.
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Functions,
                     SymbolKind::Function,
@@ -917,11 +975,14 @@ impl<'a> Walker<'a> {
             ParameterDirection::InputOutput => SymbolFlags::PARAM_INPUT_OUT,
             ParameterDirection::Return => SymbolFlags::PARAM_RETURN,
         };
+        // A parameter belongs to its routine, also when defined in a block.
+        let routine = self.tree.var_binding_scope(scope);
         match param_type {
             ParameterType::Variable {
                 name,
                 type_source,
                 no_undo,
+                ..
             } => {
                 let data_type = match type_source {
                     TypeSource::Explicit(dt) => Some(ResolvedType::from_data_type(dt)),
@@ -930,7 +991,7 @@ impl<'a> Walker<'a> {
                 let flags = dir_flag | flag_if(*no_undo, SymbolFlags::NO_UNDO);
                 self.declare(
                     stmt,
-                    scope,
+                    routine,
                     name,
                     NamespaceId::Values,
                     SymbolKind::Parameter,
@@ -943,7 +1004,7 @@ impl<'a> Walker<'a> {
                 // `DEFINE PARAMETER BUFFER b FOR <table>` — link the backing
                 // record like any other buffer-introducing site.
                 let source = self.record_source_of(target, scope);
-                self.declare_buffer(stmt, scope, name, dir_flag, source);
+                self.declare_buffer(stmt, routine, name, dir_flag, source);
             }
             ParameterType::Handle { kind, name, .. } => {
                 // All four handle-ish forms declare the same way — a `HANDLE`
@@ -953,9 +1014,15 @@ impl<'a> Walker<'a> {
                 // can tell them from the `*-HANDLE` forms, whose names really
                 // are handle values. See `SymbolFlags::PARAM_TABLE_LIKE`.
                 let table_like = matches!(kind, HandleParamKind::Table | HandleParamKind::Dataset);
-                self.declare(
+                // `INPUT` and `OUTPUT TABLE FOR t` in one scope name the same
+                // table twice, and `DATASET FOR ds` names the dataset `ds`:
+                // neither declares a new name.
+                if table_like && self.names_existing_table_or_dataset(scope, name, kind, dir_flag) {
+                    return;
+                }
+                let id = self.declare(
                     stmt,
-                    scope,
+                    routine,
                     name,
                     NamespaceId::Values,
                     SymbolKind::Parameter,
@@ -963,8 +1030,53 @@ impl<'a> Walker<'a> {
                     dir_flag | flag_if(table_like, SymbolFlags::PARAM_TABLE_LIKE),
                     None,
                 );
+                if let Some(id) = id.filter(|_| table_like) {
+                    let dirs = vec![(dir_flag.bits(), self.arm_path.clone())];
+                    self.table_params.insert(id, (*kind, dirs));
+                }
             }
         }
+    }
+
+    /// True when a `TABLE FOR` / `DATASET FOR` parameter declares nothing:
+    /// the scope holds the dataset it names, or a parameter of this name in
+    /// another direction. That parameter then also carries the new direction.
+    /// A direction already seen in an arm that can compile with this one, or
+    /// a parameter of the other kind, is a real duplicate and is not absorbed.
+    fn names_existing_table_or_dataset(
+        &mut self,
+        scope: ScopeId,
+        name: &Identifier,
+        kind: &HandleParamKind,
+        dir_flag: SymbolFlags,
+    ) -> bool {
+        let atom = fold_atom(&name.name);
+        let Some(prior) = self.tree.get(scope).get_in(NamespaceId::Values, &atom) else {
+            return false;
+        };
+        let sym = self.symbols.get(prior);
+        let names_dataset = sym.kind == SymbolKind::Dataset && *kind == HandleParamKind::Dataset;
+        if !names_dataset && !sym.flags.contains(SymbolFlags::PARAM_TABLE_LIKE) {
+            return false;
+        }
+        let (prior_kind, dirs) = self
+            .table_params
+            .entry(prior)
+            .or_insert_with(|| (*kind, Vec::new()));
+        if *prior_kind != *kind {
+            return false;
+        }
+        let repeated = dirs
+            .iter()
+            .any(|(dir, path)| *dir == dir_flag.bits() && !exclusive(path, &self.arm_path));
+        if repeated {
+            return false;
+        }
+        dirs.push((dir_flag.bits(), self.arm_path.clone()));
+        if !names_dataset {
+            self.symbols.get_mut(prior).flags |= dir_flag;
+        }
+        true
     }
 
     fn declare_temp_table(
@@ -3702,6 +3814,14 @@ impl<'a> ResolveWalker<'a> {
                         }
                     }
                 }
+                // The operand of `AVAILABLE` and its siblings is a record.
+                if is_record_operand_function(&name.name)
+                    && !matches!(self.references.get(expr.id), Some(Resolution::Resolved(_)))
+                    && let [arg] = arguments.as_slice()
+                    && matches!(arg.kind, ExpressionKind::Identifier(_))
+                {
+                    self.soften_record_miss_without_schema(arg.id);
+                }
             }
             ExpressionKind::MethodCall {
                 object,
@@ -3837,6 +3957,7 @@ impl<'a> ResolveWalker<'a> {
                     &[NamespaceId::Buffers, NamespaceId::Tables],
                     AccessMode::Read,
                 );
+                self.soften_record_miss_without_schema(expr.id);
                 if let Some(w) = where_clause {
                     self.walk_expression(w, scope, AccessMode::Read);
                 }
@@ -3965,6 +4086,12 @@ impl<'a> ResolveWalker<'a> {
         // function name is not flagged; that narrow false negative is an
         // accepted trade against the false-positive volume this eliminates.
         if oxabl_lexer::is_builtin_function(&atom) {
+            if self.ctx.record_sites
+                && namespaces.contains(&NamespaceId::Functions)
+                && self.in_opaque_class()
+            {
+                self.symbols.record_maybe_member_call(expr_id);
+            }
             self.references.insert(
                 expr_id,
                 Resolution::Unresolved {
@@ -4047,20 +4174,27 @@ impl<'a> ResolveWalker<'a> {
     /// declare makes the surface opaque. No receiver is then tried as a type, so
     /// the miss is softened at once.
     fn note_miss_in_opaque_class(&mut self, expr_id: NodeId) {
-        let Some(class) = self.current_class else {
+        if !self.in_opaque_class() {
             return;
+        }
+        if self.ctx.index_loaded {
+            self.cross_file_mut().opaque_misses.push(expr_id);
+        } else {
+            self.soften_unresolved_to_external(expr_id);
+        }
+    }
+
+    /// Whether the walk is in a class with an opaque surface: an ancestor whose
+    /// members were not read.
+    fn in_opaque_class(&mut self) -> bool {
+        let Some(class) = self.current_class else {
+            return false;
         };
         if !self.ctx.index_loaded {
-            if self.inherits_unread_parent(class) {
-                self.soften_unresolved_to_external(expr_id);
-            }
-            return;
+            return self.inherits_unread_parent(class);
         }
         self.walk_member_surface(class);
-        let cf = self.cross_file_mut();
-        if cf.opaque_surfaces.contains(&class) {
-            cf.opaque_misses.push(expr_id);
-        }
+        self.cross_file_mut().opaque_surfaces.contains(&class)
     }
 
     /// Whether `class` inherits a parent this file does not declare, other than
@@ -4983,6 +5117,28 @@ impl<'a> ResolveWalker<'a> {
                 Resolution::Unresolved {
                     name,
                     reason: UnresolvedReason::External,
+                },
+            );
+        }
+    }
+
+    /// With no schema loaded, a record name that nothing in scope declares may
+    /// be a database table, as in `FIND` or `FOR EACH`: record the miss as
+    /// `NoSchema`, not `NotInScope`.
+    fn soften_record_miss_without_schema(&mut self, expr_id: NodeId) {
+        if self.ctx.schema_loaded {
+            return;
+        }
+        if let Some(Resolution::Unresolved {
+            name,
+            reason: UnresolvedReason::NotInScope,
+        }) = self.references.get(expr_id).cloned()
+        {
+            self.references.insert(
+                expr_id,
+                Resolution::Unresolved {
+                    name,
+                    reason: UnresolvedReason::NoSchema,
                 },
             );
         }
@@ -6767,6 +6923,35 @@ fn pseudo_function_target(name: &str) -> Option<(usize, AccessMode)> {
     }
 }
 
+/// Built-ins whose single operand names a record or buffer, with their
+/// abbreviations.
+fn is_record_operand_function(name: &str) -> bool {
+    // (keyword, shortest abbreviation)
+    const RECORD_FUNCTIONS: &[(&str, usize)] = &[
+        ("ambiguous", 5),
+        ("available", 5),
+        ("buffer-group-id", 15),
+        ("buffer-group-name", 17),
+        ("buffer-partition-id", 19),
+        ("buffer-tenant-id", 16),
+        ("buffer-tenant-name", 18),
+        ("current-changed", 15),
+        ("data-source-modified", 20),
+        ("error", 5),
+        ("locked", 6),
+        ("new", 3),
+        ("recid", 5),
+        ("record-length", 13),
+        ("rejected", 8),
+        ("row-state", 9),
+        ("rowid", 5),
+    ];
+    RECORD_FUNCTIONS.iter().any(|(keyword, shortest)| {
+        (*shortest..=keyword.len()).contains(&name.len())
+            && keyword.as_bytes()[..name.len()].eq_ignore_ascii_case(name.as_bytes())
+    })
+}
+
 /// Built-ins whose single operand names a stream.
 fn is_stream_operand_function(name: &str) -> bool {
     ["page-number", "line-counter", "page-size", "seek"]
@@ -7109,6 +7294,7 @@ mod tests {
                 name: id(name),
                 type_source: TypeSource::Explicit(ty),
                 no_undo: false,
+                extent: None,
             },
         })
     }
@@ -8691,6 +8877,7 @@ mod tests {
                 name: id("h"),
                 type_source: TypeSource::Explicit(DataType::Handle),
                 no_undo: false,
+                extent: None,
             },
         })]);
         let h = find_symbol(&tree, &symbols, NamespaceId::Values, "h").unwrap();
@@ -9174,8 +9361,7 @@ mod tests {
         assert_eq!(symbols.get(*sym).kind, SymbolKind::Buffer);
     }
 
-    #[test]
-    fn resolve_can_find_unknown_buffer_is_not_in_scope() {
+    fn can_find_ghost() -> (Vec<Statement>, NodeId) {
         let cf = expr_n(ExpressionKind::CanFind {
             find_type: oxabl_ast::FindType::First,
             buffer: id("ghost"),
@@ -9184,12 +9370,31 @@ mod tests {
             no_error: false,
         });
         let cf_id = cf.id;
-        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(cf))];
-        let (_t, _s, refs, _) = run_full(&stmts);
+        (vec![stmt_n(StatementKind::ExpressionStatement(cf))], cf_id)
+    }
+
+    #[test]
+    fn resolve_can_find_unknown_buffer_under_a_schema_is_not_in_scope() {
+        let (stmts, cf_id) = can_find_ghost();
+        let schema = test_schema();
+        let (_t, _s, refs, _) = run_full_with_schema(&stmts, &schema);
         assert!(matches!(
             resolution_of(&refs, cf_id),
             Resolution::Unresolved {
                 reason: UnresolvedReason::NotInScope,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn resolve_can_find_unknown_buffer_without_a_schema_is_no_schema() {
+        let (stmts, cf_id) = can_find_ghost();
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, cf_id),
+            Resolution::Unresolved {
+                reason: UnresolvedReason::NoSchema,
                 ..
             }
         ));
@@ -10865,6 +11070,7 @@ mod tests {
                     name: id("ttItem"),
                     type_source: TypeSource::Explicit(DataType::Integer),
                     no_undo: false,
+                    extent: None,
                 },
             }),
         ];
@@ -11341,6 +11547,60 @@ mod preproc_arm_tests {
     }
 
     #[test]
+    fn a_table_for_direction_in_both_preproc_arms_is_not_a_duplicate() {
+        let src = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                   DEFINE INPUT PARAMETER TABLE FOR tt.\n\
+                   &IF DEFINED(X) <> 0 &THEN\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt APPEND.\n\
+                   &ELSE\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt.\n\
+                   &ENDIF\n";
+        assert_eq!(sem0001_messages(src), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_dataset_for_direction_in_both_preproc_arms_is_not_a_duplicate() {
+        let head = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                    DEFINE DATASET ds FOR tt.\n";
+        for (first, arms) in [
+            (
+                "DEFINE INPUT PARAMETER DATASET FOR ds.\n",
+                ["OUTPUT", "OUTPUT"],
+            ),
+            ("", ["INPUT", "INPUT"]),
+        ] {
+            let src = format!(
+                "{head}{first}&IF DEFINED(X) <> 0 &THEN\n\
+                 DEFINE {} PARAMETER DATASET FOR ds.\n\
+                 &ELSE\n\
+                 DEFINE {} PARAMETER DATASET FOR ds.\n\
+                 &ENDIF\n",
+                arms[0], arms[1]
+            );
+            assert_eq!(sem0001_messages(&src), Vec::<String>::new(), "{src}");
+        }
+    }
+
+    #[test]
+    fn a_direction_repeated_in_one_arm_is_a_duplicate() {
+        let src = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                   &IF DEFINED(X) <> 0 &THEN\n\
+                   DEFINE INPUT PARAMETER TABLE FOR tt.\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt.\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt.\n\
+                   &ENDIF\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
+    }
+
+    #[test]
+    fn a_table_for_and_a_dataset_for_of_one_name_are_a_duplicate() {
+        let src = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                   DEFINE INPUT PARAMETER TABLE FOR tt.\n\
+                   DEFINE OUTPUT PARAMETER DATASET FOR tt.\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
+    }
+
+    #[test]
     fn same_stream_in_both_preproc_arms_is_not_a_duplicate() {
         let src =
             "&IF DEFINED(F) <> 0 &THEN\nDEFINE STREAM sOut.\n&ELSE\nDEFINE STREAM sOut.\n&ENDIF\n";
@@ -11456,5 +11716,59 @@ mod unmodelled_names_tests {
         assert!(opens_with_end("."));
         assert!(!opens_with_end(":x"));
         assert!(!opens_with_end(".5"));
+    }
+}
+
+#[cfg(test)]
+mod block_definition_tests {
+    use super::*;
+    use oxabl_common::FileId;
+    use oxabl_schema::Schema;
+
+    /// The scope kind each symbol of `kinds` is declared in, by name.
+    fn declared_in(source: &str, kinds: &[SymbolKind]) -> Vec<(String, ScopeKind)> {
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{:?}", program.errors);
+        let (tree, symbols, _, _) = declare_pass(&program.statements, &ctx);
+        let mut found: Vec<(String, ScopeKind)> = symbols
+            .iter()
+            .filter(|(_, sym)| kinds.contains(&sym.kind))
+            .map(|(_, sym)| (sym.name.to_string(), tree.get(sym.declared_in).kind))
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
+    }
+
+    /// Streams, datasets, data-sources and procedures written in a block are
+    /// declared in the routine around it, as the other definitions are.
+    #[test]
+    fn stream_dataset_data_source_and_procedure_in_a_block_bind_to_the_routine() {
+        let source = "DO:\n\
+                      DEFINE STREAM s-out.\n\
+                      DEFINE TEMP-TABLE tt NO-UNDO FIELD a AS INTEGER.\n\
+                      DEFINE DATASET ds FOR tt.\n\
+                      DEFINE QUERY q FOR tt.\n\
+                      DEFINE DATA-SOURCE src FOR QUERY q.\n\
+                      PROCEDURE inner:\n\
+                      END PROCEDURE.\n\
+                      END.\n";
+        let kinds = [
+            SymbolKind::Stream,
+            SymbolKind::Dataset,
+            SymbolKind::DataSource,
+            SymbolKind::Procedure,
+        ];
+        assert_eq!(
+            declared_in(source, &kinds),
+            [
+                ("ds".to_string(), ScopeKind::File),
+                ("inner".to_string(), ScopeKind::File),
+                ("s-out".to_string(), ScopeKind::File),
+                ("src".to_string(), ScopeKind::File),
+            ]
+        );
     }
 }

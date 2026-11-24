@@ -36,6 +36,7 @@ import { definition } from "./scenarios/definition.mjs";
 import { expandedUnit } from "./scenarios/expanded-unit.mjs";
 import { includeContext } from "./scenarios/include-context.mjs";
 import { outline } from "./scenarios/outline.mjs";
+import { schema, schemaConfigAbove } from "./scenarios/schema.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
 import {
   updateAuto,
@@ -59,6 +60,8 @@ const SCENARIOS = [
   ["include-context", includeContext],
   ["expanded-unit", expandedUnit],
   ["definition", definition],
+  ["schema", schema],
+  ["schema-config-above", schemaConfigAbove],
   ["update-auto", updateAuto],
   ["update-checksum", updateChecksum],
   ["update-notify", updateNotify],
