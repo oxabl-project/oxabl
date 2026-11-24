@@ -9,7 +9,9 @@ use oxabl_workspace::{FileSystem, PreprocessorConfig};
 use rustc_hash::FxHashSet;
 
 use crate::PreprocVarTable;
-use crate::condition::{Environment, Gap, evaluate, find_var_ref, skip_comment, visit_ref_names};
+use crate::condition::{
+    Environment, Gap, evaluate, find_var_ref, last_var_ref, skip_comment, visit_ref_names,
+};
 use crate::span_tree::{
     BranchDirective, BranchState, ElidedKind, ElidedReference, IfBranch, PreprocessedFile,
     ResolvedInclude, SkippedBranch, SkippedInclude, SkippedText, SpanNode, TextLoss, TextLossKind,
@@ -32,6 +34,8 @@ pub struct Preprocessor<'fs> {
     predefined: Option<Predefined>,
     /// See [`Self::with_includer_unknown`].
     includer_unknown: bool,
+    /// See [`Self::with_branch_tracking`].
+    branch_tracking: bool,
 }
 
 /// A [`PreprocessorConfig`] with the names it defines, which every run starts
@@ -121,7 +125,18 @@ impl<'fs> Preprocessor<'fs> {
             include_paths,
             predefined: None,
             includer_unknown: false,
+            branch_tracking: false,
         }
+    }
+
+    /// Record what is known of each `&IF` branch
+    /// ([`PreprocessedFile::branches`] and [`PreprocessedFile::missed_expansion`]).
+    /// Off by default: it costs a lookup per name a condition or a define reads,
+    /// and only an editor that dims inactive branches reads it. Off, `branches`
+    /// is empty, which says nothing about the branches.
+    pub fn with_branch_tracking(mut self, track: bool) -> Self {
+        self.branch_tracking = track;
+        self
     }
 
     /// Say whether the file is processed without its includer, as an include
@@ -131,7 +146,7 @@ impl<'fs> Preprocessor<'fs> {
     /// predefined names read with `{&name}` are not known, as an includer can
     /// set them, and a condition that reads one is [`BranchState::Undecided`].
     /// Only [`PreprocessedFile::branches`] changes: the text is expanded as
-    /// before.
+    /// before. It has no effect without [`Self::with_branch_tracking`].
     pub fn with_includer_unknown(mut self, unknown: bool) -> Self {
         self.includer_unknown = unknown;
         self
@@ -193,7 +208,12 @@ impl<'fs> Preprocessor<'fs> {
             skipped_text: Vec::new(),
             branches: Vec::new(),
             include_files: Vec::new(),
-            knowledge: Knowledge::new(self.includer_unknown, &predefined.config),
+            tracking: self.branch_tracking,
+            knowledge: if self.branch_tracking {
+                Knowledge::new(self.includer_unknown, &predefined.config)
+            } else {
+                Knowledge::default()
+            },
             region_decided: true,
             missed_expansion: false,
             args_uncertain: self.includer_unknown,
@@ -310,6 +330,9 @@ struct ProcessContext<'a> {
     branches: Vec<IfBranch>,
     /// The path of each include expansion, by the file id of its text.
     include_files: Vec<(FileId, PathBuf)>,
+    /// See [`Preprocessor::with_branch_tracking`]. Off, `branches`,
+    /// `include_files`, `knowledge` and `missed_expansion` are not kept.
+    tracking: bool,
     /// Which names have a value the run knows.
     knowledge: Knowledge,
     /// Whether every enclosing branch, through the include sites, is decided.
@@ -643,7 +666,9 @@ impl ProcessContext<'_> {
                                     branches_from: self.branches.len(),
                                 });
                                 emitting = emitting && cond_result;
-                                self.region_decided = region_decided(base_decided, &if_stack);
+                                if self.tracking {
+                                    self.region_decided = region_decided(base_decided, &if_stack);
+                                }
                                 i = directive.end;
                                 skipped_from = i;
                                 chunk_start = i as u32;
@@ -710,7 +735,9 @@ impl ProcessContext<'_> {
                                     state.condition = condition;
                                 }
                                 emitting = if_stack.iter().all(|s| s.emitting);
-                                self.region_decided = region_decided(base_decided, &if_stack);
+                                if self.tracking {
+                                    self.region_decided = region_decided(base_decided, &if_stack);
+                                }
                                 i = directive.end;
                                 skipped_from = i;
                                 chunk_start = i as u32;
@@ -746,7 +773,9 @@ impl ProcessContext<'_> {
                                     state.directive = BranchDirective::Else;
                                 }
                                 emitting = if_stack.iter().all(|s| s.emitting);
-                                self.region_decided = region_decided(base_decided, &if_stack);
+                                if self.tracking {
+                                    self.region_decided = region_decided(base_decided, &if_stack);
+                                }
                                 i = directive.end;
                                 skipped_from = i;
                                 chunk_start = i as u32;
@@ -777,7 +806,9 @@ impl ProcessContext<'_> {
                                     self.close_branch(file, &state, i);
                                 }
                                 emitting = if_stack.iter().all(|s| s.emitting);
-                                self.region_decided = region_decided(base_decided, &if_stack);
+                                if self.tracking {
+                                    self.region_decided = region_decided(base_decided, &if_stack);
+                                }
                                 i = directive.end;
                                 skipped_from = i;
                                 chunk_start = i as u32;
@@ -900,6 +931,11 @@ impl ProcessContext<'_> {
                                 // the source, not about how much text arrived.
                                 let unresolved_before = self.unresolved_includes.len();
                                 let site_unknown = self.reads_unknown(raw_inner);
+                                if site_unknown {
+                                    // Another value of the name or the arguments
+                                    // names another include, or passes it other text.
+                                    self.missed_expansion = true;
+                                }
                                 let expanded = self.expand_include(
                                     &include_name,
                                     include_site,
@@ -910,11 +946,10 @@ impl ProcessContext<'_> {
                                 if expanded.is_none() {
                                     // Text the run never read may define any name.
                                     self.knowledge.all_uncertain = true;
-                                    // A file that exists and did not arrive (unreadable,
-                                    // a cycle, the expansion limit) may include any other.
-                                    if self.unresolved_includes.len() == unresolved_before {
-                                        self.missed_expansion = true;
-                                    }
+                                    // A file that did not arrive (not found here, which
+                                    // the compiler's PROPATH may find, unreadable, a
+                                    // cycle, the expansion limit) may include any other.
+                                    self.missed_expansion = true;
                                 }
                                 if let Some((path, children)) = expanded {
                                     nodes.push(SpanNode::Include {
@@ -1092,6 +1127,9 @@ impl ProcessContext<'_> {
 
     /// Record the branch `state` opened, which ends at byte `end` of `file`.
     fn close_branch(&mut self, file: FileId, state: &IfState, end: usize) {
+        if !self.tracking {
+            return;
+        }
         self.branches.push(IfBranch {
             directive: state.directive,
             body: FileSpan {
@@ -1108,10 +1146,18 @@ impl ProcessContext<'_> {
     /// Whether `text` reads a name whose value is not known, or an include
     /// argument the run does not know.
     fn reads_unknown(&self, text: &str) -> bool {
+        if !self.tracking {
+            return false;
+        }
         if self.args_uncertain && has_positional_ref(text) {
             return true;
         }
-        if self.knowledge.knows_all() {
+        self.reads_unknown_name(text)
+    }
+
+    /// Whether `text` reads a `{&name}` whose value is not known.
+    fn reads_unknown_name(&self, text: &str) -> bool {
+        if !self.tracking || self.knowledge.knows_all() {
             return false;
         }
         let mut unknown = false;
@@ -1124,6 +1170,9 @@ impl ProcessContext<'_> {
     /// Update what is known of `name` for a define or undefine whose value is
     /// `value`, met while the branch is `emitting` or not.
     fn note_define(&mut self, name: &str, value: &str, emitting: bool, kind: DefineKind) {
+        if !self.tracking {
+            return;
+        }
         let scoped = kind == DefineKind::Scoped;
         if !self.region_decided {
             // It may or may not have happened.
@@ -1166,7 +1215,7 @@ impl ProcessContext<'_> {
         else {
             return;
         };
-        if !self.region_decided && text.contains('{') {
+        if self.tracking && !self.region_decided && text.contains('{') {
             // A guessed branch may count one more `{&SEQUENCE}`, and a reference
             // in it may expand to an include.
             if contains_ignore_case(text, "{&sequence") {
@@ -1303,6 +1352,10 @@ impl ProcessContext<'_> {
         };
         let condition = expand_positional_refs(condition, args);
         let condition = self.substitute_computed_names(&condition, source, at, site);
+        // A computed name inside a reference (`{&a-{&LINE-NUMBER}}`) changes the
+        // name that is read, so the substituted text is checked too.
+        let reads_unknown = reads_unknown
+            || (matches!(condition, Cow::Owned(_)) && self.reads_unknown_name(&condition));
         let knowledge = &self.knowledge;
         let known = |name: &str| knowledge.is_known(name);
         let evaluation = evaluate(
@@ -1310,7 +1363,8 @@ impl ProcessContext<'_> {
             &Environment {
                 vars: &self.vars,
                 config: self.predefined,
-                known: (!knowledge.knows_all()).then_some(&known as &dyn Fn(&str) -> bool),
+                known: (self.tracking && !knowledge.knows_all())
+                    .then_some(&known as &dyn Fn(&str) -> bool),
             },
         );
         let mut unmodelled = Vec::new();
@@ -1346,7 +1400,7 @@ impl ProcessContext<'_> {
                 break;
             };
             // In `{&a-{&b}}` the name `b` is the one this `}` closes.
-            if let Some(inner) = rest[open + 2..open + close_rel].rfind("{&") {
+            if let Some(inner) = last_var_ref(&rest[open + 2..open + close_rel]) {
                 open += 2 + inner;
                 close_rel -= 2 + inner;
             }
@@ -1555,6 +1609,10 @@ impl ProcessContext<'_> {
                 end: ref_end as u32,
             },
         };
+        if self.tracking && !self.knowledge.is_known(var_name.trim_ascii_end()) {
+            // Another value may hold an include reference.
+            self.missed_expansion = true;
+        }
         if let Some(val) = self.lookup_ref(var_name, source, i)
             && (val.is_empty() || self.admit(val.len() + NODE_COST, site))
         {
@@ -2036,10 +2094,14 @@ impl ProcessContext<'_> {
         let args_known = self.region_decided && !site_unknown;
         for (name, value) in &args.named {
             self.vars.define_argument(name, value);
-            self.knowledge.learn(name, args_known, true);
+            if self.tracking {
+                self.knowledge.learn(name, args_known, true);
+            }
         }
         let outer_args = std::mem::replace(&mut self.args_uncertain, !args_known);
-        self.include_files.push((include_file_id, path.clone()));
+        if self.tracking {
+            self.include_files.push((include_file_id, path.clone()));
+        }
 
         // Process recursively with positional args scoped to this include.
         // The site is on the stack for the duration, so anything unresolvable

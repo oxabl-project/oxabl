@@ -492,7 +492,10 @@ impl AnalysisConfig {
     /// pointers and a bool — no `Schema` clone, no per-run allocation on the
     /// keystroke path (the 50ms interactivity budget, R14).
     pub fn lint_pipeline(&self) -> LintPipeline<'_> {
-        LintPipeline::new(&self.pipeline, &*self.fs).with_preprocess(self.preprocess)
+        // The language server shows the inactive `&IF` branches of this expansion.
+        LintPipeline::new(&self.pipeline, &*self.fs)
+            .with_preprocess(self.preprocess)
+            .with_branch_tracking(true)
     }
 }
 
@@ -1249,7 +1252,9 @@ fn analyse_root(
     let source = fs
         .read(root)
         .map_err(|error| (format!("cannot read it: {error}"), dependencies.clone()))?;
-    let run = LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
+    let run = LintPipeline::new(&config.pipeline, &fs)
+        .with_preprocess(config.preprocess)
+        .with_branch_tracking(true);
     let handle = run.with_file(root);
     let expansion = handle.expand(&source);
     dependencies.extend(expansion.dependency_paths().iter().cloned());

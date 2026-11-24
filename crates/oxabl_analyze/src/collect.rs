@@ -531,7 +531,8 @@ impl ExpandedFile {
     }
 
     /// The text of the `&IF` branches that are not compiled, in the root's own
-    /// bytes. Only a branch the preprocessor decided is listed; see
+    /// bytes. Empty unless the expansion tracked branches
+    /// ([`expand_source_tracking`]). Only a branch the preprocessor decided is listed; see
     /// [`oxabl_preprocessor::BranchState`]. Sorted, with overlaps merged.
     pub fn inactive_regions(&self) -> Vec<Span> {
         inactive_regions(
@@ -934,7 +935,40 @@ pub fn expand_source_with(
     predefined: &PreprocessorConfig,
     preprocess: bool,
 ) -> Result<ExpandedFile, Vec<Diagnostic>> {
-    if !preprocess {
+    let mode = if preprocess {
+        PreprocessMode::Expand
+    } else {
+        PreprocessMode::Off
+    };
+    expand_source_tracking(root, name, source, fs, include_paths, predefined, mode)
+}
+
+/// How [`expand_source_tracking`] preprocesses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreprocessMode {
+    /// The source as written, with no preprocessing.
+    Off,
+    /// Expand includes and directives.
+    Expand,
+    /// Expand, and record what is known of each `&IF` branch, for
+    /// [`ExpandedFile::inactive_regions`]. It costs a lookup per name a
+    /// condition or a define reads, so only a client that shows the regions
+    /// asks for it.
+    TrackBranches,
+}
+
+/// [`expand_source_with`] with a [`PreprocessMode`]. Without
+/// [`PreprocessMode::TrackBranches`] the inactive regions are empty.
+pub fn expand_source_tracking(
+    root: FileId,
+    name: Option<&str>,
+    source: &str,
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    predefined: &PreprocessorConfig,
+    mode: PreprocessMode,
+) -> Result<ExpandedFile, Vec<Diagnostic>> {
+    if mode == PreprocessMode::Off {
         return Ok(ExpandedFile {
             text: source.to_string(),
             chunks: Vec::new(),
@@ -970,6 +1004,7 @@ pub fn expand_source_with(
     // An include opened by itself has no includer to set its names.
     let pp = Preprocessor::new(&recorder, include_paths)
         .with_predefined(predefined)
+        .with_branch_tracking(mode == PreprocessMode::TrackBranches)
         .with_includer_unknown(name.is_some_and(|name| is_include_fragment(Path::new(name))));
     let processed = match name {
         Some(name) => pp.process_named(root, name, source),

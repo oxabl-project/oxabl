@@ -47,6 +47,20 @@ The server sends `textDocument/inactiveRegions`, in the shape clangd uses:
   see another version or another configuration than the diagnostics. The push
   rides on the analysis that gives the diagnostics.
 
+### Who pays for it
+
+The branch records cost a lookup per name that a condition or a define reads.
+Only the language server reads them, so they are opt-in:
+`Preprocessor::with_branch_tracking`, `PreprocessMode::TrackBranches` in
+`oxabl_analyze::expand_source_tracking`, and
+`LintPipeline::with_branch_tracking`. The daemon turns them on for the
+expansion that its diagnostics and include contexts read
+(`AnalysisConfig::lint_pipeline`, `analyse_root`). `oxabl check`, `oxabl build`
+and the index do not, and their preprocessing costs what it did before. Without
+tracking, `PreprocessedFile::branches` is empty, which says nothing about the
+branches. The bench `preprocessor/tracked/if_eval` measures the cost with
+tracking on.
+
 ## What is decided
 
 The preprocessor records each branch as taken, not taken, or undecided
@@ -65,7 +79,10 @@ A condition is undecided when:
 
 A reference inside a reference (`{&OPEN-QUERY-{&FRAME-NAME}}`) is expanded
 from the inside out, as the AVM does: the inner value becomes part of the outer
-name. Both names must be known.
+name. Both names must be known. A computed inner name (`{&a-{&LINE-NUMBER}}`)
+is checked after it is computed. A value is never scanned again, so a value
+that holds a reference to its own name stays text and cannot make the
+expansion loop.
 
 All branches of an undecided `&IF` are undecided. For an undecided `&ELSEIF`,
 the branches before it keep their state and the rest of the chain is
@@ -112,6 +129,11 @@ project that never said it compiles for TTY. Set the keys to dim these
 branches. `PreprocessorConfig::stated` records which keys the configuration
 sets (`oxabl.toml` and, for `oxabl build`, the overlay).
 
+`DBTYPE` of a connected database that `database-types` does not name answers
+`PROGRESS` for the diagnostics. That is a default too, so for the dimming the
+condition is not decided. Name the database under `database-types` to dim on
+its type.
+
 ## Includes
 
 - **A root context.** In an include with a selected root
@@ -120,11 +142,17 @@ sets (`oxabl.toml` and, for `oxabl build`, the overlay).
   (`oxabl_daemon::db::ContextDiagnostics::inactive_regions`). When the root
   expands the include more than once, a branch is a region only when no
   expansion compiles it and every expansion decides it. When the run did not
-  expand an include that the compiler may expand (`PreprocessedFile::missed_expansion`:
-  an include, or a reference that can hold one, in a branch chosen on a guess,
-  or an include dropped because it could not be read, closed a cycle, or
-  passed the depth or expansion limit), that expansion could be one more of
-  the include, so the include gets no regions at all.
+  expand an include that the compiler may expand, that expansion could be one
+  more of the include, so the include gets no regions at all
+  (`PreprocessedFile::missed_expansion`). That is so for:
+  - an include, or a reference that can hold one, in a branch chosen on a
+    guess;
+  - an include whose name or arguments read a name that is not known, and a
+    `{&name}` with a value that is not known, since another value names
+    another include;
+  - an include that oxabl does not find: the compiler's PROPATH may find it;
+  - an include dropped because it could not be read, closed a cycle, or passed
+    the depth or expansion limit.
 - **Fragment mode.** An include opened alone is preprocessed with
   `Preprocessor::with_includer_unknown`. The includer can set any name, the
   predefined ones too, and pass any argument. So a condition that reads a name
@@ -142,7 +170,8 @@ sets (`oxabl.toml` and, for `oxabl build`, the overlay).
   between its directives.
 - A file whose preprocessing fails has no regions.
 - An include whose root missed an expansion gets no regions, even when the
-  missed text cannot reach it. The run cannot tell.
+  missed text cannot reach it. The run cannot tell. A project whose
+  `include_paths` do not find every include sees no regions in its includes.
 
 ## VS Code
 
@@ -150,7 +179,9 @@ sets (`oxabl.toml` and, for `oxabl build`, the overlay).
 last regions of each document with the document version they are for
 (`regionStore.ts`). It paints them in each visible editor of the document, and
 again when an editor shows the document, but only while the document has that
-version: after an edit the old regions go away until the next publish. The setting
+version. On an edit with one change, the regions move with the text and a region
+that the edit touches goes, until the next publish brings the new ones. Several
+changes at once (multi-cursor) remove all of them until then. The setting
 `oxabl.inactiveRegions.enable` (default `true`) turns the dimming off and on
 with no restart. The e2e scenario `inactive-regions` tests it with the real
 server.
@@ -163,6 +194,9 @@ conditions, compile-environment names the project does and does not set, a
 reference inside a reference, a chain inside an unclosed `&IF`, a name that an
 unread include can define, an undefine and the end of an include's scope, an
 include under three includer contexts and in fragment mode, an include whose
-root misses an expansion of it, and a client that does not ask (an open and an
-edit). `clients/vscode/src/regionStore.test.ts` tests that old regions are not
-painted on new text.
+root misses an expansion of it (a guessed branch, a guessed include name, an
+include that is not found), a computed name inside a reference, a `DBTYPE`
+default, a value that names itself (also through `oxabl check`, with a time
+limit), and a client that does not ask (an open and an edit).
+`clients/vscode/src/regionStore.test.ts` tests that old regions are not painted
+on new text and that regions move with an edit.

@@ -109,8 +109,10 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   with no `proversion` set, a name that an include it cannot read can define,
   or `OPSYS`, `WINDOW-SYSTEM`, `BATCH-MODE` or `PROCESS-ARCHITECTURE` when
   `oxabl.toml` does not set `opsys`, `window-system`, `batch-mode` or
-  `process-architecture`. Their defaults do not dim anything. Set `oxabl.inactiveRegions.enable` to `false` to turn the dimming
-  off.
+  `process-architecture`, or `DBTYPE` of a database that `database-types` does
+  not name. Their defaults do not dim anything. An include gets no dimming when
+  a root that includes it has an include that oxabl cannot find. Set
+  `oxabl.inactiveRegions.enable` to `false` to turn the dimming off.
 - **Expanded compilation unit.** **oxabl: Show Expanded Compilation Unit**
   opens a read-only view beside the file: the source oxabl parsed after
   preprocessing. For an include it uses the selected include context, or the

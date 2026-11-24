@@ -83,8 +83,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use oxabl_analyze::{
     BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
-    ExpandedFile, IncludeOriginDiagnostic, RuleSelection, SkippedText, UnresolvedInclude,
-    analyze_from_expanded, collect_from_expanded_with_summaries, expand_source_with,
+    ExpandedFile, IncludeOriginDiagnostic, PreprocessMode, RuleSelection, SkippedText,
+    UnresolvedInclude, analyze_from_expanded, collect_from_expanded_with_summaries,
+    expand_source_tracking, expand_source_with,
 };
 
 use oxabl_common::{
@@ -485,6 +486,8 @@ pub struct LintPipeline<'a> {
     config: &'a PipelineConfig,
     fs: &'a dyn FileSystem,
     preprocess: bool,
+    /// See [`LintPipeline::with_branch_tracking`].
+    track_branches: bool,
     /// The run's cross-file index.
     index: RunIndex<'a>,
     /// The file being analysed, when the client knows which one that is.
@@ -569,6 +572,7 @@ impl<'a> SharedRun<'a> {
             config: self.config,
             fs: self.fs,
             preprocess: true,
+            track_branches: false,
             index: RunIndex::Shared(&self.index),
             file: None,
             conditional_closure: false,
@@ -758,6 +762,7 @@ impl<'a> LintPipeline<'a> {
             config,
             fs,
             preprocess: true,
+            track_branches: false,
             // The index reads nothing until a name is looked up (R6), so building
             // it here costs a pair of borrows and no I/O — which is what lets it
             // be unconditional rather than another thing a client can forget.
@@ -778,6 +783,16 @@ impl<'a> LintPipeline<'a> {
     #[must_use]
     pub fn with_preprocess(mut self, preprocess: bool) -> Self {
         self.preprocess = preprocess;
+        self
+    }
+
+    /// Make [`expand`](Self::expand) record what is known of each `&IF` branch,
+    /// for [`ExpandedFile::inactive_regions`]. Off by default: it costs a lookup
+    /// per name a condition or a define reads, and only the language server
+    /// shows the regions.
+    #[must_use]
+    pub fn with_branch_tracking(mut self, track: bool) -> Self {
+        self.track_branches = track;
         self
     }
 
@@ -933,6 +948,7 @@ impl<'a> LintPipeline<'a> {
             config: self.config,
             fs: self.fs,
             preprocess: self.preprocess,
+            track_branches: self.track_branches,
             index: match &self.index {
                 // A sibling shares the run's memo rather than building a second
                 // one — that is what makes the shared-dependency dedup pay.
@@ -1516,14 +1532,18 @@ impl<'a> LintPipeline<'a> {
         panic_if_injected(panic_sites::ANALYZE, source);
         let search_base = self.config.search_base(self.file(), source);
         Expansion {
-            inner: expand_source_with(
+            inner: expand_source_tracking(
                 ROOT_FILE_ID,
                 self.file().and_then(Path::to_str),
                 source,
                 self.fs,
                 &self.config.include_paths_from(search_base.as_deref()),
                 &self.config.preprocessor,
-                self.preprocess,
+                match (self.preprocess, self.track_branches) {
+                    (false, _) => PreprocessMode::Off,
+                    (true, false) => PreprocessMode::Expand,
+                    (true, true) => PreprocessMode::TrackBranches,
+                },
             ),
             search_base,
         }

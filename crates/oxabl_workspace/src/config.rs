@@ -428,14 +428,6 @@ pub struct StatedEnvironment {
 }
 
 impl StatedEnvironment {
-    /// Every key set, for a configuration built in code.
-    pub const ALL: StatedEnvironment = StatedEnvironment {
-        opsys: true,
-        window_system: true,
-        batch_mode: true,
-        process_architecture: true,
-    };
-
     /// The keys that `table`, a `[workspace.preprocessor]` table, sets.
     pub fn of(table: &toml::Table) -> StatedEnvironment {
         StatedEnvironment {

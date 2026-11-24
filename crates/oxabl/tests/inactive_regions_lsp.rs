@@ -417,6 +417,19 @@ fn an_include_the_run_did_not_expand_leaves_the_includes_regions_undecided() {
                 "{mid.i}\n&IF SEARCH(\"x.p\") <> ? &THEN\n{inc.i &mode=b}\n&ENDIF\n",
             ),
             ("mid.i", "{inc.i &mode=a}\n"),
+            (
+                "computed.p",
+                "{inc.i &mode=a}\n&IF PROVERSION >= \"12\" &THEN\n&SCOPED-DEFINE f wrap\n\
+                 &ELSE\n&SCOPED-DEFINE f other\n&ENDIF\n{{&f}.i}\n",
+            ),
+            ("wrap.i", "{inc.i &mode=b}\n"),
+            ("other.i", "MESSAGE \"o\".\n"),
+            (
+                "whole.p",
+                "{inc.i &mode=a}\n&IF PROVERSION >= \"12\" &THEN\n\
+                 &SCOPED-DEFINE x inc.i &mode=b\n&ENDIF\n{{&x}}\n",
+            ),
+            ("notfound.p", "{inc.i &mode=a}\n{notfound.i}\n"),
         ],
     );
     let inc_path = dir.path().join("inc.i");
@@ -429,10 +442,103 @@ fn an_include_the_run_did_not_expand_leaves_the_includes_regions_undecided() {
     regions_where(&session, &inc_path, |r| r == [(1, 0, 2, 0)]);
 
     // A 12.x compile expands it again with `mode` b, so the branch may compile.
-    for root in ["guessed.p", "searched.p"] {
+    // So may an include whose name a guessed branch chose, and one that oxabl
+    // cannot find but the compiler's PROPATH may.
+    for root in [
+        "guessed.p",
+        "searched.p",
+        "computed.p",
+        "whole.p",
+        "notfound.p",
+    ] {
         select(&mut session, &inc_path, Some(&dir.path().join(root)));
         assert_eq!(next_regions(&session, &inc_path), vec![], "in {root}");
     }
+}
+
+#[test]
+fn a_computed_name_inside_a_reference_is_read_as_computed() {
+    let text = "&IF PROVERSION >= \"12\" &THEN\n\
+&SCOPED-DEFINE a-4 yes\n\
+&ENDIF\n\
+&IF \"{&a-{&LINE-NUMBER}}\" = \"yes\" &THEN\n\
+MESSAGE 1.\n\
+&ENDIF\n\
+&IF OPSYS = \"VMS\" &THEN\n\
+MESSAGE 2.\n\
+&ENDIF\n";
+    let dir = project(BASE, &[("computed.p", text)]);
+    let path = dir.path().join("computed.p");
+    let mut session = Session::start_with(dir.path(), asks());
+    session.open(&path, text);
+    // `a-4` is defined on a guess, so line 5 may compile.
+    assert_eq!(next_regions(&session, &path), vec![(7, 0, 8, 0)]);
+}
+
+#[test]
+fn a_database_type_the_project_does_not_name_decides_nothing() {
+    let text = "&IF DBTYPE(\"ledger\") = \"ORACLE\" &THEN\n\
+MESSAGE \"dataserver\".\n\
+&ENDIF\n\
+&IF CONNECTED(\"stock\") &THEN\n\
+MESSAGE \"stock\".\n\
+&ENDIF\n";
+    let listed = format!("{BASE}databases = [\"ledger\"]\n");
+    let dir = project(&listed, &[("db.p", text)]);
+    let path = dir.path().join("db.p");
+    let mut session = Session::start_with(dir.path(), asks());
+    session.open(&path, text);
+    // `PROGRESS` is only the default type; the stated list does decide
+    // `CONNECTED`.
+    assert_eq!(next_regions(&session, &path), vec![(4, 0, 5, 0)]);
+    drop(session);
+
+    let typed = format!("{listed}database-types = {{ ledger = \"PROGRESS\" }}\n");
+    let dir = project(&typed, &[("db.p", text)]);
+    let path = dir.path().join("db.p");
+    let mut session = Session::start_with(dir.path(), asks());
+    session.open(&path, text);
+    assert_eq!(
+        next_regions(&session, &path),
+        vec![(1, 0, 2, 0), (4, 0, 5, 0)]
+    );
+}
+
+/// A value that holds a reference to its own name, read inside another
+/// reference: `oxabl check` and the language server both finish.
+const SELF_REFERENCE: &str = "&SCOPED-DEFINE b ~{&b}\n\
+&SCOPED-DEFINE c {&c}{&c}\n\
+&IF \"{&a-{&b}}\" = \"x\" &THEN\n\
+MESSAGE 1.\n\
+&ENDIF\n\
+&IF \"{&a-{&c}}\" = \"x\" &THEN\n\
+MESSAGE 2.\n\
+&ENDIF\n";
+
+#[test]
+fn a_value_that_names_itself_inside_a_reference_ends() {
+    let dir = project(BASE, &[("self.p", SELF_REFERENCE)]);
+    let path = dir.path().join("self.p");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_oxabl"))
+        .arg("check")
+        .arg(&path)
+        .current_dir(dir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("`oxabl check` did not finish in 20 s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let mut session = Session::start_with(dir.path(), asks());
+    session.open(&path, SELF_REFERENCE);
+    next_regions(&session, &path);
 }
 
 #[test]

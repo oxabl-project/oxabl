@@ -33,7 +33,7 @@ export class InactiveRegions implements vscode.Disposable {
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
   /** The last regions of each document, by URI, with their version. */
-  private readonly regions = new RegionStore<vscode.Range>();
+  private readonly regions = new RegionStore();
   private readonly subscriptions: vscode.Disposable[];
 
   constructor() {
@@ -41,10 +41,13 @@ export class InactiveRegions implements vscode.Disposable {
       this.decoration,
       vscode.window.onDidChangeVisibleTextEditors(() => this.paintAll()),
       vscode.workspace.onDidCloseTextDocument((document) => this.regions.delete(document.uri.toString())),
-      // An edit moves the text under the regions; the next publish brings new ones.
+      // An edit moves the text under the regions. They move with it, and a
+      // region the edit touches goes, until the next publish.
       vscode.workspace.onDidChangeTextDocument((event) => {
         if (event.contentChanges.length > 0) {
-          this.repaint(event.document.uri.toString());
+          const uri = event.document.uri.toString();
+          this.regions.edit(uri, event.document.version - 1, event.document.version, event.contentChanges);
+          this.repaint(uri);
         }
       }),
       vscode.workspace.onDidChangeConfiguration((event) => {
@@ -90,7 +93,7 @@ export class InactiveRegions implements vscode.Disposable {
     this.regions.set(
       uri,
       document.version,
-      params.regions.map((r) => new vscode.Range(r.start.line, r.start.character, r.end.line, r.end.character)),
+      params.regions,
     );
     this.repaint(uri);
   }
@@ -111,7 +114,11 @@ export class InactiveRegions implements vscode.Disposable {
 
   private paint(editor: vscode.TextEditor): void {
     const document = editor.document;
-    const ranges = enabled() ? this.regions.get(document.uri.toString(), document.version) : [];
+    const ranges = enabled()
+      ? this.regions
+          .get(document.uri.toString(), document.version)
+          .map((r) => new vscode.Range(r.start.line, r.start.character, r.end.line, r.end.character))
+      : [];
     editor.setDecorations(this.decoration, ranges);
   }
 
