@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use lsp_server::{Connection, Message};
@@ -50,11 +51,15 @@ pub struct Listener {
     /// Set when the loop should stop accepting, so a test — or a shutdown request —
     /// can end the loop without killing the process.
     stopping: Arc<AtomicBool>,
+    /// How long the accept loop runs with no client and no background work before it
+    /// ends. `None` runs until stopped.
+    idle_timeout: Option<Duration>,
     /// Exclusive ownership of this root, held for exactly as long as the listener.
     ///
-    /// Never read. It exists to be dropped: releasing it is what lets the next
-    /// daemon start, and the kernel does that for us if this process is killed.
-    _lock: registry::RootLock,
+    /// Releasing it is what lets the next daemon start, and the kernel does that for
+    /// us if this process is killed. An `Option` only so `Drop` can remove its file
+    /// before the release.
+    lock: Option<registry::RootLock>,
 }
 
 impl Listener {
@@ -198,7 +203,8 @@ impl Listener {
             socket_path,
             workspace_root,
             stopping: Arc::new(AtomicBool::new(false)),
-            _lock: lock,
+            idle_timeout: None,
+            lock: Some(lock),
         };
         // Belt and braces. On Linux the connect permission is the socket's write
         // bit, and `bind` takes the ambient umask — so this is the control that
@@ -223,6 +229,12 @@ impl Listener {
 
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
+    }
+
+    /// End the accept loop once no client has been connected and no background work
+    /// has run for `timeout`; `None` serves until stopped. See [`crate::idle`].
+    pub fn set_idle_timeout(&mut self, timeout: Option<Duration>) {
+        self.idle_timeout = timeout;
     }
 
     /// A handle that ends the accept loop.
@@ -267,6 +279,23 @@ impl Listener {
         // starting one: an unresolvable bound root matches no handshake, so the
         // daemon would hold this root's lock and refuse every client of it.
         host.bind_root(&self.workspace_root)?;
+        let activity = Arc::clone(host.activity());
+        let watcher = match self.idle_timeout {
+            Some(timeout) => {
+                let activity = Arc::clone(&activity);
+                let stopper = self.stopper();
+                Some(
+                    thread::Builder::new()
+                        .name("oxabl-idle".to_string())
+                        .spawn(move || {
+                            if activity.wait_until_idle(timeout) {
+                                stopper.stop();
+                            }
+                        })?,
+                )
+            }
+            None => None,
+        };
         let mut clients = Vec::new();
         let mut reported_spawn_failure = false;
         for stream in self.listener.incoming() {
@@ -278,6 +307,11 @@ impl Listener {
                 // One failed accept is not a reason to stop serving the clients
                 // already connected.
                 Err(_) => continue,
+            };
+            // The daemon has decided to exit. The stream closes unread, which its
+            // client reads as "no daemon here" and looks again.
+            let Some(busy) = activity.admit() else {
+                break;
             };
             // Every liveness probe is a real accepted connection that disconnects at
             // once (see `registry::socket_owner`), and a client poll loop makes
@@ -298,6 +332,7 @@ impl Listener {
             // peer sees as a disconnect, and the loop keeps serving everybody else.
             // The client's requests parse and analyse on this thread.
             let client = oxabl_common::stack::builder().spawn(move || {
+                let _busy = busy;
                 let (connection, threads) = connection_over(stream);
                 serve(&connection, &host);
                 // Dropping the sender lets the writer thread finish.
@@ -322,9 +357,13 @@ impl Listener {
                 }
             }
         }
+        activity.end();
         // Let every client finish in flight rather than cutting responses off.
         for client in clients {
             let _ = client.join();
+        }
+        if let Some(watcher) = watcher {
+            let _ = watcher.join();
         }
         Ok(())
     }
@@ -340,9 +379,15 @@ impl Drop for Listener {
     /// registration on that path is safe because the lock this guard holds is what
     /// admits one daemon per root — anything registered under it is debris from a
     /// daemon that is already gone.
+    ///
+    /// The lock file goes last and the lock is released after it, so no other daemon
+    /// can register for this root before the registration here is gone.
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = registry::unregister(&self.workspace_root);
+        if let Some(lock) = self.lock.take() {
+            lock.remove();
+        }
     }
 }
 

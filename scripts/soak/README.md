@@ -21,6 +21,11 @@ python3 -I scripts/soak/session.py --binary target/release/oxabl --runtime targe
 python3 -I scripts/soak/procs.py --binary target/release/oxabl --runtime target/rt roots --n 20
 ```
 
+A daemon exits after 10 minutes with no client. The daemons of `roots` inherit
+`OXABL_DAEMON_IDLE_TIMEOUT` from the script, so a short value shows the exit: with
+`OXABL_DAEMON_IDLE_TIMEOUT=5s`, the step `idle for 30s` counts 0 daemons and 0
+registry files.
+
 RSS counts memory the allocator keeps, so a growth of a few hundred KB per 1000
 edits can be noise. To see what grows, take a heap profile: build with the
 system allocator (remove `#[global_allocator]` in `crates/oxabl/src/main.rs`,
