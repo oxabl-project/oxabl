@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use session::{Session, file_uri};
 
 const CONFIG: &str = "[workspace]\nname = \"highlight\"\n\
-    [workspace.sources]\ninclude_paths = [\".\"]\n\
+    [workspace.sources]\ninclude_paths = [\".\", \"lib\"]\n\
     [workspace.schema]\nfiles = [\"db/sports.df\"]\n";
 
 const SCHEMA: &str = "ADD TABLE \"Customer\"\n  AREA \"Data\"\n\n\
@@ -53,6 +53,32 @@ const MAIN: &str = "/* Größe iCount */ DEFINE VARIABLE iCount AS INTEGER NO-UN
     FUNCTION Double RETURNS INTEGER (INPUT piValue AS INTEGER):\n\
     \x20   RETURN piValue * 2.\n\
     END FUNCTION.\n";
+
+/// One include that declares a local variable, read in two procedures.
+const LOCAL_INCLUDE: &str = "DEFINE VARIABLE iLocal AS INTEGER NO-UNDO.\n";
+
+const SCOPES: &str = "PROCEDURE a:\n\
+    \x20   {loc.i}\n\
+    \x20   iLocal = 1.\n\
+    END PROCEDURE.\n\
+    PROCEDURE b:\n\
+    \x20   {loc.i}\n\
+    \x20   iLocal = 2.\n\
+    END PROCEDURE.\n";
+
+/// A program that two entries of the include path supply, and one that only
+/// one supplies.
+const AMBIGUOUS: &str = "RUN dup.p.\nRUN dup.p.\nRUN once.p.\nRUN once.p.\n";
+
+/// A buffer the code declares, named like its table, next to the table's own
+/// default buffer.
+const BUFFERS: &str = "FIND FIRST Customer NO-LOCK.\n\
+    DISPLAY Customer.Name.\n\
+    PROCEDURE c:\n\
+    \x20   DEFINE BUFFER Customer FOR Customer.\n\
+    \x20   FIND FIRST Customer NO-LOCK.\n\
+    \x20   DISPLAY Customer.Name.\n\
+    END PROCEDURE.\n";
 
 const KINDS: &str = "DEFINE TEMP-TABLE ttOrder NO-UNDO\n\
     \x20   FIELD OrderId AS INTEGER\n\
@@ -98,6 +124,13 @@ impl Workspace {
             ("defs.i", DEFS),
             ("main.p", MAIN),
             ("kinds.p", KINDS),
+            ("loc.i", LOCAL_INCLUDE),
+            ("scopes.p", SCOPES),
+            ("ambiguous.p", AMBIGUOUS),
+            ("dup.p", "MESSAGE \"one\".\n"),
+            ("lib/dup.p", "MESSAGE \"two\".\n"),
+            ("once.p", "MESSAGE \"once\".\n"),
+            ("buffers.p", BUFFERS),
             ("app/Greeter.cls", GREETER),
             ("app/Base.cls", BASE),
         ];
@@ -158,7 +191,14 @@ fn highlights(
     needle: &str,
     occurrence: usize,
 ) -> Vec<Use> {
-    let (line, character) = utf16_at(text, nth(text, needle, occurrence) + 1);
+    highlights_at(session, file, text, nth(text, needle, occurrence) + 1)
+}
+
+/// [`highlights`] for the cursor at byte `at` of `text`.
+#[track_caller]
+fn highlights_at(session: &mut Session, file: &Path, text: &str, at: usize) -> Vec<Use> {
+    let needle = &text[at..text.len().min(at + 12)];
+    let (line, character) = utf16_at(text, at);
     let answer = session.request(
         "textDocument/documentHighlight",
         json!({
@@ -281,16 +321,15 @@ fn a_field_shows_its_uses_through_every_buffer() {
         expected(&[(11, "Name", 'R'), (14, "Name", 'R')]),
         "the field, not the buffer in front of it"
     );
-    // The qualifier is the table, and it names the table's buffers.
+    // The qualifier names the implicit buffer of `FOR EACH`, which is its own
+    // buffer: not the table that `DEFINE BUFFER ... FOR` names.
     let found = highlights(&mut session, &main, MAIN, "Customer.Name", 0);
     assert_eq!(
         found,
-        expected(&[
-            (2, "Customer", 'R'),
-            (10, "Customer", 'R'),
-            (11, "Customer", 'R')
-        ])
+        expected(&[(10, "Customer", 'R'), (11, "Customer", 'R')])
     );
+    let found = highlights(&mut session, &main, MAIN, "Customer.\n", 0);
+    assert_eq!(found, expected(&[(2, "Customer", 'R')]));
 }
 
 #[test]
@@ -455,6 +494,11 @@ fn each_statement_reads_or_writes_what_it_names() {
         table.contains(&(7, "ttOrder".to_string(), 'R')),
         "{table:?}"
     );
+    // DELETE changes the record.
+    assert!(
+        table.contains(&(16, "ttOrder".to_string(), 'W')),
+        "{table:?}"
+    );
 }
 
 #[test]
@@ -488,5 +532,105 @@ fn class_names_and_methods_show_their_uses() {
     assert_eq!(
         highlights(&mut session, &greeter, GREETER, "Hello", 0),
         expected(&[(1, "Hello", 'W')])
+    );
+}
+
+#[test]
+fn an_include_read_in_two_procedures_declares_two_variables() {
+    let ws = Workspace::new();
+    let scopes = ws.path("scopes.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&scopes, SCOPES);
+
+    // Each procedure has its own `iLocal`: the other one is not marked.
+    let found = highlights(&mut session, &scopes, SCOPES, "iLocal = 1", 0);
+    assert_eq!(found, expected(&[(2, "iLocal", 'W')]));
+    let found = highlights(&mut session, &scopes, SCOPES, "iLocal = 2", 0);
+    assert_eq!(found, expected(&[(6, "iLocal", 'W')]));
+}
+
+#[test]
+fn a_name_with_several_possible_declarations_has_no_highlight() {
+    let ws = Workspace::new();
+    let ambiguous = ws.path("ambiguous.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&ambiguous, AMBIGUOUS);
+
+    // `dup.p` is on two entries of the include path: oxabl does not choose.
+    assert_eq!(
+        highlights(&mut session, &ambiguous, AMBIGUOUS, "dup.p", 0),
+        []
+    );
+    // `once.p` is on one: both runs show.
+    assert_eq!(
+        highlights(&mut session, &ambiguous, AMBIGUOUS, "once.p", 0),
+        expected(&[(2, "once.p", 'R'), (3, "once.p", 'R')])
+    );
+}
+
+#[test]
+fn a_buffer_the_code_declares_is_not_the_default_buffer_of_its_table() {
+    let ws = Workspace::new();
+    let buffers = ws.path("buffers.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&buffers, BUFFERS);
+
+    // The default buffer of the table, used outside the procedure.
+    let found = highlights(&mut session, &buffers, BUFFERS, "Customer NO-LOCK", 0);
+    assert_eq!(
+        found,
+        expected(&[(0, "Customer", 'R'), (1, "Customer", 'R')])
+    );
+    // The buffer the procedure declares: its declaration and its uses.
+    let found = highlights(&mut session, &buffers, BUFFERS, "Customer.Name", 1);
+    assert_eq!(
+        found,
+        expected(&[
+            (3, "Customer", 'R'),
+            (4, "Customer", 'R'),
+            (5, "Customer", 'R')
+        ])
+    );
+}
+
+#[test]
+fn the_end_of_an_argument_means_the_argument_and_not_the_call() {
+    let ws = Workspace::new();
+    let main = ws.path("main.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, MAIN);
+
+    // The cursor is on the `)` that follows `iCount` in `Double(iCount)`.
+    let at = nth(MAIN, "iCount).", 0) + "iCount".len();
+    let found = highlights_at(&mut session, &main, MAIN, at);
+    let from_the_name = highlights(&mut session, &main, MAIN, "iCount)", 0);
+    assert_eq!(found, from_the_name);
+    assert_eq!(found.len(), 8, "{found:?}");
+    assert!(found.iter().all(|(_, text, _)| text == "iCount"));
+}
+
+#[test]
+fn an_edit_is_seen_by_the_next_highlight() {
+    let ws = Workspace::new();
+    let scopes = ws.path("scopes.p");
+    let mut session = Session::start(&ws.root);
+    let text = "DEFINE VARIABLE iA AS INTEGER NO-UNDO.\niA = 1.\n";
+    session.open(&scopes, text);
+    assert_eq!(
+        highlights(&mut session, &scopes, text, "iA = 1", 0).len(),
+        2
+    );
+
+    let edited = format!("{text}MESSAGE iA.\n");
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": file_uri(&scopes), "version": 2},
+            "contentChanges": [{"text": edited}]
+        }
+    }));
+    assert_eq!(
+        highlights(&mut session, &scopes, &edited, "iA = 1", 0),
+        expected(&[(0, "iA", 'W'), (1, "iA", 'W'), (2, "iA", 'R'),])
     );
 }

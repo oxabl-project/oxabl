@@ -103,7 +103,7 @@ use std::sync::{Arc, RwLock};
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, IncludeContext, index_file_at, program_signatures_at};
-use oxabl_pipeline::{Expansion, LintPipeline, PipelineConfig};
+use oxabl_pipeline::{Expansion, LintPipeline, NavigationModel, PipelineConfig};
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
     MemberDescriptor, WorkspaceIndex,
@@ -1089,6 +1089,27 @@ fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> Co
     handle.collect(&expansion).into_diagnostics()
 }
 
+/// The navigation analysis of a buffer: the resolve pass with its sites
+/// recorded, over the expansion that [`diagnostics`] reads. Kept per buffer
+/// revision, so each cursor move after the first costs a pass over the sites and
+/// no analysis. `no_eq`: a recomputed model is never compared.
+#[salsa::tracked(returns(clone), no_eq, lru = 16)]
+fn navigation_model(
+    db: &dyn AblDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+) -> Option<Arc<NavigationModel>> {
+    let _revision = schema.revision(db);
+    let expansion = expanded_text(db, buffer);
+    db.unwind_if_revision_cancelled();
+    let index = SnapshotIndex::new(db, buffer.path(db).as_deref(), expansion.search_base());
+    let run = db.config().lint_pipeline();
+    let handle = run
+        .with_file(buffer.path(db).as_deref().unwrap_or(Path::new("")))
+        .with_index(&index);
+    handle.navigation_model(&expansion).map(Arc::new)
+}
+
 /// Render cached effect summaries on a worker snapshot. Cancellation returns no answer.
 /// This may populate the reachable graph; callers must keep it off the LSP thread.
 pub fn compute_effect_lenses(
@@ -1121,6 +1142,7 @@ pub fn set_buffer_capacity(db: &mut AnalysisDatabase, buffers: usize) {
     expanded_text::set_lru_capacity(db, buffers);
     effect_summaries::set_lru_capacity(db, buffers);
     diagnostics::set_lru_capacity(db, buffers);
+    navigation_model::set_lru_capacity(db, buffers);
 }
 
 /// Compute diagnostics on a snapshot, swallowing a [`salsa::Cancelled`] unwind
@@ -1479,6 +1501,57 @@ fn unsaved_sources(
         .collect();
     unsaved.sort();
     unsaved
+}
+
+/// The uses of the name at byte `offset` of the open `buffer`, from the cached
+/// [`navigation_model`] and the expansion that diagnostics read: after the first
+/// request on a revision of the buffer it analyses nothing. Includes are read as
+/// diagnostics read them, from disk. The buffer is its own root, so a file with
+/// a selected includer context goes through [`compute_navigation`].
+///
+/// `Ok(Err(reason))` when the preprocessing of the buffer failed. `None` when a
+/// concurrent write cancelled the read.
+pub fn compute_highlights(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+    offset: u32,
+) -> Option<Result<NavigationAnswer, String>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let root = buffer
+            .path(snapshot)
+            .clone()
+            .ok_or_else(|| "the buffer has no path".to_string())?;
+        let Some(model) = navigation_model(snapshot, buffer, schema) else {
+            return Err("its preprocessing failed".to_string());
+        };
+        let expansion = expanded_text(snapshot, buffer);
+        let index = SnapshotIndex::new(snapshot, Some(&root), expansion.search_base());
+        let config = snapshot.config();
+        let file_of = |id: IndexedFileId| {
+            config
+                .index
+                .registered()
+                .into_iter()
+                .find(|(_, known)| *known == id)
+                .map(|(file, _)| file.path(snapshot).clone())
+        };
+        let run = config.lint_pipeline();
+        let handle = run.with_file(&root).with_index(&index);
+        let Some(navigation) = handle.navigation_with(&expansion, model, &file_of) else {
+            return Err("its preprocessing failed".to_string());
+        };
+        let mut answer = NavigationAnswer {
+            highlights: navigation.highlights(&root, offset),
+            ..NavigationAnswer::default()
+        };
+        answer.texts.insert(
+            search::normalize_lexically(&root),
+            Arc::from(buffer.text(snapshot).as_str()),
+        );
+        Ok(answer)
+    }))
+    .ok()
 }
 
 /// `file` as the expansion of `root` spells it, so a path that reaches it
@@ -2450,5 +2523,56 @@ mod tests {
         assert_eq!(tx004(&db, buffer, schema), 1);
         buffer.set_text(&mut db).to("MESSAGE \"hi\".".into());
         assert_eq!(tx004(&db, buffer, schema), 0);
+    }
+
+    /// A highlight costs at most one analysis of the open buffer, and shares its
+    /// expansion with diagnostics. Counted on salsa's execution log, not on time:
+    /// every cursor move asks again.
+    #[test]
+    fn highlights_share_one_cached_analysis_with_diagnostics() {
+        let executed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut db = AnalysisDatabase::recording(
+            config_with(oxabl_workspace::InMemoryFileSystem::new()),
+            Arc::clone(&executed),
+        );
+        let text = "DEFINE VARIABLE iA AS INTEGER NO-UNDO.\niA = iA + 1.\n";
+        let path = PathBuf::from("/src/main.p");
+        let buffer = Buffer::new(&db, text.to_string(), Some(path.clone()));
+        let schema = SchemaHandle::new(&db, 0);
+        let _ = compute_diagnostics(&db, buffer, schema).unwrap();
+        let count = |name: &str| {
+            executed
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|query| query.contains(name))
+                .count()
+        };
+        assert_eq!(count("expanded_text"), 1);
+
+        let at = text.find("iA = ").unwrap() as u32;
+        for moved in 0..5 {
+            let answer = compute_highlights(&db, buffer, schema, at + (moved % 2))
+                .expect("not cancelled")
+                .expect("the buffer analyses");
+            assert_eq!(answer.highlights.len(), 3, "{answer:?}");
+        }
+        assert_eq!(
+            count("navigation_model"),
+            1,
+            "five cursor moves analyse the buffer once"
+        );
+        assert_eq!(
+            count("expanded_text"),
+            1,
+            "the expansion is the one that diagnostics read"
+        );
+
+        buffer.set_text(&mut db).to(format!("{text}MESSAGE iA.\n"));
+        let answer = compute_highlights(&db, buffer, schema, at)
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer.highlights.len(), 4, "an edit is seen");
+        assert_eq!(count("navigation_model"), 2);
     }
 }

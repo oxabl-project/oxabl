@@ -235,20 +235,25 @@ no hover.
 
 `textDocument/documentHighlight` marks the other uses of the name at the cursor.
 `Navigation::highlights` finds the name in the same way as go to definition: the
-shortest site at the cursor, and a cursor just after a name still means it.
-Then it keeps each site that names the same thing. Each use has the kind
+shortest site at the cursor. A cursor at the end of a word means that word, not
+the call or the statement that holds it (`Double(x|)` is `x`). Then it keeps
+each site that names the same thing. Each use has the kind
 `Read` or `Write`.
 
 Two sites name the same thing when they have the same identity:
 
 | The name resolves to | Identity |
 | --- | --- |
-| A declaration in the unit | The place of its name, in the root or in the include |
+| A declaration in the unit | The symbol. An include that the unit reads twice declares one symbol for each read, so `DEFINE VARIABLE i` in an include read in two procedures is two variables |
+| A buffer that the code declares (`DEFINE BUFFER`, the implicit buffer of `FOR EACH`) | The symbol, also when it is named like its table. It is its own record scope |
+| A table name that no buffer declares, and the default buffer of a table | The table. All such uses in the unit are one name |
 | A program, or a class from another file | The file |
 | An inherited member | The class file and the member name |
 | A schema field | The table and the full field name, so an abbreviation counts |
-| A table, or a buffer named like its table | The table |
-| A `RUN p IN h` target, or a name with several candidates | The same targets that go to definition gives |
+| A `RUN p IN h` target | The targets that go to definition gives, when there is exactly one |
+
+Go to definition on a buffer named like its table goes to the table. A highlight
+does not follow it: it marks the uses of that buffer only.
 
 The answer holds:
 
@@ -258,8 +263,9 @@ The answer holds:
   once.
 - The declaration, as a `Write`. A buffer declaration is a `Read`.
 - A use that the statement changes, as a `Write`: an assignment target, an
-  `ASSIGN`, `UPDATE`, `SET` or `IMPORT` target, an `OUTPUT` or `INPUT-OUTPUT` argument,
-  and a `CREATE`. The resolve pass records this on each site (`Site::write`),
+  `ASSIGN`, `UPDATE`, `SET` or `IMPORT` target, an `OUTPUT` or `INPUT-OUTPUT`
+  argument, a `CREATE` and a `DELETE`. `RELEASE` and `VALIDATE` do not change
+  the record: they are a `Read`. The resolve pass records this on each site (`Site::write`),
   from the access mode that it already uses to count reads and writes. Every
   other use is a `Read`.
 - Only the name. A call site covers its whole call, so a span that holds
@@ -270,7 +276,8 @@ The answer never guesses:
 - A name that does not resolve has no highlight. No other text of the same
   spelling is marked, and neither is a string or a comment.
 - A name with more than one possible declaration (a `RUN` target that two
-  entries of the include path supply) has none.
+  entries of the include path supply, a `RUN p IN h` with several targets) has
+  none. The uses of such a name are not matched by their text either.
 - A use that comes from a macro (`{&name}`) or an include argument has no place
   in the file, so it is not shown.
 
@@ -281,7 +288,8 @@ fallback is the editor's own.
 
 An open include with a selected compilation context (see
 `docs/design/include-context.md`) is analysed in that root for go to definition
-and hover. Without one, and always for its links, the include is analysed alone.
+for hover and for highlights. Without one, and always for its links, the include is
+analysed alone.
 
 Local names need no setup. `RUN` targets, include files, classes and inherited
 members are found through `[workspace.sources].include_paths`, and tables and
@@ -293,6 +301,9 @@ fields through `[workspace.schema]`. No request depends on
 `crates/oxabl/tests/definition_lsp.rs`, `document_highlight_lsp.rs` and
 `document_link_lsp.rs` pin the targets, the uses and the links, and
 `hover_lsp.rs` pins the hover text of each kind of name.
+`highlight_cost.rs` of `oxabl_pipeline` counts the file system operations of a
+highlight in a unit with 300 `RUN ... IN h`. A test of `oxabl_daemon::db` counts
+the executions of the memoized queries over five cursor moves.
 `navigation_sweep_lsp.rs` asks for a definition and for highlights at every
 position, and a hover at every position that can give another answer (each
 start and end of a name, and each other character outside a run of spaces), of
@@ -309,12 +320,11 @@ a response with neither `result` nor `error`, which a client rejects.
 
 ## Cost
 
-Each request expands, parses and resolves the unit again (no type check), with
-the open buffers over the disk, on a worker thread. Nothing is memoized. A
-highlight request reads one unit and no other file of the workspace, except
-for the files that a handle `RUN` or an ambiguous name needs. A
-request on a `RUN` target that is not a program also lexes and parses the
-expanded unit once more for its call sites (`FileCalls::extract`), and reads
+Go to definition, hover and the links expand, parse and resolve the unit again
+(no type check), with the open buffers over the disk, on a worker thread.
+Nothing is memoized, except what a highlight and a hover on a routine keep (see
+below). A request on a `RUN` target that is not a program also lexes and parses
+the expanded unit once more for its call sites (`FileCalls::extract`), and reads
 the outline of each program a handle runs. A hover parses the expanded unit at
 most once more (shared with the call sites), and parses one more file when it
 names a class, an inherited member or a procedure run through a handle. A
@@ -322,6 +332,8 @@ keyword hover scans the documentation table, about 460 entries. A hover on a
 routine reads the effect summaries: memoized per open buffer revision and per
 disk revision of every other file, but the first one builds the summaries of
 every program the root or class reaches.
+The resolve pass of every other run records no site: the check of the flag is its
+whole cost.
 
 Hover requests run one at a time (`HoverGate` in
 `crates/oxabl_lsp/src/navigation.rs`). An editor asks for a hover at each pause
@@ -333,6 +345,27 @@ and cancels nothing. `crates/oxabl/tests/hover_cancel_lsp.rs` tests both
 through the server: a source with the marker `OXABL-TEST-HOLD:hover` makes its
 hover wait three seconds before it computes, in test builds only
 (`oxabl_common::hold_if_injected`), so the order of events does not depend on
-the speed of the machine. The
-resolve pass of every other run records no site: the check of the flag is its
-whole cost.
+the speed of the machine.
+
+A highlight comes on every cursor move, so it has a bound:
+
+- An open file that is its own root is answered from `navigation_model`, a
+  memoized query of the daemon (`oxabl_daemon::db`). It reads the expansion that
+  diagnostics read (`expanded_text`, one execution for both) and records the
+  navigation sites in its own resolve pass. The first highlight of a revision of
+  the buffer pays for that pass; every later one pays for a pass over the
+  recorded sites. An edit makes the next highlight analyse again. The model
+  also keeps the call sites (`FileCalls`) after the first `RUN` that needs
+  them. Includes are read from disk, as for diagnostics.
+- Diagnostics do not record sites, so their own resolve pass is not the one a
+  highlight uses. Recording sites in every diagnostics run would add a push for
+  each expression to each keystroke.
+- A site is compared by what its resolution holds. Only the name at the cursor
+  asks the file system, and, when that name is a `RUN p IN h` target, the sites
+  that spell it the same way. Each file is read once for a request. A unit with
+  many `RUN ... IN h` costs the same as one with none when the cursor is on a
+  variable.
+- An include with a selected compilation context is analysed in its root for
+  each request, as go to definition does, and is not memoized.
+- A request does not cancel an older one. Each request is one pass over the
+  recorded sites, so a held arrow key does not queue analyses.

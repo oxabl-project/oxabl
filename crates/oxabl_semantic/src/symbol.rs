@@ -588,7 +588,7 @@ pub struct Site {
     pub target: SiteTarget,
     /// Whether the statement changes the value the name stands for: an
     /// assignment target, an `OUTPUT` or `INPUT-OUTPUT` argument, a record
-    /// the statement creates or changes.
+    /// the statement creates, changes or deletes.
     pub write: bool,
 }
 

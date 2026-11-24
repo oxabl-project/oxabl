@@ -3570,9 +3570,16 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
-            StatementKind::Delete { buffer, .. }
-            | StatementKind::Release { buffer, .. }
-            | StatementKind::Validate { buffer, .. } => {
+            StatementKind::Delete { buffer, .. } => {
+                self.resolve_record_ident_as(
+                    buffer,
+                    scope,
+                    &[NamespaceId::Buffers, NamespaceId::Tables],
+                    AccessMode::Read,
+                    AccessMode::Write,
+                );
+            }
+            StatementKind::Release { buffer, .. } | StatementKind::Validate { buffer, .. } => {
                 self.resolve_record_ident(
                     buffer,
                     scope,
@@ -5325,11 +5332,25 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
         mode: AccessMode,
     ) -> Option<SymbolId> {
+        self.resolve_statement_ident_as(id, scope, namespaces, mode, mode)
+    }
+
+    /// [`Self::resolve_statement_ident`] whose navigation site carries `site`
+    /// instead of `mode`: the access that the counts see and the one that the
+    /// editor shows can differ (`DELETE` changes a record the lints count as read).
+    fn resolve_statement_ident_as(
+        &mut self,
+        id: &Identifier,
+        scope: ScopeId,
+        namespaces: &[NamespaceId],
+        mode: AccessMode,
+        site: AccessMode,
+    ) -> Option<SymbolId> {
         let sym = match self.lookup_statement_ident(id, scope, namespaces) {
             Some(sym) => sym,
             None => self.lookup_inherited_ident(id, namespaces)?,
         };
-        self.note_site_as(id.span, SiteTarget::Symbol(sym), mode);
+        self.note_site_as(id.span, SiteTarget::Symbol(sym), site);
         self.bump_count(sym, mode);
         if self.track_block_vars {
             self.note_block_var_use(sym, scope, mode);
@@ -5390,10 +5411,22 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
         mode: AccessMode,
     ) {
+        self.resolve_record_ident_as(id, scope, namespaces, mode, mode);
+    }
+
+    /// [`Self::resolve_record_ident`] with the access of the navigation site apart.
+    fn resolve_record_ident_as(
+        &mut self,
+        id: &Identifier,
+        scope: ScopeId,
+        namespaces: &[NamespaceId],
+        mode: AccessMode,
+        site: AccessMode,
+    ) {
         if self
-            .resolve_statement_ident(id, scope, namespaces, mode)
+            .resolve_statement_ident_as(id, scope, namespaces, mode, site)
             .is_none()
-            && let Some(sym) = self.schema_default_buffer_as(id, mode)
+            && let Some(sym) = self.schema_default_buffer_as(id, site)
         {
             self.bump_count(sym, mode);
         }
