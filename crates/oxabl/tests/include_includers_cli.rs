@@ -279,3 +279,66 @@ fn a_new_baseline_has_no_includers_and_the_same_version() {
     // The file that an old binary wrote is the file that this one writes.
     assert_eq!(json(&written), json(OLD_BASELINE));
 }
+
+#[test]
+fn without_preprocessing_no_finding_has_includers() {
+    let dir = tree(&[("a.p", "{inc.i}\n"), ("b.p", "{inc.i}\n")]);
+    let (_, stdout, stderr) = check(dir.path(), &[".", "--json", "--no-preprocess"]);
+    let report = json(&stdout);
+    assert_eq!(includers(&report, "src/inc.i", "CL001"), None, "{stderr}");
+    let (_, stdout, _) = check(dir.path(), &[".", "--no-preprocess"]);
+    assert!(!stdout.contains("included by"), "{stdout}");
+}
+
+/// Make `path` unreadable. `None` when the test runs as a user that reads it
+/// all the same.
+#[cfg(unix)]
+fn lock(path: &Path) -> Option<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+    fs::read(path).is_err().then_some(())
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_program_makes_the_count_a_lower_bound() {
+    let dir = tree(&[("a.p", "{inc.i}\n"), ("b.p", "{inc.i}\n")]);
+    if lock(&dir.path().join("src/b.p")).is_none() {
+        return;
+    }
+    let (_, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    let found = includers(&json(&stdout), "src/inc.i", "CL001").expect("includers");
+    assert_eq!(found["count"], 1, "{found} {stderr}");
+    assert_eq!(found["unknown"], 1, "{found}");
+    let (_, stdout, _) = check(dir.path(), &["."]);
+    assert!(stdout.contains("included by at least 1 file"), "{stdout}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_include_between_makes_the_count_a_lower_bound() {
+    let dir = tree(&[
+        ("a.p", "{inc.i}\n"),
+        ("b.p", "{mid.i}\n"),
+        ("mid.i", "{inc.i}\n"),
+    ]);
+    if lock(&dir.path().join("src/mid.i")).is_none() {
+        return;
+    }
+    let (_, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    let found = includers(&json(&stdout), "src/inc.i", "CL001").expect("includers");
+    assert_eq!(found["count"], 1, "{found} {stderr}");
+    assert_eq!(found["unknown"], 1, "{found}");
+}
+
+#[test]
+fn an_include_that_does_not_resolve_makes_the_count_a_lower_bound() {
+    let dir = tree(&[("a.p", "{inc.i}\n"), ("b.p", "{missing.i}\n")]);
+    let (_, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    let found = includers(&json(&stdout), "src/inc.i", "CL001").expect("includers");
+    assert_eq!(found["unknown"], 1, "{found} {stderr}");
+    let (_, stdout, _) = check(dir.path(), &["."]);
+    let note = "note: included by at least 1 file, e.g. ./src/a.p:1; \
+                the includes of 1 checked file are not known";
+    assert!(stdout.contains(note), "{stdout}");
+}

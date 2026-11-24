@@ -184,3 +184,21 @@ fn the_summary_does_not_combine_with_watch_and_the_top_needs_the_summary() {
     let (exit, _, stderr) = check(dir.path(), &[".", "--summary-top", "3"]);
     assert_eq!(exit, Some(2), "{stderr}");
 }
+
+#[test]
+fn with_include_findings_a_finding_in_an_include_counts_once_for_one_file() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(&root.join("oxabl.toml"), CONFIG);
+    write(
+        &root.join("src/inc.i"),
+        "DEFINE NEW SHARED VARIABLE shared-c AS CHARACTER NO-UNDO.\nRUN VALUE(shared-c).\n",
+    );
+    for name in ["a.p", "b.p", "c.p"] {
+        write(&root.join("src").join(name), "{inc.i}\n");
+    }
+    let (_, stdout, stderr) = check(root, &[".", "--summary", "--include-findings", "--json"]);
+    let summary = &json(&stdout)["summary"];
+    assert_eq!(summary["files"], 1, "{summary} {stderr}");
+    assert_eq!(summary["findings"], 2, "{summary}");
+}

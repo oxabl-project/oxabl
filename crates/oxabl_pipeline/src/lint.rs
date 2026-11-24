@@ -1749,9 +1749,13 @@ impl<'a> LintPipeline<'a> {
     }
 
     /// [`run`](Self::run), and the include files the expansion read with the
-    /// root-level site of each. The list is empty on a failed run, on a fatal
-    /// preprocessing failure and when preprocessing is off.
-    pub fn run_with_include_origins(&self, source: &str) -> (LintResult, Vec<IncludeOrigin>) {
+    /// root-level site of each. `None` when the includes are not all known: on
+    /// a failed run, a fatal preprocessing failure, with preprocessing off, and
+    /// when an include did not resolve, could not be read or was elided.
+    pub fn run_with_include_origins(
+        &self,
+        source: &str,
+    ) -> (LintResult, Option<Vec<IncludeOrigin>>) {
         match catch_panic(|| {
             let expansion = self.expand(source);
             let result = self.collect(&expansion);
@@ -1762,12 +1766,18 @@ impl<'a> LintPipeline<'a> {
             };
             let origins = expansion
                 .expanded()
-                .map(|expanded| expanded.include_origins().to_vec())
-                .unwrap_or_default();
+                .filter(|expanded| {
+                    self.preprocess
+                        && expanded.unresolved_includes().is_empty()
+                        && expanded.nested_unresolved_includes().is_empty()
+                        && expanded.unreadable_includes().is_empty()
+                        && expanded.elided_include_offsets().is_empty()
+                })
+                .map(|expanded| expanded.include_origins().to_vec());
             (self.report_include_findings(result), origins)
         }) {
             Ok(run) => run,
-            Err(panic) => (LintResult::failed(panic), Vec::new()),
+            Err(panic) => (LintResult::failed(panic), None),
         }
     }
 }

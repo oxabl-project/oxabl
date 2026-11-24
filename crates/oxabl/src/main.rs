@@ -1471,6 +1471,10 @@ impl LabelPlaces {
 struct CheckJsonIncluders {
     count: usize,
     first: Vec<String>,
+    /// The checked programs whose includes are not known, so `count` is a
+    /// lower bound. Omitted when it is 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    unknown: usize,
 }
 
 /// Counts of a run's findings, for `--summary`.
@@ -1815,7 +1819,7 @@ fn run_check(
         baseline: baseline.as_ref(),
         format: &format,
         decoding: config.decoding,
-        collect_includers: !fragments.is_empty(),
+        collect_includers: preprocess && !fragments.is_empty(),
         includers: std::sync::OnceLock::new(),
     };
     // Files first, then include fragments, so the output order is the serial
@@ -1856,6 +1860,7 @@ fn run_check(
                 fragments
                     .iter()
                     .map(|(_, indexed_path)| indexed_path.as_path()),
+                files.len(),
             )
         }),
         ..Totals::default()
@@ -2369,9 +2374,9 @@ impl CheckPass<'_> {
             lint.with_file(indexed_path)
                 .run_with_include_origins(source)
         } else {
-            (lint.with_file(indexed_path).run(source), Vec::new())
+            (lint.with_file(indexed_path).run(source), None)
         };
-        if !origins.is_empty() {
+        if let Some(origins) = origins {
             let map = SourceMap::new(source);
             let lines = origins
                 .into_iter()
@@ -2647,7 +2652,7 @@ fn report_findings(
     );
     if !quiet {
         let resolver = places.resolver(source);
-        match includers.filter(|found| found.count > 0) {
+        match includers.filter(|found| found.count > 0 || found.unknown > 0) {
             // The note follows its own finding, so each one renders alone.
             Some(found) => {
                 for collected in reported.all() {
@@ -2673,12 +2678,25 @@ fn report_findings(
 
 /// The text line for a finding in an include that others include.
 fn includers_note(found: &CheckJsonIncluders) -> String {
-    let files = if found.count == 1 { "file" } else { "files" };
-    format!(
-        "  note: included by {} {files}, e.g. {}\n",
-        found.count,
-        found.first.join(", ")
-    )
+    let plural = |n: usize| if n == 1 { "file" } else { "files" };
+    let unknown = format!(
+        "the includes of {} checked {} are not known",
+        found.unknown,
+        plural(found.unknown)
+    );
+    match (found.count, found.unknown) {
+        (count, 0) => format!(
+            "  note: included by {count} {}, e.g. {}\n",
+            plural(count),
+            found.first.join(", ")
+        ),
+        (0, _) => format!("  note: includers not known: {unknown}\n"),
+        (count, _) => format!(
+            "  note: included by at least {count} {}, e.g. {}; {unknown}\n",
+            plural(count),
+            found.first.join(", ")
+        ),
+    }
 }
 
 /// How many includer sites a finding lists.
@@ -2715,22 +2733,29 @@ fn canonical_or_self(path: &Path) -> PathBuf {
 
 /// The programs that include each include file of the walk, by canonical path.
 #[derive(Default)]
-struct Includers(HashMap<PathBuf, Found>);
+struct Includers {
+    found: HashMap<PathBuf, Found>,
+    /// The roots whose includes are not known: unread, failed, or with an
+    /// include that did not arrive.
+    unknown: usize,
+}
 
 impl Includers {
     /// What `file` has: no includer among the checked files gives a count of 0.
     fn of(&self, file: &Path) -> CheckJsonIncluders {
-        let Some(found) = self.0.get(&canonical_or_self(file)) else {
-            return CheckJsonIncluders::default();
+        let mut out = CheckJsonIncluders {
+            unknown: self.unknown,
+            ..CheckJsonIncluders::default()
         };
-        CheckJsonIncluders {
-            count: found.count,
-            first: found
+        if let Some(found) = self.found.get(&canonical_or_self(file)) {
+            out.count = found.count;
+            out.first = found
                 .first
                 .iter()
                 .map(|site| format!("{}:{}", site.path, site.line))
-                .collect(),
+                .collect();
         }
+        out
     }
 }
 
@@ -2739,20 +2764,26 @@ struct IncludersBuilder {
     wanted: HashSet<PathBuf>,
     canonical: HashMap<PathBuf, PathBuf>,
     found: Includers,
+    /// The roots of the walk not yet added.
+    pending: usize,
 }
 
 impl IncludersBuilder {
-    fn new<'p>(include_files: impl Iterator<Item = &'p Path>) -> Self {
+    /// A builder for a walk of `roots` roots. A root never added counts as
+    /// unknown.
+    fn new<'p>(include_files: impl Iterator<Item = &'p Path>, roots: usize) -> Self {
         IncludersBuilder {
             wanted: include_files.map(canonical_or_self).collect(),
             canonical: HashMap::new(),
             found: Includers::default(),
+            pending: roots,
         }
     }
 
     /// Add a root and the includes it read, each with the line of its site. A
     /// root counts once for a file, with its first site.
     fn add(&mut self, root: &str, includes: Vec<(PathBuf, usize)>) {
+        self.pending -= 1;
         let mut seen: HashSet<PathBuf> = HashSet::new();
         for (path, line) in includes {
             let key = self
@@ -2763,7 +2794,7 @@ impl IncludersBuilder {
                 continue;
             }
             self.found
-                .0
+                .found
                 .entry(key.clone())
                 .or_default()
                 .add(IncluderSite {
@@ -2773,7 +2804,8 @@ impl IncludersBuilder {
         }
     }
 
-    fn finish(self) -> Includers {
+    fn finish(mut self) -> Includers {
+        self.found.unknown = self.pending;
         self.found
     }
 }
@@ -2786,21 +2818,35 @@ fn summarize(
     top: usize,
 ) -> CheckJsonSummary {
     let mut rules: HashMap<&str, usize> = HashMap::new();
-    let mut files: HashMap<&str, usize> = HashMap::new();
+    // A file goes by its canonical path and is shown as first spelled: an
+    // include row and a fragment row spell one file two ways.
+    let mut canonical: HashMap<&str, PathBuf> = HashMap::new();
+    let mut files: HashMap<PathBuf, (&str, usize)> = HashMap::new();
+    let mut seen: HashSet<(PathBuf, &str, u32, u32)> = HashSet::new();
     let rows = diagnostics
         .iter()
-        .map(|d| (d.code.as_str(), d.path.as_str()))
+        .map(|d| (false, d.code.as_str(), d.path.as_str(), &d.span))
         .chain(
             include_diagnostics
                 .iter()
-                .map(|d| (d.code.as_str(), d.path.as_str())),
+                .map(|d| (true, d.code.as_str(), d.path.as_str(), &d.span)),
         );
     let mut findings = 0;
-    for (code, path) in rows {
+    for (in_include, code, path, span) in rows {
+        let key = canonical
+            .entry(path)
+            .or_insert_with(|| canonical_or_self(Path::new(path)))
+            .clone();
+        // A finding in an include counts once, whatever the number of
+        // includers and whether the fragment's own run reports it too.
+        if !seen.insert((key.clone(), code, span.start, span.end)) && in_include {
+            continue;
+        }
         findings += 1;
         *rules.entry(code).or_default() += 1;
-        *files.entry(path).or_default() += 1;
+        files.entry(key).or_insert((path, 0)).1 += 1;
     }
+    let files: HashMap<&str, usize> = files.into_values().collect();
     fn ranked(counts: HashMap<&str, usize>) -> Vec<(String, usize)> {
         let mut rows: Vec<(String, usize)> = counts
             .into_iter()
