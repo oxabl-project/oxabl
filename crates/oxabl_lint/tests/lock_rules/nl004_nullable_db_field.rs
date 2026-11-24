@@ -6,7 +6,7 @@ use oxabl_lint::nullable_db_field::run;
 use oxabl_lint::{unknown_in_comparison, unknown_propagation};
 
 use super::registry_run::codes_of;
-use super::{check, check_fragment, check_no_schema, check_recovered, help, lines};
+use super::{check, check_fragment, check_no_schema, check_recovered, help, labels, lines};
 
 const HEAD: &str = "FIND FIRST Parcel NO-LOCK NO-ERROR.\nIF NOT AVAILABLE Parcel THEN RETURN.\n";
 
@@ -191,4 +191,133 @@ fn the_group_enables_the_rule() {
     let mut map = LintSeverityMap::new();
     map.base_mut().enable_group(groups::STRICT_NULLS);
     assert_eq!(codes_of(&src, map, "NL"), ["NL004"]);
+}
+
+#[test]
+fn a_finding_relates_the_statement_that_reads_the_record() {
+    let src = "\
+FOR EACH Parcel NO-LOCK
+    WHERE Parcel.Qty > 0:
+    IF Parcel.ShipDate < TODAY THEN MESSAGE 1.
+END.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [3]);
+    assert_eq!(
+        labels(src, &diags[0]),
+        [(
+            1,
+            "`Parcel.ShipDate` may be `?` in the record read here".to_string()
+        )]
+    );
+    let at = diags[0].labels[0].span.span;
+    assert_eq!(
+        &src[at.start as usize..at.end as usize],
+        "FOR EACH Parcel NO-LOCK",
+        "the label takes the first line of the block header only"
+    );
+}
+
+#[test]
+fn a_record_from_outside_the_unit_is_related_to_the_unit_start() {
+    let src = "\
+PROCEDURE p:
+    DEFINE PARAMETER BUFFER bp FOR Parcel.
+    DEFINE INPUT PARAMETER n AS INTEGER NO-UNDO.
+    IF n = 1 THEN FIND FIRST bp NO-LOCK.
+    IF bp.ShipDate < TODAY THEN MESSAGE 1.
+END PROCEDURE.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [5]);
+    assert_eq!(
+        labels(src, &diags[0]),
+        [
+            (
+                2,
+                "`bp.ShipDate` may already be `?` when this unit starts".to_string()
+            ),
+            (
+                4,
+                "`bp.ShipDate` may be `?` in the record read here".to_string()
+            ),
+        ]
+    );
+    let at = diags[0].labels[0].span.span;
+    assert_eq!(
+        &src[at.start as usize..at.end as usize],
+        "bp",
+        "the label is the buffer in its definition"
+    );
+}
+
+/// The text of each label of `d`.
+fn label_texts<'s>(src: &'s str, d: &oxabl_common::Diagnostic) -> Vec<&'s str> {
+    d.labels
+        .iter()
+        .map(|l| &src[l.span.span.start as usize..l.span.span.end as usize])
+        .collect()
+}
+
+#[test]
+fn a_buffer_of_the_main_block_holds_no_record_when_it_starts() {
+    let src = "\
+/* header comment
+   second line */
+DEFINE INPUT PARAMETER n AS INTEGER NO-UNDO.
+IF n = 1 THEN FIND FIRST Parcel NO-LOCK.
+IF Parcel.ShipDate < TODAY THEN MESSAGE 1.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [5]);
+    assert_eq!(
+        labels(src, &diags[0]),
+        [(
+            4,
+            "`Parcel.ShipDate` may be `?` in the record read here".to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_buffer_of_an_outer_unit_is_related_to_the_header_of_the_unit() {
+    let src = "\
+FIND FIRST Parcel NO-LOCK.
+PROCEDURE p:
+    IF Parcel.ShipDate < TODAY THEN MESSAGE 1.
+END PROCEDURE.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [3]);
+    assert_eq!(label_texts(src, &diags[0]), ["PROCEDURE p:"]);
+}
+
+#[test]
+fn a_test_that_makes_a_field_unknown_is_related_as_a_test() {
+    let src = "\
+DEFINE INPUT PARAMETER d AS DATE NO-UNDO.
+FIND FIRST Parcel EXCLUSIVE-LOCK.
+Parcel.ShipDate = d.
+IF Parcel.ShipDate = ? THEN MESSAGE Parcel.ShipDate + 1.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [4]);
+    assert_eq!(
+        labels(src, &diags[0]),
+        [(
+            4,
+            "`Parcel.ShipDate` may be `?` after this test".to_string()
+        )]
+    );
+    assert_eq!(label_texts(src, &diags[0]), ["Parcel.ShipDate = ?"]);
+
+    let src = "\
+DEFINE INPUT PARAMETER d AS DATE NO-UNDO.
+FIND FIRST Parcel EXCLUSIVE-LOCK.
+Parcel.ShipDate = d.
+DISPLAY Parcel.ShipDate + 1 WHEN Parcel.ShipDate = ?.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [4]);
+    assert_eq!(label_texts(src, &diags[0]), ["Parcel.ShipDate = ?"]);
 }

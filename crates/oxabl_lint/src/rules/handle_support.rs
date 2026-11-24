@@ -108,6 +108,41 @@ pub(super) fn includer_may_free(ctx: &AnalysisContext, unit: &UnitHandles, leak:
         && matches!(leak.kind, LeakKind::Exit(_))
 }
 
+/// `d` with a label at the create of `o`.
+pub(super) fn with_create_label(d: Diagnostic, ctx: &AnalysisContext, o: &Object) -> Diagnostic {
+    if o.create.span.start >= o.create.span.end {
+        return d;
+    }
+    d.with_label(
+        file_span(ctx, o.create.span),
+        format!("{} is created here", describe(o)),
+    )
+}
+
+/// `d` with a label where `leak` loses `o`: the last statement before the
+/// exit, or the assignment that overwrites the handle.
+pub(super) fn with_leak_label(
+    d: Diagnostic,
+    ctx: &AnalysisContext,
+    o: &Object,
+    leak: &Leak,
+) -> Diagnostic {
+    if leak.at.start >= leak.at.end {
+        return d;
+    }
+    let message = match leak.kind {
+        LeakKind::Exit(_) => format!("path ends after `{}`", quote(ctx.source, leak.at)),
+        LeakKind::Overwrite => match &o.holder {
+            Some(h) => format!("`{h}` is assigned here while it holds the {}", noun(o.kind)),
+            None => format!(
+                "the handle is assigned here while it holds the {}",
+                noun(o.kind)
+            ),
+        },
+    };
+    d.with_label(file_span(ctx, leak.at), message)
+}
+
 /// Add the includer note to the help of `d` when `lowered`.
 pub(super) fn with_fragment_note(mut d: Diagnostic, lowered: bool) -> Diagnostic {
     if lowered {

@@ -78,7 +78,11 @@ impl ScopeKind {
     /// definition). These block kinds are therefore "seen through" when
     /// choosing where a variable binds.
     ///
-    /// Note this governs only where a `DEFINE VARIABLE` *binds*; block-local
+    /// The same rule holds for every other `DEFINE` statement (`BUFFER`,
+    /// `TEMP-TABLE`, `PARAMETER`, `STREAM`, `FRAME`, `DATASET`, ...) and for a
+    /// `FUNCTION` or `PROCEDURE` written inside a block.
+    ///
+    /// Note this governs only where a definition *binds*; block-local
     /// bindings introduced by the block itself (a `DO` loop counter, a
     /// `CATCH` error variable) are declared directly against the block scope
     /// and are unaffected.
@@ -252,7 +256,8 @@ impl ScopeTree {
             .map(|(i, s)| (ScopeId(i as u32), s))
     }
 
-    /// The scope a `DEFINE VARIABLE` at `scope` actually binds into.
+    /// The scope a `DEFINE` statement, `FUNCTION` or `PROCEDURE` at `scope`
+    /// actually binds into.
     ///
     /// Walks up from `scope` skipping [var-transparent](ScopeKind::is_var_transparent)
     /// block scopes and returns the first enclosing routine (or class/file)

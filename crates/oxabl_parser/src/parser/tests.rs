@@ -2679,6 +2679,7 @@ fn parse_define_input_parameter_like() {
                     name,
                     type_source,
                     no_undo,
+                    ..
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
@@ -4108,6 +4109,7 @@ fn parse_define_input_parameter() {
                     name,
                     type_source,
                     no_undo,
+                    ..
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
@@ -4133,6 +4135,7 @@ fn parse_define_output_parameter() {
                     name,
                     type_source,
                     no_undo,
+                    ..
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Output);
@@ -4158,6 +4161,7 @@ fn parse_define_output_parameter_with_format() {
                     name,
                     type_source,
                     no_undo,
+                    ..
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Output);
@@ -4183,6 +4187,7 @@ fn parse_define_input_output_parameter() {
                     name,
                     type_source,
                     no_undo,
+                    ..
                 },
         } => {
             assert_eq!(direction, ParameterDirection::InputOutput);
@@ -4208,6 +4213,7 @@ fn parse_define_parameter_with_no_undo() {
                     name,
                     type_source,
                     no_undo,
+                    ..
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Input);

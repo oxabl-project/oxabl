@@ -7,8 +7,10 @@ use oxabl_common::{Diagnostic, FileId, FileSpan};
 use oxabl_workspace::{FileSystem, RealFileSystem};
 
 use crate::diagnostics::{SCHEMA0001, SCHEMA0010, SCHEMA0011, SCHEMA0012, SCHEMA0030, SCHEMA0031};
-use crate::parser::{PendingField, PendingIndex, parse_df};
-use crate::schema::{Field, Schema, SchemaType};
+use oxabl_lexer::oxabl_atom::OxablAtom;
+
+use crate::parser::{PendingField, PendingIndex, SkippedDirective, parse_df};
+use crate::schema::{Field, Schema, SchemaType, Table, TableId};
 
 /// Hard upper bound on table count before `SCHEMA0031` fires. Guards against
 /// crafted `.df` files growing the global `OxablAtom` pool unboundedly.
@@ -98,7 +100,7 @@ impl SchemaLoader {
                 }
             };
 
-            ingest(&mut schema, &source, file_id, &mut diagnostics);
+            ingest(&mut schema, &source, file_id, &mut diagnostics, None);
             schema.record_source_file(file_id, path.clone());
         }
 
@@ -130,15 +132,121 @@ impl SchemaLoader {
 pub(crate) fn schema_from_source(source: &str, file_id: FileId) -> (Schema, Vec<Diagnostic>) {
     let mut schema = Schema::empty();
     let mut diagnostics = Vec::new();
-    ingest(&mut schema, source, file_id, &mut diagnostics);
+    ingest(&mut schema, source, file_id, &mut diagnostics, None);
     (schema, diagnostics)
+}
+
+/// What one `.df` file declares, read alone under the loader's merge rules:
+/// the same duplicate warnings, type conflicts and caps as
+/// [`SchemaLoader::load_files`].
+#[derive(Debug)]
+pub struct FileSchema {
+    pub schema: Schema,
+    /// Tables of `schema` that the file adds fields or indexes to without an
+    /// `ADD TABLE`, because an earlier file declares them. Each is a stub
+    /// whose `source` is the first `ADD` of the file that names it.
+    pub extended: Vec<TableId>,
+    /// The directives the parser read past without applying.
+    pub skipped: Vec<SkippedDirective>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl SchemaLoader {
+    /// Read one `.df` file alone. A field or index of a table the file does not
+    /// declare is kept when `declared_before` says an earlier file declares
+    /// that table, as the loader accepts it; otherwise it is the loader's
+    /// `SCHEMA0001` error and is dropped.
+    pub fn load_file_alone(
+        source: &str,
+        file_id: FileId,
+        declared_before: &dyn Fn(&OxablAtom) -> bool,
+    ) -> FileSchema {
+        let mut schema = Schema::empty();
+        let mut diagnostics = Vec::new();
+        let mut extend = Extend {
+            declared_before,
+            extended: Vec::new(),
+        };
+        let skipped = ingest(
+            &mut schema,
+            source,
+            file_id,
+            &mut diagnostics,
+            Some(&mut extend),
+        );
+        // A stub starts at the field or index that made it; fields merge
+        // before indexes, so move it to the first `ADD` that names it.
+        for &id in &extend.extended {
+            let table = schema.table_mut(id);
+            let first = table
+                .fields
+                .iter()
+                .map(|f| f.source)
+                .chain(table.indexes.iter().map(|i| i.source))
+                .min_by_key(|source| source.span.start);
+            if let Some(first) = first {
+                table.source = first;
+            }
+        }
+        FileSchema {
+            schema,
+            extended: extend.extended,
+            skipped,
+            diagnostics,
+        }
+    }
+}
+
+/// How [`SchemaLoader::load_file_alone`] accepts a field or index of a table
+/// that an earlier file declares.
+struct Extend<'a> {
+    declared_before: &'a dyn Fn(&OxablAtom) -> bool,
+    extended: Vec<TableId>,
+}
+
+impl Extend<'_> {
+    /// The stub of table `name` in `schema`, added at `source` the first time.
+    fn stub(
+        &mut self,
+        schema: &mut Schema,
+        name: &OxablAtom,
+        display: &str,
+        source: FileSpan,
+    ) -> Option<TableId> {
+        if !(self.declared_before)(name) {
+            return None;
+        }
+        let id = schema.insert_table(Table {
+            name: name.clone(),
+            display_name: display.to_string(),
+            fields: Vec::new(),
+            indexes: Vec::new(),
+            area: None,
+            description: None,
+            dump_name: None,
+            frozen: false,
+            hidden: false,
+            label: None,
+            valexp: None,
+            valmsg: None,
+            source,
+        });
+        self.extended.push(id);
+        Some(id)
+    }
 }
 
 /// Parse one `.df` source into `schema`, merging over whatever is already
 /// there. Factored out of [`SchemaLoader::load_files_with_root`] so the
 /// built-in metaschema catalog goes through exactly the same path as a user
 /// `.df` — there is no second parser and no second merge policy.
-fn ingest(schema: &mut Schema, source: &str, file_id: FileId, diagnostics: &mut Vec<Diagnostic>) {
+fn ingest(
+    schema: &mut Schema,
+    source: &str,
+    file_id: FileId,
+    diagnostics: &mut Vec<Diagnostic>,
+    mut extend: Option<&mut Extend<'_>>,
+) -> Vec<SkippedDirective> {
     let mut outcome = parse_df(source, file_id);
     diagnostics.append(&mut outcome.diagnostics);
 
@@ -181,12 +289,13 @@ fn ingest(schema: &mut Schema, source: &str, file_id: FileId, diagnostics: &mut 
     }
 
     for pending in outcome.fields {
-        merge_field(schema, pending, diagnostics);
+        merge_field(schema, pending, diagnostics, extend.as_deref_mut());
     }
 
     for pending in outcome.indexes {
-        merge_index(schema, pending, diagnostics);
+        merge_index(schema, pending, diagnostics, extend.as_deref_mut());
     }
+    outcome.skipped
 }
 
 fn merge_table(
@@ -216,13 +325,21 @@ fn merge_table(
     }
 }
 
-fn merge_field(schema: &mut Schema, pending: PendingField, diagnostics: &mut Vec<Diagnostic>) {
+fn merge_field(
+    schema: &mut Schema,
+    pending: PendingField,
+    diagnostics: &mut Vec<Diagnostic>,
+    extend: Option<&mut Extend<'_>>,
+) {
     let PendingField {
         table,
         table_display,
         field,
     } = pending;
-    let Some(table_id) = schema.own_table_id(&table) else {
+    let found = schema
+        .own_table_id(&table)
+        .or_else(|| extend.and_then(|e| e.stub(schema, &table, &table_display, field.source)));
+    let Some(table_id) = found else {
         diagnostics.push(Diagnostic::error(
             SCHEMA0001,
             format!(
@@ -287,13 +404,21 @@ fn merge_field(schema: &mut Schema, pending: PendingField, diagnostics: &mut Vec
     }
 }
 
-fn merge_index(schema: &mut Schema, pending: PendingIndex, diagnostics: &mut Vec<Diagnostic>) {
+fn merge_index(
+    schema: &mut Schema,
+    pending: PendingIndex,
+    diagnostics: &mut Vec<Diagnostic>,
+    extend: Option<&mut Extend<'_>>,
+) {
     let PendingIndex {
         table,
         table_display,
         index,
     } = pending;
-    let Some(table_id) = schema.own_table_id(&table) else {
+    let found = schema
+        .own_table_id(&table)
+        .or_else(|| extend.and_then(|e| e.stub(schema, &table, &table_display, index.source)));
+    let Some(table_id) = found else {
         diagnostics.push(Diagnostic::error(
             SCHEMA0001,
             format!(

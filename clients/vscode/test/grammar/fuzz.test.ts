@@ -12,8 +12,6 @@ import * as onig from "vscode-oniguruma";
 //   OXABL_FUZZ_SECONDS  time box of each random phase (default 2)
 //   OXABL_FUZZ_SCALE    largest size of the pathological shapes (default 10000)
 //   OXABL_FUZZ_OUT      directory that receives the worst inputs as files
-//   OXABL_FUZZ_DEEP    1 runs the shapes that grow the rule stack at the full scale too; they
-//                       cost quadratic time there (see the report of the run), so they fail
 //   OXABL_FUZZ_LINE_CAP longest line fed to the grammar (default 20000, the editor's
 //                       `editor.maxTokenizationLineLength`); 0 feeds every line whole
 //
@@ -27,7 +25,6 @@ const SEED = Number(process.env.OXABL_FUZZ_SEED ?? 1);
 const SECONDS = Number(process.env.OXABL_FUZZ_SECONDS ?? 2);
 const SCALE = Number(process.env.OXABL_FUZZ_SCALE ?? 10000);
 const OUT = process.env.OXABL_FUZZ_OUT;
-const DEEP = process.env.OXABL_FUZZ_DEEP === "1";
 const LINE_CAP = Number(process.env.OXABL_FUZZ_LINE_CAP ?? 20000);
 
 // The time budgets hold on a machine that runs the calibration in CALIBRATION_MS or less; a
@@ -40,8 +37,10 @@ let speed = 1;
 // A line of n characters may take this long. The corpus test holds 50 ms for real lines.
 const lineBudgetMs = (chars: number) => (50 + chars * 0.02) * speed;
 const fileBudgetMs = () => 2000 * speed;
-// Deepest rule stack any input may leave behind. Real files stay far below it.
-const DEPTH_BUDGET = 2000;
+// Deepest rule stack any input may leave behind. The grammar counts at most 50 nested
+// comments or include references (`x-nesting-limit` in the template); a few outer rules
+// (a `&GLOBAL-DEFINE`, a string) may sit around them. Real files stay below 10.
+const DEPTH_BUDGET = 64;
 
 const EXTENSIONS = new Set([".p", ".w", ".cls", ".i", ".v", ".abl"]);
 const SKIP_DIRS = new Set(["target", "node_modules"]);
@@ -238,12 +237,17 @@ const shapes: Record<string, (n: number) => string> = {
   "open preprocessor refs": (n) => rep("{&", n),
   "preprocessor refs, closed": (n) => rep("{&a}", n),
   "nested include refs": (n) => rep("{a ", n) + rep("}", n),
+  "open include refs, one per line": (n) => rep("{a\n", n),
+  "strings in open include refs": (n) => "{a " + rep('{"b" ', n),
   "nested preprocessor refs": (n) => rep("{&a ", n) + rep("}", n),
   "nested refs, one per line": (n) => rep("{&a\n", n),
   "&IF run": (n) => rep("&IF ", n),
   "&IF nest, one per line": (n) => rep("&IF a &THEN\n", n),
   "&IF nest with ELSE": (n) => rep("&IF a &THEN\n&ELSE\n", n) + rep("&ENDIF\n", n),
   "&SCOPED-DEFINE run": (n) => rep("&SCOPED-DEFINE a ", n),
+  "&SCOPED-DEFINE run, continued": (n) => rep("&SCOPED-DEFINE a ~\n", n),
+  "open include refs in a define": (n) => "&GLOBAL-DEFINE a {b " + rep("{", n),
+  "open comments in a define, continued": (n) => rep("&GLOBAL-DEFINE a /* ~\n", n),
   "hyphen run": (n) => rep("-", n),
   "hyphenated name": (n) => rep("a-", n) + "b",
   "keyword hyphen chain": (n) => rep("no-undo-", n),
@@ -274,6 +278,7 @@ const shapes: Record<string, (n: number) => string> = {
   "class nesting": (n) => rep("CLASS c:\n", n),
   "define without end": (n) => rep("DEFINE VARIABLE a AS INTEGER ", n),
   "define chain": (n) => "DEFINE " + rep("VARIABLE ", n),
+  "generic type nesting": (n) => "DEFINE VARIABLE a AS A" + rep("<B", n) + rep(">", n) + ".",
   "for each nest": (n) => rep("FOR EACH a:\n", n),
   "string with colon suffix": (n) => rep('"a":U ', n),
   "unicode": (n) => rep("é€𝄞", n),
@@ -281,24 +286,11 @@ const shapes: Record<string, (n: number) => string> = {
   "carriage returns": (n) => rep("a\r", n),
 };
 
-// Shapes whose rule stack grows with n. A real file nests a few levels; the default run
-// stops them at DEEP_SIZE.
-const DEEP_SIZE = 1000;
-const deepShapes = new Set([
-  "open comments, one line",
-  "open comments, one per line",
-  "nested comments with text",
-  "open include refs",
-  "nested include refs",
-  "star slash run",
-]);
-
 // Sizes in steps of ten up to the scale, to expose super-linear growth.
-function sizes(name: string): number[] {
-  const top = deepShapes.has(name) && !DEEP ? Math.min(SCALE, DEEP_SIZE) : SCALE;
+function sizes(): number[] {
   const out: number[] = [];
-  for (let n = 100; n < top; n *= 10) out.push(n);
-  out.push(top);
+  for (let n = 100; n < SCALE; n *= 10) out.push(n);
+  out.push(SCALE);
   return out;
 }
 
@@ -308,11 +300,11 @@ describe("pathological shapes", () => {
     const growth: string[] = [];
     for (const [name, make] of Object.entries(shapes)) {
       const runs: Run[] = [];
-      for (const n of sizes(name)) failures.push(...check(`${name} x${n}`, make(n), runs));
+      for (const n of sizes()) failures.push(...check(`${name} x${n}`, make(n), runs));
       // Ten times the input may cost at most about thirty times the time.
       const superLinear = runs.some((run, i) => i > 0 && run.totalMs > 30 * Math.max(runs[i - 1].totalMs, 1));
       growth.push(
-        `${name}: depth ${runs[runs.length - 1].maxDepth}; ${runs.map((run) => run.totalMs.toFixed(1)).join(" / ")} ms for ${sizes(name).join(" / ")}${superLinear ? "  <-- super-linear" : ""}`,
+        `${name}: depth ${runs[runs.length - 1].maxDepth}; ${runs.map((run) => run.totalMs.toFixed(1)).join(" / ")} ms for ${sizes().join(" / ")}${superLinear ? "  <-- super-linear" : ""}`,
       );
     }
     console.log(`shapes (total ms by size):\n  ${growth.join("\n  ")}`);

@@ -154,7 +154,7 @@ pub fn check(
                 if (fragment && is_bare(name)) || !ctx.elided_includes.is_empty() {
                     return;
                 }
-                let sigs = local.get_or_insert_with(|| ProgramSignatures::of(program, tokens));
+                let sigs = local.get_or_insert_with(|| ProgramSignatures::of(program));
                 sigs.procedure(&IndexName::new(name)).cloned().map(Arc::new)
             }
             CallTarget::Program(name) => {

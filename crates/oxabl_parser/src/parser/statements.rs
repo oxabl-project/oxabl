@@ -115,9 +115,10 @@ impl Parser<'_> {
         // token. A bare store, deliberately: this is the parser's hottest
         // funnel, and save/restore around the call measured ~1.5% on the
         // existing fixtures. Correctness does not need it — between this store
-        // and the matching `skipped_stmt` read, the only path that recurses into
-        // `parse_statement` is the `EDITING:` body, which saves and restores the
-        // anchor itself (`skip_to_statement_end_editing_aware`).
+        // and the matching `skipped_stmt` read, the paths that recurse into
+        // `parse_statement` put the anchor back themselves: the `EDITING:` body
+        // (`skip_to_statement_end_editing_aware`) and a failed CREATE
+        // `TRIGGERS:` block (`recover_create_as_skipped`).
         self.stmt_start_token = self.current;
         // No statement is inside an expression, so no chain is open here; a
         // chain left open by an error is closed.
@@ -1661,7 +1662,7 @@ impl Parser<'_> {
                 if no_undo {
                     self.advance();
                 }
-                let type_source = self.parse_type_source()?;
+                let (type_source, mut extent) = self.parse_type_source_with_extent()?;
                 loop {
                     match self.peek().kind {
                         Kind::NoUndo => {
@@ -1688,13 +1689,7 @@ impl Parser<'_> {
                             // Consume the initial value expression
                             self.parse_expression().ok();
                         }
-                        Kind::Extent => {
-                            self.advance(); // consume EXTENT
-                            // Consume optional array size integer (e.g. EXTENT 10)
-                            if self.check(Kind::IntegerLiteral) {
-                                self.advance();
-                            }
-                        }
+                        Kind::Extent => extent = self.parse_extent_clause(),
                         Kind::CaseSensitive | Kind::FindCaseSensitive => {
                             self.advance(); // consume CASE-SENSITIVE
                         }
@@ -1705,6 +1700,7 @@ impl Parser<'_> {
                     name,
                     type_source,
                     no_undo,
+                    extent,
                 }
             }
         };
@@ -3683,13 +3679,22 @@ impl Parser<'_> {
 
         // Dotted version-number procedure names: e.g. config_18.4.2_extra lexes as
         // Identifier("config_18") + DecimalLiteral(".4") + DecimalLiteral(".2") + Identifier("_extra").
-        // Consume the extra tokens to advance past the full name.
-        while self.check(Kind::DecimalLiteral) {
+        // The name is the source text through the last of these tokens.
+        let mut dotted = false;
+        // Every token must touch the one before it, so the name holds no
+        // whitespace or comment.
+        while self.check(Kind::DecimalLiteral) && self.peek().start == self.prev_end() as usize {
             self.advance(); // consume ".4", ".2", etc.
+            dotted = true;
             // An underscore/alpha-led segment directly following (e.g. "_data") is a separate Identifier.
-            if self.check(Kind::Identifier) {
+            if self.check(Kind::Identifier) && self.peek().start == self.prev_end() as usize {
                 self.advance();
             }
+        }
+        if dotted {
+            let end = self.prev_end();
+            name.name = self.source[name.span.start as usize..end as usize].to_string();
+            name.span.end = end;
         }
 
         // Dotted method-name suffix: e.g. "Procedure Dataset.Fill:" where Dataset is a keyword.
@@ -6602,7 +6607,13 @@ impl Parser<'_> {
     // CREATE WIDGET-POOL [pool] [PERSISTENT] [NO-ERROR].
     fn parse_create_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CREATE
-        let resume = (self.current, self.errors.len());
+        let resume = (self.current, self.errors.len(), self.stmt_start_token);
+        // The same tokens fail the same way again. Only a CREATE that met the
+        // nesting limit can parse when tried again less deep, and the file
+        // reports that limit (`limit_error`).
+        if self.failed_creates.contains(&resume.0) {
+            return Ok(self.recover_create_as_skipped(resume));
+        }
 
         if self.check(Kind::WidgetPool) {
             return Ok(self
@@ -6656,8 +6667,16 @@ impl Parser<'_> {
 
     /// Skip the rest of a CREATE whose tail did not parse, so the statement
     /// after it is not swallowed. The names in it are still harvested.
-    fn recover_create_as_skipped(&mut self, (resume, error_count): (usize, usize)) -> Statement {
+    ///
+    /// A failed `TRIGGERS:` block has parsed statements of its own, which moved
+    /// the harvest anchor, so the CREATE's own anchor is put back first.
+    fn recover_create_as_skipped(
+        &mut self,
+        (resume, error_count, anchor): (usize, usize, usize),
+    ) -> Statement {
         self.errors.truncate(error_count);
+        self.failed_creates.insert(resume);
+        self.stmt_start_token = anchor;
         self.current = resume;
         let (_, hi) = self.skip_to_statement_end_triggers_aware();
         self.skipped_stmt(hi)

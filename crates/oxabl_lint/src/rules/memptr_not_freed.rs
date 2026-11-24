@@ -69,6 +69,7 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 use super::HD004;
 use super::handle_support::{
     includer_may_free, not_judged, quote, reported_leak, warning, with_fragment_note,
+    with_leak_label,
 };
 
 /// Kebab-case rule name.
@@ -112,6 +113,7 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
             ),
             o.create.span,
         );
+        let d = with_leak_label(d, ctx, o, leak);
         diags.push(with_fragment_note(d, includer_may_free(ctx, unit, leak)));
     }
     diags

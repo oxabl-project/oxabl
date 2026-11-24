@@ -101,10 +101,9 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::HD001;
 use super::handle_support::{
-    describe, includer_may_free, not_judged, noun, quote, reported_leak, scope, warning,
-    with_fragment_note,
+    describe, includer_may_free, not_judged, noun, reported_leak, scope, warning,
+    with_create_label, with_fragment_note, with_leak_label,
 };
-use super::syntactic::file_span;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "handle-not-deleted";
@@ -152,8 +151,8 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
             scope(unit),
         );
         let d = match leak.kind {
-            LeakKind::Exit(_) => {
-                let mut d = warning(
+            LeakKind::Exit(_) => with_leak_label(
+                warning(
                     ctx,
                     HD001,
                     format!(
@@ -163,24 +162,25 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
                     ),
                     help,
                     o.create.span,
-                );
-                if leak.at.start < leak.at.end {
-                    d = d.with_label(
-                        file_span(ctx, leak.at),
-                        format!("path ends after `{}`", quote(ctx.source, leak.at)),
-                    );
-                }
-                d
-            }
-            LeakKind::Overwrite => warning(
-                ctx,
-                HD001,
-                format!(
-                    "{holder} is assigned here while it still holds a {}, which nothing deletes",
-                    noun(o.kind)
                 ),
-                help,
-                leak.at,
+                ctx,
+                o,
+                leak,
+            ),
+            LeakKind::Overwrite => with_create_label(
+                warning(
+                    ctx,
+                    HD001,
+                    format!(
+                        "{holder} is assigned here while it still holds a {}, which nothing \
+                         deletes",
+                        noun(o.kind)
+                    ),
+                    help,
+                    leak.at,
+                ),
+                ctx,
+                o,
             ),
         };
         diags.push(with_fragment_note(d, includer_may_free(ctx, unit, leak)));

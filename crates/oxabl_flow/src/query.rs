@@ -87,6 +87,13 @@ impl Cfg {
             .map(|&e| &self.edges[e as usize])
     }
 
+    /// Incoming edges of `n`, each with its index in [`Cfg::edges`].
+    pub fn predecessors_indexed(&self, n: NodeIx) -> impl Iterator<Item = (usize, &Edge)> {
+        self.pred[n.index()]
+            .iter()
+            .map(|&e| (e as usize, &self.edges[e as usize]))
+    }
+
     /// The nodes of a statement: one per copy for a statement in a `FINALLY`,
     /// the [`NodeKind::Head`] nodes for a block statement, none for a statement
     /// of another unit or a definition (`PROCEDURE`, `METHOD`, ...).

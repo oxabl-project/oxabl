@@ -103,6 +103,21 @@ pub fn lines(source: &str, diags: &[Diagnostic]) -> Vec<usize> {
         .collect()
 }
 
+/// The 1-based line and the message of each label of `d`.
+pub fn labels(source: &str, d: &Diagnostic) -> Vec<(usize, String)> {
+    d.labels
+        .iter()
+        .map(|l| {
+            let line = source[..l.span.span.start as usize]
+                .bytes()
+                .filter(|&b| b == b'\n')
+                .count()
+                + 1;
+            (line, l.message.clone())
+        })
+        .collect()
+}
+
 pub fn help(d: &Diagnostic) -> &str {
     d.help.as_deref().unwrap_or("")
 }

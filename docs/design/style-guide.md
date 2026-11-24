@@ -132,6 +132,19 @@ These are pure semantic conventions with no layout component. They map to
 | delete_dynamic_objects | true | true |
 | memptr_deallocate | true | true |
 
+## Formatter: known limits
+
+`oxabl format` changes only indentation and blank lines. These layouts stay as they are, or get a wrong indent:
+
+- **Property accessors inside a preprocessor conditional.** The formatter reads the source with no preprocessing, and the parser keeps only one accessor of a `&IF ... &THEN ... &ELSE ... &ENDIF` in a `DEFINE PROPERTY`. The formatter does not align the accessors of such a property: their bodies and `END GET.` / `END SET.` can stay at the wrong column. The output is stable. Example:
+
+  ```abl
+  DEFINE PROPERTY P AS INTEGER NO-UNDO
+  &IF DEFINED(x) &THEN GET(): RETURN 1. END GET. &ELSE GET():
+      RETURN 2.
+      END GET. &ENDIF
+  ```
+
 ## API
 
 ```rust

@@ -89,6 +89,7 @@
       ]
     },
     "comment-block": {
+      "x-nesting-limit": 50,
       "name": "comment.block.abl",
       "begin": "/\\*",
       "end": "\\*/",
@@ -112,7 +113,7 @@
       "patterns": [
         {
           "name": "meta.preprocessor.analyze.abl",
-          "match": "(?i)(?<![\\w#$%&-])(&analyze-(?:suspend|resume))(?![\\w#$%&-])(.*)$",
+          "match": "(?i){{non-boundary}}(?<![#$%&-])(&analyze-(?:suspend|resume))(?![\\w#$%&-])(.*)$",
           "captures": {
             "1": {
               "name": "keyword.control.directive.analyze.abl"
@@ -124,7 +125,7 @@
         },
         {
           "name": "meta.preprocessor.define.abl",
-          "begin": "(?i)(?<![\\w#$%&-])({{word:&GLOBAL-DEFINE}}|{{word:&SCOPED-DEFINE}})(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
+          "begin": "(?i){{non-boundary}}(?<![#$%&-])({{word:&GLOBAL-DEFINE}}|{{word:&SCOPED-DEFINE}})(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
           "beginCaptures": {
             "1": {
               "name": "keyword.control.directive.define.abl"
@@ -139,13 +140,24 @@
               "include": "#line-continuation"
             },
             {
+              "match": "(?i)(?<![\\w#$%&-])({{word:&GLOBAL-DEFINE}}|{{word:&SCOPED-DEFINE}})(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.control.directive.define.abl"
+                },
+                "2": {
+                  "name": "entity.name.function.preprocessor.abl"
+                }
+              }
+            },
+            {
               "include": "#code"
             }
           ]
         },
         {
           "name": "meta.preprocessor.undefine.abl",
-          "match": "(?i)(?<![\\w#$%&-])({{word:&UNDEFINE}})(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
+          "match": "(?i){{non-boundary}}(?<![#$%&-])({{word:&UNDEFINE}})(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
           "captures": {
             "1": {
               "name": "keyword.control.directive.undefine.abl"
@@ -157,7 +169,7 @@
         },
         {
           "name": "meta.preprocessor.message.abl",
-          "begin": "(?i)(?<![\\w#$%&-])(&message)(?![\\w#$%&-])",
+          "begin": "(?i){{non-boundary}}(?<![#$%&-])(&message)(?![\\w#$%&-])",
           "beginCaptures": {
             "1": {
               "name": "keyword.control.directive.message.abl"
@@ -176,11 +188,11 @@
         },
         {
           "name": "keyword.control.directive.conditional.abl",
-          "match": "(?i)(?<![\\w#$%&-])&(?:if|then|elseif|else|endif)(?![\\w#$%&-])"
+          "match": "(?i){{non-boundary}}(?<![#$%&-])&(?:if|then|elseif|else|endif)(?![\\w#$%&-])"
         },
         {
           "name": "keyword.control.directive.abl",
-          "match": "(?<![\\w#$%&-])&[A-Za-z][\\w-]*"
+          "match": "{{non-boundary}}(?<![#$%&-])&[A-Za-z][\\w-]*"
         }
       ]
     },
@@ -223,6 +235,7 @@
       ]
     },
     "include": {
+      "x-nesting-limit": 50,
       "name": "meta.preprocessor.include.abl",
       "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
       "beginCaptures": {
@@ -236,6 +249,16 @@
           "name": "punctuation.definition.include.end.abl"
         }
       },
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include"
+        }
+      ]
+    },
+    "include-arguments": {
       "patterns": [
         {
           "match": "\\G\\s*((?:\\{[^{}]*\\}|\"[^\"]*\"|[^\\s{}\"])+)",
@@ -263,9 +286,6 @@
         },
         {
           "include": "#preprocessor-references"
-        },
-        {
-          "include": "#include"
         },
         {
           "include": "#strings"
@@ -347,7 +367,7 @@
           "name": "constant.character.escape.abl"
         },
         {
-          "match": "(?<!\\\\)\\\\[\"'](?![\\s),.+;:=]|$)",
+          "match": "\\\\(?<!\\\\\\\\)[\"'](?![\\s),.+;:=]|$)",
           "name": "constant.character.escape.abl"
         },
         {
@@ -359,15 +379,15 @@
       "patterns": [
         {
           "name": "constant.numeric.date.abl",
-          "match": "(?<![\\w#$%&])\\d{1,4}/\\d{1,2}/\\d{1,4}(?![\\w#$%&])"
+          "match": "{{boundary}}(?<![#$%&])\\d{1,4}/\\d{1,2}/\\d{1,4}(?![\\w#$%&])"
         },
         {
           "name": "constant.numeric.decimal.abl",
-          "match": "(?<![\\w#$%&])(?:\\d+\\.\\d+|\\.\\d+)(?:-(?![\\w#$%&-]))?(?![\\w#$%&])"
+          "match": "(?:{{boundary}}(?<![#$%&])\\d+\\.\\d+|{{non-boundary}}(?<![#$%&])\\.\\d+)(?:-(?![\\w#$%&-]))?(?![\\w#$%&])"
         },
         {
           "name": "constant.numeric.integer.abl",
-          "match": "(?<![\\w#$%&])\\d+(?:-(?![\\w#$%&-]))?(?![\\w#$%&])"
+          "match": "{{boundary}}(?<![#$%&])\\d+(?:-(?![\\w#$%&-]))?(?![\\w#$%&])"
         },
         {
           "name": "constant.language.unknown.abl",
@@ -422,7 +442,7 @@
           }
         },
         {
-          "match": "(?i)(?<![\\w#$%&.-])({{word:INHERITS}}|{{word:IMPLEMENTS}})\\s+([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:\\s*,\\s*[A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*)*)",
+          "match": "(?i){{boundary}}(?<![#$%&.-])({{word:INHERITS}}|{{word:IMPLEMENTS}})\\s+([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:\\s*,\\s*[A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*)*)",
           "captures": {
             "1": {
               "name": "storage.modifier.abl"
@@ -583,7 +603,7 @@
           }
         },
         {
-          "match": "(?i)(?<![\\w#$%&.-])({{word:INPUT}}|{{word:OUTPUT}}|{{word:INPUT-OUTPUT}})\\s+([A-Za-z_][\\w#$%&-]*)(?=\\s+(?:{{word:AS}}|{{word:LIKE}})(?![\\w#$%&-]))",
+          "match": "(?i){{boundary}}(?<![#$%&.-])({{word:INPUT}}|{{word:OUTPUT}}|{{word:INPUT-OUTPUT}})\\s+([A-Za-z_][\\w#$%&-]*)(?=\\s+(?:{{word:AS}}|{{word:LIKE}})(?![\\w#$%&-]))",
           "captures": {
             "1": {
               "name": "storage.modifier.abl"
@@ -594,7 +614,7 @@
           }
         },
         {
-          "match": "(?i)(?<![\\w#$%&.-])({{word:FIELD}}|{{word:INDEX}})\\s+([A-Za-z_][\\w#$%&-]*)",
+          "match": "(?i){{boundary}}(?<![#$%&.-])({{word:FIELD}}|{{word:INDEX}})\\s+([A-Za-z_][\\w#$%&-]*)",
           "captures": {
             "1": {
               "name": "keyword.other.abl"
@@ -609,7 +629,7 @@
     "type-references": {
       "patterns": [
         {
-          "match": "(?i)(?<![\\w#$%&.-])({{word:AS}}|{{word:RETURNS}})\\s+(?:({{word:CLASS}})\\s+)?([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:<[^>]*>)?)",
+          "match": "(?i){{boundary}}(?<![#$%&.-])({{word:AS}}|{{word:RETURNS}})\\s+(?:({{word:CLASS}})\\s+)?([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:<[^>]*>)?)",
           "captures": {
             "1": {
               "name": "keyword.other.abl"
@@ -627,7 +647,7 @@
           }
         },
         {
-          "match": "(?i)(?<![\\w#$%&.-])({{word:NEW}})\\s+([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:<[^>]*>)?)(?=\\s*\\()",
+          "match": "(?i){{boundary}}(?<![#$%&.-])({{word:NEW}})\\s+([A-Za-z_][\\w#$%&-]*(?:\\.[A-Za-z_][\\w#$%&-]*)*(?:<[^>]*>)?)(?=\\s*\\()",
           "captures": {
             "1": {
               "name": "keyword.operator.new.abl"
@@ -647,11 +667,11 @@
       "patterns": [
         {
           "name": "storage.type.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:type}})(?![\\w#$%&.-])"
+          "match": "(?i){{boundary}}(?<![#$%&.-])(?:{{keywords:type}})(?![\\w#$%&.-])"
         },
         {
           "name": "keyword.other.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{word:CLASS}}|{{word:EXTENT}})(?![\\w#$%&.-])"
+          "match": "(?i){{boundary}}(?<![#$%&.-])(?:{{word:CLASS}}|{{word:EXTENT}})(?![\\w#$%&.-])"
         },
         {
           "name": "entity.name.type.abl",
@@ -682,7 +702,7 @@
       ]
     },
     "run-target": {
-      "match": "(?i)(?<![\\w#$%&.-])({{word:RUN}})\\s+(?!(?:{{word:VALUE}}|{{word:SUPER}})(?![\\w#$%&-]))([\\w#$%&/\\\\-]+(?:\\.[\\w#$%&/\\\\-]+)*)",
+      "match": "(?i){{boundary}}(?<![#$%&.-])({{word:RUN}})\\s+(?!(?:{{word:VALUE}}|{{word:SUPER}})(?![\\w#$%&-]))([\\w#$%&/\\\\-]+(?:\\.[\\w#$%&/\\\\-]+)*)",
       "captures": {
         "1": {
           "name": "keyword.other.abl"
@@ -693,7 +713,7 @@
       }
     },
     "record-names": {
-      "match": "(?i)\\b(?<![#$%&.-])(?:((?:(?:{{word:FIND}})(?![\\w#$%&-])(?:\\s+(?:{{word:FIRST}}|{{word:LAST}}|{{word:NEXT}}|{{word:PREV}}|{{word:CURRENT}})(?![\\w#$%&-]))?\\s+|(?:{{word:EACH}}|{{word:FIRST}}|{{word:LAST}}|{{word:BUFFER}}|{{word:BUFFER-COPY}}|{{word:BUFFER-COMPARE}}|{{word:LIKE}})(?![\\w#$%&-])\\s+|(?:{{word:AVAILABLE}}|{{word:AMBIGUOUS}}|{{word:LOCKED}})(?![\\w#$%&-])(?:\\s*\\(\\s*|\\s+)|(?:{{word:CAN-FIND}}|{{word:ROWID}}|{{word:RECID}})\\s*\\(\\s*))(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))(?!(?:{{word:PREV}})(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])|((?:{{word:FOR}})(?![\\w#$%&-])\\s+)((?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))(?!(?:{{word:TEMP-TABLE}})(?![\\w#$%&-]))[A-Za-z_][\\w#$%&-]*(?![\\w#$%&-]|\\.[A-Za-z_])(?:\\s*,\\s*(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))[A-Za-z_][\\w#$%&-]*(?![\\w#$%&-]|\\.[A-Za-z_]))*)(?!\\s+(?:{{word:OF}})(?![\\w#$%&-]))|((?:{{word:OF}})(?![\\w#$%&-])\\s+)(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])(?=\\s*(?:$|[,.:)]|/[*/]|(?:{{keywords:reserved}})(?![\\w#$%&-])|(?:{{word:EXCLUSIVE-LOCK}}|{{word:OVERRIDE}})(?![\\w#$%&-])|(?:outer-join|left|table-scan|tenant-where|skip-group-duplicates)(?![\\w#$%&-])))|((?:{{word:CREATE}}|{{word:DELETE}}|{{word:RELEASE}}|{{word:VALIDATE}})(?![\\w#$%&-])\\s+)(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))(?!(?:{{word:WIDGET-POOL}})(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])(?=\\s*(?:\\.(?:\\s|$)|(?:{{word:NO-ERROR}}|{{word:USING}}|{{word:VALIDATE}})(?![\\w#$%&-])|(?:{{word:FOR}})\\s+tenant(?![\\w#$%&-]))))",
+      "match": "(?i){{boundary}}(?<![#$%&.-])(?:((?:(?:{{word:FIND}})(?![\\w#$%&-])(?:\\s+(?:{{word:FIRST}}|{{word:LAST}}|{{word:NEXT}}|{{word:PREV}}|{{word:CURRENT}})(?![\\w#$%&-]))?\\s+|(?:{{word:EACH}}|{{word:FIRST}}|{{word:LAST}}|{{word:BUFFER}}|{{word:BUFFER-COPY}}|{{word:BUFFER-COMPARE}}|{{word:LIKE}})(?![\\w#$%&-])\\s+|(?:{{word:AVAILABLE}}|{{word:AMBIGUOUS}}|{{word:LOCKED}})(?![\\w#$%&-])(?:\\s*\\(\\s*|\\s+)|(?:{{word:CAN-FIND}}|{{word:ROWID}}|{{word:RECID}})\\s*\\(\\s*))(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))(?!(?:{{word:PREV}})(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])|((?:{{word:FOR}})(?![\\w#$%&-])\\s+)((?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))(?!(?:{{word:TEMP-TABLE}})(?![\\w#$%&-]))[A-Za-z_][\\w#$%&-]*(?![\\w#$%&-]|\\.[A-Za-z_])(?:\\s*,\\s*(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))[A-Za-z_][\\w#$%&-]*(?![\\w#$%&-]|\\.[A-Za-z_]))*)(?!\\s+(?:{{word:OF}})(?![\\w#$%&-]))|((?:{{word:OF}})(?![\\w#$%&-])\\s+)(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])(?=\\s*(?:$|[,.:)]|/[*/]|(?:{{keywords:reserved}})(?![\\w#$%&-])|(?:{{word:EXCLUSIVE-LOCK}}|{{word:OVERRIDE}})(?![\\w#$%&-])|(?:outer-join|left|table-scan|tenant-where|skip-group-duplicates)(?![\\w#$%&-])))|((?:{{word:CREATE}}|{{word:DELETE}}|{{word:RELEASE}}|{{word:VALIDATE}})(?![\\w#$%&-])\\s+)(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))(?!(?:{{word:WIDGET-POOL}})(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])(?=\\s*(?:\\.(?:\\s|$)|(?:{{word:NO-ERROR}}|{{word:USING}}|{{word:VALIDATE}})(?![\\w#$%&-])|(?:{{word:FOR}})\\s+tenant(?![\\w#$%&-]))))",
       "captures": {
         "1": {
           "patterns": [
@@ -779,14 +799,14 @@
     },
     "builtin-function-call": {
       "name": "support.function.abl",
-      "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:function}})(?=\\s*\\()"
+      "match": "(?i){{boundary}}(?<![#$%&.-])(?:{{keywords:function}})(?=\\s*\\()"
     },
     "lock-phrase": {
       "name": "keyword.other.abl",
-      "match": "(?i)(?<![\\w#$%&.-])(?:no|share|exclusive)[ \\t]+lock(?![\\w#$%&-])"
+      "match": "(?i){{boundary}}(?<![#$%&.-])(?:no|share|exclusive)[ \\t]+lock(?![\\w#$%&-])"
     },
     "keywords": {
-      "match": "(?i)(?<![\\w#$%&.-])(?:({{keywords:boolean}})|({{keywords:operator-logical}})|({{keywords:operator-comparison}})|({{keywords:operator-pattern}})|({{keywords:operator-arithmetic}})|({{keywords:control}})|({{keywords:type}})|({{keywords:modifier}})|({{keywords:handle}})|({{keywords:other}}))(?![\\w#$%&-]|\\.[A-Za-z_])",
+      "match": "(?i){{boundary}}(?<![#$%&.-])(?:({{keywords:boolean}})|({{keywords:operator-logical}})|({{keywords:operator-comparison}})|({{keywords:operator-pattern}})|({{keywords:operator-arithmetic}})|({{keywords:control}})|({{keywords:type}})|({{keywords:modifier}})|({{keywords:handle}})|({{keywords:other}}))(?![\\w#$%&-]|\\.[A-Za-z_])",
       "captures": {
         "1": {
           "name": "constant.language.boolean.abl"
@@ -822,10 +842,10 @@
     },
     "function-call": {
       "name": "entity.name.function.abl",
-      "match": "(?<![\\w#$%&.-])[A-Za-z_][\\w#$%&-]*(?=\\()"
+      "match": "{{boundary}}(?<![#$%&.-])[A-Za-z_][\\w#$%&-]*(?=\\()"
     },
     "label": {
-      "match": "(?<=^[ \\t]{0,200})([A-Za-z_][\\w#$%&-]*)(:)(?=\\s|$)",
+      "match": "\\b(?<=^[ \\t]{0,200})([A-Za-z_][\\w#$%&-]*)(:)(?=\\s|$)",
       "captures": {
         "1": {
           "name": "entity.name.label.abl"
@@ -839,7 +859,7 @@
       "patterns": [
         {
           "name": "variable.other.abl",
-          "match": "(?<![\\w#$%&-])[A-Za-z_][\\w#$%&-]*"
+          "match": "{{boundary}}(?<![#$%&-])[A-Za-z_][\\w#$%&-]*"
         },
         {
           "name": "punctuation.accessor.abl",

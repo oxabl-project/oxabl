@@ -30,7 +30,7 @@ use oxabl_lexer::tokenize;
 use oxabl_lint::{LINT0001, LINT0003, lint_file};
 use oxabl_parser::Parser;
 use oxabl_schema::{Schema, test_support::schema_from_df};
-use oxabl_semantic::{AnalysisContext, analyze_file};
+use oxabl_semantic::{AnalysisContext, Resolution, UnresolvedReason, analyze_file};
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -393,7 +393,7 @@ MESSAGE _file._File-Number.
 #[test]
 fn an_unloaded_schema_is_untouched_by_the_catalog() {
     // With no `.df` configured, table resolution is off entirely: LINT0003 is
-    // not run at all and a bare table name is undefined whether it is
+    // not run at all and a bare table name resolves to nothing, whether it is
     // `_file` or `Customer`. Pinning this is what stops an always-present
     // catalog from quietly switching schema-dependent diagnostics on for
     // projects that never configured one.
@@ -413,9 +413,25 @@ IF AVAILABLE _file THEN
     let sem = analyze_file(&stmts, &ctx);
     let diags = lint_file(&stmts, &sem, &ctx);
 
-    // Exactly the pre-existing no-schema answer: LINT0001 on the bare
-    // `AVAILABLE` reference, and no LINT0003 at all.
-    assert_eq!(codes(&diags), vec![LINT0001]);
+    // The bare `AVAILABLE` operand is a record name oxabl cannot judge
+    // without a schema: unresolved for that reason, never bound to a catalog
+    // table, and so no finding at all.
+    assert!(
+        sem.references
+            .iter()
+            .all(|(_, r)| !matches!(r, Resolution::Resolved(_))),
+        "nothing may resolve without a schema: {:#?}",
+        sem.references.iter().collect::<Vec<_>>()
+    );
+    assert!(
+        sem.references.iter().any(|(_, r)| matches!(
+            r,
+            Resolution::Unresolved { name, reason: UnresolvedReason::NoSchema }
+                if name.as_ref() == "_file"
+        )),
+        "`AVAILABLE _file` must be unresolved for want of a schema"
+    );
+    assert!(codes(&diags).is_empty(), "{diags:#?}");
 }
 
 #[test]

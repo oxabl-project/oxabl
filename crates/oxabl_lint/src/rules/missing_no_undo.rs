@@ -225,6 +225,7 @@ impl Visitor for Definitions<'_> {
                         name,
                         type_source,
                         no_undo: false,
+                        ..
                     },
                 ..
             } if !type_is_exempt(type_source) => {

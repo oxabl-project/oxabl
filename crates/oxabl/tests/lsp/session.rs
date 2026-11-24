@@ -170,6 +170,13 @@ impl Session {
         answers
     }
 
+    /// Take the id for a request the caller sends itself.
+    pub fn next_request_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 2;
+        id
+    }
+
     /// The answer to the request `method` with `params`.
     pub fn request(&mut self, method: &str, params: Value) -> Value {
         let id = self.next_id;

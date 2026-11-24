@@ -23,6 +23,7 @@ oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.8.0" }
 oxabl_semantic = { path = "../oxabl_semantic", version = "5.2.0" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "3.6.2" }
 anyhow = "1"
+blake3 = "1"
 crossbeam-channel = "0.5"
 lsp-server = "0.7"
 # Pinned exact patch: the write-on-main / read-on-snapshot / `Cancelled` threading
