@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use oxabl_ast::Span;
-use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity};
+use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity, VirtualSpan};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{
@@ -1668,14 +1668,15 @@ pub fn analyze_from_expanded(
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
 ) -> (Semantic, bool) {
-    analyze_expanded(
+    let (semantic, first_error) = analyze_expanded(
         expanded,
         schema,
         schema_loaded,
         index,
         source_context,
         false,
-    )
+    );
+    (semantic, first_error.is_some())
 }
 
 /// [`analyze_from_expanded`] with the navigation sites recorded
@@ -1691,15 +1692,16 @@ pub fn analyze_for_navigation(
     analyze_for_navigation_checked(expanded, schema, schema_loaded, index, source_context).0
 }
 
-/// [`analyze_for_navigation`] and whether the parser recovered from an error:
-/// the sites of a damaged statement can be missing.
+/// [`analyze_for_navigation`] and where the parser first recovered from an
+/// error, in expanded coordinates: the sites of a damaged statement can be
+/// missing.
 pub fn analyze_for_navigation_checked(
     expanded: &ExpandedFile,
     schema: &Schema,
     schema_loaded: bool,
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
-) -> (Semantic, bool) {
+) -> (Semantic, Option<VirtualSpan>) {
     analyze_expanded(expanded, schema, schema_loaded, index, source_context, true)
 }
 
@@ -1710,7 +1712,7 @@ fn analyze_expanded(
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
     record_sites: bool,
-) -> (Semantic, bool) {
+) -> (Semantic, Option<VirtualSpan>) {
     let timing = std::env::var_os("OXABL_EDGE_PROFILE").map(|_| std::time::Instant::now());
     let tokens = tokenize(&expanded.text);
     let lexed = timing.map(|t| t.elapsed());
@@ -1723,7 +1725,10 @@ fn analyze_expanded(
         .with_sites(record_sites);
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file_untyped(&program.statements, &ctx);
-    let recovered = !program.errors.is_empty();
+    let recovered = program
+        .errors
+        .first()
+        .map(|error| VirtualSpan::new(error.span.start, error.span.end));
     let analyzed = timing.map(|t| t.elapsed());
     drop(program);
     drop(tokens);

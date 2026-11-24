@@ -155,16 +155,25 @@ two kinds.
   is run again once. When it is still out of date, or edits replaced each
   pass, it is a gap.
 - A unit with a parse error: the analysis of a damaged statement can lack its
-  names. The gap names the file.
+  names. The gap names the file that holds the first error (an include, when
+  the error is in one).
 - A referent that text which oxabl skips can name. The parser recognizes some
   statements (`PROMPT-FOR`, `ENABLE`, `DEFINE FRAME`, `UNDERLINE`) and some
-  clauses (the joined tables of a `FOR EACH`, its `BY` and `WHILE`, the tail of
-  `DISPLAY ... WITH FRAME`) but does not model them, so the names in them are
-  not sites. For a variable, the gap shows when the analysis ties a name in
-  skipped text to it. For a field, a table or a buffer, it shows when the
-  skipped text has a word that is the name, or an abbreviation of it of three
-  letters or more. The gap can show when the word means something else. The
-  gap names the referent and the file.
+  clauses but does not model them, so the names in them are not sites. It also
+  reads some text and drops it. The parser records the range of each of
+  these: the joined tables and the `BY`, `WHILE` and `WITH` clauses of a
+  `FOR EACH`, a `FIELDS` or `EXCEPT` list of a record phrase, the `EXCEPT` or
+  `USING` list of `BUFFER-COPY` and `BUFFER-COMPARE`, the tokens that a
+  `DEFINE TEMP-TABLE` or `DEFINE DATASET` skips (`LIKE t EXCEPT f`), a
+  `PRESELECT` phrase, the tail of `DISPLAY ... WITH FRAME`, and each
+  expression that a statement parses and does not keep (an `INITIAL` value
+  before `AS`, a `WHEN` condition of an `ASSIGN`, the parent table of
+  `CAN-FIND(t OF p)`). The gap shows when a recorded range has a word that is
+  the name, outside string literals. For a field, a table or a buffer, an
+  abbreviation of the name of three letters or more counts too. A word that is
+  the name of the table, and also the start of the name of a field, counts for
+  the field. The gap can show when the word means something else. The gap
+  names the referent and the file that wrote the text.
 - A place that names the referent in text no file writes and no reference
   can stand for, and a place that the client cannot be shown because the text
   of its file could not be read.
@@ -172,7 +181,9 @@ two kinds.
 A gap that many files give (parse errors, skipped text, names that did not
 resolve) is one line that counts the files and names one, for example `50
 file(s) have parse errors, such as dam00.p`. The text of an answer does not
-grow with the number of files.
+grow with the number of files. A file that several units include counts once.
+Parse errors and skipped text name the file that wrote them; the other two
+kinds name the unit.
 
 Like the others, the gaps "no include path is configured" and "the workspace
 index is not ready or out of date" are shown on each request that has them:
@@ -215,6 +226,13 @@ most visible place that it can without a message on every request:
 - `NEW` (a constructor call) is not an outgoing call.
 - The units that use a shared variable are not searched (a gap says so).
 - Text in an `&IF` branch that the preprocessor did not take is not analysed.
+- A clause that the parser skips and does not record is not a site and gives
+  no gap. The list in "Gaps" above is the list of the clauses that it records.
+  The `BY`, `WHILE` and joined `WHERE` expressions of a `FOR EACH` are a gap,
+  not sites, so a field or a table whose name is also a clause word (`Title`,
+  `Width`) gives the warning in a file with such a clause.
+- A call of a routine in skipped text is not found. The references and the
+  incoming calls of the routine show the gap.
 
 ## Cost
 
@@ -275,9 +293,14 @@ temp-table), overloads split between a class and its include, a qualified
 temp-table field with no false gap, several requests after one change that
 share one pass, a field of a `LIKE` temp-table, qualified or bare, kept apart
 from the database field, a unit with a parse error and a name in a statement
-that oxabl does not model (both are gaps), a field, a temp-table field or a
-buffer named in a statement or a clause that oxabl does not model (a gap), 50
-damaged files that give one short gap, an abbreviated field name, a cancel
+that oxabl does not model (both are gaps), a field, a temp-table field, a
+buffer, a routine or a variable named in a statement or a clause that oxabl
+does not model or reads and drops (a gap, also for the incoming calls), a
+name in a string literal of such text (no gap), a temp-table or a dataset named in a parameter or a dataset
+definition, 50 damaged files that give one short gap, a damaged or skipped
+include that three units share (one file), the folds of the gaps of unmodelled
+text and of names that did not resolve, an abbreviated field name (the rule of
+three letters), a cancel
 during the workspace pass and between files, the cost of outgoing calls as a
 unit grows, and the cost of a
 local name in a unit that calls many classes. The `references` scenario of

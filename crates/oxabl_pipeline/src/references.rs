@@ -60,7 +60,10 @@ pub struct Gap {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Fold {
     kind: FoldKind,
+    /// The name of the file, for the text.
     file: String,
+    /// What tells the files apart: one file in several units is one.
+    path: PathBuf,
     count: usize,
 }
 
@@ -92,8 +95,13 @@ impl Gap {
     }
 
     /// A gap of one file. `count` is how many names or places the file has.
-    fn of_file(kind: FoldKind, file: String, count: usize) -> Gap {
-        let fold = Fold { kind, file, count };
+    fn of_file(kind: FoldKind, path: PathBuf, count: usize) -> Gap {
+        let fold = Fold {
+            kind,
+            file: file_name(&path),
+            path,
+            count,
+        };
         Gap {
             reason: fold.reason(1),
             standing: false,
@@ -146,7 +154,7 @@ impl Fold {
 /// number of files. Other gaps stay as they are.
 pub fn fold_gaps(gaps: Vec<Gap>) -> Vec<Gap> {
     let mut out: Vec<Gap> = Vec::new();
-    let mut folded: Vec<(usize, Fold, usize)> = Vec::new();
+    let mut folded: Vec<(usize, Fold, Vec<PathBuf>)> = Vec::new();
     for gap in gaps {
         let Some(fold) = &gap.fold else {
             out.push(gap);
@@ -157,18 +165,20 @@ pub fn fold_gaps(gaps: Vec<Gap>) -> Vec<Gap> {
             .find(|(_, held, _)| held.kind == fold.kind)
         {
             Some((_, held, files)) => {
-                held.count += fold.count;
-                *files += 1;
+                if !files.contains(&fold.path) {
+                    held.count += fold.count;
+                    files.push(fold.path.clone());
+                }
             }
             None => {
-                folded.push((out.len(), fold.clone(), 1));
+                folded.push((out.len(), fold.clone(), vec![fold.path.clone()]));
                 out.push(gap);
             }
         }
     }
     for (at, fold, files) in folded {
         out[at] = Gap {
-            reason: fold.reason(files),
+            reason: fold.reason(files.len()),
             standing: false,
             fold: None,
         };
@@ -805,10 +815,7 @@ impl Navigation<'_, '_> {
         let (occurrences, unplaced, unresolved_names) = self.occurrences(referent);
         let unresolved_calls = self.unresolved_calls(referent, &occurrences);
         let mut gaps = Vec::new();
-        let root = self
-            .root_path()
-            .map(|root| file_name(&root))
-            .unwrap_or_default();
+        let root = self.root_path().unwrap_or_default();
         if unplaced > 0 {
             gaps.push(Gap::of_file(
                 FoldKind::Unplaced(referent.name.clone()),
@@ -826,17 +833,22 @@ impl Navigation<'_, '_> {
         if let Some(gap) = self.recovered_gap() {
             gaps.push(gap);
         }
-        if self.named_by_unmodelled_statement(referent) || self.named_in_unmodelled_text(referent) {
+        let unmodelled = self.named_in_unmodelled_text(referent).or_else(|| {
+            self.named_by_unmodelled_statement(referent)
+                .then(|| root.clone())
+        });
+        if let Some(file) = unmodelled {
             gaps.push(Gap::of_file(
                 FoldKind::Unmodelled(referent.name.clone()),
-                root.clone(),
+                file,
                 1,
             ));
         }
         if referent.reach.iter().any(through_handles) && self.calls().truncated {
             gaps.push(Gap::of_referent(format!(
-                "{root} has more than {} calls: a call through a handle after that is not \
+                "{} has more than {} calls: a call through a handle after that is not \
                  resolved",
+                file_name(&root),
                 oxabl_index::calls::MAX_SITES
             )));
         }
@@ -850,15 +862,8 @@ impl Navigation<'_, '_> {
     /// The gap of a unit whose parse had errors: the sites of a damaged
     /// statement are not known.
     fn recovered_gap(&self) -> Option<Gap> {
-        self.recovered.then(|| {
-            Gap::of_file(
-                FoldKind::ParseErrors,
-                self.root_path()
-                    .map(|root| file_name(&root))
-                    .unwrap_or_default(),
-                1,
-            )
-        })
+        self.recovered
+            .map(|at| Gap::of_file(FoldKind::ParseErrors, self.file_of_text(at), 1))
     }
 
     /// Whether a statement form that oxabl recognizes but does not model names
@@ -876,19 +881,30 @@ impl Navigation<'_, '_> {
         })
     }
 
-    /// Whether text that the parser skipped without modelling holds the name
-    /// of a referent that is not always written whole (a field, a table, a
-    /// buffer): the uses in it are not sites. A word that is a prefix of the
-    /// name, three letters or more, counts: a field can be abbreviated.
-    fn named_in_unmodelled_text(&self, referent: &Referent) -> bool {
-        !referent.whole_name
-            && self
-                .semantic
-                .symbols
-                .unmodelled_spans()
-                .iter()
-                .filter_map(|span| self.text(*span))
-                .any(|text| holds_name(text, &referent.name))
+    /// The file that wrote `span` of the expanded text: an include, or the
+    /// unit when no file did.
+    fn file_of_text(&self, span: VirtualSpan) -> PathBuf {
+        self.place_or_site(span)
+            .map(|place| place.path)
+            .or_else(|| self.root_path())
+            .unwrap_or_default()
+    }
+
+    /// The file whose skipped text (not modelled by the parser) holds the name
+    /// of the referent: the uses in it are not sites. For a referent that is
+    /// not always written whole (a field, a table, a buffer), a word that is a
+    /// prefix of the name, three letters or more, counts: a field can be
+    /// abbreviated.
+    fn named_in_unmodelled_text(&self, referent: &Referent) -> Option<PathBuf> {
+        self.semantic
+            .symbols
+            .unmodelled_spans()
+            .iter()
+            .find(|span| {
+                self.text(**span)
+                    .is_some_and(|text| holds_name(text, &referent.name, !referent.whole_name))
+            })
+            .map(|span| self.file_of_text(*span))
     }
 
     /// The occurrences of `referent`, how many sites named it in text that
@@ -1740,22 +1756,55 @@ fn contains_folded(text: &str, name: &str) -> bool {
             .any(|window| window.eq_ignore_ascii_case(name))
 }
 
-/// Whether `text` has a word that is `name` or, when `name` is one word, an
-/// abbreviation of it. A name with a character that no word holds (a program
-/// path) is looked for as text.
-fn holds_name(text: &str, name: &str) -> bool {
+/// Whether `text` has a word, outside string literals, that is `name` or,
+/// with `abbreviated` and when `name` is one word, an abbreviation of it. A
+/// name with a character that no word holds (a program path) is looked for as
+/// text.
+fn holds_name(text: &str, name: &str, abbreviated: bool) -> bool {
     let word_char = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '#' | '$' | '%' | '&');
     if !name.chars().all(word_char) {
         return contains_folded(text, name);
     }
-    text.split(|c: char| !word_char(c)).any(|word| {
-        word.eq_ignore_ascii_case(name)
-            || (word.len() >= 3
-                && name
-                    .as_bytes()
-                    .get(..word.len())
-                    .is_some_and(|head| head.eq_ignore_ascii_case(word.as_bytes())))
+    code_outside_strings(text).any(|code| {
+        code.split(|c: char| !word_char(c)).any(|word| {
+            word.eq_ignore_ascii_case(name)
+                || (abbreviated
+                    && word.len() >= 3
+                    && name
+                        .as_bytes()
+                        .get(..word.len())
+                        .is_some_and(|head| head.eq_ignore_ascii_case(word.as_bytes())))
+        })
     })
+}
+
+/// The parts of `text` outside string literals (`"..."`, `'...'`, with `~` as
+/// the escape). A quote with no closing quote opens no literal, so a stray
+/// quote hides nothing.
+fn code_outside_strings(text: &str) -> impl Iterator<Item = &str> {
+    let bytes = text.as_bytes();
+    let mut parts = Vec::new();
+    let (mut start, mut at) = (0, 0);
+    while at < bytes.len() {
+        let quote = bytes[at];
+        if quote != b'"' && quote != b'\'' {
+            at += 1;
+            continue;
+        }
+        let mut end = at + 1;
+        while end < bytes.len() && bytes[end] != quote {
+            end += if bytes[end] == b'~' { 2 } else { 1 };
+        }
+        if end >= bytes.len() {
+            at += 1;
+            continue;
+        }
+        parts.push(&text[start..at]);
+        start = end + 1;
+        at = start;
+    }
+    parts.push(&text[start..]);
+    parts.into_iter()
 }
 
 /// Whether other files reach the referent through a handle.

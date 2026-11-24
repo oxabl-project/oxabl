@@ -996,7 +996,7 @@ impl Parser<'_> {
                     }
                     if self.check(Kind::When) {
                         self.advance();
-                        self.parse_expression().ok();
+                        self.parse_expression_dropped();
                     }
                     assignments.push(AssignPair {
                         target,
@@ -1348,7 +1348,7 @@ impl Parser<'_> {
                 self.peek().kind,
                 Kind::KwAs | Kind::Like | Kind::NoUndo | Kind::Period
             ) {
-                self.parse_expression().ok();
+                self.parse_expression_dropped();
             }
         }
 
@@ -1654,7 +1654,7 @@ impl Parser<'_> {
                 // Consume optional INIT value before AS/LIKE (some code specifies INIT first)
                 if self.check(Kind::Initial) {
                     self.advance();
-                    self.parse_expression().ok();
+                    self.parse_expression_dropped();
                 }
                 // NO-UNDO may appear before AS/LIKE (e.g. DEF INPUT PARAM p NO-UNDO LIKE t.f)
                 let mut no_undo = self.check(Kind::NoUndo);
@@ -1686,7 +1686,7 @@ impl Parser<'_> {
                         Kind::Initial => {
                             self.advance(); // consume INIT/INITIAL
                             // Consume the initial value expression
-                            self.parse_expression().ok();
+                            self.parse_expression_dropped();
                         }
                         Kind::Extent => {
                             self.advance(); // consume EXTENT
@@ -2065,7 +2065,9 @@ impl Parser<'_> {
                 });
             } else {
                 // Skip unknown tokens in temp-table definition (forward-compatibility)
+                let lo = self.current;
                 self.advance();
+                self.note_dropped(lo);
             }
         }
 
@@ -2229,7 +2231,9 @@ impl Parser<'_> {
                 });
             } else {
                 // Skip unknown tokens for forward-compatibility
+                let lo = self.current;
                 self.advance();
+                self.note_dropped(lo);
             }
         }
 
@@ -2619,7 +2623,7 @@ impl Parser<'_> {
                 self.advance(); // consume STOP-AFTER
                 // Consume the duration expression (may be integer literal or identifier)
                 if !self.check(Kind::Colon) && !self.at_end() {
-                    self.parse_expression().ok();
+                    self.parse_expression_dropped();
                 }
             }
         }
@@ -2811,13 +2815,13 @@ impl Parser<'_> {
         }
         if self.check(Kind::Equals) {
             self.advance(); // consume =
-            self.parse_expression().ok(); // from value
+            self.parse_expression_dropped(); // from value
             if self.check(Kind::To) {
                 self.advance(); // consume TO
-                self.parse_expression().ok(); // to value
+                self.parse_expression_dropped(); // to value
                 if self.check(Kind::By) {
                     self.advance(); // consume BY
-                    self.parse_expression().ok(); // by value
+                    self.parse_expression_dropped(); // by value
                 }
                 return true;
             }
@@ -2976,6 +2980,7 @@ impl Parser<'_> {
         // Optional PRESELECT EACH/FIRST/LAST table [lock] [WHERE cond] [lock]
         // Multiple tables may be comma-joined: PRESELECT EACH t1 NO-LOCK, EACH t2 NO-LOCK
         while self.check(Kind::Preselect) {
+            let preselect_start = self.current;
             self.advance(); // consume PRESELECT
             // Inner loop: handle comma-joined table entries
             loop {
@@ -2999,7 +3004,7 @@ impl Parser<'_> {
                 // optional WHERE clause
                 if self.check(Kind::KwWhere) {
                     self.advance();
-                    self.parse_expression().ok();
+                    self.parse_expression_dropped();
                 }
                 // lock type may also appear after WHERE
                 self.parse_lock_type();
@@ -3029,6 +3034,7 @@ impl Parser<'_> {
                     self.parse_postfix().ok(); // consume break field
                 }
             }
+            self.note_dropped(preselect_start);
         }
 
         // Expect colon (or period for legacy code)
@@ -3330,7 +3336,7 @@ impl Parser<'_> {
             // optional WHERE clause
             if self.check(Kind::KwWhere) {
                 self.advance();
-                self.parse_expression().ok();
+                self.parse_expression_dropped();
             }
             // trailing lock, USE-INDEX, NO-WAIT
             self.parse_lock_type();
@@ -3357,7 +3363,7 @@ impl Parser<'_> {
                 self.advance(); // consume BY
                 // consume the sort field expression (stops at ':' or '.')
                 if !self.check(Kind::Colon) && !self.check(Kind::Period) {
-                    self.parse_expression().ok();
+                    self.parse_expression_dropped();
                 }
                 // Optional DESCENDING / ASCENDING
                 if self.check(Kind::Descending) || self.check(Kind::Ascending) {
@@ -3365,7 +3371,7 @@ impl Parser<'_> {
                 }
             } else if self.check(Kind::KwWhile) {
                 self.advance(); // consume WHILE
-                self.parse_expression().ok(); // parse the condition
+                self.parse_expression_dropped(); // parse the condition
             } else if self.check(Kind::Transaction) {
                 self.advance();
             } else if self.check(Kind::On) {
@@ -4909,7 +4915,7 @@ impl Parser<'_> {
             // Also handles WHEN cond WITH/FRAME/. where there is no following display item.
             if self.check(Kind::When) {
                 self.advance(); // consume WHEN
-                self.parse_expression().ok(); // parse the condition
+                self.parse_expression_dropped(); // parse the condition
                 // If we're now at a statement terminator, the WHEN was trailing; restart loop
                 // so the outer while condition can exit cleanly.
                 if self.check(Kind::With)
@@ -4943,7 +4949,7 @@ impl Parser<'_> {
                     // AT column-number or @ column-reference
                     self.advance();
                     if !self.check(Kind::Period) && !self.check(Kind::With) {
-                        self.parse_expression().ok();
+                        self.parse_expression_dropped();
                     }
                 } else if self.check(Kind::ViewAs) {
                     // VIEW-AS widget-type [SIZE[CHARS] n BY m] — consume widget descriptor
@@ -5242,7 +5248,7 @@ impl Parser<'_> {
             // Optional WHEN condition: field = expr WHEN condition
             if self.check(Kind::When) {
                 self.advance(); // consume WHEN
-                self.parse_expression().ok(); // consume condition
+                self.parse_expression_dropped(); // consume condition
             }
             assignments.push(AssignPair { target, value });
         }
@@ -5652,8 +5658,10 @@ impl Parser<'_> {
         if !self.check(Kind::Fields) && !self.check(Kind::Except) {
             return;
         }
+        let lo = self.current;
         self.advance(); // consume FIELDS / EXCEPT
         if !self.check(Kind::LeftParen) {
+            self.note_dropped(lo);
             return;
         }
         let mut depth = 0usize;
@@ -5668,6 +5676,7 @@ impl Parser<'_> {
                 break;
             }
         }
+        self.note_dropped(lo);
     }
 
     /// Parses an optional lock type (NO-LOCK, SHARE-LOCK, EXCLUSIVE-LOCK)
@@ -6267,7 +6276,7 @@ impl Parser<'_> {
                         | Kind::PackagePrivate
                         | Kind::PackageProtected
                 ) {
-                    self.parse_expression().ok();
+                    self.parse_expression_dropped();
                 }
             } else {
                 break;
@@ -7041,6 +7050,7 @@ impl Parser<'_> {
         // Appears BEFORE the TO keyword: BUFFER-COPY src [USING|EXCEPT] f1 f2 TO target
         // Field names may be qualified: USING table.field or buf.field
         if self.check(Kind::Using) || self.check(Kind::Except) {
+            let lo = self.current;
             self.advance(); // consume USING/EXCEPT
             while Self::can_be_identifier(self.peek().kind) {
                 self.advance(); // consume field name (or table/buffer qualifier)
@@ -7052,6 +7062,7 @@ impl Parser<'_> {
                     }
                 }
             }
+            self.note_dropped(lo);
         }
 
         self.expect_kind(Kind::To, "Expected TO after source buffer in BUFFER-COPY")?;
@@ -7086,10 +7097,12 @@ impl Parser<'_> {
 
         // Optional USING or EXCEPT field-list clause (field1 field2 ...) before TO
         if self.check(Kind::Using) || self.check(Kind::Except) {
+            let lo = self.current;
             self.advance(); // consume USING/EXCEPT
             while Self::can_be_identifier(self.peek().kind) {
                 self.advance(); // consume each field name
             }
+            self.note_dropped(lo);
         }
 
         self.expect_kind(

@@ -19,7 +19,7 @@ span of the expanded text and what is written there
 | `Reference(node)` | Every expression the walk reaches, the field and each qualifier of a field access. The answer is `Semantic::references[node]`. |
 | `Run(node)`, `Using(node)` | A literal `RUN` target and a `USING` name. |
 | `Type(resolution)` | A class name in a type position: `NEW`, `CAST`, `INHERITS`, `IMPLEMENTS`, and the type of a `DEFINE`, parameter, property or function. A declared type has no span in the AST, so the pass finds the name after the declared name in the text. |
-| `Symbol(sym)` | A name in a statement position (`FIND b`, `CREATE tt`) and a temp-table field named through its qualifier. |
+| `Symbol(sym)` | A name in a statement position (`FIND b`, `CREATE tt`), a temp-table field named through its qualifier, and a temp-table, buffer or dataset named by a declaration (`TABLE FOR tt`, `DATASET FOR ds`, `DEFINE DATASET ds FOR tt` and its `DATA-RELATION`). The parameter that `TABLE FOR tt` declares is not a place of its own: the name there is the temp-table. |
 | `Table(id)`, `SchemaField(id)` | The table of `DEFINE BUFFER b FOR t`; the field of `LIKE table.field` (also when the field has its table's name), and a schema field that a temp-table copies with `LIKE`. |
 
 The same run also keeps the file behind each synthesized symbol: the class file

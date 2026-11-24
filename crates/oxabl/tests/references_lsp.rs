@@ -1867,3 +1867,288 @@ fn damaged_files_give_one_short_gap() {
     assert_eq!(logged.len(), 2, "{logged:?}");
     assert!(logged.iter().all(|line| line.len() < 300), "{logged:?}");
 }
+
+/// The warnings, of those that say the text oxabl does not model can hold
+/// uses, that the references of `needle` give.
+fn unmodelled_warnings(text: &str, needle: &str) -> Vec<String> {
+    warnings_in_one_program(text, needle)
+        .into_iter()
+        .filter(|warning| warning.contains("does not model"))
+        .collect()
+}
+
+#[test]
+fn names_in_text_the_parser_reads_and_drops_say_it_can_miss_uses() {
+    let field = "FIND FIRST Item.\nDISPLAY Item.ItemNum.\n";
+    let forms = [
+        (
+            "a FIELDS list",
+            format!("{field}FOR EACH Item FIELDS (ItemNum) NO-LOCK:\nEND.\n"),
+            "ItemNum",
+        ),
+        (
+            "a BUFFER-COPY EXCEPT list",
+            format!("{field}BUFFER-COPY Item EXCEPT ItemNum TO Item.\n"),
+            "ItemNum",
+        ),
+        (
+            "a temp-table LIKE EXCEPT list",
+            format!("{field}DEFINE TEMP-TABLE tt LIKE Item EXCEPT ItemNum.\n"),
+            "ItemNum",
+        ),
+        (
+            "a PRESELECT BY",
+            format!("{field}REPEAT PRESELECT EACH Item BY Item.ItemNum:\nEND.\n"),
+            "ItemNum",
+        ),
+        (
+            "a variable in a PRESELECT WHERE",
+            "DEFINE VARIABLE gcV AS INTEGER NO-UNDO.\ngcV = 1.\n\
+             REPEAT PRESELECT EACH Item WHERE Item.ItemNum = gcV:\nEND.\n"
+                .to_string(),
+            "gcV",
+        ),
+    ];
+    for (what, text, needle) in forms {
+        let shown = unmodelled_warnings(&text, needle);
+        assert_eq!(shown.len(), 1, "{what}: {shown:?}");
+    }
+
+    // The same statements without the dropped part give no warning.
+    let shown = unmodelled_warnings(
+        &format!(
+            "{field}FOR EACH Line NO-LOCK:\nEND.\nBUFFER-COPY Line TO Line.\n\
+             REPEAT PRESELECT EACH Line:\nEND.\n"
+        ),
+        "ItemNum",
+    );
+    assert_eq!(shown, Vec::<String>::new());
+}
+
+#[test]
+fn a_routine_or_a_variable_named_in_skipped_text_says_it_can_miss_uses() {
+    let function = "FUNCTION fnX RETURNS INTEGER ():\n    RETURN 1.\nEND FUNCTION.\n\
+                    DISPLAY fnX().\n";
+    let forms = [
+        (
+            "BY",
+            format!("{function}FOR EACH Item BY fnX():\nEND.\n"),
+            "fnX",
+        ),
+        (
+            "a joined WHERE",
+            format!("{function}FOR EACH Item, EACH Line WHERE Line.LineNum = fnX():\nEND.\n"),
+            "fnX",
+        ),
+        (
+            "an unmodelled statement",
+            format!("{function}UNDERLINE fnX().\n"),
+            "fnX",
+        ),
+        (
+            "DEFINE FRAME",
+            format!("{function}DEFINE FRAME f fnX() WITH 1 DOWN.\n"),
+            "fnX",
+        ),
+        (
+            "a variable in a joined WHERE",
+            "DEFINE VARIABLE gcV AS INTEGER NO-UNDO.\ngcV = 1.\n\
+             FOR EACH Item, EACH Line WHERE Line.LineNum = gcV:\nEND.\n"
+                .to_string(),
+            "gcV",
+        ),
+    ];
+    for (what, text, needle) in forms {
+        let shown = unmodelled_warnings(&text, needle);
+        assert_eq!(shown.len(), 1, "{what}: {shown:?}");
+    }
+
+    // The incoming calls read the same gap.
+    let text = format!("{function}FOR EACH Item BY fnX():\nEND.\n");
+    let ws = Workspace::new(&[
+        ("oxabl.toml", SCHEMA_CONFIG),
+        ("db/shop.df", SHOP_LINES),
+        ("one.p", &text),
+    ]);
+    let path = ws.path("one.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, &text);
+    let function_item = item(&mut session, &path, &text, "fnX", 0);
+    let (_, shown) = ask(
+        &mut session,
+        "callHierarchy/incomingCalls",
+        json!({"item": function_item}),
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|warning| warning.contains("does not model")),
+        "{shown:?}"
+    );
+
+    // The name in a string literal is no use of it.
+    let shown = unmodelled_warnings(&format!("{function}UNDERLINE \"fnX\" 'fnX'.\n"), "fnX");
+    assert_eq!(shown, Vec::<String>::new());
+    // A stray quote hides nothing that follows it.
+    let shown = unmodelled_warnings(&format!("{function}UNDERLINE \"a fnX().\n"), "fnX");
+    assert_eq!(shown.len(), 1, "{shown:?}");
+}
+
+#[test]
+fn a_prefix_of_a_field_name_in_skipped_text_counts_from_three_letters() {
+    let text = |word: &str| {
+        format!(
+            "FIND FIRST Item.\nDISPLAY Item.ItemNum.\nDEFINE BUFFER bI FOR Item.\n\
+             UNDERLINE bI.{word}.\n"
+        )
+    };
+    for word in ["ItemN", "Ite", "itemnum"] {
+        let shown = unmodelled_warnings(&text(word), "ItemNum");
+        assert_eq!(shown.len(), 1, "{word}: {shown:?}");
+    }
+    for word in ["It", "Xtem", "ItemNumber"] {
+        let shown = unmodelled_warnings(&text(word), "ItemNum");
+        assert_eq!(shown, Vec::<String>::new(), "{word}");
+    }
+}
+
+const TABLES_AS_PARAMETERS: &str = "DEFINE TEMP-TABLE ttZ NO-UNDO FIELD a AS INTEGER.\n\
+    DEFINE TEMP-TABLE ttY NO-UNDO FIELD b AS INTEGER.\n\
+    DEFINE DATASET dsZ FOR ttZ, ttY\n    DATA-RELATION r FOR ttZ, ttY RELATION-FIELDS (a, b).\n\
+    DEFINE INPUT PARAMETER TABLE FOR ttZ.\n\
+    DEFINE OUTPUT PARAMETER TABLE FOR ttZ.\n\
+    CREATE ttZ.\n";
+
+#[test]
+fn a_temp_table_named_in_a_parameter_or_a_dataset_is_a_reference() {
+    let ws = Workspace::new(&[("oxabl.toml", CONFIG), ("p.p", TABLES_AS_PARAMETERS)]);
+    let path = ws.path("p.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, TABLES_AS_PARAMETERS);
+    let (found, shown, _) = references_logged(&mut session, &path, TABLES_AS_PARAMETERS, "ttZ", 0);
+    // The definition, the dataset's buffer list and its relation, the two
+    // parameters and the use.
+    let places: Vec<Value> = (0..6)
+        .map(|at| location(&path, TABLES_AS_PARAMETERS, "ttZ", at))
+        .collect();
+    assert_eq!(found, sorted(places), "{shown:?}");
+    // The other temp-table of the dataset: its list and its relation.
+    let (found, _, _) = references_logged(&mut session, &path, TABLES_AS_PARAMETERS, "ttY", 0);
+    assert_eq!(found.len(), 3, "{found:?}");
+    // From the name in a parameter: the same temp-table.
+    let (found, _, _) = references_logged(&mut session, &path, TABLES_AS_PARAMETERS, "ttZ", 3);
+    assert_eq!(found.len(), 6, "{found:?}");
+    let (definition, _) = ask(
+        &mut session,
+        "textDocument/definition",
+        position(&path, TABLES_AS_PARAMETERS, "ttZ", 4),
+    );
+    assert_eq!(
+        definition,
+        json!([location(&path, TABLES_AS_PARAMETERS, "ttZ", 0)]),
+        "{definition}"
+    );
+}
+
+const DATASET_PARAMETER: &str = "DEFINE TEMP-TABLE ttZ NO-UNDO FIELD a AS INTEGER.\n\
+    DEFINE DATASET dsZ FOR ttZ.\n\
+    PROCEDURE load:\n    DEFINE INPUT-OUTPUT PARAMETER DATASET FOR dsZ.\nEND PROCEDURE.\n";
+
+#[test]
+fn a_dataset_named_in_a_parameter_is_a_reference() {
+    let ws = Workspace::new(&[("oxabl.toml", CONFIG), ("p.p", DATASET_PARAMETER)]);
+    let path = ws.path("p.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, DATASET_PARAMETER);
+    let (found, shown, _) = references_logged(&mut session, &path, DATASET_PARAMETER, "dsZ", 0);
+    assert_eq!(
+        found,
+        sorted(vec![
+            location(&path, DATASET_PARAMETER, "dsZ", 0),
+            location(&path, DATASET_PARAMETER, "dsZ", 1),
+        ]),
+        "{shown:?}"
+    );
+}
+
+#[test]
+fn a_damaged_or_skipped_include_names_its_own_file_once() {
+    let inc_damaged = "IF THEN ELSE DISPLAY.\n";
+    let inc_skipped = "UNDERLINE Item.ItemNum.\n";
+    let unit = "FIND FIRST Item.\nDISPLAY Item.ItemNum.\n";
+    for (what, include, expected) in [
+        ("damaged", inc_damaged, "inc.i has parse errors"),
+        ("skipped", inc_skipped, "of inc.i that oxabl does not model"),
+    ] {
+        let units: Vec<(String, String)> = ["a.p", "b.p", "c.p"]
+            .iter()
+            .map(|name| (name.to_string(), format!("{{inc.i}}\n{unit}")))
+            .collect();
+        let mut files: Vec<(&str, &str)> = vec![
+            ("oxabl.toml", SCHEMA_CONFIG),
+            ("db/shop.df", SHOP_LINES),
+            ("inc.i", include),
+        ];
+        files.extend(units.iter().map(|(n, t)| (n.as_str(), t.as_str())));
+        let ws = Workspace::new(&files);
+        let a = ws.path("a.p");
+        let mut session = Session::start(&ws.root);
+        session.open(&a, &units[0].1);
+        let (_, shown, _) = references_logged(&mut session, &a, &units[0].1, "ItemNum", 0);
+        assert_eq!(shown.len(), 1, "{what}: {shown:?}");
+        assert!(
+            shown[0].contains(expected) && !shown[0].contains("file(s)"),
+            "{what}: {shown:?}"
+        );
+    }
+}
+
+#[test]
+fn the_gaps_of_many_files_fold_into_one_line_for_each_kind() {
+    let kinds = [
+        (
+            "unmodelled",
+            "FIND FIRST Item.\nDISPLAY Item.ItemNum.\nUNDERLINE Item.ItemNum.\n",
+            "20 file(s)",
+            "does not model",
+        ),
+        (
+            "unresolved",
+            "FIND FIRST Item NO-LOCK NO-ERROR.\nDISPLAY ItemNum.\nDISPLAY Item.ItemNum.\n",
+            "20 name(s)",
+            "did not resolve",
+        ),
+    ];
+    for (what, text, count, reason) in kinds {
+        let names: Vec<String> = (0..20).map(|n| format!("f{n:02}.p")).collect();
+        let mut files: Vec<(&str, &str)> = vec![
+            ("oxabl.toml", SCHEMA_CONFIG),
+            ("db/shop.df", SHOP_LINES),
+            ("reads.p", "FIND FIRST Item.\nDISPLAY Item.ItemNum.\n"),
+        ];
+        files.extend(names.iter().map(|name| (name.as_str(), text)));
+        let ws = Workspace::new(&files);
+        let reads = ws.path("reads.p");
+        let mut session = Session::start(&ws.root);
+        session.open(&reads, "FIND FIRST Item.\nDISPLAY Item.ItemNum.\n");
+        let (_, shown, logged) = references_logged(
+            &mut session,
+            &reads,
+            "FIND FIRST Item.\nDISPLAY Item.ItemNum.\n",
+            "ItemNum",
+            0,
+        );
+        assert_eq!(shown.len(), 1, "{what}: {shown:?}");
+        assert!(
+            shown[0].len() < 300
+                && shown[0].contains(count)
+                && shown[0].contains("such as f")
+                && shown[0].contains(reason),
+            "{what}: {shown:?}"
+        );
+        assert!(
+            logged.iter().all(|line| line.len() < 300),
+            "{what}: {logged:?}"
+        );
+    }
+}

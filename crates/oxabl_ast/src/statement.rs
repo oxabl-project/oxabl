@@ -983,6 +983,10 @@ pub struct SkippedTail {
     pub names: Vec<Identifier>,
     /// The bytes of the skipped range, from its first token to its last.
     pub span: Span,
+    /// Ranges the parser read and dropped (a `FIELDS` or `EXCEPT` list, an
+    /// expression it did not keep): names in them are not sites. They are
+    /// not harvested into `names`.
+    pub dropped: Vec<Span>,
 }
 
 impl Statement {

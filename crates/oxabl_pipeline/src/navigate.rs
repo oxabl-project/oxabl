@@ -29,8 +29,8 @@ use oxabl_index::calls::{
 };
 use oxabl_index::search::{self, NameKind};
 use oxabl_semantic::{
-    IndexName, IndexedFileId, Resolution, Semantic, SiteTarget, SourceContext, SymbolId,
-    SymbolKind, UnresolvedReason,
+    IndexName, IndexedFileId, Resolution, Semantic, SiteTarget, SourceContext, SymbolFlags,
+    SymbolId, SymbolKind, UnresolvedReason,
 };
 use oxabl_workspace::is_include_fragment;
 
@@ -94,8 +94,8 @@ pub struct Navigation<'s, 'a> {
     pub(crate) expanded: &'s ExpandedFile,
     search_base: Option<PathBuf>,
     pub(crate) semantic: Semantic,
-    /// Whether the parser recovered from an error in the expanded text.
-    pub(crate) recovered: bool,
+    /// Where the parser first recovered from an error in the expanded text.
+    pub(crate) recovered: Option<VirtualSpan>,
     file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
     /// The unit's calls, extracted on the first `RUN` site asked about.
     calls: OnceCell<FileCalls>,
@@ -352,7 +352,12 @@ impl Navigation<'_, '_> {
         let (declared, declaration_index) = self.declarations.get_or_init(|| {
             let declared: Vec<SymbolId> = symbols
                 .iter()
-                .filter(|(_, symbol)| symbol.declaration != NodeId::DUMMY)
+                .filter(|(_, symbol)| {
+                    symbol.declaration != NodeId::DUMMY
+                        // `TABLE FOR tt` names the temp-table; the parameter
+                        // symbol is no place of its own.
+                        && !symbol.flags.contains(SymbolFlags::PARAM_TABLE_LIKE)
+                })
                 .map(|(sym, _)| sym)
                 .collect();
             let index = SpanIndex::new(

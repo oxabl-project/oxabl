@@ -2625,6 +2625,9 @@ impl<'a> ResolveWalker<'a> {
         if let Some(tail) = &stmt.skipped_tail {
             self.credit_unmodelled_names(&tail.names, scope);
             self.note_unmodelled_span(tail.span);
+            for span in &tail.dropped {
+                self.note_unmodelled_span(*span);
+            }
             // A class-shaped run in the tail starts with a harvested name, so
             // the first name bounds the scan.
             if let Some(first) = tail.names.first() {
@@ -2673,6 +2676,16 @@ impl<'a> ResolveWalker<'a> {
                         type_source: TypeSource::Like { source },
                         ..
                     } => self.note_like_source(source, scope, false),
+                    ParameterType::Handle {
+                        kind: HandleParamKind::Table,
+                        name,
+                        ..
+                    } => self.note_named_table(name, scope, false),
+                    ParameterType::Handle {
+                        kind: HandleParamKind::Dataset,
+                        name,
+                        ..
+                    } => self.note_named_dataset(name, scope),
                     _ => {}
                 }
             }
@@ -2700,7 +2713,24 @@ impl<'a> ResolveWalker<'a> {
                 let (BufferTarget::Table(t) | BufferTarget::TempTable(t)) = target;
                 self.credit_buffer_target(name, t, scope);
             }
-            StatementKind::DefineDataset { .. } => {}
+            StatementKind::DefineDataset {
+                buffers,
+                data_relations,
+                parent_id_relations,
+                ..
+            } => {
+                let relation_buffers = data_relations
+                    .iter()
+                    .flat_map(|r| [&r.parent_buffer, &r.child_buffer])
+                    .chain(
+                        parent_id_relations
+                            .iter()
+                            .flat_map(|r| [&r.parent_buffer, &r.child_buffer]),
+                    );
+                for buffer in buffers.iter().chain(relation_buffers) {
+                    self.note_named_table(buffer, scope, true);
+                }
+            }
             StatementKind::DefineDataSource { source_buffers, .. } => {
                 for buffer in source_buffers {
                     self.resolve_record_ident(
@@ -5167,6 +5197,38 @@ impl<'a> ResolveWalker<'a> {
         let sym = self.synth_table_buffer_symbol(tid, &atom, id);
         self.note_site(id.span, SiteTarget::Symbol(sym));
         Some(sym)
+    }
+
+    /// Note the temp-table, buffer or (with `schema`) schema table that a
+    /// declaration names (`TABLE FOR tt`, `DEFINE DATASET ds FOR tt`), for
+    /// navigation. No read is credited.
+    fn note_named_table(&mut self, id: &Identifier, scope: ScopeId, schema: bool) {
+        if !self.ctx.record_sites {
+            return;
+        }
+        match self.lookup_statement_ident(id, scope, &[NamespaceId::Buffers, NamespaceId::Tables]) {
+            Some(sym) => self.note_site(id.span, SiteTarget::Symbol(sym)),
+            None if schema => {
+                self.schema_default_buffer(id);
+            }
+            None => {}
+        }
+    }
+
+    /// Note the dataset that `DATASET FOR ds` names. The parameter takes the
+    /// name in the same scope, so the search starts past the parameters.
+    fn note_named_dataset(&mut self, id: &Identifier, scope: ScopeId) {
+        if !self.ctx.record_sites {
+            return;
+        }
+        let atom = fold_atom(&id.name);
+        let dataset = self.tree.ancestors(scope).find_map(|at| {
+            let sym = self.tree.get(at).get_in(NamespaceId::Values, &atom)?;
+            (self.symbols.get(sym).kind == SymbolKind::Dataset).then_some(sym)
+        });
+        if let Some(sym) = dataset {
+            self.note_site(id.span, SiteTarget::Symbol(sym));
+        }
     }
 
     /// Note the table a declaration copies with `LIKE`: the table of
