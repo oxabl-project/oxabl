@@ -1,0 +1,99 @@
+{
+  "about": "Texts of oxabl.toml with the keyword case the server uses for them. The vitest file src/snippets.test.ts and the Rust test crates/oxabl/tests/vscode_snippets.rs both read this file: the first checks keywordCaseOf, the second checks WorkspaceConfig. `expected` is what the server uses (upper when the file is rejected). `rejected` is true when the server refuses the text. `reader` is the answer of keywordCaseOf where it is known to differ from `expected`.",
+  "cases": [
+    {
+      "name": "plain table",
+      "toml": ["[workspace]", "name = \"p\"", "[workspace.style]", "keyword_case = \"Lowercase\""],
+      "expected": "lower"
+    },
+    {
+      "name": "spaces in the header and a comment after the value",
+      "toml": ["[workspace]", "name = \"p\"", "[ workspace . style ]", "keyword_case=\"Lowercase\" # keep"],
+      "expected": "lower"
+    },
+    {
+      "name": "dotted key under workspace",
+      "toml": ["[workspace]", "name = \"p\"", "style.keyword_case = \"Lowercase\""],
+      "expected": "lower"
+    },
+    {
+      "name": "inline style table",
+      "toml": ["[workspace]", "name = \"p\"", "style = { indent_size = 2, keyword_case = \"Lowercase\" }"],
+      "expected": "lower"
+    },
+    {
+      "name": "dotted key from the root",
+      "toml": ["workspace.name = \"p\"", "workspace.style.keyword_case = \"Lowercase\""],
+      "expected": "lower"
+    },
+    {
+      "name": "quoted key",
+      "toml": ["[workspace]", "name = \"p\"", "[workspace.style]", "\"keyword_case\" = \"Lowercase\""],
+      "expected": "lower"
+    },
+    {
+      "name": "quoted segment in the header",
+      "toml": ["[workspace]", "name = \"p\"", "[workspace.\"style\"]", "keyword_case = 'Lowercase'"],
+      "expected": "lower"
+    },
+    {
+      "name": "whole workspace table inline",
+      "toml": ["workspace = { name = \"p\", style = { keyword_case = \"Lowercase\" } }"],
+      "expected": "lower"
+    },
+    {
+      "name": "a real setting after a multi-line string that holds a header",
+      "toml": ["[workspace]", "name = \"\"\"", "[other]", "\"\"\"", "style.keyword_case = \"Lowercase\""],
+      "expected": "lower"
+    },
+    {
+      "name": "a setting inside a multi-line string",
+      "toml": ["[workspace]", "name = '''", "[workspace.style]", "keyword_case = \"Lowercase\"", "'''"],
+      "expected": "upper"
+    },
+    {
+      "name": "Uppercase",
+      "toml": ["[workspace]", "name = \"p\"", "[workspace.style]", "keyword_case = \"Uppercase\""],
+      "expected": "upper"
+    },
+    {
+      "name": "Preserve",
+      "toml": ["[workspace]", "name = \"p\"", "[workspace.style]", "keyword_case = \"Preserve\""],
+      "expected": "upper"
+    },
+    {
+      "name": "no style setting",
+      "toml": ["[workspace]", "name = \"p\"", "[workspace.style]", "indent_size = 2"],
+      "expected": "upper"
+    },
+    {
+      "name": "no style table",
+      "toml": ["[workspace]", "name = \"p\""],
+      "expected": "upper"
+    },
+    {
+      "name": "the setting is in a comment",
+      "toml": ["[workspace]", "name = \"p\"", "[workspace.style]", "# keyword_case = \"Lowercase\""],
+      "expected": "upper"
+    },
+    {
+      "name": "the same key in another table",
+      "toml": ["[workspace]", "name = \"p\"", "[other]", "keyword_case = \"Lowercase\""],
+      "expected": "upper",
+      "rejected": true
+    },
+    {
+      "name": "an array of tables",
+      "toml": ["[workspace]", "name = \"p\"", "[[workspace.style]]", "keyword_case = \"Lowercase\""],
+      "expected": "upper",
+      "rejected": true
+    },
+    {
+      "name": "an unknown key next to the setting",
+      "toml": ["[workspace]", "name = \"p\"", "unknown_key = 1", "[workspace.style]", "keyword_case = \"Lowercase\""],
+      "expected": "upper",
+      "rejected": true,
+      "reader": "lower"
+    }
+  ]
+}

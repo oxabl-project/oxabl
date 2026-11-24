@@ -14,6 +14,7 @@ import { InactiveRegions } from "./inactiveRegions";
 import { IncluderContexts } from "./includerContext";
 import { installRecordPath, isManaged } from "./install";
 import { SchemaBrowser } from "./schemaView";
+import { registerSnippets } from "./snippetCompletion";
 import { installSkill } from "./skill";
 import { registerUpdates } from "./updates";
 
@@ -96,6 +97,10 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
   // Not awaited: an update check never delays the language client.
   registerUpdates(context, log, cli);
   applyBuildEnabled();
+  const snippets = await registerSnippets(context.extensionPath, log);
+  if (snippets) {
+    context.subscriptions.push(snippets);
+  }
 
   await startClient();
   void cli.offerInstall();

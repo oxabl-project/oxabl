@@ -46,6 +46,13 @@ Install the extension and open an ABL file. These features need nothing else:
 - **Editing.** Word selection knows ABL names such as `my-var-name` and
   `&SCOPED-DEFINE`. Lines indent after `DO:` and similar blocks, and fold on
   `&ANALYZE-SUSPEND` sections and `// #region` comments.
+- **Snippets.** Type a prefix and choose the snippet from the suggestions:
+  `find` (`FIND FIRST` and an `IF AVAILABLE` test), `foreach`, `defvar`,
+  `deftt`, `proc`, `function`, `method`, `class` and `trycatch`. Tab moves
+  between the placeholders. The snippets write keywords in the case of
+  `keyword_case` in `[workspace.style]` of the nearest `oxabl.toml`. Upper case
+  is the default, also for `Preserve`. The placeholders hold sample names, not
+  names from your schema.
 
 ## What needs the oxabl language server
 

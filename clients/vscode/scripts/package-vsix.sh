@@ -46,6 +46,7 @@ for required in \
   extension/language-configuration.json \
   extension/syntaxes/abl.tmLanguage.json \
   extension/syntaxes/abl.markdown.tmLanguage.json \
+  extension/snippets/abl.json \
   extension/schemas/oxabl.schema.json; do
   if ! grep -qxF "$required" <<<"$entries"; then
     echo "!! $vsix is missing $required" >&2
