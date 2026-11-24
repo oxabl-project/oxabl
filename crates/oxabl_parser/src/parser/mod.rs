@@ -2258,7 +2258,10 @@ impl<'a> Parser<'a> {
                 }
 
                 let name = self.parse_identifier()?;
-                let (type_source, extent) = self.parse_type_source_with_extent()?;
+                let (type_source, mut extent) = self.parse_type_source_with_extent()?;
+                if matches!(type_source, TypeSource::Like { .. }) {
+                    extent = self.parse_extent_clause();
+                }
                 let no_undo = if self.check(Kind::NoUndo) {
                     self.advance();
                     true

@@ -3681,11 +3681,13 @@ impl Parser<'_> {
         // Identifier("config_18") + DecimalLiteral(".4") + DecimalLiteral(".2") + Identifier("_extra").
         // The name is the source text through the last of these tokens.
         let mut dotted = false;
-        while self.check(Kind::DecimalLiteral) {
+        // Every token must touch the one before it, so the name holds no
+        // whitespace or comment.
+        while self.check(Kind::DecimalLiteral) && self.peek().start == self.prev_end() as usize {
             self.advance(); // consume ".4", ".2", etc.
             dotted = true;
             // An underscore/alpha-led segment directly following (e.g. "_data") is a separate Identifier.
-            if self.check(Kind::Identifier) {
+            if self.check(Kind::Identifier) && self.peek().start == self.prev_end() as usize {
                 self.advance();
             }
         }

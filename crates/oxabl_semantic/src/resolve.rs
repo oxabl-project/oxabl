@@ -77,7 +77,11 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
                         format!("value:{}{}", canonical_data_type(ty), extent_key(*extent))
                     }
                     TypeSource::Like { source } => {
-                        format!("like:{}", source.name.to_ascii_lowercase())
+                        format!(
+                            "like:{}{}",
+                            source.name.to_ascii_lowercase(),
+                            extent_key(*extent)
+                        )
                     }
                 },
                 ParameterType::Handle { kind, passing, .. } => format!(
@@ -297,6 +301,9 @@ struct Walker<'a> {
     arm_path: ArmPath,
     /// Arm path of each symbol declared inside an `&IF` arm.
     decl_arms: FxHashMap<SymbolId, ArmPath>,
+    /// Directions of the `DATASET FOR` parameters that name a dataset of the
+    /// same scope, so a repeated direction still reports a duplicate.
+    dataset_param_dirs: FxHashSet<(SymbolId, u32)>,
 }
 
 impl<'a> Walker<'a> {
@@ -311,6 +318,7 @@ impl<'a> Walker<'a> {
             diagnostics: Vec::new(),
             arm_path: Vec::new(),
             decl_arms: FxHashMap::default(),
+            dataset_param_dirs: FxHashSet::default(),
         }
     }
 
@@ -999,10 +1007,10 @@ impl<'a> Walker<'a> {
                 // can tell them from the `*-HANDLE` forms, whose names really
                 // are handle values. See `SymbolFlags::PARAM_TABLE_LIKE`.
                 let table_like = matches!(kind, HandleParamKind::Table | HandleParamKind::Dataset);
-                // `INPUT` and `OUTPUT TABLE FOR t` in one procedure name the
-                // same table twice: the second declares nothing new.
-                if table_like && self.repeats_table_param_in_other_direction(scope, name, dir_flag)
-                {
+                // `INPUT` and `OUTPUT TABLE FOR t` in one scope name the same
+                // table twice, and `DATASET FOR ds` names the dataset `ds`:
+                // neither declares a new name.
+                if table_like && self.names_existing_table_or_dataset(scope, name, kind, dir_flag) {
                     return;
                 }
                 self.declare(
@@ -1019,27 +1027,31 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// True when `scope` already holds a `TABLE FOR` / `DATASET FOR` parameter
-    /// of this name with another direction.
-    fn repeats_table_param_in_other_direction(
-        &self,
+    /// True when a `TABLE FOR` / `DATASET FOR` parameter declares nothing:
+    /// the scope holds the dataset it names, or a parameter of this name in
+    /// another direction. That parameter then also carries the new direction.
+    /// A repeat of a direction already seen is a real duplicate and is not
+    /// absorbed.
+    fn names_existing_table_or_dataset(
+        &mut self,
         scope: ScopeId,
         name: &Identifier,
+        kind: &HandleParamKind,
         dir_flag: SymbolFlags,
     ) -> bool {
-        const DIRECTIONS: SymbolFlags = SymbolFlags::PARAM_INPUT
-            .union(SymbolFlags::PARAM_OUTPUT)
-            .union(SymbolFlags::PARAM_INPUT_OUT)
-            .union(SymbolFlags::PARAM_RETURN);
         let atom = fold_atom(&name.name);
-        self.tree
-            .get(scope)
-            .get_in(NamespaceId::Values, &atom)
-            .map(|prior| self.symbols.get(prior))
-            .is_some_and(|prior| {
-                prior.flags.contains(SymbolFlags::PARAM_TABLE_LIKE)
-                    && prior.flags.intersection(DIRECTIONS) != dir_flag
-            })
+        let Some(prior) = self.tree.get(scope).get_in(NamespaceId::Values, &atom) else {
+            return false;
+        };
+        let sym = self.symbols.get(prior);
+        if sym.kind == SymbolKind::Dataset && *kind == HandleParamKind::Dataset {
+            return self.dataset_param_dirs.insert((prior, dir_flag.bits()));
+        }
+        if !sym.flags.contains(SymbolFlags::PARAM_TABLE_LIKE) || sym.flags.contains(dir_flag) {
+            return false;
+        }
+        self.symbols.get_mut(prior).flags |= dir_flag;
+        true
     }
 
     fn declare_temp_table(
