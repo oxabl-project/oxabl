@@ -212,3 +212,64 @@ fn a_name_no_ancestor_declares_is_still_undefined() {
 
     assert!(codes(&findings).contains(&"LINT0001"), "{findings:?}");
 }
+
+/// The model of `source` with the files `classes` in the workspace.
+fn analyse_in(classes: &[(&str, &str)], source: &str) -> Semantic {
+    let mut fs = InMemoryFileSystem::new();
+    for (path, text) in classes {
+        fs.insert(PathBuf::from(path), *text);
+    }
+    let dirs = vec![PathBuf::from("/src")];
+    let index = BatchIndex::new(&fs, &dirs);
+    let schema = customer_schema();
+    let stmts = parse(source);
+    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+    ctx.schema_loaded = true;
+    oxabl_semantic::analyze_file(&stmts, &ctx)
+}
+
+#[test]
+fn a_temp_table_of_a_class_below_the_buffer_does_not_hide_its_table() {
+    let sem = analyse_in(
+        &[
+            (
+                "/src/pkg/top.cls",
+                "CLASS pkg.top:\n\
+                 DEFINE PROTECTED BUFFER deep_ FOR Customer.\n\
+                 END CLASS.",
+            ),
+            (
+                BASE_PATH,
+                "CLASS pkg.base INHERITS pkg.top:\n\
+                 DEFINE PROTECTED TEMP-TABLE Customer NO-UNDO FIELD z AS INTEGER.\n\
+                 END CLASS.",
+            ),
+        ],
+        &child("FIND FIRST deep_."),
+    );
+
+    assert_eq!(
+        table_of(&sem, "deep_").1.as_deref(),
+        Some("customer"),
+        "`deep_` is bound where it is declared, and `pkg.base` is below that"
+    );
+}
+
+#[test]
+fn a_buffer_above_an_unreadable_class_reads_no_table() {
+    let sem = analyse_in(
+        &[(
+            BASE_PATH,
+            "CLASS pkg.base INHERITS pkg.absent:\n\
+             DEFINE PROTECTED BUFFER cust_ FOR Customer.\n\
+             END CLASS.",
+        )],
+        &child("FIND FIRST cust_."),
+    );
+
+    assert_eq!(
+        table_of(&sem, "cust_").1,
+        None,
+        "`pkg.absent` may define a temp-table `Customer`"
+    );
+}

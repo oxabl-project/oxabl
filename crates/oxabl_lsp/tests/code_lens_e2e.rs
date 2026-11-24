@@ -278,3 +278,24 @@ fn transactions_enable_lenses_and_include_first_main_keeps_its_root_position() {
     );
     client.close();
 }
+
+#[test]
+fn a_lens_names_the_table_of_an_inherited_buffer() {
+    let root = fixture("enable = [\"strict.access\"]");
+    std::fs::create_dir_all(root.path().join("pkg")).unwrap();
+    std::fs::write(
+        root.path().join("pkg/Root.cls"),
+        "CLASS pkg.Root:\n    DEFINE PROTECTED BUFFER cust_ FOR customer.\nEND CLASS.\n",
+    )
+    .unwrap();
+    let source = "USING pkg.*.\nCLASS Sub INHERITS Root:\n    METHOD PUBLIC VOID Run():\n        FIND FIRST cust_ NO-LOCK NO-ERROR.\n    END METHOD.\nEND CLASS.\n";
+    let (mut client, _) = Client::new(&root, true, false);
+    let params = client.open(&root, "Sub.cls", source);
+    let lenses = client.ready(params);
+    let titles: Vec<_> = lenses
+        .iter()
+        .map(|l| l.command.as_ref().unwrap().title.as_str())
+        .collect();
+    assert!(titles.contains(&"reads customer"), "{titles:?}");
+    client.close();
+}

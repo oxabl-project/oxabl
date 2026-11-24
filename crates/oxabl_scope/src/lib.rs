@@ -66,9 +66,10 @@ mod scopes;
 mod txn;
 
 pub use model::{
-    BlockScopes, BlockUnknown, BlockUpdate, Buffer, BufferId, BufferKind, Lock, LockMode, ReadKind,
-    RecordRead, Reference, Scope, ScopeKind, Table, Transaction, TxKind, UnitScopes, Unknown,
-    UnknownReason, Update, UpdateKind, Written,
+    BlockScopes, BlockUnknown, BlockUpdate, Buffer, BufferId, BufferKind, Inherited, InheritedKind,
+    InheritedRecord, InheritedTable, Lock, LockMode, ReadKind, RecordRead, Reference, Scope,
+    ScopeKind, Table, Transaction, TxKind, UnitScopes, Unknown, UnknownReason, Update, UpdateKind,
+    Written,
 };
 
 use oxabl_ast::{Span, Statement};
@@ -261,8 +262,27 @@ pub fn analyze_tokens(
     schema: Option<&Schema>,
     options: &ScopeOptions<'_>,
 ) -> FileScopes {
+    analyze_tokens_inherited(
+        program,
+        source,
+        tokens,
+        schema,
+        options,
+        &Inherited::default(),
+    )
+}
+
+/// [`analyze_tokens`] for a class that inherits buffers and temp-tables.
+pub fn analyze_tokens_inherited(
+    program: &[Statement],
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+    schema: Option<&Schema>,
+    options: &ScopeOptions<'_>,
+    inherited: &Inherited,
+) -> FileScopes {
     let flow = oxabl_flow::build_file_tokens(program, source, tokens, &options.flow);
-    analyze_flow(program, source, tokens, &flow, schema, options)
+    analyze_flow_inherited(program, source, tokens, &flow, schema, options, inherited)
 }
 
 /// [`analyze_tokens`] over the file's CFGs, already built from the same
@@ -274,6 +294,27 @@ pub fn analyze_flow(
     flow: &oxabl_flow::FileFlow,
     schema: Option<&Schema>,
     options: &ScopeOptions<'_>,
+) -> FileScopes {
+    analyze_flow_inherited(
+        program,
+        source,
+        tokens,
+        flow,
+        schema,
+        options,
+        &Inherited::default(),
+    )
+}
+
+/// [`analyze_flow`] for a class that inherits buffers and temp-tables.
+pub fn analyze_flow_inherited(
+    program: &[Statement],
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+    flow: &oxabl_flow::FileFlow,
+    schema: Option<&Schema>,
+    options: &ScopeOptions<'_>,
+    inherited: &Inherited,
 ) -> FileScopes {
     let collected = collect::collect(program, source, tokens, flow, options);
     let mut file_unknown: Vec<Unknown> = Vec::new();
@@ -289,7 +330,7 @@ pub fn analyze_flow(
             at: Span::DUMMY,
         });
     }
-    let mut res = resolve::resolve(&collected, flow, schema);
+    let mut res = resolve::resolve(&collected, flow, schema, inherited);
     let scope_of = scopes::assign(&mut res, flow);
 
     // Unknowns: per buffer, per unit (every buffer the unit can see), file.

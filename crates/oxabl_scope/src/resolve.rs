@@ -12,15 +12,15 @@ use oxabl_flow::{BlockId, FileFlow, UnitId};
 use oxabl_schema::{FieldResolution, Schema};
 use std::cell::RefCell;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::collect::{
     Collected, DefBuffer, Folded, Form, Phrase, RawRef, ReadTarget, Role, What, fold, last_segment,
 };
 use crate::model::{
-    Buffer, BufferId, BufferKind, Lock, LockMode, ReadKind, RecordRead, Table, Unknown,
-    UnknownReason, Update, UpdateKind, Written,
+    Buffer, BufferId, BufferKind, Inherited, InheritedKind, InheritedRecord, InheritedTable, Lock,
+    LockMode, ReadKind, RecordRead, Table, Unknown, UnknownReason, Update, UpdateKind, Written,
 };
 
 /// A resolved reference.
@@ -154,8 +154,13 @@ impl<'a> ExactFields<'a> {
     }
 }
 
-pub(crate) fn resolve(c: &Collected, flow: &FileFlow, schema: Option<&Schema>) -> Resolved {
-    let mut r = Resolver::new(c, flow, schema);
+pub(crate) fn resolve(
+    c: &Collected,
+    flow: &FileFlow,
+    schema: Option<&Schema>,
+    inherited: &Inherited,
+) -> Resolved {
+    let mut r = Resolver::new(c, flow, schema, inherited);
     r.run();
     r.out
 }
@@ -167,6 +172,13 @@ struct Resolver<'a> {
     defined: ByName<usize>,
     temp_tables: ByName<usize>,
     variables: ByName<()>,
+    /// The records the class inherits, by folded name.
+    inherited: FxHashMap<&'a str, &'a InheritedRecord>,
+    /// A superclass that was not read may define any other name.
+    opaque: bool,
+    /// Buffers of an inherited temp-table: its fields are not the fields of a
+    /// temp-table of the file that has the same name.
+    inherited_tt: FxHashSet<BufferId>,
     /// Schema tables by folded name, and their fields by folded word.
     tables: RefCell<FxHashMap<String, Option<&'a oxabl_schema::Table>>>,
     fields: RefCell<FxHashMap<String, FxHashMap<String, Has>>>,
@@ -191,7 +203,12 @@ struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    fn new(c: &'a Collected, flow: &'a FileFlow, schema: Option<&'a Schema>) -> Self {
+    fn new(
+        c: &'a Collected,
+        flow: &'a FileFlow,
+        schema: Option<&'a Schema>,
+        inherited: &'a Inherited,
+    ) -> Self {
         let parent = flow.units().iter().map(|u| u.unit().parent).collect();
         let mut defined = ByName::default();
         for (i, d) in c.buffers.iter().enumerate() {
@@ -212,6 +229,13 @@ impl<'a> Resolver<'a> {
             defined,
             temp_tables,
             variables,
+            inherited: inherited
+                .records
+                .iter()
+                .map(|r| (r.name.as_str(), r))
+                .collect(),
+            opaque: inherited.opaque,
+            inherited_tt: FxHashSet::default(),
             tables: RefCell::default(),
             fields: RefCell::default(),
             exact: RefCell::default(),
@@ -332,6 +356,7 @@ impl<'a> Resolver<'a> {
         let d: &DefBuffer = &self.c.buffers[i];
         let key = fold(last_segment(&d.table));
         let tt = self.temp_table_in(&key, d.unit);
+        let mut inherited_tt = false;
         let table = match tt {
             Some(t) => {
                 let t = &self.c.temp_tables[t];
@@ -344,9 +369,16 @@ impl<'a> Resolver<'a> {
                 name: d.table.clone(),
                 no_undo: false,
             },
-            None => self.db_table(&key, last_segment(&d.table)),
+            None => {
+                let (table, inherited) = self.for_table(&key, last_segment(&d.table));
+                inherited_tt = inherited;
+                table
+            }
         };
         let id = self.new_buffer(&d.name, d.kind, table, d.unit, Some(d.at));
+        if inherited_tt {
+            self.inherited_tt.insert(id);
+        }
         if let Some(t) = tt {
             self.temp_table_of.insert(id, t);
         }
@@ -362,6 +394,43 @@ impl<'a> Resolver<'a> {
         match self.schema_table(key) {
             Some(t) => Table::Database(t.display_name.clone()),
             None => Table::Unknown(written.to_string()),
+        }
+    }
+
+    /// What an inherited record stands for, and whether it is a temp-table.
+    fn bound(&self, record: &InheritedRecord) -> (Table, bool) {
+        match &record.table {
+            InheritedTable::TempTable(name) => (
+                Table::TempTable {
+                    name: name.clone(),
+                    no_undo: false,
+                },
+                true,
+            ),
+            InheritedTable::Named(name) => {
+                let written = last_segment(name);
+                (self.db_table(&fold(written), written), false)
+            }
+            InheritedTable::Unknown(name) => (Table::Unknown(name.clone()), false),
+        }
+    }
+
+    /// The table of a name that no definition of the file explains: a table of
+    /// the schema, unless a superclass that was not read may define it.
+    fn schema_or_unknown(&self, key: &str, written: &str) -> Table {
+        if self.opaque {
+            Table::Unknown(written.to_string())
+        } else {
+            self.db_table(key, written)
+        }
+    }
+
+    /// The table a `FOR` names where the file defines no temp-table of it. Only
+    /// a temp-table of a superclass can be the target: a buffer cannot.
+    fn for_table(&self, key: &str, written: &str) -> (Table, bool) {
+        match self.inherited.get(key) {
+            Some(r) if r.kind == InheritedKind::TempTable => self.bound(r),
+            _ => (self.schema_or_unknown(key, written), false),
         }
     }
 
@@ -398,11 +467,20 @@ impl<'a> Resolver<'a> {
         if let Some(id) = self.defaults.get(key, main) {
             return Some(id);
         }
+        if let Some(record) = self.inherited.get(key) {
+            let (table, temp_table) = self.bound(record);
+            let id = self.new_buffer(written, BufferKind::Default, table, main, None);
+            if temp_table {
+                self.inherited_tt.insert(id);
+            }
+            self.defaults.insert_first(key, main, id);
+            return Some(id);
+        }
         let known = self.schema_table(key).is_some();
         if !known && !create {
             return None;
         }
-        let table = self.db_table(key, written);
+        let table = self.schema_or_unknown(key, written);
         let id = self.new_buffer(written, BufferKind::Default, table, main, None);
         self.defaults.insert_first(key, main, id);
         Some(id)
@@ -667,7 +745,11 @@ impl<'a> Resolver<'a> {
         // A CAN-FIND's own table, read by name.
         let private_hit = privates.iter().any(|&p| {
             let name = &self.c.privates[p].1;
-            match self.table_has_field(&self.private_table(name, unit), None, word) {
+            let (table, inherited_tt) = self.private_table(name, unit);
+            if inherited_tt {
+                return true;
+            }
+            match self.table_has_field(&table, None, word) {
                 Has::Exact | Has::Maybe => true,
                 Has::Prefix => !exact_only,
                 Has::No => false,
@@ -691,12 +773,17 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn private_table(&self, name: &str, unit: UnitId) -> Table {
+    /// The table of a `CAN-FIND` buffer, and whether it is an inherited
+    /// temp-table.
+    fn private_table(&self, name: &str, unit: UnitId) -> (Table, bool) {
         if let Some(t) = self.temp_table_in(name, unit) {
-            return Table::TempTable {
-                name: self.c.temp_tables[t].name.clone(),
-                no_undo: true,
-            };
+            return (
+                Table::TempTable {
+                    name: self.c.temp_tables[t].name.clone(),
+                    no_undo: true,
+                },
+                false,
+            );
         }
         let def = self.find(&self.defined, name, unit);
         let key = match def {
@@ -704,15 +791,24 @@ impl<'a> Resolver<'a> {
             None => name.to_string(),
         };
         if let Some(t) = self.temp_table_in(&key, unit) {
-            return Table::TempTable {
-                name: self.c.temp_tables[t].name.clone(),
-                no_undo: true,
-            };
+            return (
+                Table::TempTable {
+                    name: self.c.temp_tables[t].name.clone(),
+                    no_undo: true,
+                },
+                false,
+            );
         }
-        self.db_table(&key, &key)
+        match (def, self.inherited.get(key.as_str())) {
+            (None, Some(record)) => self.bound(record),
+            _ => self.for_table(&key, &key),
+        }
     }
 
     fn has_field(&self, b: BufferId, word: &str) -> Has {
+        if self.inherited_tt.contains(&b) {
+            return Has::Maybe;
+        }
         let buffer = &self.out.buffers[b.index()];
         self.table_has_field(&buffer.table, self.temp_table_of.get(&b).copied(), word)
     }
@@ -774,6 +870,7 @@ impl<'a> Resolver<'a> {
                 None => TableSlot::Unknown,
             },
             Table::Unknown(_) => TableSlot::Unknown,
+            Table::TempTable { .. } if self.inherited_tt.contains(&b) => TableSlot::Unknown,
             Table::TempTable { name, .. } => {
                 let tt = self.temp_table_of.get(&b).copied().or_else(|| {
                     self.c
@@ -940,7 +1037,7 @@ impl<'a> Resolver<'a> {
                 // A CAN-FIND reads with a buffer of its own: only its table
                 // counts.
                 ReadTarget::Private => {
-                    let table =
+                    let (table, _) =
                         self.private_table(&Folded::new(last_segment(&read.name)), read.unit);
                     self.hidden_lock(read, &table);
                     self.out.reads.push(RecordRead {

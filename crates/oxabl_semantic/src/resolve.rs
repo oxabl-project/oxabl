@@ -41,13 +41,14 @@ use smallvec::SmallVec;
 
 use crate::builtin_classes::{BuiltinClass, builtin_class};
 use crate::index::ImportCandidate;
+use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_records};
 use crate::symbol::RecordSource;
 use crate::{
     AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
     LocateKind, Located, MemberDescriptor, MemberRecord, MemberType, NamespaceId, NodeIndexVec,
     ResolvedType, ScopeId, ScopeKind, ScopeTree, Site, SiteTarget, SupertypeRef, Supertypes,
-    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun, builtins, diagnostics,
-    resolve_span,
+    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun, WorkspaceIndex, builtins,
+    diagnostics, resolve_span,
 };
 
 fn method_signature(parameters: &[Statement]) -> Vec<String> {
@@ -1526,6 +1527,9 @@ struct CrossFileState {
     /// it are named, and a chain of depth five under twenty references costs five
     /// lookups rather than a hundred.
     inherited_walked: FxHashSet<SymbolId>,
+    /// The buffers and temp-tables each class inherits, for the table a buffer
+    /// member reads.
+    record_chains: FxHashMap<SymbolId, Arc<InheritedRecords>>,
     /// Classes whose chain reached a workspace ancestor the index could not
     /// supply — one no file declares, or one it declined or failed to read. A
     /// name such a class does not declare may well be a member that ancestor
@@ -5922,7 +5926,7 @@ impl<'a> ResolveWalker<'a> {
                 member.file,
             )
         };
-        let table_id = record.and_then(|r| self.inherited_buffer_table(class, &r));
+        let table_id = record.and_then(|_| self.inherited_buffer_table(class, atom));
         // The declared type goes onto the symbol, exactly as a local
         // declaration's would.
         //
@@ -5953,32 +5957,66 @@ impl<'a> ResolveWalker<'a> {
         InheritedLookup::Member(sym)
     }
 
-    /// The schema table an inherited buffer reads, so that its fields and its
-    /// database dependency resolve as a local buffer's do.
+    /// The schema table the inherited buffer `name` reads, so that its fields and
+    /// its database dependency resolve as a local buffer's do.
     ///
-    /// `None` for a temp-table, and for a name the schema does not know. A
-    /// temp-table of that name in the chain wins over a schema table, as
-    /// [`Self::record_source_of`] has it in the declaring file; one the class
-    /// cannot reach still hides it.
-    fn inherited_buffer_table(&self, class: SymbolId, record: &MemberRecord) -> Option<TableId> {
-        if record.temp_table || !self.ctx.schema_loaded {
+    /// `None` for a temp-table, and for a name the schema does not know. The
+    /// binding is the one [`inherited_records`] gives: the declaring class's
+    /// temp-tables hide a schema table, and a class that cannot be read keeps
+    /// the table unknown.
+    fn inherited_buffer_table(&mut self, class: SymbolId, name: &OxablAtom) -> Option<TableId> {
+        if !self.ctx.schema_loaded {
             return None;
         }
-        let atom = record.table.as_atom();
-        let cf = self.cross_file()?;
-        let names_record = |kind| {
-            cf.inherited
-                .get(&(class, atom.clone()))
-                .is_some_and(|m| m.kind == kind)
-        };
-        if names_record(SymbolKind::TempTable)
-            || cf
-                .inherited_inaccessible
-                .contains(&(class, NamespaceId::Buffers, atom.clone()))
+        let chain = self.record_chain(class);
+        let record = chain.records.iter().find(|r| r.name.as_atom() == name)?;
+        match &record.binding {
+            InheritedBinding::Table(table) => {
+                schema_table_named(self.ctx.schema, &fold_atom(table))
+            }
+            InheritedBinding::TempTable(_) | InheritedBinding::Unknown(_) => None,
+        }
+    }
+
+    /// The records `class` inherits, walked once.
+    fn record_chain(&mut self, class: SymbolId) -> Arc<InheritedRecords> {
+        if let Some(chain) = self
+            .cross_file()
+            .and_then(|cf| cf.record_chains.get(&class))
         {
-            return None;
+            return Arc::clone(chain);
         }
-        schema_table_named(self.ctx.schema, atom)
+        let index = self.ctx.index;
+        let indexed = self
+            .cross_file()
+            .and_then(|cf| cf.indexed_class_of.get(&class))
+            .cloned();
+        let chain = match indexed {
+            Some(name) => chain_records(index, None, ChainStart::Class(name)),
+            None => {
+                let parent = self
+                    .symbols
+                    .supertypes(class)
+                    .and_then(|s| s.inherits.as_ref())
+                    .map(|p| p.name.as_written().to_string());
+                match parent {
+                    Some(raw) => chain_records(
+                        index,
+                        Some(IndexName::new(&self.symbols.get(class).name)),
+                        ChainStart::Parent {
+                            imports: self.imports(),
+                            raw: &raw,
+                        },
+                    ),
+                    None => InheritedRecords::default(),
+                }
+            }
+        };
+        let chain = Arc::new(chain);
+        self.cross_file_mut()
+            .record_chains
+            .insert(class, Arc::clone(&chain));
+        chain
     }
 
     /// Queue the class the supertype name `raw` means, for the walk of `class`.
@@ -6004,26 +6042,30 @@ impl<'a> ResolveWalker<'a> {
         superclass: bool,
         queue: &mut VecDeque<(IndexName, bool)>,
     ) {
-        let index = self.ctx.index;
-        for candidate in imports.candidates(raw) {
-            let ImportCandidate::Name(name) = candidate else {
+        match lookup_supertype(self.ctx.index, imports, raw) {
+            SupertypeLookup::Class(name) => {
+                queue.push_back((name, superclass));
+                return;
+            }
+            SupertypeLookup::Assembly => {
                 if superclass {
                     self.cross_file_mut().opaque_surfaces.insert(class);
                 }
                 return;
-            };
-            if !matches!(index.class(&name), IndexAnswer::NotFound) {
-                queue.push_back((name, superclass));
-                return;
             }
-        }
-        // `Progress.Lang.Object` is every class's root, written or not, so
-        // naming it hides nothing an unwritten root does not.
-        if superclass && !names_root_object(imports, raw) {
-            self.cross_file_mut().opaque_surfaces.insert(class);
-        }
-        if names_shipped_class(imports, raw) {
-            return;
+            SupertypeLookup::Missing {
+                root_object,
+                shipped,
+            } => {
+                // `Progress.Lang.Object` is every class's root, written or not, so
+                // naming it hides nothing an unwritten root does not.
+                if superclass && !root_object {
+                    self.cross_file_mut().opaque_surfaces.insert(class);
+                }
+                if shipped {
+                    return;
+                }
+            }
         }
         let outcome = if imports.has_unseen_imports() {
             ClassLookup::Unknowable
@@ -6898,6 +6940,44 @@ fn names_shipped_class(imports: &ImportContext, raw: &str) -> bool {
             .prefixes()
             .any(|prefix| is_system_namespace(&fold_atom(prefix))))
         || imports.implicit_lang_class(raw).is_some()
+}
+
+/// What the supertype name `raw`, written in a file with `imports`, means.
+pub(crate) enum SupertypeLookup {
+    /// A class or interface the index knows, or could not read.
+    Class(IndexName),
+    /// An import from an assembly, which no workspace file supplies.
+    Assembly,
+    /// No candidate is a class the index knows.
+    Missing {
+        /// The name is `Progress.Lang.Object`.
+        root_object: bool,
+        /// The AVM supplies the class.
+        shipped: bool,
+    },
+}
+
+/// The one reading of a supertype name that the member walks share.
+///
+/// A candidate the index answers anything but `NotFound` for is the class: the
+/// caller then asks what the index says about it.
+pub(crate) fn lookup_supertype(
+    index: &dyn WorkspaceIndex,
+    imports: &ImportContext,
+    raw: &str,
+) -> SupertypeLookup {
+    for candidate in imports.candidates(raw) {
+        let ImportCandidate::Name(name) = candidate else {
+            return SupertypeLookup::Assembly;
+        };
+        if !matches!(index.class(&name), IndexAnswer::NotFound) {
+            return SupertypeLookup::Class(name);
+        }
+    }
+    SupertypeLookup::Missing {
+        root_object: names_root_object(imports, raw),
+        shipped: names_shipped_class(imports, raw),
+    }
 }
 
 /// Whether the supertype name `raw`, written in a file with `imports`, is

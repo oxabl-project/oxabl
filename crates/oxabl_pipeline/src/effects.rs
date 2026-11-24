@@ -169,7 +169,12 @@ struct Direct {
     fingerprint: u64,
 }
 
-fn direct(config: &PipelineConfig, path: &Path, expansion: &Expansion) -> Option<Direct> {
+fn direct(
+    config: &PipelineConfig,
+    path: &Path,
+    expansion: &Expansion,
+    index: &BatchIndex<'_>,
+) -> Option<Direct> {
     let expanded = expansion.expanded()?;
     let text = expanded.text.as_str();
     let tokens = oxabl_lexer::tokenize(text);
@@ -178,7 +183,8 @@ fn direct(config: &PipelineConfig, path: &Path, expansion: &Expansion) -> Option
         .with_tokens(&tokens)
         .with_parse_recovered(!program.errors.is_empty())
         .with_elided(expanded.elided_offsets())
-        .with_elided_includes(expanded.elided_include_offsets());
+        .with_elided_includes(expanded.elided_include_offsets())
+        .with_index(index);
     ctx.schema_loaded = config.schema_loaded;
     let shared = oxabl_lint::RunShared::default();
     let effects = shared.effects(&program.statements, &ctx).clone();
@@ -295,22 +301,22 @@ impl LintPipeline<'_> {
         );
         let fs = self.file_system();
         let preprocess = self.preprocess();
+        let index = self.effect_index(&index);
         let load = |path: &PathBuf| {
             oxabl_common::catch_panic(|| {
                 if let Some((_, expansion)) = root.filter(|(r, _)| *path == key(r)) {
-                    direct(config, path, expansion)
+                    direct(config, path, expansion, index)
                 } else {
                     fs.read(path).ok().and_then(|text| {
                         let run = LintPipeline::new(config, fs).with_preprocess(preprocess);
                         let handle = run.with_file(path);
-                        direct(config, path, &handle.expand(&text))
+                        direct(config, path, &handle.expand(&text), index)
                     })
                 }
             })
             .ok()
             .flatten()
         };
-        let index = self.effect_index(&index);
         // Breadth-first, one frontier at a time: the files of a frontier are
         // analysed in parallel, then taken in discovery order, so node ids do
         // not depend on the thread count.
