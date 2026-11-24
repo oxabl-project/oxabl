@@ -113,6 +113,27 @@ fn it_installs_the_newest_release_and_writes_the_record() {
         "{}",
         text(&output.stdout)
     );
+    assert!(
+        text(&output.stdout)
+            .lines()
+            .any(|line| line == "To teach coding agents oxabl: oxabl skill install --user"),
+        "{}",
+        text(&output.stdout)
+    );
+}
+
+#[test]
+fn a_failed_install_prints_no_skill_hint() {
+    let fixture = Fixture::new();
+    fixture
+        .server
+        .release("99.1.0", &binary("99.1.0"), Some(&"0".repeat(64)));
+
+    let output = fixture.install(&[]);
+
+    assert!(!output.status.success());
+    assert!(!text(&output.stdout).contains("oxabl skill install"));
+    assert!(!text(&output.stderr).contains("oxabl skill install"));
 }
 
 #[test]
