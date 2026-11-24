@@ -229,6 +229,9 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         }
         | StatementKind::Set {
             targets, options, ..
+        }
+        | StatementKind::PromptFor {
+            targets, options, ..
         } => {
             for e in targets.iter().chain(options) {
                 walk_expression(v, e);
@@ -248,6 +251,44 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         }
         StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
             if let Some(e) = lines {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::Get { query, .. } => walk_expression(v, query),
+        StatementKind::CopyLob {
+            source,
+            target,
+            options,
+            ..
+        } => {
+            for e in [source, target].into_iter().chain(options) {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::Color { items, .. } => {
+            for e in items {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::Accumulate { expression, breaks } => {
+            for e in std::iter::once(expression).chain(breaks) {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::Reposition {
+            query, operands, ..
+        } => {
+            for e in std::iter::once(query).chain(operands) {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::Close {
+            target,
+            status,
+            handle,
+            ..
+        } => {
+            for e in std::iter::once(target).chain(status).chain(handle) {
                 walk_expression(v, e);
             }
         }
@@ -372,6 +413,7 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         | StatementKind::Leave(_)
         | StatementKind::Next(_)
         | StatementKind::Empty
+        | StatementKind::Clear { .. }
         | StatementKind::Annotation(_)
         | StatementKind::Skipped { .. } => {}
     }

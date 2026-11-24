@@ -21,8 +21,8 @@
 //! # Unmodelled statements
 //!
 //! Statement forms the parser recognizes but does not model — `PUT`, `EXPORT`,
-//! `UPDATE`, `SET`, `PROMPT-FOR`, `GET-KEY-VALUE`, `IMPORT`, `COPY-LOB`,
-//! `ENABLE`, `HIDE` and friends — credit no reads. A variable whose only read
+//! `UPDATE`, `SET`, `GET-KEY-VALUE`, `IMPORT`, `ENABLE`, `HIDE` and friends —
+//! credit no reads. A variable whose only read
 //! lives in one of them used to be falsely reported here. The parser now emits
 //! `StatementKind::Skipped` carrying the identifiers it passed over, the resolve
 //! pass best-effort-resolves them into

@@ -119,6 +119,10 @@ how each part works and why.
 - A `&GLOBAL-DEFINE` or `&SCOPED-DEFINE` in the value of another one is a
   `match`, not a second `begin`. Otherwise each continued line
   (`&SCOPED-DEFINE a ~`) pushes one more define rule.
+- Digit runs joined by `/` with no spaces (`12/31/2026`, `2/1/26`, `10/2`)
+  are one date constant, as the compiler and the lexer read them: `10/2` is a
+  date, `10 / 2` a division. A run followed by a word character, `/` or `.`
+  plus a word character is a path part (`rpt/2024/01/x.p`), not a date.
 - The `record-names` rule starts with `\b(?<![#$%&.-])`, not
   `(?<![\w#$%&.-])`. Before a letter the two match the same, but Oniguruma
   tries a pattern that starts with a look-behind at every position: the rule
@@ -136,8 +140,6 @@ how each part works and why.
   So does a table name on the line after its record word, and a table after
   `TO` in `BUFFER-COPY a TO item`. LSP semantic tokens are the planned
   correction: the parser and the semantic model know what each name is.
-- The grammar scopes three integer literals joined by `/` with no spaces
-  (`10/2/3`) as a date, the same as `12/31/2026`.
 - The grammar counts at most 50 nested block comments and 50 nested include
   references. Past that depth, `/*` is comment text and `{` is argument
   text, and each `*/` or `}` closes one of the 50 levels. So in a comment

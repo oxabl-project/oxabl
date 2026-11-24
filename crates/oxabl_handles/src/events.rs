@@ -358,10 +358,16 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                 });
             }
         }
-        SK::Skipped { names, .. } if !names.is_empty() => match copy_lob(s.span, names, src) {
-            Some((to, no_error)) => out.push(Effect::CopyLob { to, no_error }),
-            None => out.push(Effect::Skipped(names)),
-        },
+        SK::Skipped { names, .. } if !names.is_empty() => out.push(Effect::Skipped(names)),
+        SK::CopyLob {
+            target,
+            target_file,
+            no_error,
+            ..
+        } => out.push(Effect::CopyLob {
+            to: if *target_file { None } else { var_of(target) },
+            no_error: *no_error,
+        }),
         // An event of a waited-on object can run code that frees it
         // (`ON CLOSE OF THIS-PROCEDURE DO: DELETE PROCEDURE ...`).
         SK::WaitFor { widgets } => {
@@ -920,39 +926,6 @@ fn mentions<'a>(e: &'a Expression, out: &mut SmallVec<[&'a str; 4]>) {
         EK::Negate(a) | EK::Not(a) => mentions(a, out),
         _ => {}
     }
-}
-
-/// `COPY-LOB ... TO target`: the statement's target when it is a plain
-/// variable (not `TO FILE`), and whether it has `NO-ERROR`. `None` for any
-/// other skipped statement. The parser skips the statement, so its tokens are
-/// read again here.
-fn copy_lob<'a>(span: Span, names: &'a [Identifier], src: &str) -> Option<(Option<&'a str>, bool)> {
-    let text = slice(src, span);
-    let toks: SmallVec<[_; 16]> = Lexer::new(text)
-        .filter(|t| !matches!(t.kind, Kind::Comment))
-        .take_while(|t| t.kind != Kind::Eof)
-        .collect();
-    if toks.first()?.kind != Kind::CopyLob {
-        return None;
-    }
-    let no_error = toks.iter().any(|t| t.kind == Kind::NoError);
-    let target = toks
-        .iter()
-        .position(|t| t.kind == Kind::To)
-        .and_then(|i| toks.get(i + 1))
-        .map(|t| &text[t.start..t.end])
-        .filter(|w| {
-            w.starts_with(|c: char| c.is_ascii_alphabetic())
-                && !w.contains([':', '.'])
-                && !w.eq_ignore_ascii_case("FILE")
-        })
-        .and_then(|w| {
-            names
-                .iter()
-                .map(|n| n.name.as_str())
-                .find(|n| n.eq_ignore_ascii_case(w))
-        });
-    Some((target, no_error))
 }
 
 fn opaque_args<'a>(args: impl Iterator<Item = &'a Expression>, out: &mut Effects<'a>) {

@@ -328,6 +328,112 @@ pub enum StatementKind {
         fields: Vec<FrameField>,
     },
 
+    /// PROMPT-FOR statement — prompts for input into the screen buffer of fields
+    /// and variables, without assigning it.
+    ///
+    /// Same shape as [`StatementKind::Update`], with an optional stream. The
+    /// targets are read, not written. The list ends at the first token that is
+    /// not a target or an option the parser models, and the rest, the frame
+    /// phrase and any `EDITING` block stay in [`Statement::skipped_tail`].
+    PromptFor {
+        /// Optional named stream (`PROMPT-FOR STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Fields, variables or records named, in source order.
+        targets: Vec<Expression>,
+        /// Non-literal expressions of the format options, read, in source order.
+        options: Vec<Expression>,
+        /// The `name AS type` / `name LIKE field` items, which declare a
+        /// variable rather than read one. They are not in `targets`.
+        fields: Vec<FrameField>,
+    },
+
+    /// GET statement — moves a query to a record.
+    ///
+    /// `get_type` is never [`FindType::Unique`]. The query is a static query
+    /// name or a handle expression.
+    Get {
+        get_type: FindType,
+        query: Expression,
+        /// The lock phrase, when written.
+        lock: Option<LockType>,
+        no_wait: bool,
+    },
+
+    /// CLOSE QUERY and CLOSE STORED-PROCEDURE statements.
+    ///
+    /// `target` is a static query or stored procedure name, or a handle
+    /// expression. `status` (`field = PROC-STATUS`, written) and `handle`
+    /// (`WHERE PROC-HANDLE = field`, read) are set only for a stored procedure.
+    Close {
+        kind: CloseKind,
+        target: Expression,
+        status: Option<Expression>,
+        handle: Option<Expression>,
+    },
+
+    /// REPOSITION statement — moves a query to a row or a record.
+    ///
+    /// `query` is a static query name or a handle expression. The operands are
+    /// the row number, the `ROWID` or `RECID` expressions, or the `FORWARD` and
+    /// `BACKWARD` count, in source order; the keywords are not modelled.
+    Reposition {
+        query: Expression,
+        operands: Vec<Expression>,
+        no_error: bool,
+    },
+
+    /// CLEAR statement — clears the fields of a frame.
+    ///
+    /// `ALL` and `NO-PAUSE` are not modelled.
+    Clear {
+        /// The frame of `CLEAR FRAME f`. `None` for the default frame.
+        frame: Option<Identifier>,
+    },
+
+    /// ACCUMULATE statement — accumulates aggregate values of an expression.
+    ///
+    /// `ACCUMULATE expression (aggregate [BY break-group]...)`. The aggregate
+    /// keywords are not modelled. An expression that is neither a single name
+    /// nor an expression that ends before the parenthesis leaves the statement
+    /// [`StatementKind::Skipped`].
+    Accumulate {
+        expression: Expression,
+        /// The `BY` break groups, in source order.
+        breaks: Vec<Expression>,
+    },
+
+    /// COLOR statement — sets the terminal colors of fields.
+    ///
+    /// `COLOR [STREAM s] {DISPLAY | PROMPT} color [PROMPT color] [field]...`.
+    /// The color words are not symbols and are dropped; a `VALUE(expression)`
+    /// color is kept. The frame phrase stays in [`Statement::skipped_tail`].
+    Color {
+        stream_name: Option<Identifier>,
+        /// The `VALUE(...)` colors, then the fields, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// COPY-LOB statement — copies a large object between a file, a variable or
+    /// a field.
+    ///
+    /// `COPY-LOB [FROM] [FILE | OBJECT] source [STARTING AT n] [FOR n] TO
+    /// [FILE | OBJECT] target [OVERLAY AT n [TRIM] | APPEND] [CONVERT ...]
+    /// [NO-ERROR]`. A form whose source or target does not parse leaves the
+    /// statement [`StatementKind::Skipped`].
+    CopyLob {
+        source: Expression,
+        /// `FILE` was written before the source: it names a file.
+        source_file: bool,
+        target: Expression,
+        /// `FILE` was written before the target: it names a file, which is
+        /// written, and the target expression is read.
+        target_file: bool,
+        /// The expressions of `STARTING AT`, `FOR`, `OVERLAY AT` and the code
+        /// pages, in source order.
+        options: Vec<Expression>,
+        no_error: bool,
+    },
+
     /// APPLY statement — sends an event to a widget or procedure.
     ///
     /// The event and target expressions are modelled; a target that is not an
@@ -981,6 +1087,8 @@ pub struct Statement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedTail {
     pub names: Vec<Identifier>,
+    /// The source of the tail, for a rule that lexes it.
+    pub span: Span,
 }
 
 impl Statement {
@@ -1127,6 +1235,13 @@ pub enum LockType {
     NoLock,
     ShareLock,
     ExclusiveLock,
+}
+
+/// What a CLOSE statement closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseKind {
+    Query,
+    StoredProcedure,
 }
 
 /// ABL Find Type

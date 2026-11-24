@@ -1266,8 +1266,27 @@ impl Problem<'_> {
                     }
                 }
             }
+            S::Close {
+                status: Some(target),
+                ..
+            } => {
+                if let Some(i) = self.variable(target) {
+                    f.forget(i, UNKNOWN);
+                }
+            }
+            S::CopyLob {
+                target,
+                target_file: false,
+                ..
+            } => {
+                if let Some(i) = self.variable(target) {
+                    f.forget(i, UNKNOWN);
+                }
+            }
             // These run triggers, which may write the locals other units write.
-            S::WaitFor { .. } | S::Apply { .. } | S::Enable { .. } => self.forget_call_writes(f),
+            S::WaitFor { .. } | S::Apply { .. } | S::Enable { .. } | S::PromptFor { .. } => {
+                self.forget_call_writes(f)
+            }
             S::Publish { arguments, .. } => {
                 self.forget_call_writes(f);
                 for a in arguments {
@@ -2347,6 +2366,14 @@ fn analyze_inspect(
                     write(t);
                 }
             }
+            S::Close {
+                status: Some(t), ..
+            } => write(t),
+            S::CopyLob {
+                target,
+                target_file: false,
+                ..
+            } => write(target),
             S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {
@@ -2438,6 +2465,14 @@ fn analyze_inspect(
                     record(t);
                 }
             }
+            S::Close {
+                status: Some(t), ..
+            } => record(t),
+            S::CopyLob {
+                target,
+                target_file: false,
+                ..
+            } => record(target),
             S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {

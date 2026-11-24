@@ -370,7 +370,7 @@ fn is_unit_stmt(s: &Statement) -> bool {
 fn contains_input(stmts: &[Statement], src: Src<'_>) -> bool {
     stmts.iter().any(|s| match &s.kind {
         SK::Skipped { .. } => tokens::skipped_input(src, s.span) == Input::Blocking,
-        SK::Update { .. } | SK::Set { .. } | SK::WaitFor { .. } => true,
+        SK::Update { .. } | SK::Set { .. } | SK::PromptFor { .. } | SK::WaitFor { .. } => true,
         SK::Message {
             set_targets,
             fields,
@@ -1507,6 +1507,13 @@ impl<'a> Builder<'a> {
             | SK::Down { .. }
             | SK::Form { .. }
             | SK::Apply { .. }
+            | SK::Get { .. }
+            | SK::Close { .. }
+            | SK::Reposition { .. }
+            | SK::Clear { .. }
+            | SK::Accumulate { .. }
+            | SK::Color { .. }
+            | SK::CopyLob { .. }
             | SK::Enable { .. }
             | SK::Disable { .. }
             | SK::Hide { .. }
@@ -1517,14 +1524,16 @@ impl<'a> Builder<'a> {
             | SK::Unsubscribe { .. } => Shape::plain(!self.no_error_text(s)),
             // Reading past the end of the input, a key pressed during a pause
             // or user input raises ENDKEY. WAIT-FOR can also be interrupted.
-            SK::Import { .. } | SK::Pause { .. } | SK::Update { .. } | SK::Set { .. } => {
-                Shape::Plain {
-                    raises: !self.no_error_text(s),
-                    endkey: true,
-                    waits: false,
-                    opaque: None,
-                }
-            }
+            SK::Import { .. }
+            | SK::Pause { .. }
+            | SK::Update { .. }
+            | SK::Set { .. }
+            | SK::PromptFor { .. } => Shape::Plain {
+                raises: !self.no_error_text(s),
+                endkey: true,
+                waits: false,
+                opaque: None,
+            },
             SK::WaitFor { .. } => Shape::Plain {
                 raises: !self.no_error_text(s),
                 endkey: true,

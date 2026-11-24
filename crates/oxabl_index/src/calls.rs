@@ -339,6 +339,13 @@ fn same(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
+/// Whether the handle expression of a `RUN ... IN` is `THIS-PROCEDURE` alone,
+/// not a member of it (`THIS-PROCEDURE:INSTANTIATING-PROCEDURE`).
+pub fn is_this_procedure(tokens: &[Token], handle: &Expression) -> bool {
+    let mut it = tokens_in(tokens, handle.span);
+    it.next().is_some_and(|t| t.kind == Kind::ThisProcedure) && it.next().is_none()
+}
+
 /// The folded name of a plain variable expression.
 fn handle_name(e: &Expression) -> Option<String> {
     match &e.kind {
@@ -420,10 +427,7 @@ fn run_site(s: &Statement, tokens: &[Token], decls: &Decls) -> Option<CallSite> 
                 reason: UnknownCall::Unexpanded,
             },
             (RunTarget::Literal { name, .. }, Some(h)) => {
-                let this = tokens_in(tokens, h.span)
-                    .next()
-                    .is_some_and(|t| t.kind == Kind::ThisProcedure);
-                if this {
+                if is_this_procedure(tokens, h) {
                     internal(name, decls)
                 } else {
                     match handle_name(h).and_then(|hn| decls.handle_program(&hn)) {

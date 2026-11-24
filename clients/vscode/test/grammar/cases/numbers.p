@@ -24,6 +24,16 @@
 //      ^^^^^^^^^^ constant.numeric.date.abl
     x = 1/2/26.
 //      ^^^^^^ constant.numeric.date.abl
+//            ^ punctuation.terminator.statement.abl
+    x = 10/2.
+//      ^^^^ constant.numeric.date.abl
+    x = 02/01/20266 + 1.
+//      ^^^^^^^^^^^ constant.numeric.date.abl
+//                    ^ constant.numeric.integer.abl
+    RUN rpt/2024/01/x.p.
+//          ^^^^^^^ - constant.numeric.date.abl
+    RUN rpt/2024/01.p.
+//          ^^^^^^^ - constant.numeric.date.abl
     x = a / b.
 //        ^ - constant.numeric.date.abl
 //        ^ keyword.operator.arithmetic.abl
