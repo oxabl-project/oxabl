@@ -82,6 +82,18 @@ pub const FRAGMENT_NOTE: &str = "This file is an include. The including file, wh
      seen, may delete the object or provide the widget pool. Check each includer before you \
      change it.";
 
+/// The sentence that ends the help of a widget pool finding in an include
+/// when the run checked every includer and some of them give the object no
+/// pool. `includers` are the names to show.
+pub fn uncovered_includers_note(includers: &[String]) -> String {
+    let names: Vec<String> = includers.iter().map(|n| format!("`{n}`")).collect();
+    format!(
+        "This file is an include. These including files give the object no widget pool: {}. \
+         Add the pool in each one, or in this file.",
+        names.join(", ")
+    )
+}
+
 /// The sentence that ends the help of a finding that sits in an include but is
 /// reported at the `{...}` site in the includer, because the include alone
 /// cannot show it.

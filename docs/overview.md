@@ -402,6 +402,7 @@ The six rules before `HD001` and the `NL` rules are context-free: each finding d
 - `check` does not find an include outside the directory that it walks, or an include with an extension other than `.i`.
 - In the editor, an open `.i` file shows its context-free findings. The editor does not show the help, so it does not show the lower-confidence note.
 - The text summary and `--json` count these files apart from the roots (`include_files_checked`).
+- `HD005` in an include is judged by the roots of the same run, under one conservative rule: it is dropped only when every file that can include it is known and is a root of the run that gives the objects a widget pool. The help names the roots that give none. Any doubt keeps the finding with the note that the includer was not seen: an include reached through another include, an inactive `&IF` branch, a computed or unresolved include name, two include files with the same base name, a root that a trigger file or other non-root file includes, a symbolic link, an include path outside the workspace, a parse that recovered, or another file of the workspace (an include file, a trigger file, notes, a log) that holds a reference to it. Includers outside the workspace directory are not seen. `check --watch` and the editor keep the note. See `docs/design/strict-analysis-open-questions.md` for the full list.
 
 See `docs/design/strict-analysis-open-questions.md` for the reasons and for the plan for rules that depend on the includer.
 
