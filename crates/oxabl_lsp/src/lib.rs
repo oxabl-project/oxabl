@@ -776,6 +776,8 @@ struct Negotiated {
     hierarchical_symbols: bool,
     /// Whether the client takes `relatedInformation` on a diagnostic.
     related_information: bool,
+    /// The most folding ranges the client takes (`rangeLimit`), if it says.
+    folding_range_limit: Option<usize>,
 }
 
 fn serve_initialized(
@@ -844,6 +846,13 @@ fn finish_handshake(
         .and_then(|c| c.publish_diagnostics.as_ref())
         .and_then(|c| c.related_information)
         .unwrap_or(false);
+    let folding_range_limit = init
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|c| c.folding_range.as_ref())
+        .and_then(|c| c.range_limit)
+        .map(|limit| limit as usize);
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
@@ -874,6 +883,7 @@ fn finish_handshake(
             options,
             hierarchical_symbols,
             related_information,
+            folding_range_limit,
         },
         workspace_root,
     ))
@@ -912,6 +922,8 @@ struct Server<'c> {
     hierarchical_symbols: bool,
     /// Whether the client takes `relatedInformation` on a diagnostic.
     related_information: bool,
+    /// The most folding ranges the client takes, if it says.
+    folding_range_limit: Option<usize>,
     /// Open buffers, keyed by URI (R4).
     documents: DocumentStore,
     /// The daemon's one session map. No analysis state lives in this client.
@@ -997,6 +1009,7 @@ impl<'c> Server<'c> {
             options,
             hierarchical_symbols,
             related_information,
+            folding_range_limit,
         } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         let (context_events, context_results) = crossbeam_channel::unbounded();
@@ -1005,6 +1018,7 @@ impl<'c> Server<'c> {
             encoding: options.encoding.clone(),
             hierarchical_symbols,
             related_information,
+            folding_range_limit,
             documents: DocumentStore::new(),
             host,
             session_root,
@@ -1946,7 +1960,12 @@ impl<'c> Server<'c> {
         let response = match syntax {
             Ok(syntax) => Response::new_ok(
                 req.id,
-                editor_syntax::folding_ranges(syntax, &doc.rope, &self.encoding),
+                editor_syntax::folding_ranges(
+                    syntax,
+                    self.folding_range_limit,
+                    &doc.rope,
+                    &self.encoding,
+                ),
             ),
             Err(panic) => Response::new_err(
                 req.id,
@@ -2096,6 +2115,7 @@ mod tests {
                 },
                 hierarchical_symbols: false,
                 related_information: false,
+                folding_range_limit: None,
             },
             std::time::Duration::from_millis(10),
             None,

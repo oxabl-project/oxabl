@@ -45,13 +45,18 @@ fn range(rope: &Rope, encoding: &PositionEncodingKind, start: u32, end: u32) -> 
     }
 }
 
+/// The folds of `syntax`, at most `limit` of them (the client's `rangeLimit`).
 pub(crate) fn folding_ranges(
     syntax: &DocumentSyntax,
+    limit: Option<usize>,
     rope: &Rope,
     encoding: &PositionEncodingKind,
 ) -> Vec<FoldingRange> {
-    syntax
-        .folds()
+    let folds = match limit {
+        Some(limit) => syntax.folds_within(limit),
+        None => syntax.folds().to_vec(),
+    };
+    folds
         .iter()
         .map(|fold| {
             let range = range(rope, encoding, fold.span.start, fold.span.end);

@@ -38,7 +38,9 @@ The pass returns these ranges when they cover more than one line:
   statement that covers more than one line (a long `ASSIGN`, `DEFINE BROWSE`
   or `FORM`). These ranges have no kind.
 - Each run of two or more `DEFINE` statements in one statement list. This range
-  has no kind.
+  has no kind. A run starts at a `DEFINE` of one line. So a temp-table
+  definition at the start of a run keeps its own fold, and the run starts at
+  the next `DEFINE`.
 - Block comments, with kind `comment`.
 - Each `&IF`, `&ELSEIF`, and `&ELSE` branch, with kind `region`. A branch ends
   before the directive that closes it. The pass reads the branches from the
@@ -46,10 +48,27 @@ The pass returns these ranges when they cover more than one line:
 - Paired `&ANALYZE-SUSPEND` / `&ANALYZE-RESUME` markers, with kind `region`.
 - Paired `// #region` / `// #endregion` markers, with kind `region`.
 
-When the last line of a statement starts with its `END`, the range stops at
-the end of the line before. So a folded block shows its first line and its
-`END` line, as indentation folding does. A block that is only two lines long
-(`DO:` and `END.`) does not fold.
+A client folds whole lines. These rules make sure that each range does what
+the client shows:
+
+- When the last line of a statement starts with its `END`, the range stops at
+  the end of the line before. So a folded block shows its first line and its
+  `END` line, as indentation folding does. A block that is only two lines long
+  (`DO:` and `END.`) does not fold.
+- When code follows the end of a range on its last line, the range stops at
+  the end of the line before. So a fold never hides code such as the `&ELSE 3`
+  in `2 &ELSE 3` or a statement after `b = 2.`. A comment that ends on that line
+  can hide. A range that becomes one line is not sent.
+- Only one range starts on each line: the innermost one. VS Code keeps only
+  the first range that starts on a line, so the server makes that choice
+  itself. In `IF a THEN DO: ... END. ELSE DO: ... END.`, the `DO` blocks fold
+  and the `IF` statement does not, so the `ELSE DO:` line stays visible.
+
+A client can send `rangeLimit` in its `foldingRange` capabilities (VS Code
+sends 5000). When the file has more ranges, the server sends the outermost
+ranges first, by nesting depth, and then in source order. So the end of a
+large file keeps its routine folds. Without the limit, VS Code keeps the first
+ranges in source order, and the end of the file has no folds.
 
 When a server answers `foldingRange`, VS Code no longer uses the folding
 markers of `language-configuration.json`. So the server returns the
@@ -68,7 +87,10 @@ can ignore the character positions.
 Each answer starts at the innermost range and links to its parents. The chain
 can contain:
 
-1. The token at the position.
+1. The token at the position, also a comment. When the position is between
+   two tokens, a word (a name, a keyword, a literal, or a reference) wins over
+   punctuation. So a cursor at the end of `Name` in `Customer.Name.` selects
+   `Name`, then `Customer.Name`.
 2. Each containing expression, from small to large.
 3. Each containing statement, block, and routine, from small to large.
 4. The whole file.
@@ -100,4 +122,7 @@ the pass on the files of the outline bench (6,000 and 8,400 lines). The
 `parse/*` bench there gives the cost of the lex and parse alone. The stdio test
 `a_large_file_answers_both_requests` runs both requests on a file of 33,000
 lines, and it fails when a request takes more than 20 seconds in a debug
-build.
+build. That file has 15,000 ranges, and 6,000 of them are not inside another range.
+With VS Code's `rangeLimit` of 5000, the editor gets the first 5000 of those
+6,000 ranges. A file with more top-level ranges than the limit cannot fold
+all of them.

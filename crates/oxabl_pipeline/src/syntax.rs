@@ -35,7 +35,8 @@ pub struct DocumentSyntax {
     folds: Vec<Fold>,
     statements: Vec<Span>,
     expressions: Vec<Span>,
-    words: Vec<Span>,
+    /// Each token, comments included, and whether it reads as a word.
+    words: Vec<(Span, bool)>,
     file: Span,
 }
 
@@ -57,6 +58,12 @@ impl DocumentSyntax {
         let mut builder = Builder {
             source,
             tokens: &tokens,
+            newlines: source
+                .bytes()
+                .enumerate()
+                .filter(|(_, byte)| *byte == b'\n')
+                .map(|(at, _)| at as u32)
+                .collect(),
             folds: Vec::new(),
             statements: Vec::new(),
             expressions: Vec::new(),
@@ -64,17 +71,15 @@ impl DocumentSyntax {
         walk_statements(&mut builder, &program.statements);
         builder.comments_and_markers();
         builder.preproc_branches();
-        let mut folds = builder.folds;
-        // Source order, outer first; an equal span occurs once.
-        folds.sort_by_key(|fold| (fold.span.start, std::cmp::Reverse(fold.span.end)));
-        folds.dedup_by_key(|fold| fold.span);
+        let folds = builder.one_fold_per_line();
         sort_levels(&mut builder.statements);
         sort_levels(&mut builder.expressions);
         let words = tokens
             .iter()
-            .filter(|token| !matches!(token.kind, Kind::Comment | Kind::Eof))
+            .filter(|token| token.kind != Kind::Eof)
             .map(token_span)
             .filter(|span| valid_span(source, *span))
+            .map(|span| (span, word_like(&source[span.start as usize..])))
             .collect();
         DocumentSyntax {
             folds,
@@ -88,9 +93,31 @@ impl DocumentSyntax {
         }
     }
 
-    /// Folding ranges in source order.
+    /// Folding ranges in source order. No two start on the same line.
     pub fn folds(&self) -> &[Fold] {
         &self.folds
+    }
+
+    /// At most `limit` folding ranges in source order. When there are more, the
+    /// outermost ranges stay, so every part of the file keeps its top folds.
+    pub fn folds_within(&self, limit: usize) -> Vec<Fold> {
+        if self.folds.len() <= limit {
+            return self.folds.clone();
+        }
+        // The nesting depth of each fold: the folds that contain it.
+        let mut open: Vec<u32> = Vec::new();
+        let mut ranked: Vec<(usize, usize)> = Vec::with_capacity(self.folds.len());
+        for (at, fold) in self.folds.iter().enumerate() {
+            while open.last().is_some_and(|end| *end <= fold.span.start) {
+                open.pop();
+            }
+            ranked.push((open.len(), at));
+            open.push(fold.span.end);
+        }
+        ranked.sort_unstable();
+        let mut kept: Vec<usize> = ranked[..limit].iter().map(|(_, at)| *at).collect();
+        kept.sort_unstable();
+        kept.into_iter().map(|at| self.folds[at]).collect()
     }
 
     /// The chain at `offset`, from the innermost range to the whole file.
@@ -117,15 +144,31 @@ impl DocumentSyntax {
         out
     }
 
+    /// The token at `offset`. Between two tokens, a word wins over
+    /// punctuation, so a cursor at the end of a name selects the name.
     fn word_at(&self, offset: u32) -> Option<Span> {
-        let at = self.words.partition_point(|span| span.start <= offset);
-        self.words
-            .get(at)
-            .filter(|span| contains_offset(**span, offset))
-            .or_else(|| at.checked_sub(1).and_then(|i| self.words.get(i)))
-            .filter(|span| contains_offset(**span, offset))
-            .copied()
+        let at = self.words.partition_point(|(span, _)| span.start <= offset);
+        let right = at
+            .checked_sub(1)
+            .map(|i| self.words[i])
+            .filter(|(span, _)| contains_offset(*span, offset));
+        let left = at
+            .checked_sub(2)
+            .map(|i| self.words[i])
+            .filter(|(span, _)| span.end == offset);
+        match (left, right) {
+            (Some((left, true)), Some((right, false))) if right.start == offset => Some(left),
+            _ => right.or(left).map(|(span, _)| span),
+        }
     }
+}
+
+/// Whether a token that starts `text` reads as a word: a name, a keyword, a
+/// literal or a reference, not punctuation or an operator.
+fn word_like(text: &str) -> bool {
+    text.chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '"' | '\'' | '{' | '&' | '?'))
 }
 
 fn sort_levels(spans: &mut Vec<Span>) {
@@ -160,22 +203,84 @@ fn valid_span(source: &str, span: Span) -> bool {
 struct Builder<'a> {
     source: &'a str,
     tokens: &'a [Token],
+    /// The byte offset of each `\n`, in order.
+    newlines: Vec<u32>,
     folds: Vec<Fold>,
     statements: Vec<Span>,
     expressions: Vec<Span>,
 }
 
 impl<'a> Builder<'a> {
+    fn line_of(&self, offset: u32) -> usize {
+        self.newlines.partition_point(|at| *at < offset)
+    }
+
+    /// Folds in source order, with one fold for each start line: the
+    /// innermost. A client folds by line and keeps only one range per line,
+    /// so `IF a THEN DO:` folds its `DO` block, not the whole `IF ... ELSE`.
+    fn one_fold_per_line(&mut self) -> Vec<Fold> {
+        let mut folds = std::mem::take(&mut self.folds);
+        folds.sort_by_key(|fold| (fold.span.start, std::cmp::Reverse(fold.span.end)));
+        folds.dedup_by_key(|fold| fold.span);
+        let mut kept: Vec<Fold> = Vec::with_capacity(folds.len());
+        for fold in folds {
+            match kept.last_mut() {
+                Some(last) if self.line_of(last.span.start) == self.line_of(fold.span.start) => {
+                    if self.line_of(fold.span.end) <= self.line_of(last.span.end) {
+                        *last = fold;
+                    }
+                }
+                _ => kept.push(fold),
+            }
+        }
+        kept
+    }
+
     fn push_fold(&mut self, span: Span, kind: Option<FoldKind>) {
-        let span = trim_trailing_space(self.source, span);
-        if !valid_span(self.source, span)
-            || !self.source[span.start as usize..span.end as usize]
-                .bytes()
-                .any(|byte| matches!(byte, b'\r' | b'\n'))
-        {
+        let mut span = trim_trailing_space(self.source, span);
+        if !valid_span(self.source, span) {
+            return;
+        }
+        // A client folds whole lines: when code follows the range on its last
+        // line, the range stops on the line before, so that code stays visible.
+        if self.code_follows(span.end) {
+            let line_start = self.source[..span.end as usize]
+                .rfind('\n')
+                .map_or(0, |at| at + 1) as u32;
+            span = trim_trailing_space(
+                self.source,
+                Span {
+                    start: span.start,
+                    end: line_start.max(span.start),
+                },
+            );
+        }
+        if !valid_span(self.source, span) || self.line_of(span.start) == self.line_of(span.end) {
             return;
         }
         self.folds.push(Fold { span, kind });
+    }
+
+    /// Whether a token other than a comment that ends on the same line starts
+    /// at or after `offset` on its line.
+    fn code_follows(&self, offset: u32) -> bool {
+        let line_end = self
+            .source
+            .get(offset as usize..)
+            .and_then(|rest| rest.find('\n'))
+            .map_or(self.source.len(), |at| offset as usize + at);
+        let from = self
+            .tokens
+            .partition_point(|token| token.start < offset as usize);
+        self.tokens[from..]
+            .iter()
+            .take_while(|token| token.start < line_end && token.kind != Kind::Eof)
+            .any(|token| token.kind != Kind::Comment || token.end > line_end)
+    }
+
+    fn single_line(&self, span: Span) -> bool {
+        let span = trim_trailing_space(self.source, span);
+        self.line_of(span.start) == self.line_of(span.end)
     }
 
     fn tokens_in(&self, span: Span) -> &'a [Token] {
@@ -193,6 +298,8 @@ impl<'a> Builder<'a> {
             .is_some_and(|token| token.kind == Kind::Define)
     }
 
+    /// A run starts at a one-line `DEFINE`: a run that started at a longer
+    /// one would share its first line with that statement's own fold.
     fn define_runs(&mut self, statements: &[Statement]) {
         let mut run: Option<(u32, u32, usize)> = None;
         for statement in statements {
@@ -202,7 +309,10 @@ impl<'a> Builder<'a> {
                         *end = statement.span.end;
                         *count += 1;
                     }
-                    None => run = Some((statement.span.start, statement.span.end, 1)),
+                    None if self.single_line(statement.span) => {
+                        run = Some((statement.span.start, statement.span.end, 1));
+                    }
+                    None => {}
                 }
             } else {
                 self.define_run(run.take());

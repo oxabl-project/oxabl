@@ -18,10 +18,20 @@ fn folding(session: &mut Session, path: &Path) -> Vec<Value> {
         json!({"textDocument": {"uri": session::file_uri(path)}}),
     );
     assert!(answer.get("error").is_none(), "folding failed: {answer}");
-    answer["result"]
+    let folds = answer["result"]
         .as_array()
         .unwrap_or_else(|| panic!("folding gave no list: {answer}"))
-        .clone()
+        .clone();
+    // VS Code keeps only the first range that starts on a line, so a second
+    // one is a fold the editor drops.
+    let mut lines: Vec<&Value> = folds.iter().map(|fold| &fold["startLine"]).collect();
+    lines.dedup();
+    assert_eq!(
+        lines.len(),
+        folds.len(),
+        "two folds start on one line: {folds:#?}"
+    );
+    folds
 }
 
 fn selection(session: &mut Session, path: &Path, line: u32, character: u32) -> Value {
@@ -64,6 +74,20 @@ fn position_of(source: &str, needle: &str) -> (u32, u32) {
     let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32;
     let column = before.rsplit_once('\n').map_or(before, |(_, tail)| tail);
     (line, column.encode_utf16().count() as u32)
+}
+
+/// The position just after `needle`.
+fn position_after(source: &str, needle: &str) -> (u32, u32) {
+    let (line, character) = position_of(source, needle);
+    let tail = needle.rsplit('\n').next().unwrap();
+    if needle.contains('\n') {
+        (
+            line + needle.matches('\n').count() as u32,
+            tail.encode_utf16().count() as u32,
+        )
+    } else {
+        (line, character + needle.encode_utf16().count() as u32)
+    }
 }
 
 fn byte_offset(source: &str, position: &Value) -> usize {
@@ -164,6 +188,20 @@ MESSAGE "finally".
             END FINALLY.
     END METHOD.
             END CLASS.
+IF a THEN DO:
+x = 1.
+END.
+ELSE IF b THEN DO:
+y = 1.
+END.
+ELSE DO:
+z = 1.
+END.
+IF a THEN DO:
+x = 1.
+END. ELSE DO:
+y = 1.
+END.
 "#;
     let mut session = Session::start(root.path());
     session.open(&path, source);
@@ -177,6 +215,11 @@ MESSAGE "finally".
         (11, 13, None), // case
         (15, 16, None), // catch
         (18, 19, None), // finally
+        (23, 24, None), // IF ... THEN DO, not the whole IF
+        (26, 27, None), // ELSE IF ... THEN DO
+        (29, 30, None), // ELSE DO
+        (32, 33, None), // IF ... THEN DO before `END. ELSE DO:`
+        (34, 35, None), // that ELSE DO
     ];
     assert_eq!(fold_lines(&folds), expected, "{folds:#?}");
 }
@@ -213,7 +256,7 @@ n.
         (0, 1, None),   // procedure
         (3, 4, None),   // function
         (6, 8, None),   // temp-table with its fields
-        (6, 12, None),  // the run of DEFINE statements
+        (9, 12, None),  // the run of DEFINE statements after the temp-table
         (11, 12, None), // a long DEFINE
         (13, 15, None), // a long statement
         (18, 19, None), // a list of declarations, once
@@ -311,6 +354,103 @@ END PROCEDURE.
     assert!(has_fold(&folds, 0, 1, None), "{folds:#?}");
     assert!(has_fold(&folds, 8, 11, None), "{folds:#?}");
     assert!(has_fold(&folds, 9, 10, None), "{folds:#?}");
+}
+
+/// A client folds whole lines, so a range never ends before code on its
+/// last line. A comment there may hide.
+#[test]
+fn a_fold_never_hides_code_on_its_last_line() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("tails.p");
+    let source = r#"x = 1 +
+&IF DEFINED(X) &THEN
+2 &ELSE 3
+&ENDIF
+.
+ASSIGN a = 1
+b = 2
+c = 3. MESSAGE "after".
+/* a
+*/ x = 1.
+ASSIGN
+a = 1
+b = 2. /* note */
+"#;
+    let mut session = Session::start(root.path());
+    session.open(&path, source);
+    let folds = folding(&mut session, &path);
+    let expected: Vec<(u64, u64, Option<String>)> = vec![
+        (0, 4, None),   // the statement around the conditional; its branches are one line each
+        (5, 6, None),   // ASSIGN stops before the line with `MESSAGE "after"`
+        (10, 12, None), // a trailing comment may hide
+    ];
+    assert_eq!(fold_lines(&folds), expected, "{folds:#?}");
+}
+
+/// With `rangeLimit`, the outer folds stay, also at the end of the file.
+#[test]
+fn range_limit_keeps_the_outer_folds() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("limit.p");
+    let mut source = String::new();
+    for index in 0..10 {
+        source.push_str(&format!(
+            "PROCEDURE p{index}:\nDO:\nMESSAGE {index}.\nMESSAGE {index}.\nEND.\nEND PROCEDURE.\n"
+        ));
+    }
+    let mut session = Session::start_with(
+        root.path(),
+        json!({"textDocument": {"foldingRange": {"rangeLimit": 12}}}),
+    );
+    session.open(&path, &source);
+    let folds = folding(&mut session, &path);
+    let mut expected: Vec<(u64, u64, Option<String>)> = Vec::new();
+    for index in 0..10 {
+        let start = index * 6;
+        expected.push((start, start + 4, None)); // procedure
+        if index < 2 {
+            expected.push((start + 1, start + 3, None)); // DO
+        }
+    }
+    expected.sort();
+    assert_eq!(fold_lines(&folds), expected, "{folds:#?}");
+}
+
+#[test]
+fn selection_at_the_end_of_a_word_or_in_a_comment() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ends.p");
+    let source = r#"FOR EACH Customer:
+MESSAGE Customer.Name.
+x = foo(a + bcd).
+/* comment here */
+END.
+"#;
+    let mut session = Session::start(root.path());
+    session.open(&path, source);
+    let mut texts = |at: (u32, u32)| -> Vec<String> {
+        let chain = chain_of(selection(&mut session, &path, at.0, at.1));
+        assert_containment(&chain);
+        chain
+            .iter()
+            .map(|range| range_text(source, range).to_string())
+            .collect()
+    };
+    let name = texts(position_after(source, "Customer.Name"));
+    assert_eq!(
+        name[..3],
+        ["Name", "Customer.Name", "MESSAGE Customer.Name."],
+        "{name:#?}"
+    );
+    let bcd = texts(position_after(source, "a + bcd"));
+    assert_eq!(
+        bcd[..4],
+        ["bcd", "a + bcd", "foo(a + bcd)", "x = foo(a + bcd)."],
+        "{bcd:#?}"
+    );
+    let comment = texts(position_of(source, "here"));
+    assert_eq!(comment[0], "/* comment here */", "{comment:#?}");
+    assert!(comment[1].starts_with("FOR EACH"), "{comment:#?}");
 }
 
 #[test]

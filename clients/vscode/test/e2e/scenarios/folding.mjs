@@ -24,6 +24,12 @@ const MAIN = [
   "&ANALYZE-SUSPEND _UIB-CODE-BLOCK",
   'MESSAGE "analyze-inside".',
   "&ANALYZE-RESUME",
+  "IF TRUE THEN DO:",
+  'MESSAGE "then-inside".',
+  "END.",
+  "ELSE DO:",
+  'MESSAGE "else-inside".',
+  "END.",
   "",
 ].join("\n");
 
@@ -101,6 +107,11 @@ export async function folding(ctx) {
     lines = await visible(page);
     check(`${name}: Fold All folds the procedure without indentation`, !shows(lines, "proc-inside"), `lines: ${lines.join(" | ")}`);
     check(`${name}: the folded procedure shows its END line`, shows(lines, "END PROCEDURE."), `lines: ${lines.join(" | ")}`);
+    check(
+      `${name}: Fold All folds both IF branches and keeps the ELSE line`,
+      !shows(lines, "then-inside") && !shows(lines, "else-inside") && shows(lines, "ELSE DO:"),
+      `lines: ${lines.join(" | ")}`,
+    );
     await screenshot(page, `${name}-all`);
 
     // 3. Fold All Regions folds the #region and &ANALYZE markers, not the procedure.
