@@ -26,6 +26,7 @@ mod coercion;
 mod diagnostics;
 mod index;
 mod index_vec;
+mod inherited;
 mod namespace;
 mod operators;
 mod resolve;
@@ -48,6 +49,9 @@ pub use index::{
     PortableType, WorkspaceIndex,
 };
 pub use index_vec::NodeIndexVec;
+pub use inherited::{
+    InheritedBinding, InheritedKind, InheritedRecord, InheritedRecords, inherited_records,
+};
 pub use namespace::{NUM_NAMESPACES, NamespaceId};
 pub use operators::{binary_op_result, unary_negate_result, unary_not_result};
 pub use resolve::{
