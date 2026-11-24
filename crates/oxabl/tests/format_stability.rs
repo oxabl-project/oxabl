@@ -84,6 +84,22 @@ fn every_format_fuzz_finding_is_stable() {
     }
 }
 
+#[test]
+fn carriage_returns_inside_a_string_keep_their_value() {
+    // The line ending inside the string is part of its value; only the
+    // `\r\n` that the output writes replaces one `\r` of the run.
+    assert_formats(
+        "string-crlf.p",
+        b"DO:\r\nMESSAGE \"a\r\r\nb\".\r\nEND.\r\n",
+        b"DO:\r\n    MESSAGE \"a\r\r\nb\".\r\nEND.\r\n",
+    );
+    assert_formats(
+        "double-crlf.p",
+        b"DO:\r\r\nMESSAGE \"a\r\n\r\r\nb\".\r\r\nEND.\r\r\n",
+        b"DO:\r\n    MESSAGE \"a\r\n\r\r\nb\".\r\nEND.\r\n",
+    );
+}
+
 // --- a statement that starts on a line inside a multi-line string ----------
 
 #[test]

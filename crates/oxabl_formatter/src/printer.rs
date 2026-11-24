@@ -331,6 +331,8 @@ pub(crate) fn print(
     // bytes. This keeps the whole scan ~O(source) instead of O(tokens · log lines).
     let src_bytes = source.as_bytes();
     let mut protected: Vec<bool> = tab_at.iter().map(Option::is_some).collect();
+    // Lines whose line ending is inside such a token.
+    let mut ends_inside = vec![false; n];
     for t in toks {
         if t.kind == Kind::Eof {
             break;
@@ -369,6 +371,9 @@ pub(crate) fn print(
             };
             let delta = first as isize - leadings[fl] as isize;
             *slot = (leadings[l] as isize + delta).max(0) as usize;
+        }
+        for slot in ends_inside[sl.min(n)..el.min(n)].iter_mut() {
+            *slot = true;
         }
     }
     // Snap block `END` lines to the block's depth (a structural line, not an
@@ -489,6 +494,18 @@ pub(crate) fn print(
 
     let content_starts: Vec<usize> = lines.iter().map(|l| l.content_start).collect();
     let mut content: Vec<String> = lines.into_iter().map(|l| l.content).collect();
+    // A line ending inside a token is part of its value: `split_lines` took
+    // every `\r` before the `\n` as the terminator, but the emitted line ending
+    // supplies only the `\n` and at most one `\r`. Keep the others.
+    for l in (0..n).filter(|&l| ends_inside[l]) {
+        let nl = line_starts[l + 1] - 1;
+        let end = if nl > content_starts[l] && src_bytes[nl - 1] == b'\r' {
+            nl - 1
+        } else {
+            nl
+        };
+        content[l] = source[content_starts[l]..end].to_string();
+    }
 
     // `toks` is the caller's single tokenization of `source`, shared with the
     // semantic guard so the file is lexed once, not twice (the protected-line
