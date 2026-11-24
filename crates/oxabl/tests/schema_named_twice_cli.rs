@@ -95,3 +95,25 @@ fn a_file_named_after_its_directory_keeps_its_fields() {
     );
     assert_extra_is_known(&check(dir.path()));
 }
+
+/// Two names of one file through a symlink are two databases with one schema:
+/// both stay connected, as before a file named twice was loaded once.
+#[cfg(unix)]
+#[test]
+fn two_databases_that_share_a_file_stay_two_databases() {
+    let dir = project(r#"["db/prod.df", "db/archive.df"]"#, &[("prod.df", BASE)]);
+    std::os::unix::fs::symlink("prod.df", dir.path().join("db/archive.df")).unwrap();
+    write(
+        &dir.path().join("main.p"),
+        "&IF CONNECTED(\"prod\") AND CONNECTED(\"archive\") &THEN\n\
+         FIND FIRST Customer NO-LOCK NO-ERROR.\n\
+         &ENDIF\n",
+    );
+    let run = check(dir.path());
+    assert_eq!(
+        run.stdout, "checked 1 file: no findings, format suppressed\n",
+        "stderr:\n{}",
+        run.stderr
+    );
+    assert!(!run.stderr.contains("more than once"), "{}", run.stderr);
+}

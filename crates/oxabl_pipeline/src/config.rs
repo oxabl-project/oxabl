@@ -592,18 +592,23 @@ fn load_schema(
 /// warning: every reader of the list (the analysis, the build, the schema
 /// browser) then sees one order. The last place keeps what reading the file at
 /// every place gave, because a later read of a file replaces what an earlier
-/// read of it declared.
+/// read of it declared. Two names with different stems are two databases,
+/// also when they resolve to one file, so both stay.
 fn schema_files(
     config: &WorkspaceConfig,
     root: &Path,
     schema_path: Option<&PathBuf>,
     warnings: &mut Vec<ConfigWarning>,
 ) -> Vec<PathBuf> {
-    let mut named: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut named: Vec<((PathBuf, String), PathBuf)> = Vec::new();
     for entry in &schema_entries(config, root, schema_path) {
         for file in expand_schema_entry(entry, warnings) {
-            let key = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
-            named.push((key, file));
+            let path = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+            let stem = file
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            named.push(((path, stem), file));
         }
     }
     let mut last = std::collections::HashMap::new();
@@ -611,13 +616,15 @@ fn schema_files(
         last.insert(key.clone(), at);
     }
     let mut files = Vec::with_capacity(last.len());
-    for (at, (key, file)) in named.into_iter().enumerate() {
-        if last[&key] == at {
-            files.push(file);
+    for (at, (key, file)) in named.iter().enumerate() {
+        let kept = last[key];
+        if kept == at {
+            files.push(file.clone());
         } else {
             warnings.push(ConfigWarning::SchemaPath(format!(
-                "`{}` is named more than once; it is loaded once, at its last place",
-                file.display()
+                "`{}` is named more than once (last as `{}`); it is loaded once, at its last place",
+                file.display(),
+                named[kept].1.display()
             )));
         }
     }

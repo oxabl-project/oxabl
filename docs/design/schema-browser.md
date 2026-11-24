@@ -13,8 +13,9 @@ the workspace anchor, expands `[workspace.schema] files` as the analysis does
 the configured source encoding. It reads at each request, so the answer always
 agrees with the disk. A file that the list names more than once (as itself and
 through its directory, or by two spellings) is loaded once, at its last
-place, with a warning for each extra name. The configuration does this for
-every reader of the list (`schema_files` in `oxabl_pipeline`), so the
+place, with a warning for each extra name. Two names with different stems
+that resolve to one file are two databases, so both load. The configuration
+does this for every reader of the list (`schema_files` in `oxabl_pipeline`), so the
 analysis, the build and the tree read the files in one order. The last place
 gives the same tables and fields as a load at each place, which the analysis
 did before: the last load of a file replaces what its earlier loads declared.
