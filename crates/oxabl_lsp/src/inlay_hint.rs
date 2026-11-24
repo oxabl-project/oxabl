@@ -153,8 +153,7 @@ impl Server<'_> {
             Some((
                 session.database().config().clone(),
                 (session.config_generation(), session.schema_revision()),
-                root.as_ref()
-                    .map(|_| (session.buffer_generation(), session.buffer_overlay())),
+                root.as_ref().map(|_| session.buffer_overlay()),
             ))
         }) else {
             return self.respond(none());
@@ -163,14 +162,10 @@ impl Server<'_> {
         let encoding = self.encoding.clone();
         let from = position_to_byte(&rope, params.range.start, &encoding) as u32;
         let to = position_to_byte(&rope, params.range.end, &encoding) as u32;
-        let (buffers, overlay) = match overlay {
-            Some((buffers, overlay)) => (buffers, Some(overlay)),
-            None => (0, None),
-        };
+        let root_version = root.as_ref().and_then(|r| self.inlay.shared.version_of(r));
         let key = Key {
             text: 0,
             context: root.clone(),
-            buffers,
             config: generations.0,
             schema: generations.1,
             disk: self.inlay.shared.disk.load(Ordering::SeqCst),
@@ -180,6 +175,7 @@ impl Server<'_> {
             id: req.id.clone(),
             uri,
             version: doc.version,
+            root_version,
             source: HintSource {
                 config,
                 file: path,
@@ -213,6 +209,19 @@ impl Server<'_> {
 
     /// Record the version of an open file, or forget a closed one.
     pub(crate) fn note_inlay_version(&mut self, uri: &Uri, version: Option<i32>) {
+        if let Some(path) = crate::uri_to_path(uri) {
+            let mut paths = self
+                .inlay
+                .shared
+                .paths
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let path = oxabl_daemon::canonical_path(&path);
+            match version {
+                Some(version) => paths.insert(path, version),
+                None => paths.remove(&path),
+            };
+        }
         let mut versions = self
             .inlay
             .shared
@@ -243,14 +252,13 @@ impl Server<'_> {
 }
 
 /// What a file's hints were computed from: its text, its selected include
-/// context (and, for one, the generation of the open buffers it reads), the
-/// configuration and schema generations, the generation of files on disk,
-/// and the kinds.
+/// context, the configuration and schema generations, the generation of
+/// files on disk, and the kinds. In a context, the cache entry also holds
+/// the files the root's analysis read and the open-buffer text of them.
 #[derive(Clone, PartialEq, Eq)]
 struct Key {
     text: u64,
     context: Option<PathBuf>,
-    buffers: u64,
     config: u64,
     schema: u32,
     disk: u64,
@@ -260,11 +268,33 @@ struct Key {
 /// The hints of a whole file.
 type Hints = Arc<Vec<oxabl_pipeline::InlayHint>>;
 
+/// One file's cached hints.
+struct Cached {
+    key: Key,
+    /// The files a context's analysis read, and the fingerprint of their
+    /// open-buffer text then.
+    read: Vec<PathBuf>,
+    overlay: u64,
+    hints: Hints,
+}
+
+impl Shared {
+    fn version_of(&self, path: &std::path::Path) -> Option<i32> {
+        self.paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(path)
+            .copied()
+    }
+}
+
 /// One request, queued for the worker.
 struct Job {
     id: RequestId,
     uri: Uri,
     version: i32,
+    /// The version of the selected root, when it is open.
+    root_version: Option<i32>,
     source: HintSource,
     key: Key,
     range: RangeInclusive<u32>,
@@ -277,8 +307,10 @@ struct Job {
 pub(crate) struct Shared {
     /// The version of each open file, as the main loop last saw it.
     versions: Mutex<HashMap<Uri, i32>>,
+    /// The version of each open file, by its canonical path.
+    paths: Mutex<HashMap<PathBuf, i32>>,
     /// The last hints of each open file, for the whole file.
-    cache: Mutex<HashMap<Uri, (Key, Hints)>>,
+    cache: Mutex<HashMap<Uri, Cached>>,
     /// Bumped on each watched-file change.
     disk: AtomicU64,
 }
@@ -317,9 +349,15 @@ fn answer(shared: &Shared, job: Job) -> Response {
         .unwrap_or_else(|e| e.into_inner())
         .get(&job.uri)
         .copied();
-    // The file changed after the request: the client asks again for the new
-    // text, so no analysis is spent on the old one.
-    if current != Some(job.version) {
+    // The file, or the root it is read in, changed after the request: the
+    // client asks again for the new text (a refresh follows the debounced
+    // analysis of a context), so no analysis is spent on the old one.
+    let root_now = job
+        .source
+        .context
+        .as_ref()
+        .and_then(|(root, _)| shared.version_of(root));
+    if current != Some(job.version) || root_now != job.root_version {
         return Response::new_err(
             job.id,
             ErrorCode::ContentModified as i32,
@@ -339,15 +377,25 @@ fn answer(shared: &Shared, job: Job) -> Response {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&job.uri)
-            .filter(|(k, _)| *k == key)
-            .map(|(_, hints)| Arc::clone(hints));
+            .filter(|c| c.key == key && c.overlay == job.source.overlay_fingerprint(&c.read))
+            .map(|c| Arc::clone(&c.hints));
         let hints = cached.unwrap_or_else(|| {
-            let hints = Arc::new(job.source.hints(key.kinds));
+            let (hints, read) = job.source.hints(key.kinds);
+            let hints = Arc::new(hints);
+            let overlay = job.source.overlay_fingerprint(&read);
             shared
                 .cache
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(job.uri.clone(), (key, Arc::clone(&hints)));
+                .insert(
+                    job.uri.clone(),
+                    Cached {
+                        key,
+                        read,
+                        overlay,
+                        hints: Arc::clone(&hints),
+                    },
+                );
             hints
         });
         hints

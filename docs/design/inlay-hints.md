@@ -77,13 +77,19 @@ An include has no meaning alone (`docs/design/include-context.md`).
   hints of the include come from the analysis of the selected root, as its
   diagnostics do. The root is read with the open buffers over the disk. A
   hint is shown when its place is in the include's own text. The tooltip names
-  the root. The root's configuration decides whether hints show. When the root
+  the root. An edit of the root makes the server ask the client again
+  (`workspace/inlayHint/refresh`) once the edits settle, after the same
+  debounce as the include's diagnostics, not on each keystroke. The root's configuration decides whether hints show. When the root
   expands the include more than once, or no longer includes it, the include
   gets no hint: one place cannot hold two answers.
 - **In fragment mode** (no context), the include is analysed alone. A hint
   whose statement holds a `{...}` reference or sits under an `&IF` gives no
   hint: the rules lower the confidence of such findings, because each includer
-  can read them differently (`oxabl_lint::fragment::IncludeDependence`). Every
+  can read them differently (`oxabl_lint::fragment::IncludeDependence`). A
+  period or a colon ends a statement there only before whitespace, so a
+  reference after `customer.region` is in the statement. A hint whose finding
+  is not in the include's own text (a reference in a nested include) cannot be
+  checked, so it gives no hint either. Every
   other hint says in its tooltip that a file that includes it can change it,
   for example with a temp-table of the same name.
 
@@ -141,21 +147,29 @@ request returns only the hints in its range.
   analysis runs at a time.
 - A request whose file changed before the worker reached it answers
   `ContentModified` with no analysis. VS Code asks again for the new text,
-  because the document changed. Only an edit of the same file does this: an
-  edit, an open or a close of another file does not.
+  because the document changed. For an include in a context, an edit of the
+  open root does the same, and the debounced refresh makes the client ask
+  again. An edit, an open or a close of any other file does not.
 - The worker holds no snapshot of the session database. A write to the
   database waits for every snapshot to drop, so an analysis that held one
   would delay the next keystroke, and an edit of any other buffer would cancel
   it.
 - The server keeps the hints of each open file until its text, its include
-  context (and, in a context, the open buffers), the configuration, the
-  schema, a file on disk (a watched-file event) or the kinds change. A request
+  context, the configuration, the schema, a file on disk (a watched-file
+  event) or the kinds change. In a context it also keeps the files the root's
+  analysis read, and the hints stay until the open-buffer text of one of them
+  changes; an edit of a file that the root does not read keeps them. A request
   for another range of the same text, for example after a scroll, costs a
   filter. The key holds the file's own text, not only the expanded text: an
   edit of a `&SCOPED-DEFINE` line can keep the expanded text and move every
   offset.
 - A kind that is off is not computed. Only the index needs the effects
   analysis.
+
+The tests of this behaviour do not depend on the speed of the machine. In a
+test build (the `test-panics` feature of `oxabl_common`), the comment
+`OXABL-TEST-HOLD:lsp.inlay-hints` in the analysed text makes the analysis wait
+2 s, so edits sent meanwhile are queued behind it.
 
 `crates/oxabl_pipeline/benches/hints_bench.rs` measures the analysis of a
 procedure file of about 5,400 lines. On a loaded development machine it took

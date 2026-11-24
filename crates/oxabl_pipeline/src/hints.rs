@@ -111,7 +111,9 @@ impl LintPipeline<'_> {
             placed
                 .into_iter()
                 .filter(|p| {
-                    p.finding.is_none_or(|(code, span)| {
+                    // A finding that cannot be placed in the file cannot be
+                    // checked, so its hint is left out.
+                    p.finding.is_some_and(|(code, span)| {
                         dependence.dependence(code, span, &probe).is_none()
                     })
                 })

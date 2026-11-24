@@ -402,14 +402,13 @@ impl IncludeDependence {
                 depth,
             );
 
-            let ends_statement = match token.kind {
-                Kind::Period => true,
-                Kind::Colon => source[token.end..]
+            // A period or colon ends a statement only before whitespace or
+            // the end of the text: in `customer.region` it is part of a name.
+            let ends_statement = matches!(token.kind, Kind::Period | Kind::Colon)
+                && source[token.end..]
                     .chars()
                     .next()
-                    .is_none_or(char::is_whitespace),
-                _ => false,
-            };
+                    .is_none_or(char::is_whitespace);
             if ends_statement {
                 out.finish(&mut cur, token.end);
                 run = Run::Outside;

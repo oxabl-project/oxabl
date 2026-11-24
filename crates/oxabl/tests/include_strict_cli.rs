@@ -560,3 +560,41 @@ fn a_use_site_finding_is_baselined_under_the_includer() {
     let (exit, _, stderr) = check(root, &[".", "--baseline", "b.json"]);
     assert_eq!(exit, Some(0), "{stderr}");
 }
+
+#[test]
+fn a_reference_after_a_qualified_name_marks_the_statement() {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), STRICT_ALL);
+    // The period in `c.x` is part of a name; the statement ends at the last
+    // period, so `{&suffix}` is in the `RUN` target. CL001 asks only about
+    // the target, so a reference after it changes nothing.
+    write(
+        &dir.path().join("src/qual.i"),
+        "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n\
+         RUN VALUE(c.x {&suffix}).\n\
+         RUN VALUE(c) {&suffix}.\n\
+         RUN VALUE(c).\n",
+    );
+    let (_, stdout, stderr) = check(dir.path(), &["src", "--json"]);
+    let report = json(&stdout);
+    let rows: Vec<(u64, bool)> = report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "CL001")
+        .map(|d| {
+            (
+                d["start"]["line"].as_u64().unwrap(),
+                d["help"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("depends on the including file"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [(2, true), (3, false), (4, false)],
+        "{stdout}\n{stderr}"
+    );
+}

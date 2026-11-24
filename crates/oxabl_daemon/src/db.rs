@@ -1106,17 +1106,24 @@ impl HintSource {
             .database_hints_enabled()
     }
 
-    /// The hints of `kinds` for the whole file, in its own bytes.
-    /// Unguarded: run it inside a panic guard. Empty when the selected root
-    /// cannot be read, fails to preprocess, or no longer includes the file.
-    pub fn hints(&self, kinds: HintKinds) -> Vec<InlayHint> {
+    /// The hints of `kinds` for the whole file, in its own bytes, and the
+    /// files the analysis read besides it (in a context: the root and every
+    /// include its expansion read). Unguarded: run it inside a panic guard.
+    /// Empty when the selected root cannot be read, fails to preprocess, or
+    /// no longer includes the file.
+    pub fn hints(&self, kinds: HintKinds) -> (Vec<InlayHint>, Vec<PathBuf>) {
         let config = &self.config;
+        let site = oxabl_common::panic_sites::LSP_INLAY_HINTS;
         match &self.context {
             None => {
+                oxabl_common::hold_if_injected(site, &self.text);
                 let run = config.lint_pipeline();
                 let handle = run.with_file(&self.file);
                 let expansion = handle.expand(&self.text);
-                handle.database_hints(&self.text, &expansion, kinds)
+                (
+                    handle.database_hints(&self.text, &expansion, kinds),
+                    Vec::new(),
+                )
             }
             Some((root, overlay)) => {
                 let fs = OverlayFs {
@@ -1124,15 +1131,40 @@ impl HintSource {
                     inner: Arc::clone(&config.fs),
                 };
                 let Ok(source) = fs.read(root) else {
-                    return Vec::new();
+                    return (Vec::new(), vec![root.clone()]);
                 };
+                oxabl_common::hold_if_injected(site, &source);
                 let run =
                     LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
                 let handle = run.with_file(root);
                 let expansion = handle.expand(&source);
-                handle.database_hints_in_include(&expansion, &self.file, kinds)
+                let mut read = vec![root.clone()];
+                read.extend(expansion.dependency_paths().iter().cloned());
+                (
+                    handle.database_hints_in_include(&expansion, &self.file, kinds),
+                    read,
+                )
             }
         }
+    }
+
+    /// A fingerprint of the open-buffer text of `paths`, as this source's
+    /// context reads them: equal while none of them is edited, opened or
+    /// closed. 0 for a file read alone.
+    pub fn overlay_fingerprint(&self, paths: &[PathBuf]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let Some((_, overlay)) = &self.context else {
+            return 0;
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for path in paths {
+            path.hash(&mut hasher);
+            let text = overlay
+                .get(path)
+                .or_else(|| overlay.get(&crate::session::canonical_path(path)));
+            text.map(|t| &**t).hash(&mut hasher);
+        }
+        hasher.finish()
     }
 }
 

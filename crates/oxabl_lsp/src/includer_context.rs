@@ -347,13 +347,8 @@ impl Server<'_> {
     /// Schedule the includes analysed in `root`, after `root` changed.
     pub(crate) fn schedule_context_users(&mut self, root: &Path) {
         let now = std::time::Instant::now();
-        let users = self.contexts.users_of(root);
-        for uri in &users {
-            self.debouncer.schedule(uri.clone(), now);
-        }
-        // The hints of an include in this root change with it.
-        if !users.is_empty() {
-            self.refresh_inlay_hints();
+        for uri in self.contexts.users_of(root) {
+            self.debouncer.schedule(uri, now);
         }
     }
 }

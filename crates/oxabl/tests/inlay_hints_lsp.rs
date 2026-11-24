@@ -599,7 +599,7 @@ fn an_edit_of_another_file_does_not_overtake_the_answer() {
     let lint = format!("[workspace.lint]\n{STRICT}");
     let root = workspace_with(
         &lint,
-        &[("big.p", &big_file(800)), ("other.p", "MESSAGE 1.\n")],
+        &[("big.p", &held(&big_file(20))), ("other.p", "MESSAGE 1.\n")],
     );
     let mut session = Session::start_with(root.path(), capabilities());
     open(&mut session, root.path(), "big.p");
@@ -651,7 +651,7 @@ fn threads_named(pid: u32, prefix: &str) -> usize {
 #[test]
 fn a_burst_of_edits_runs_one_analysis_at_a_time() {
     let lint = format!("[workspace.lint]\n{STRICT}");
-    let text = big_file(1000);
+    let text = held(&big_file(20));
     let root = workspace_with(&lint, &[("big.p", &text)]);
     let mut session = Session::start_with(root.path(), capabilities());
     open(&mut session, root.path(), "big.p");
@@ -693,13 +693,15 @@ fn a_burst_of_edits_runs_one_analysis_at_a_time() {
         }
     }
     // One worker computes hints; a request whose text was replaced before
-    // the worker reached it is answered with no analysis.
+    // the worker reached it is answered with no analysis. The first request
+    // is analysed while the rest queue behind it (the analysis waits), so
+    // all but the first and the last are stale.
     assert!(most <= 1, "{most} inlay hint threads at once");
     let stale = answers
         .values()
         .filter(|a| a["error"]["code"] == json!(-32801))
         .count();
-    assert!(stale >= count - 2, "{stale} stale answers: {answers:?}");
+    assert_eq!(stale, count - 2, "{answers:?}");
     let last = &answers[&(900 + count as u64 - 1)];
     assert!(last.get("result").is_some(), "{last}");
 }
@@ -830,4 +832,173 @@ fn two_blocks_at_one_place_nest() {
         "{}",
         tx.tooltip
     );
+}
+
+/// `text` with the marker that makes the hint analysis of it wait (in test
+/// builds), so that edits sent meanwhile are queued behind it, whatever the
+/// speed of the machine.
+fn held(text: &str) -> String {
+    format!("/* OXABL-TEST-HOLD:lsp.inlay-hints */\n{text}")
+}
+
+/// Send `didChange` with the whole `text`, not on disk.
+fn edit(session: &mut Session, path: &Path, version: i32, text: &str) {
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": session::file_uri(path), "version": version},
+            "contentChanges": [{"text": text}]
+        }
+    }));
+}
+
+fn ask(session: &mut Session, id: u64, path: &Path) {
+    session.send(json!({
+        "jsonrpc": "2.0", "id": id, "method": "textDocument/inlayHint",
+        "params": {
+            "textDocument": {"uri": session::file_uri(path)},
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 100, "character": 0}}
+        }
+    }));
+}
+
+/// The answers to the requests `ids`, the most `oxabl-inlay` threads the
+/// daemon `pid` had at once meanwhile, and the inlay hint refresh requests
+/// the server sent meanwhile.
+fn collect_answers(
+    session: &Session,
+    pid: u32,
+    ids: std::ops::Range<u64>,
+) -> (std::collections::BTreeMap<u64, Value>, usize, usize) {
+    let mut answers = std::collections::BTreeMap::new();
+    let (mut most, mut refreshes) = (0, 0);
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while answers.len() < ids.clone().count() {
+        assert!(std::time::Instant::now() < deadline, "answers: {answers:?}");
+        most = most.max(threads_named(pid, "oxabl-inlay"));
+        if let Some(m) = session.try_next(Duration::from_millis(5)) {
+            if m["method"] == json!("workspace/inlayHint/refresh") {
+                refreshes += 1;
+            } else if let Some(id) = m["id"].as_u64().filter(|id| ids.contains(id))
+                && m.get("method").is_none()
+            {
+                answers.insert(id, m);
+            }
+        }
+    }
+    (answers, most, refreshes)
+}
+
+#[test]
+fn edits_of_the_selected_root_run_one_analysis_and_one_refresh() {
+    let toml = format!("[workspace.sources]\ninclude_paths = [\".\"]\n[workspace.lint]\n{STRICT}");
+    let main = held(&format!("{{reads.i}}\n{}", big_file(20)));
+    let root = workspace_with(
+        &toml,
+        &[
+            ("reads.i", INCLUDE),
+            ("main.p", &main),
+            ("z.p", "MESSAGE 1.\n"),
+        ],
+    );
+    let mut session = Session::start_with(root.path(), capabilities());
+    let include = root.path().join("reads.i");
+    let main_path = root.path().join("main.p");
+    open(&mut session, root.path(), "reads.i");
+    session.open(&main_path, &main);
+    let answer = session.request(
+        "oxabl/selectIncluderContext",
+        json!({"textDocument": {"uri": session::file_uri(&include)},
+               "root": std::fs::canonicalize(&main_path).unwrap()}),
+    );
+    assert!(answer.get("error").is_none(), "{answer}");
+    let first = hints(&mut session, root.path(), "reads.i");
+    assert!(!first.is_empty());
+    let pid = session.daemon_pid().expect("the daemon registered itself");
+
+    // Another file opens and changes: the root reads none of it, so the
+    // answer comes from the cache, with no analysis (which would wait).
+    let z = root.path().join("z.p");
+    session.open(&z, "MESSAGE 1.\n");
+    edit(&mut session, &z, 2, "MESSAGE 2.\n");
+    let start = std::time::Instant::now();
+    let again = hints(&mut session, root.path(), "reads.i");
+    assert!(
+        start.elapsed() < oxabl_common::TEST_HOLD,
+        "an edit of a file the root does not read ran the analysis again: {:?}",
+        start.elapsed()
+    );
+    assert_eq!(placed(&again, INCLUDE), placed(&first, INCLUDE));
+
+    // A burst of edits of the root, each followed by the include's request.
+    let count = 8u64;
+    for k in 0..count {
+        edit(
+            &mut session,
+            &main_path,
+            2 + k as i32,
+            &format!("{main}/* edit {k} */\n"),
+        );
+        ask(&mut session, 950 + k, &include);
+    }
+    let (answers, most, refreshes) = collect_answers(&session, pid, 950..950 + count);
+    assert!(most <= 1, "{most} inlay hint threads at once");
+    let stale = answers
+        .values()
+        .filter(|a| a["error"]["code"] == json!(-32801))
+        .count();
+    // The first is analysed while the rest queue; each but the last then
+    // finds the root changed.
+    assert_eq!(stale as u64, count - 2, "{answers:?}");
+    assert!(answers[&(950 + count - 1)].get("result").is_some());
+    // The client is asked again once the edits settle, not once per edit.
+    let mut refreshes = refreshes;
+    while let Some(m) = session.try_next(Duration::from_millis(600)) {
+        if m["method"] == json!("workspace/inlayHint/refresh") {
+            refreshes += 1;
+        }
+    }
+    assert!(
+        (1..count as usize / 2).contains(&refreshes),
+        "{refreshes} refreshes"
+    );
+}
+
+#[test]
+fn an_unplaceable_finding_in_an_include_gives_no_hint() {
+    let toml = format!("[workspace.sources]\ninclude_paths = [\".\"]\n[workspace.lint]\n{STRICT}");
+    // The reference that raises the scope is in a nested include, so the
+    // includer check cannot read its statement.
+    let frag =
+        "FOR EACH customer NO-LOCK:\n    DISPLAY customer.name.\nEND.\n{raise.i}\nMESSAGE 1.\n";
+    let raise = "FIND FIRST customer WHERE customer.custnum = 1 NO-LOCK.\n";
+    let root = workspace_with(&toml, &[("frag.i", frag), ("raise.i", raise)]);
+    let found = findings(root.path(), "frag.i");
+    let mut session = Session::start_with(root.path(), capabilities());
+    open(&mut session, root.path(), "frag.i");
+    let hints = hints(&mut session, root.path(), "frag.i");
+    assert!(
+        !hints.iter().any(|h| h.label.contains(" scope ")),
+        "{hints:?}\n{found:?}"
+    );
+    // The rule reports the raise; the hint cannot be checked, so it goes.
+    assert_eq!(coded(&found, &["TX005"]).len(), 1, "{found:?}");
+    // A hint whose finding is in the include itself stays.
+    let text = std::fs::read_to_string(root.path().join("frag.i")).unwrap();
+    assert_eq!(
+        placed(&hints, &text),
+        ["1|FOR EACH customer|index custnum, WHOLE-INDEX"]
+    );
+}
+
+#[test]
+fn a_reference_after_a_qualified_name_in_an_include_gives_no_hint() {
+    let toml = format!("[workspace.lint]\n{STRICT}");
+    let qualified = "FOR EACH customer NO-LOCK WHERE customer.region = \"n\" {&extra}:\n    \
+                     DISPLAY customer.name.\nEND.\n";
+    let root = workspace_with(&toml, &[("w1.i", qualified)]);
+    let mut session = Session::start_with(root.path(), capabilities());
+    open(&mut session, root.path(), "w1.i");
+    let hints = hints(&mut session, root.path(), "w1.i");
+    assert!(hints.is_empty(), "{hints:?}");
 }

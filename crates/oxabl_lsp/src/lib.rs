@@ -879,6 +879,7 @@ impl<'c> Server<'c> {
     /// version it read so a superseded computation is dropped on completion.
     fn fire_due_debounces(&mut self, result_tx: &crossbeam_channel::Sender<ComputeResult>) {
         let now = std::time::Instant::now();
+        let mut context_due = false;
         for uri in self.debouncer.take_due(now) {
             let Some(doc) = self.documents.get(&uri) else {
                 continue;
@@ -889,6 +890,7 @@ impl<'c> Server<'c> {
                 continue;
             }
             if let Some(root) = self.contexts.selected(&uri).cloned() {
+                context_due = true;
                 self.spawn_context_analysis(uri, version, root);
                 continue;
             }
@@ -920,6 +922,11 @@ impl<'c> Server<'c> {
                     });
                 })
                 .expect("failed to spawn an analysis thread");
+        }
+        // The hints of an include read in a root change with the root: ask
+        // the client again once the edits settle, not on every keystroke.
+        if context_due {
+            self.refresh_inlay_hints();
         }
     }
 
