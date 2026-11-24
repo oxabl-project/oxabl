@@ -89,7 +89,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 ## Fuzzing and soak tests
 
 - `fuzz/` holds `cargo-fuzz` targets (lex, preprocess and parse, lint, format, outline, navigate) in a crate outside the workspace; see `fuzz/README.md`. The CI job `Fuzz targets` formats and lints it on stable; running a target needs nightly and `cargo-fuzz`. `.github/workflows/fuzz.yml` runs every target and the grammar fuzz each night and fails on any finding.
-- `crates/oxabl/tests/navigation_sweep_lsp.rs` asks for a definition at every position of files full of awkward table, field and file names, through `oxabl lsp`, and wants a well-formed answer each time.
+- `crates/oxabl/tests/navigation_sweep_lsp.rs` asks for a definition and for highlights at every position of files full of awkward table, field and file names, through `oxabl lsp`, and wants a well-formed answer each time.
 - `scripts/soak/` drives `oxabl lsp` and `oxabl daemon` and counts memory, threads and processes; see `scripts/soak/README.md`.
 - `clients/vscode/test/grammar/fuzz.test.ts` fuzzes the TextMate grammar for slow lines and deep rule stacks (`pnpm test`; a longer run with `OXABL_FUZZ_SECONDS`).
 

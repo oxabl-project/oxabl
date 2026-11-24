@@ -1,9 +1,10 @@
-# Navigation: go to definition, hover and document links
+# Navigation: go to definition, hover, highlights and document links
 
-`oxabl lsp` answers `textDocument/definition`, `textDocument/hover` and
-`textDocument/documentLink`. Each analyses one compilation unit per request and
-gives answers in the bytes of physical files: a declaration written in an
-include is placed in the include, never in the expanded text.
+`oxabl lsp` answers `textDocument/definition`, `textDocument/hover`,
+`textDocument/documentHighlight` and `textDocument/documentLink`. Each analyses
+one compilation unit per request and gives answers in the bytes of physical
+files: a declaration written in an include is placed in the include, never in
+the expanded text.
 
 ## Where the answer comes from
 
@@ -230,6 +231,52 @@ class. A wildcard `USING` has no link. Text in an `&IF` branch that the
 preprocessor did not take is not analysed, so it has no link, no definition and
 no hover.
 
+## Document highlights
+
+`textDocument/documentHighlight` marks the other uses of the name at the cursor.
+`Navigation::highlights` finds the name in the same way as go to definition: the
+shortest site at the cursor, and a cursor just after a name still means it.
+Then it keeps each site that names the same thing. Each use has the kind
+`Read` or `Write`.
+
+Two sites name the same thing when they have the same identity:
+
+| The name resolves to | Identity |
+| --- | --- |
+| A declaration in the unit | The place of its name, in the root or in the include |
+| A program, or a class from another file | The file |
+| An inherited member | The class file and the member name |
+| A schema field | The table and the full field name, so an abbreviation counts |
+| A table, or a buffer named like its table | The table |
+| A `RUN p IN h` target, or a name with several candidates | The same targets that go to definition gives |
+
+The answer holds:
+
+- Only the uses that are written in the file of the request. The cursor in an
+  include gives the uses in that include, and the cursor in the program gives
+  the uses in the program. An include that the unit reads twice gives each use
+  once.
+- The declaration, as a `Write`. A buffer declaration is a `Read`.
+- A use that the statement changes, as a `Write`: an assignment target, an
+  `ASSIGN`, `UPDATE`, `SET` or `IMPORT` target, an `OUTPUT` or `INPUT-OUTPUT` argument,
+  and a `CREATE`. The resolve pass records this on each site (`Site::write`),
+  from the access mode that it already uses to count reads and writes. Every
+  other use is a `Read`.
+- Only the name. A call site covers its whole call, so a span that holds
+  another use of the same name is dropped and the name stays.
+
+The answer never guesses:
+
+- A name that does not resolve has no highlight. No other text of the same
+  spelling is marked, and neither is a string or a comment.
+- A name with more than one possible declaration (a `RUN` target that two
+  entries of the include path supply) has none.
+- A use that comes from a macro (`{&name}`) or an include argument has no place
+  in the file, so it is not shown.
+
+VS Code marks the same word as plain text when the server answers `null`. That
+fallback is the editor's own.
+
 ## Includes and configuration
 
 An open include with a selected compilation context (see
@@ -243,15 +290,17 @@ fields through `[workspace.schema]`. No request depends on
 
 ## Tests
 
-`crates/oxabl/tests/definition_lsp.rs` and `document_link_lsp.rs` pin the
-targets, and `hover_lsp.rs` pins the hover text of each kind of name.
-`navigation_sweep_lsp.rs` asks for a definition at every position, and a hover
-at every position that can give another answer (each start and end of a name,
-and each other character outside a run of spaces), of files full of awkward
-names (a table and field of one name, keywords, hyphens, non-ASCII, a
-200-character name, a `.df` that breaks off), and wants a well-formed answer
-with no error each time, with every range inside its file. It sends the hovers
-one at a time, because the server drops a hover that a newer one replaced.
+`crates/oxabl/tests/definition_lsp.rs`, `document_highlight_lsp.rs` and
+`document_link_lsp.rs` pin the targets, the uses and the links, and
+`hover_lsp.rs` pins the hover text of each kind of name.
+`navigation_sweep_lsp.rs` asks for a definition and for highlights at every
+position, and a hover at every position that can give another answer (each
+start and end of a name, and each other character outside a run of spaces), of
+files full of awkward names (a table and field of one name, keywords, hyphens,
+non-ASCII, a 200-character name, a `.df` that breaks off), and wants a
+well-formed answer with no error each time, with every range inside its file.
+It sends the hovers one at a time, because the server drops a hover that a newer
+one replaced.
 The `navigate` fuzz target (`fuzz/README.md`) does the same on fuzzed input.
 
 Every answer goes through the `oxabl lsp` proxy, which restores a `null`
@@ -262,6 +311,8 @@ a response with neither `result` nor `error`, which a client rejects.
 
 Each request expands, parses and resolves the unit again (no type check), with
 the open buffers over the disk, on a worker thread. Nothing is memoized. A
+highlight request reads one unit and no other file of the workspace, except
+for the files that a handle `RUN` or an ambiguous name needs. A
 request on a `RUN` target that is not a program also lexes and parses the
 expanded unit once more for its call sites (`FileCalls::extract`), and reads
 the outline of each program a handle runs. A hover parses the expanded unit at
