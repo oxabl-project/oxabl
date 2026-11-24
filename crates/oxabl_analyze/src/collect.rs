@@ -476,6 +476,17 @@ impl ExpandedFile {
 
     /// Include references written in an included file that named no locatable
     /// file, at any depth below the root.
+    /// Whether some include text is missing from the expansion: an include
+    /// that does not resolve or cannot be read, a lossy decode, or an elided
+    /// include.
+    pub fn lost_include_text(&self) -> bool {
+        !self.unresolved_includes().is_empty()
+            || !self.nested_unresolved_includes().is_empty()
+            || !self.unreadable_includes().is_empty()
+            || !self.text_losses().is_empty()
+            || !self.elided_include_offsets().is_empty()
+    }
+
     pub fn nested_unresolved_includes(&self) -> &[UnresolvedInclude] {
         &self.nested_unresolved_includes
     }

@@ -3965,6 +3965,12 @@ impl<'a> ResolveWalker<'a> {
         // function name is not flagged; that narrow false negative is an
         // accepted trade against the false-positive volume this eliminates.
         if oxabl_lexer::is_builtin_function(&atom) {
+            if self.ctx.record_sites
+                && namespaces.contains(&NamespaceId::Functions)
+                && self.in_opaque_class()
+            {
+                self.symbols.record_maybe_member_call(expr_id);
+            }
             self.references.insert(
                 expr_id,
                 Resolution::Unresolved {
@@ -4047,20 +4053,27 @@ impl<'a> ResolveWalker<'a> {
     /// declare makes the surface opaque. No receiver is then tried as a type, so
     /// the miss is softened at once.
     fn note_miss_in_opaque_class(&mut self, expr_id: NodeId) {
-        let Some(class) = self.current_class else {
+        if !self.in_opaque_class() {
             return;
+        }
+        if self.ctx.index_loaded {
+            self.cross_file_mut().opaque_misses.push(expr_id);
+        } else {
+            self.soften_unresolved_to_external(expr_id);
+        }
+    }
+
+    /// Whether the walk is in a class with an opaque surface: an ancestor whose
+    /// members were not read.
+    fn in_opaque_class(&mut self) -> bool {
+        let Some(class) = self.current_class else {
+            return false;
         };
         if !self.ctx.index_loaded {
-            if self.inherits_unread_parent(class) {
-                self.soften_unresolved_to_external(expr_id);
-            }
-            return;
+            return self.inherits_unread_parent(class);
         }
         self.walk_member_surface(class);
-        let cf = self.cross_file_mut();
-        if cf.opaque_surfaces.contains(&class) {
-            cf.opaque_misses.push(expr_id);
-        }
+        self.cross_file_mut().opaque_surfaces.contains(&class)
     }
 
     /// Whether `class` inherits a parent this file does not declare, other than
