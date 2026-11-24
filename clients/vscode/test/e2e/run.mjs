@@ -39,6 +39,7 @@ import { folding } from "./scenarios/folding.mjs";
 import { expandedUnit } from "./scenarios/expanded-unit.mjs";
 import { includeContext } from "./scenarios/include-context.mjs";
 import { inlayHints } from "./scenarios/inlay-hints.mjs";
+import { semanticTokens } from "./scenarios/semantic-tokens.mjs";
 import { inactiveRegions } from "./scenarios/inactive-regions.mjs";
 import { outline } from "./scenarios/outline.mjs";
 import { schema, schemaConfigAbove } from "./scenarios/schema.mjs";
@@ -69,6 +70,7 @@ const SCENARIOS = [
   ["definition", definition],
   ["references", references],
   ["inlay-hints", inlayHints],
+  ["semantic-tokens", semanticTokens],
   ["schema", schema],
   ["schema-config-above", schemaConfigAbove],
   ["document-highlight", documentHighlight],

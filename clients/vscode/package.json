@@ -218,6 +218,11 @@
           "default": [],
           "description": "Extra arguments for `oxabl build`, for example `[\"--config-overlay\", \"/path/overlay.toml\"]`. Also passed when the extension reads the build setup of a project."
         },
+        "oxabl.semanticTokens.enable": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Colour names by what they are, from the language server: a variable, a parameter, a database field, a temp-table field, a buffer, a class, a method and so on. A name that oxabl does not resolve keeps the colour of the grammar. Applied automatically when changed; no window reload needed. VS Code's `editor.semanticHighlighting.enabled` also applies."
+        },
         "oxabl.inlayHints.locks": {
           "type": "boolean",
           "default": true,
@@ -245,6 +250,38 @@
         }
       }
     },
+    "semanticTokenTypes": [
+      {
+        "id": "table",
+        "superType": "type",
+        "description": "A table of a database, or the default buffer of one."
+      },
+      {
+        "id": "tempTable",
+        "superType": "type",
+        "description": "A temp-table."
+      },
+      {
+        "id": "buffer",
+        "superType": "variable",
+        "description": "A buffer that the code declares."
+      },
+      {
+        "id": "dataset",
+        "superType": "type",
+        "description": "A dataset."
+      },
+      {
+        "id": "databaseField",
+        "superType": "property",
+        "description": "A field of a database table."
+      },
+      {
+        "id": "tempTableField",
+        "superType": "property",
+        "description": "A field of a temp-table."
+      }
+    ],
     "configurationDefaults": {
       "[abl]": {
         "editor.formatOnSave": true,

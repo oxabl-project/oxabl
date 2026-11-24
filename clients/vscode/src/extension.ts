@@ -8,7 +8,7 @@ import {
 import { CliManager, resolveBinary } from "./binary";
 import { BuildController } from "./builds";
 import { binaryVersion, supportsYield } from "./cli";
-import { inlayHintSettings, shouldRestartForConfigChange } from "./config";
+import { inlayHintSettings, semanticTokenSettings, shouldRestartForConfigChange } from "./config";
 import { ExpandedUnits } from "./expandedUnit";
 import { InactiveRegions } from "./inactiveRegions";
 import { IncluderContexts } from "./includerContext";
@@ -83,6 +83,11 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
       if (event.affectsConfiguration("oxabl.inlayHints")) {
         void client?.sendNotification("workspace/didChangeConfiguration", {
           settings: { oxabl: { inlayHints: readInlayHints() } },
+        });
+      }
+      if (event.affectsConfiguration("oxabl.semanticTokens")) {
+        void client?.sendNotification("workspace/didChangeConfiguration", {
+          settings: { oxabl: { semanticTokens: readSemanticTokens() } },
         });
       }
       if (event.affectsConfiguration("oxabl.build.enable")) {
@@ -186,6 +191,12 @@ function readInlayHints(): Record<string, boolean> {
   return inlayHintSettings((kind) => config.get<boolean>(kind));
 }
 
+/** The `oxabl.semanticTokens.enable` setting, for the server. */
+function readSemanticTokens(): { enable: boolean } {
+  const config = vscode.workspace.getConfiguration("oxabl.semanticTokens");
+  return semanticTokenSettings(config.get<boolean>("enable"));
+}
+
 /** Start the client if enabled; a no-op (silent) when `oxabl.enable` is false. */
 async function startClient(): Promise<void> {
   const config = vscode.workspace.getConfiguration("oxabl");
@@ -216,7 +227,7 @@ async function startClient(): Promise<void> {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "abl" }],
     outputChannel: log,
-    initializationOptions: { inlayHints: readInlayHints() },
+    initializationOptions: { inlayHints: readInlayHints(), semanticTokens: readSemanticTokens() },
     synchronize: {
       // The server watches these itself, but forwarding the events lets live
       // reload work even when the client owns the file watcher (#90 / U2).

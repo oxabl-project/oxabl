@@ -6,6 +6,7 @@ import {
   INLAY_HINT_KINDS,
   RESTART_CONFIG_KEYS,
   inlayHintSettings,
+  semanticTokenSettings,
   shouldRestartForConfigChange,
 } from "./config";
 
@@ -95,5 +96,37 @@ describe("inlayHintSettings", () => {
     for (const kind of INLAY_HINT_KINDS) {
       expect(props[`oxabl.inlayHints.${kind}`]).toMatchObject({ type: "boolean", default: true });
     }
+  });
+});
+
+describe("semanticTokenSettings", () => {
+  it("is on when the setting is not set", () => {
+    expect(semanticTokenSettings(undefined)).toEqual({ enable: true });
+  });
+
+  it("follows the setting", () => {
+    expect(semanticTokenSettings(false)).toEqual({ enable: false });
+    expect(semanticTokenSettings(true)).toEqual({ enable: true });
+  });
+
+  it("does not restart the server", () => {
+    expect(shouldRestartForConfigChange((s) => s.startsWith("oxabl.semanticTokens"))).toBe(false);
+  });
+
+  it("has a boolean setting, on by default, and types for the names the server gives", () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    expect(manifest.contributes.configuration.properties["oxabl.semanticTokens.enable"]).toMatchObject({
+      type: "boolean",
+      default: true,
+    });
+    const types = manifest.contributes.semanticTokenTypes as { id: string; superType: string }[];
+    expect(Object.fromEntries(types.map((t) => [t.id, t.superType]))).toEqual({
+      table: "type",
+      tempTable: "type",
+      buffer: "variable",
+      dataset: "type",
+      databaseField: "property",
+      tempTableField: "property",
+    });
   });
 });
