@@ -109,6 +109,9 @@ pub struct ReferenceAnswer {
     pub outgoing: Vec<OutgoingCall>,
     /// Why the answer can miss something. Empty for a complete answer.
     pub gaps: Vec<Gap>,
+    /// The calls of the workspace that no search follows and that can reach the
+    /// referent, as the short text a count shows ([`Search::counts`]).
+    pub count_reasons: Vec<String>,
     pub texts: HashMap<PathBuf, Arc<str>>,
     /// Whether the name or item asked about refers to something. An empty
     /// `locations` of an answer that is not `resolved` is not a count of zero.
@@ -117,6 +120,30 @@ pub struct ReferenceAnswer {
     /// the workspace pass was not ready, failed or was dated. A caller keeps
     /// no such answer.
     pub volatile: bool,
+    /// The workspace pass the search read, for [`Pass::is_current`]. `None`
+    /// when the answer read no pass.
+    pub pass: Option<Pass>,
+}
+
+/// The identity of a workspace pass: it holds no part of the pass, and tells
+/// whether the pass is still the one a later request reads.
+#[derive(Debug, Clone)]
+pub struct Pass(std::sync::Weak<oxabl_pipeline::ReverseGraph>);
+
+impl Pass {
+    /// Whether the workspace pass that a request now reads is this one and is
+    /// current. Blocks as long as a request does for a pass that is not, so
+    /// callers keep it off the LSP thread. `false` when `cancel` is set, or
+    /// when the workspace cannot say.
+    pub fn is_current(&self, host: &SessionHost, session_root: &Path, cancel: &AtomicBool) -> bool {
+        match graph_or_cancel(host, session_root, cancel) {
+            Ok(Ok(Ok(graph))) => {
+                graph.gaps.is_empty()
+                    && std::sync::Weak::ptr_eq(&self.0, &Arc::downgrade(&graph.graph))
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Why a request has no answer.
@@ -168,6 +195,8 @@ pub fn answer_references(
     let mut units = Vec::new();
     let mut slot = None;
     let mut volatile = false;
+    let mut pass = None;
+    let mut count_reasons = Vec::new();
     if !referent.is_local() {
         cancelled()?;
         // These leave out or date the whole search, so they are gaps of this
@@ -175,9 +204,11 @@ pub fn answer_references(
         match graph_or_cancel(host, session_root, cancel)? {
             Ok(Ok(graph)) => {
                 volatile = !graph.gaps.is_empty();
+                pass = Some(Pass(Arc::downgrade(&graph.graph)));
                 gaps.extend(graph.gaps.into_iter().map(Gap::of_referent));
                 let search = referent.search(&graph.graph, root, MAX_UNITS);
                 gaps.extend(search.gaps);
+                count_reasons = search.counts;
                 units = search.units;
             }
             Ok(Err(reason)) => {
@@ -278,9 +309,11 @@ pub fn answer_references(
     answer.locations.dedup();
     finish_incoming(&mut answer.incoming);
     answer.gaps = gaps;
+    answer.count_reasons = count_reasons;
     answer.texts = texts;
     answer.resolved = true;
     answer.volatile = volatile;
+    answer.pass = pass;
     Ok(answer)
 }
 

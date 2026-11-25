@@ -233,13 +233,18 @@ fn count_of(title: &str) -> usize {
         .unwrap_or_else(|| panic!("`{title}` starts with no count"))
 }
 
-/// What the count of an internal procedure or function says: a file can reach
-/// it through a handle that oxabl does not follow.
+/// What the count of a routine says when a call through a handle can name it.
 const HANDLES: &str = "calls through a handle are not followed";
 
-/// The title of a lens of a routine with `n` found references.
-fn routine_title(n: usize) -> String {
-    format!("{n}+ references · incomplete: {HANDLES}")
+/// The title of a lens with `n` references and no gap.
+fn exact(n: usize) -> String {
+    format!("{n} reference{}", if n == 1 { "" } else { "s" })
+}
+
+/// The title of a lens with `n` found references and a reason that the count
+/// can be short.
+fn short(n: usize, reason: &str) -> String {
+    format!("{n}+ references · incomplete: {reason}")
 }
 
 /// The places of a resolved lens, as `(file, line)` pairs, sorted.
@@ -340,22 +345,16 @@ fn the_count_of_each_lens_is_the_length_of_find_references() {
                 assert_eq!(listed_places(&program), want, "{name}: the RUN places");
             }
         }
-        for (((header, symbol), (_, got)), lens) in symbols
+        for (((_, symbol), (_, got)), lens) in symbols
             .iter()
             .zip(found.iter().skip(skip))
             .zip(lenses(&mut session, &file).iter().skip(skip))
         {
             let (uses, with_declaration) = find_references(&mut session, &file, text, symbol);
             assert_eq!(count_of(got), uses, "{name} `{symbol}`: `{got}`");
-            let routine = header.starts_with("PROCEDURE") || header.starts_with("FUNCTION");
-            if routine {
-                assert_eq!(got, &routine_title(uses), "{name} `{symbol}`");
-            } else {
-                assert!(
-                    !got.contains('+') && !got.contains("incomplete"),
-                    "{name} `{symbol}`: `{got}` is exact"
-                );
-            }
+            // The workspace has no call that a search cannot follow: every
+            // count is exact.
+            assert_eq!(got, &exact(uses), "{name} `{symbol}`");
             // The list the lens opens is the answer of find references.
             let listed = listed_places(&resolve(&mut session, lens));
             assert_eq!(listed.len(), uses, "{name} `{symbol}`: the list");
@@ -389,9 +388,9 @@ fn counts_are_the_uses_in_the_workspace() {
         titles,
         [
             "4 references · used by 3 files".to_string(),
-            routine_title(2),
-            routine_title(1),
-            routine_title(0),
+            exact(2),
+            exact(1),
+            exact(0),
         ]
     );
     let calc = ws.path("app/Calc.cls");
@@ -426,7 +425,7 @@ fn the_lenses_have_no_count_until_they_resolve() {
     }
     let resolved = resolve(&mut session, &listed[1]);
     assert_eq!(resolved["range"], listed[1]["range"]);
-    assert_eq!(title(&resolved), routine_title(2));
+    assert_eq!(title(&resolved), exact(2));
 }
 
 #[test]
@@ -476,7 +475,7 @@ fn a_count_that_can_be_short_says_so() {
     let mut session = start(&ws);
     session.open(&main, MAIN);
     let titles = resolved_titles(&mut session, &main);
-    assert_eq!(titles[1].1, routine_title(1), "{titles:?}");
+    assert_eq!(titles[1].1, exact(1), "{titles:?}");
 }
 
 #[test]
@@ -517,7 +516,7 @@ fn a_stale_lens_is_refused() {
     assert_eq!(answer["error"]["code"], -32801, "{answer}");
     // The lenses of the new text resolve.
     let found = resolved_titles(&mut session, &util);
-    assert_eq!(found[1].1, routine_title(2));
+    assert_eq!(found[1].1, exact(2));
 }
 
 #[test]
@@ -654,7 +653,7 @@ fn effect_lenses_and_reference_lenses_are_apart() {
         both.iter().any(|t| t.starts_with("reads customer")),
         "{both:?}"
     );
-    assert!(both.iter().any(|t| *t == routine_title(1)), "{both:?}");
+    assert!(both.iter().any(|t| *t == exact(1)), "{both:?}");
     assert!(
         both.iter().any(|t| t == "0 references · used by 0 files"),
         "{both:?}"
@@ -807,7 +806,7 @@ fn a_change_in_another_file_makes_a_new_search() {
     session.open(&util, UTIL);
     session.open(&other, OTHER);
     let listed = lenses(&mut session, &util);
-    assert_eq!(title(&resolve(&mut session, &listed[1])), routine_title(2));
+    assert_eq!(title(&resolve(&mut session, &listed[1])), exact(2));
     // `other.p` stops calling `doWork`; the lens of `util.p` has the same
     // version and the same text.
     session.send(json!({
@@ -817,7 +816,7 @@ fn a_change_in_another_file_makes_a_new_search() {
             "contentChanges": [{"text": "RUN lib/util.p.\n"}]
         }
     }));
-    assert_eq!(title(&resolve(&mut session, &listed[1])), routine_title(1));
+    assert_eq!(title(&resolve(&mut session, &listed[1])), exact(1));
 }
 
 #[test]
@@ -868,12 +867,317 @@ fn a_change_of_a_file_on_disk_makes_a_new_search() {
     let mut session = start(&ws);
     session.open(&util, UTIL);
     let listed = lenses(&mut session, &util);
-    assert_eq!(title(&resolve(&mut session, &listed[1])), routine_title(2));
+    assert_eq!(title(&resolve(&mut session, &listed[1])), exact(2));
     // `other.p` is not open: only the watcher tells of the change.
     std::fs::write(&other, "RUN lib/util.p.\n").unwrap();
     session.send(json!({
         "jsonrpc": "2.0", "method": "workspace/didChangeWatchedFiles",
         "params": {"changes": [{"uri": file_uri(&other), "type": 2}]}
     }));
-    assert_eq!(title(&resolve(&mut session, &listed[1])), routine_title(1));
+    assert_eq!(title(&resolve(&mut session, &listed[1])), exact(1));
+}
+
+/// What a count shows for a call that no search follows.
+const RUN_VALUE: &str = "a RUN VALUE can run it";
+const DYNAMIC_NEW: &str = "a DYNAMIC-NEW can create it";
+const DYNAMIC_INVOKE_CLASS: &str = "a DYNAMIC-INVOKE can name it";
+const DYNAMIC_INVOKE_MEMBER: &str = "a DYNAMIC-INVOKE can call it";
+const DYNAMIC_FUNCTION: &str = "a DYNAMIC-FUNCTION can call it";
+
+/// The titles of the lenses of `name` once it is open.
+fn titles_of(session: &mut Session, ws: &Workspace, name: &str, text: &str) -> Vec<String> {
+    let file = ws.path(name);
+    session.open(&file, text);
+    resolved_titles(session, &file)
+        .into_iter()
+        .map(|(_, title)| title)
+        .collect()
+}
+
+#[test]
+fn a_program_that_a_run_value_can_run_has_no_exact_count() {
+    const PROG: &str = "PROCEDURE hello:\nEND PROCEDURE.\n";
+    const MENU: &str =
+        "DEFINE VARIABLE c AS CHARACTER NO-UNDO INITIAL \"prog.p\".\nRUN VALUE(c).\n";
+    let ws = Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("prog.p", PROG),
+        ("menu.p", MENU),
+        ("caller.p", "RUN prog.p.\n"),
+    ]);
+    let mut session = start(&ws);
+    let titles = titles_of(&mut session, &ws, "prog.p", PROG);
+    assert_eq!(
+        titles[0],
+        format!("1+ references · used by 1+ files · incomplete: {RUN_VALUE}")
+    );
+    // The `RUN VALUE` of another file cannot run an internal procedure of
+    // `prog.p`.
+    assert_eq!(titles[1], exact(0), "{titles:?}");
+
+    // The call goes: the counts are exact again.
+    std::fs::write(ws.path("menu.p"), "RUN caller.p.\n").unwrap();
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeWatchedFiles",
+        "params": {"changes": [{"uri": file_uri(&ws.path("menu.p")), "type": 2}]}
+    }));
+    let file = ws.path("prog.p");
+    let found = resolved_titles(&mut session, &file);
+    assert_eq!(found[0].1, "1 reference · used by 1 file", "{found:?}");
+}
+
+#[test]
+fn a_routine_that_a_run_value_in_its_file_can_run_has_no_exact_count() {
+    const DISPATCH: &str = "PROCEDURE a:\nEND PROCEDURE.\nPROCEDURE b:\nEND PROCEDURE.\n\
+        RUN VALUE(\"a\").\n";
+    let ws = Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("dispatch.p", DISPATCH),
+        ("plain.p", "PROCEDURE c:\nEND PROCEDURE.\n"),
+    ]);
+    let mut session = start(&ws);
+    let titles = titles_of(&mut session, &ws, "dispatch.p", DISPATCH);
+    assert_eq!(titles[1], short(0, RUN_VALUE), "{titles:?}");
+    assert_eq!(titles[2], short(0, RUN_VALUE), "{titles:?}");
+    // A file with no `RUN VALUE` of its own stays exact.
+    let titles = titles_of(
+        &mut session,
+        &ws,
+        "plain.p",
+        "PROCEDURE c:\nEND PROCEDURE.\n",
+    );
+    assert_eq!(titles[1], exact(0), "{titles:?}");
+}
+
+#[test]
+fn a_routine_is_exact_unless_a_call_through_a_handle_can_name_it() {
+    const LIB: &str = "PROCEDURE doWork:\nEND PROCEDURE.\nPROCEDURE quiet:\nEND PROCEDURE.\n";
+    let ws = Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("lib.p", LIB),
+        (
+            "b.p",
+            "DEFINE INPUT PARAMETER h AS HANDLE NO-UNDO.\nRUN doWork IN h.\n",
+        ),
+    ]);
+    let mut session = start(&ws);
+    let titles = titles_of(&mut session, &ws, "lib.p", LIB);
+    // A call through a handle names `doWork`, and no call names `quiet`.
+    assert_eq!(titles[1], short(0, HANDLES), "{titles:?}");
+    assert_eq!(titles[2], exact(0), "{titles:?}");
+
+    // A call through a handle with a computed name, or with no name to read,
+    // can reach any routine.
+    for call in [
+        "DEFINE INPUT PARAMETER h AS HANDLE NO-UNDO.\nDEFINE VARIABLE c AS CHARACTER NO-UNDO.\n\
+         RUN VALUE(c) IN h.\n",
+        "PROCEDURE over:\n    RUN SUPER.\nEND PROCEDURE.\n",
+    ] {
+        let ws = Workspace::new(&[("oxabl.toml", CONFIG), ("lib.p", LIB), ("b.p", call)]);
+        let mut session = start(&ws);
+        let titles = titles_of(&mut session, &ws, "lib.p", LIB);
+        assert_eq!(titles[1], short(0, HANDLES), "{call}: {titles:?}");
+        assert_eq!(titles[2], short(0, HANDLES), "{call}: {titles:?}");
+    }
+}
+
+#[test]
+fn a_dynamic_new_or_invoke_makes_a_class_or_member_count_incomplete() {
+    for (call, class, member) in [
+        (
+            "DEFINE VARIABLE o AS CLASS app.Calc NO-UNDO.\no = DYNAMIC-NEW \"app.Calc\" ().\n",
+            Some(DYNAMIC_NEW),
+            None,
+        ),
+        (
+            "DEFINE VARIABLE o AS CLASS app.Calc NO-UNDO.\n\
+             DYNAMIC-INVOKE(o, \"Add\", 1).\n",
+            Some(DYNAMIC_INVOKE_CLASS),
+            Some(DYNAMIC_INVOKE_MEMBER),
+        ),
+        (
+            "DEFINE VARIABLE o AS CLASS app.Calc NO-UNDO.\no = NEW app.Calc().\no:Add(1).\n",
+            None,
+            None,
+        ),
+    ] {
+        let ws = Workspace::new(&[
+            ("oxabl.toml", CONFIG),
+            ("app/Calc.cls", CALC),
+            ("dyn.p", call),
+        ]);
+        let mut session = start(&ws);
+        let titles = titles_of(&mut session, &ws, "app/Calc.cls", CALC);
+        let file = ws.path("app/Calc.cls");
+        // The class, its property, `Add` and `Twice`, in order.
+        let uses =
+            |needle: &str, session: &mut Session| find_references(session, &file, CALC, needle).0;
+        let wanted = [
+            ("Calc:", class),
+            ("Total AS", member),
+            ("Add(", member),
+            ("Twice(", member),
+        ];
+        for ((needle, reason), got) in wanted.into_iter().zip(&titles) {
+            let n = uses(needle, &mut session);
+            let want = reason.map_or(exact(n), |reason| short(n, reason));
+            assert_eq!(got, &want, "{call}: `{needle}` in {titles:?}");
+        }
+    }
+}
+
+#[test]
+fn a_dynamic_function_makes_a_routine_count_incomplete() {
+    const LIB: &str = "FUNCTION twice RETURNS INTEGER (INPUT i AS INTEGER):\n    RETURN i * 2.\n\
+        END FUNCTION.\n";
+    let ws = Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("lib.p", LIB),
+        (
+            "dyn.p",
+            "DEFINE VARIABLE x AS INTEGER NO-UNDO.\nx = DYNAMIC-FUNCTION(\"twice\", 2).\n",
+        ),
+    ]);
+    let mut session = start(&ws);
+    let titles = titles_of(&mut session, &ws, "lib.p", LIB);
+    assert_eq!(titles[1], short(0, DYNAMIC_FUNCTION), "{titles:?}");
+    // No `RUN VALUE`: the program count is exact.
+    assert_eq!(titles[0], "0 references · used by 0 files", "{titles:?}");
+}
+
+const CALLER: &str = "DEFINE VARIABLE o AS CLASS app.Calc NO-UNDO.\no = NEW app.Calc().\n\
+    o:Add(1).\n";
+
+/// The index of the lens of `Add` among those of `app/Calc.cls`.
+const ADD: usize = 2;
+
+#[test]
+fn a_count_follows_a_change_on_disk_that_no_watcher_reports() {
+    let ws = Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("app/Calc.cls", CALC),
+        ("a.p", CALLER),
+    ]);
+    let calc = ws.path("app/Calc.cls");
+    let mut session = start(&ws);
+    session.open(&calc, CALC);
+    let listed = lenses(&mut session, &calc);
+    assert_eq!(title(&resolve(&mut session, &listed[ADD])), exact(1));
+    // A second call in `a.p` and a new file, with no notification: a client
+    // with no file watcher says nothing.
+    std::fs::write(ws.path("a.p"), format!("{CALLER}o:Add(2).\n")).unwrap();
+    std::fs::write(ws.path("b.p"), CALLER).unwrap();
+    // The workspace looks for new files once each second.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let (uses, _) = find_references(&mut session, &calc, CALC, "Add(");
+    assert_eq!(uses, 3, "find references");
+    assert_eq!(title(&resolve(&mut session, &listed[ADD])), exact(uses));
+}
+
+/// `Calc.cls` with a marker that holds each search of its lenses after the
+/// answer, before the title is kept.
+fn held_calc() -> String {
+    format!("{CALC}/* OXABL-TEST-HOLD:lsp.answered-reference-lens@1500 */\n")
+}
+
+#[test]
+fn a_change_on_disk_during_a_search_is_not_kept_as_its_answer() {
+    let ws = Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("app/Calc.cls", CALC),
+        ("a.p", CALLER),
+    ]);
+    let calc = ws.path("app/Calc.cls");
+    let mut session = start(&ws);
+    session.open(&calc, &held_calc());
+    let listed = lenses(&mut session, &calc);
+    // The workspace pass exists once a first lens has its answer.
+    assert_eq!(title(&resolve(&mut session, &listed[ADD + 1])), exact(1));
+    let id = session.next_request_id();
+    session.send(json!({
+        "jsonrpc": "2.0", "id": id, "method": "codeLens/resolve", "params": listed[ADD]
+    }));
+    // The search has its answer and the marker holds it.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::fs::write(ws.path("b.p"), CALLER).unwrap();
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeWatchedFiles",
+        "params": {"changes": [{"uri": file_uri(&ws.path("b.p")), "type": 1}]}
+    }));
+    let first = session.wait_for(|m| m["id"] == json!(id));
+    assert_eq!(title(&first["result"]), exact(1));
+    // The answer is as old as the change: the next resolve looks again.
+    assert_eq!(title(&resolve(&mut session, &listed[ADD])), exact(2));
+}
+
+/// Whether the server asks for the lenses again within `wait`.
+fn refresh_comes(session: &Session, wait: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + wait;
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match session.try_next(left) {
+            Some(message) if message["method"] == "workspace/codeLens/refresh" => return true,
+            Some(_) => {}
+            None => return false,
+        }
+    }
+    false
+}
+
+#[test]
+fn the_client_is_asked_for_the_lenses_again_when_another_file_can_have_changed_them() {
+    let ws = Workspace::standard();
+    let util = ws.path("lib/util.p");
+    let other = ws.path("other.p");
+    let mut session = start(&ws);
+    session.open(&util, UTIL);
+    let _ = lenses(&mut session, &util);
+    let wait = std::time::Duration::from_secs(10);
+    let quiet = std::time::Duration::from_millis(2500);
+    // Nothing changed yet.
+    assert!(!refresh_comes(&session, quiet), "a refresh with no change");
+
+    // An edit of the one file with lenses: the client asks for that file.
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": file_uri(&util), "version": 2},
+            "contentChanges": [{"text": format!("\n{UTIL}")}]
+        }
+    }));
+    assert!(
+        !refresh_comes(&session, quiet),
+        "a refresh for the edited file"
+    );
+
+    // A save.
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didSave",
+        "params": {"textDocument": {"uri": file_uri(&util)}}
+    }));
+    assert!(refresh_comes(&session, wait), "no refresh after a save");
+
+    // A change on disk.
+    std::fs::write(&other, "RUN lib/util.p.\n").unwrap();
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeWatchedFiles",
+        "params": {"changes": [{"uri": file_uri(&other), "type": 2}]}
+    }));
+    assert!(
+        refresh_comes(&session, wait),
+        "no refresh after a disk change"
+    );
+
+    // An edit of another open file.
+    session.open(&other, "RUN lib/util.p.\n");
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": file_uri(&other), "version": 2},
+            "contentChanges": [{"text": "RUN lib/util.p.\nRUN lib/util.p.\n"}]
+        }
+    }));
+    assert!(
+        refresh_comes(&session, wait),
+        "no refresh after an edit of another file"
+    );
 }

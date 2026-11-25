@@ -1016,6 +1016,8 @@ struct Server<'c> {
     lenses: code_lens::LensCache,
     /// The resolved titles of the reference-count lenses.
     reference_cache: reference_lens::ResolveCache,
+    /// When to ask the client for the reference lenses again.
+    lens_refresh: reference_lens::Refresh,
     /// The client's inlay hint support and the kinds it wants.
     inlay: inlay_hint::Options,
     /// The client's semantic token support and the user's choice.
@@ -1112,6 +1114,7 @@ impl<'c> Server<'c> {
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
             reference_cache: reference_lens::ResolveCache::default(),
+            lens_refresh: reference_lens::Refresh::new(debounce_window),
             inlay,
             semantic,
             outlines: document_symbol::OutlineCache::default(),
@@ -1150,7 +1153,11 @@ impl<'c> Server<'c> {
         let mut shutdown_received = false;
         loop {
             // Size the timeout to the nearest pending debounce deadline.
-            let timer = match self.debouncer.next_deadline() {
+            let timer = match [self.debouncer.next_deadline(), self.lens_refresh.due()]
+                .into_iter()
+                .flatten()
+                .min()
+            {
                 Some(deadline) => {
                     after(deadline.saturating_duration_since(std::time::Instant::now()))
                 }
@@ -1276,6 +1283,7 @@ impl<'c> Server<'c> {
                 }
                 recv(timer) -> _ => {
                     self.fire_due_debounces(&result_tx);
+                    self.fire_lens_refresh();
                 }
             }
         }
@@ -1504,6 +1512,7 @@ impl<'c> Server<'c> {
                     if let Some(path) = uri_to_path(&uri) {
                         self.schedule_context_users(&path);
                     }
+                    self.schedule_lens_refresh_for_edit(&uri);
                     self.debouncer.schedule(uri, std::time::Instant::now());
                 }
             }
@@ -1511,6 +1520,7 @@ impl<'c> Server<'c> {
                 if let Ok(params) = serde_json::from_value::<DidSaveTextDocumentParams>(not.params)
                 {
                     // Recompute on save so on-disk include changes are picked up.
+                    self.schedule_lens_refresh();
                     self.debouncer
                         .schedule(params.text_document.uri, std::time::Instant::now());
                 }
@@ -1520,6 +1530,7 @@ impl<'c> Server<'c> {
                     serde_json::from_value::<DidChangeWatchedFilesParams>(not.params)
                 {
                     self.handle_watched_files(params);
+                    self.schedule_lens_refresh();
                     self.inlay_disk_changed();
                 }
             }
@@ -1547,6 +1558,7 @@ impl<'c> Server<'c> {
                     self.note_inlay_version(&uri, None);
                     self.note_semantic_version(&uri, None);
                     self.debouncer.cancel(&uri);
+                    self.lens_refresh.forget(&uri);
                     // An include analysed in this root now reads its saved copy.
                     if let Some(path) = uri_to_path(&uri) {
                         self.schedule_context_users(&path);

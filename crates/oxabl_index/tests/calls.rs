@@ -207,3 +207,44 @@ fn components_come_callees_first() {
     assert!(pos(1) < pos(0) && pos(3) < pos(0));
     assert_eq!(comps.len(), 3);
 }
+
+#[test]
+fn dynamic_calls_are_read_by_kind() {
+    let dynamic = |src: &str| calls(src).dynamic;
+    assert!(dynamic("PROCEDURE p:\nEND PROCEDURE.\nRUN p.\nRUN a.p.\n").is_empty());
+
+    let run_value = dynamic("RUN VALUE(c).\n");
+    assert!(run_value.run_value && !run_value.run_value_in_handle);
+    assert!(!run_value.handle_reaches("p"));
+
+    let in_handle = dynamic("RUN VALUE(c) IN h.\n");
+    assert!(in_handle.run_value && in_handle.run_value_in_handle);
+    assert!(in_handle.handle_reaches("anything"));
+
+    let new = dynamic("o = DYNAMIC-NEW \"demo.Thing\" ().\n");
+    assert!(new.dynamic_new && !new.dynamic_invoke && !new.dynamic_function);
+    let invoke = dynamic("DYNAMIC-INVOKE(o, \"Go\").\n");
+    assert!(invoke.dynamic_invoke && !invoke.dynamic_new);
+    let function = dynamic("x = DYNAMIC-FUNCTION(\"f\", 1).\n");
+    assert!(function.dynamic_function && !function.dynamic_invoke);
+
+    // A call through a handle names its routine, in any spelling of the case.
+    let named = dynamic("RUN DoWork IN h.\nRUN other IN h.\n");
+    assert!(named.handle_reaches("dowork") && named.handle_reaches("OTHER"));
+    assert!(!named.handle_reaches("third") && !named.unnamed_handle);
+    // A call with no name to read can reach any routine.
+    let unnamed = dynamic("PROCEDURE p:\n    RUN SUPER.\nEND PROCEDURE.\n");
+    assert!(unnamed.unnamed_handle && unnamed.handle_reaches("third"));
+    // A routine declared `IN SUPER` is named where it is called.
+    let delegated = dynamic("PROCEDURE viaSuper IN SUPER.\nRUN viaSuper.\n");
+    assert!(delegated.handle_reaches("viasuper") && !delegated.unnamed_handle);
+}
+
+#[test]
+fn the_dynamic_calls_of_two_files_join() {
+    let mut joined = calls("RUN VALUE(c).\nRUN a IN h.\n").dynamic;
+    joined.absorb(&calls("o = DYNAMIC-NEW \"x\" ().\nRUN b IN h.\n").dynamic);
+    assert!(joined.run_value && joined.dynamic_new && !joined.dynamic_invoke);
+    assert!(joined.handle_reaches("a") && joined.handle_reaches("b"));
+    assert!(!joined.handle_reaches("c"));
+}

@@ -281,8 +281,10 @@ longer. The limit bounds the work of one request.
 The code lenses with the count of references (`docs/design/reference-lenses.md`)
 run this search for one declaration. Their count is the length of the
 references answer without the declaration, and the gaps of the referent mark it
-as incomplete. The standing gap of a RUN through a handle marks the count of
-every procedure and function.
+as incomplete. So does a call of the workspace that no search follows (a `RUN`
+through a handle, `RUN VALUE`, `DYNAMIC-NEW`, `DYNAMIC-INVOKE`,
+`DYNAMIC-FUNCTION`) and that can reach the declaration: it marks the count of
+that declaration and no other. Find references does not show these marks.
 
 ## Tests
 

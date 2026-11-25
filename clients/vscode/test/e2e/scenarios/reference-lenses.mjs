@@ -21,14 +21,23 @@ const MAIN = [
   "    MESSAGE \"tally\".",
   "END PROCEDURE.",
   "",
+  "PROCEDURE bump:",
+  "    MESSAGE \"bump\".",
+  "END PROCEDURE.",
+  "",
 ].join("\n");
 
 const FILES = {
   "oxabl.toml": '[workspace]\nname = "lenses"\n[workspace.sources]\ninclude_paths = ["."]\n',
   "main.p": MAIN,
   "batch.p": "RUN main.p.\n",
+  // `bump` is run through a handle that comes in as a parameter, which no search follows.
+  "viahandle.p": "DEFINE INPUT PARAMETER h AS HANDLE NO-UNDO.\nRUN bump IN h.\n",
   "util/recalc.p": "MESSAGE \"recalc\".\n",
 };
+
+// A procedure that a call through a handle can run has no exact count.
+const BUMP = "0+ references · incomplete: calls through a handle are not followed";
 
 const lenses = (page) =>
   page.evaluate(() =>
@@ -91,12 +100,16 @@ export async function referenceLenses(ctx) {
       "the counts",
       async () => {
         const found = await lenses(page);
-        return found.includes("1 reference · used by 1 file") && found.some((t) => t.startsWith("2+ references"));
+        return (
+          found.includes("1 reference · used by 1 file") &&
+          found.includes("2 references") &&
+          found.includes(BUMP)
+        );
       },
       60_000,
     );
     check(
-      `${name}: a program shows its references and files, a procedure its references`,
+      `${name}: a program shows its references and files, a procedure its references, a procedure run through a handle says it is incomplete`,
       shown,
       `lenses: ${await lenses(page)}`,
     );
@@ -112,7 +125,7 @@ export async function referenceLenses(ctx) {
       await until("the references view closed", async () => (await peek(page)) === null);
       return view;
     };
-    const procedure = await clickLens("2+ references");
+    const procedure = await clickLens("2 references");
     check(
       `${name}: a click on a procedure lists its two uses`,
       procedure?.count === 2 && JSON.stringify(procedure.rows) === JSON.stringify(["RUN tally.", "RUN tally."]),

@@ -143,6 +143,76 @@ pub struct FileCalls {
     pub functions: Vec<String>,
     /// More than [`MAX_SITES`] calls: the rest are not listed.
     pub truncated: bool,
+    /// The calls whose target is computed or goes through a handle, from all
+    /// the calls of the file, also past [`MAX_SITES`].
+    pub dynamic: DynamicCalls,
+}
+
+/// The kinds of call that a file makes and that no static search can follow to
+/// a routine, a program, a class or a member. A workspace pass joins the
+/// facts of its files ([`absorb`](Self::absorb)).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DynamicCalls {
+    /// `RUN VALUE(...)`: any program or internal procedure.
+    pub run_value: bool,
+    /// `RUN VALUE(...) IN h`: any internal procedure of a persistent program.
+    pub run_value_in_handle: bool,
+    /// `DYNAMIC-NEW`: any class.
+    pub dynamic_new: bool,
+    /// `DYNAMIC-INVOKE`: any method, also a static one by class name.
+    pub dynamic_invoke: bool,
+    /// `DYNAMIC-FUNCTION`: any user-defined function.
+    pub dynamic_function: bool,
+    /// A call through a handle or a super procedure with no name to read:
+    /// `RUN SUPER`, `SUPER(...)`.
+    pub unnamed_handle: bool,
+    /// The folded names of the routines that a call through a handle or a
+    /// super procedure names (`RUN name IN h`).
+    pub handle_names: std::collections::BTreeSet<String>,
+}
+
+impl DynamicCalls {
+    /// Whether the file makes no such call.
+    pub fn is_empty(&self) -> bool {
+        *self == DynamicCalls::default()
+    }
+
+    /// Join the calls of another file into these.
+    pub fn absorb(&mut self, other: &DynamicCalls) {
+        self.run_value |= other.run_value;
+        self.run_value_in_handle |= other.run_value_in_handle;
+        self.dynamic_new |= other.dynamic_new;
+        self.dynamic_invoke |= other.dynamic_invoke;
+        self.dynamic_function |= other.dynamic_function;
+        self.unnamed_handle |= other.unnamed_handle;
+        self.handle_names.extend(other.handle_names.iter().cloned());
+    }
+
+    /// Whether a call through a handle or a super procedure can reach a
+    /// routine named `name`.
+    pub fn handle_reaches(&self, name: &str) -> bool {
+        self.unnamed_handle || self.run_value_in_handle || self.handle_names.contains(&fold(name))
+    }
+
+    fn note_target(&mut self, target: &CallTarget) {
+        if let CallTarget::Unknown {
+            name,
+            reason: UnknownCall::Handle | UnknownCall::Super,
+        } = target
+        {
+            match name {
+                Some(name) => {
+                    self.handle_names.insert(fold(name));
+                }
+                None => self.unnamed_handle = true,
+            }
+        }
+    }
+}
+
+/// A routine name as the call index compares it: without quotes, in lower case.
+fn fold(name: &str) -> String {
+    name.trim_matches(['"', '\'']).to_ascii_lowercase()
 }
 
 impl FileCalls {
@@ -156,12 +226,28 @@ impl FileCalls {
             functions: decls.functions.clone(),
             ..FileCalls::default()
         };
+        let mut dynamic = DynamicCalls::default();
         walk(program, &mut |s| {
             if let Some(site) = run_site(s, tokens, &decls) {
+                if let (
+                    CallTarget::Unknown {
+                        reason: UnknownCall::Dynamic,
+                        ..
+                    },
+                    StatementKind::Run { in_handle, .. },
+                ) = (&site.target, &s.kind)
+                {
+                    dynamic.run_value = true;
+                    dynamic.run_value_in_handle |= in_handle.is_some();
+                }
                 out.sites.push(site);
             }
         });
-        expression_calls(source, tokens, &decls, &mut out.sites);
+        expression_calls(source, tokens, &decls, &mut out.sites, &mut dynamic);
+        for site in &out.sites {
+            dynamic.note_target(&site.target);
+        }
+        out.dynamic = dynamic;
         out.sites.sort_by_key(|s| (s.at.start, s.at.end));
         if out.sites.len() > MAX_SITES {
             out.sites.truncate(MAX_SITES);
@@ -633,7 +719,13 @@ fn receiver(source: &str, toks: &[&Token], colon: usize, decls: &Decls) -> Recei
 /// Function and method calls in expressions, found in the tokens: a name of
 /// a function of the file, `DYNAMIC-FUNCTION(`, `DYNAMIC-INVOKE(`,
 /// `DYNAMIC-NEW`, `SUPER(` in a function, and `x:name(`.
-fn expression_calls(source: &str, tokens: &[Token], decls: &Decls, out: &mut Vec<CallSite>) {
+fn expression_calls(
+    source: &str,
+    tokens: &[Token],
+    decls: &Decls,
+    out: &mut Vec<CallSite>,
+    dynamic: &mut DynamicCalls,
+) {
     let toks: Vec<&Token> = tokens
         .iter()
         .take_while(|t| t.kind != Kind::Eof)
@@ -655,10 +747,16 @@ fn expression_calls(source: &str, tokens: &[Token], decls: &Decls, out: &mut Vec
         };
         match t.kind {
             Kind::DynamicFunction | Kind::DynamicInvoke if next == Some(Kind::LeftParen) => {
+                if t.kind == Kind::DynamicFunction {
+                    dynamic.dynamic_function = true;
+                } else {
+                    dynamic.dynamic_invoke = true;
+                }
                 out.push(unknown(UnknownCall::Dynamic));
                 continue;
             }
             Kind::DynamicNew => {
+                dynamic.dynamic_new = true;
                 out.push(unknown(UnknownCall::Dynamic));
                 continue;
             }

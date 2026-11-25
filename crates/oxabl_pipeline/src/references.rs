@@ -51,9 +51,6 @@ pub struct Gap {
     /// True for a gap that every request in the workspace has (the state of
     /// the index, a limit of the analysis), false for one of this referent.
     pub standing: bool,
-    /// For a standing gap that is a property of the referent's kind: the short
-    /// text a count shows, so a count of such a referent is never exact.
-    count_reason: Option<String>,
     /// Set for a gap that one unit gives, so [`fold_gaps`] can join the gaps
     /// of many units into one.
     fold: Option<Fold>,
@@ -84,27 +81,7 @@ impl Gap {
         Gap {
             reason,
             standing: false,
-            count_reason: None,
             fold: None,
-        }
-    }
-
-    /// The text a count of the referent shows for this gap, or `None` for a gap
-    /// a count does not show (a standing gap of the workspace).
-    pub fn count_reason(&self) -> Option<&str> {
-        if self.standing {
-            self.count_reason.as_deref()
-        } else {
-            Some(&self.reason)
-        }
-    }
-
-    /// A standing gap that also makes the count of the referent inexact, with
-    /// the `short` text the count shows.
-    pub fn standing_in_counts(reason: String, short: &str) -> Gap {
-        Gap {
-            count_reason: Some(short.to_string()),
-            ..Gap::standing(reason)
         }
     }
 
@@ -113,7 +90,6 @@ impl Gap {
         Gap {
             reason,
             standing: true,
-            count_reason: None,
             fold: None,
         }
     }
@@ -129,7 +105,6 @@ impl Gap {
         Gap {
             reason: fold.reason(1),
             standing: false,
-            count_reason: None,
             fold: Some(fold),
         }
     }
@@ -205,12 +180,20 @@ pub fn fold_gaps(gaps: Vec<Gap>) -> Vec<Gap> {
         out[at] = Gap {
             reason: fold.reason(files.len()),
             standing: false,
-            count_reason: None,
             fold: None,
         };
     }
     out
 }
+
+/// What a count shows when a call that no search follows can reach the
+/// referent.
+const HANDLE_SHORT: &str = "calls through a handle are not followed";
+const RUN_VALUE_SHORT: &str = "a RUN VALUE can run it";
+const DYNAMIC_FUNCTION_SHORT: &str = "a DYNAMIC-FUNCTION can call it";
+const DYNAMIC_NEW_SHORT: &str = "a DYNAMIC-NEW can create it";
+const DYNAMIC_INVOKE_CLASS_SHORT: &str = "a DYNAMIC-INVOKE can name it";
+const DYNAMIC_INVOKE_SHORT: &str = "a DYNAMIC-INVOKE can call it";
 
 /// Which other files can name a referent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -344,6 +327,11 @@ pub struct Search {
     pub units: Vec<PathBuf>,
     /// Why the answer can miss a reference. Empty when it cannot.
     pub gaps: Vec<Gap>,
+    /// Calls of the workspace that no search follows and that can reach the
+    /// referent, as the short text a count of it shows. A count is not exact
+    /// while this is not empty. Find references does not show them: it lists
+    /// the places and does not claim a number.
+    pub counts: Vec<String>,
 }
 
 impl Referent {
@@ -387,6 +375,15 @@ impl Referent {
             found
         };
         let mut handles = false;
+        let dynamic = graph.dynamic_calls();
+        // What can reach the referent and that no search follows, once for each
+        // text a count shows.
+        let mut counts: Vec<String> = Vec::new();
+        let mut note = |short: &str| {
+            if !counts.iter().any(|known| known == short) {
+                counts.push(short.to_string());
+            }
+        };
         let mut queue: VecDeque<Reach> = self.reach.iter().cloned().collect();
         let mut done: Vec<Reach> = Vec::new();
         while let Some(reach) = queue.pop_front() {
@@ -407,6 +404,9 @@ impl Referent {
             }
             match reach {
                 Reach::Program(program) => {
+                    if dynamic.run_value {
+                        note(RUN_VALUE_SHORT);
+                    }
                     add(
                         &Subject::file(&program),
                         &[EdgeKind::ProgramReference],
@@ -415,6 +415,15 @@ impl Referent {
                 }
                 Reach::Routine { program } => {
                     handles = true;
+                    if dynamic.handle_reaches(&self.name) {
+                        note(HANDLE_SHORT);
+                    }
+                    if graph.runs_value_in(&program) {
+                        note(RUN_VALUE_SHORT);
+                    }
+                    if dynamic.dynamic_function {
+                        note(DYNAMIC_FUNCTION_SHORT);
+                    }
                     add(
                         &Subject::file(&program),
                         &[EdgeKind::ProgramReference],
@@ -422,6 +431,12 @@ impl Referent {
                     );
                 }
                 Reach::Class(class) => {
+                    if dynamic.dynamic_new {
+                        note(DYNAMIC_NEW_SHORT);
+                    }
+                    if dynamic.dynamic_invoke {
+                        note(DYNAMIC_INVOKE_CLASS_SHORT);
+                    }
                     add(
                         &Subject::file(&class),
                         &[EdgeKind::ClassReference],
@@ -429,6 +444,9 @@ impl Referent {
                     );
                 }
                 Reach::Member { class } => {
+                    if dynamic.dynamic_invoke {
+                        note(DYNAMIC_INVOKE_SHORT);
+                    }
                     // A class that names the class can inherit the member, and
                     // so can a class that names that one.
                     let mut seen = BTreeSet::from([search::normalize_lexically(&class)]);
@@ -503,11 +521,10 @@ impl Referent {
             )));
         }
         if handles {
-            gaps.push(Gap::standing_in_counts(
+            gaps.push(Gap::standing(
                 "a RUN ... IN a handle that a file gets from elsewhere (a parameter, a shared \
                  variable, SESSION) is not followed"
                     .to_string(),
-                "calls through a handle are not followed",
             ));
         }
         let unanalysed = graph.unanalysed().len();
@@ -525,6 +542,7 @@ impl Referent {
         Search {
             units: ordered,
             gaps,
+            counts,
         }
     }
 }

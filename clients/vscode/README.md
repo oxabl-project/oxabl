@@ -122,8 +122,11 @@ you also get, with no setup:
   and it is made when
   the lens comes into view, so a large file does not run a search for each
   declaration at once. A count that can be short says so
-  (`12+ references · incomplete: <reason>`); a procedure or function always says
-  that calls through a handle are not followed. A declaration that oxabl does
+  (`12+ references · incomplete: <reason>`): for example when a call through a
+  handle, a `RUN VALUE`, a `DYNAMIC-NEW` or a `DYNAMIC-INVOKE` in the workspace
+  can reach the declaration. A caller from outside the workspace (an AppServer
+  client, a `-p` program, a published event) is never counted. The lenses ask
+  again after a save, a change on disk and an edit of another file. A declaration that oxabl does
   not resolve shows `references not known`, never a number. These lenses are
   off by default, and apart from the database effect lenses, which follow the
   rules in `oxabl.toml`. VS Code's `editor.codeLens` turns off both. See

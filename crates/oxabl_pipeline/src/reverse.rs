@@ -49,6 +49,7 @@ use oxabl_analyze::{
     DependencyEdgeRow, DependencySection, LookupSpanRow, UnresolvedEdgeRow, unresolved_reason_str,
 };
 use oxabl_ast::Span;
+use oxabl_index::calls::DynamicCalls;
 use oxabl_index::{
     DegradedReason, DependencyEdges, EdgeKind, EdgeTarget, UnresolvedReference,
     search::normalize_lexically,
@@ -279,6 +280,8 @@ struct NamedEdges {
     edges: DependencyEdges,
     /// One per edge, in order. `None` for an edge whose target cannot be named.
     subjects: Vec<Option<Subject>>,
+    /// The calls of the file that no static search follows.
+    dynamic: DynamicCalls,
 }
 
 /// The whole workspace's edges, inverted.
@@ -312,6 +315,11 @@ pub struct ReverseGraph {
     /// opposite: pure prefix arithmetic against subjects that are already
     /// normalised, where an unnormalised root simply never matches.
     include_roots: Vec<PathBuf>,
+    /// The calls that no static search follows, of every file the pass
+    /// analysed.
+    dynamic: DynamicCalls,
+    /// The files that make a `RUN VALUE`, normalised and sorted.
+    run_value_files: Vec<PathBuf>,
 }
 
 impl ReverseGraph {
@@ -369,6 +377,18 @@ impl ReverseGraph {
             + self.files.capacity() * std::mem::size_of::<PathBuf>()
             + self
                 .files
+                .iter()
+                .map(|path| path.to_string_lossy().len())
+                .sum::<usize>()
+            + self
+                .dynamic
+                .handle_names
+                .iter()
+                .map(String::len)
+                .sum::<usize>()
+            + self.run_value_files.capacity() * std::mem::size_of::<PathBuf>()
+            + self
+                .run_value_files
                 .iter()
                 .map(|path| path.to_string_lossy().len())
                 .sum::<usize>()
@@ -488,6 +508,8 @@ impl ReverseGraph {
                 .iter()
                 .map(|root| normalize_lexically(root))
                 .collect(),
+            dynamic: DynamicCalls::default(),
+            run_value_files: Vec::new(),
         }
     }
 
@@ -509,16 +531,17 @@ impl ReverseGraph {
         let mut inspected = None;
         let file_pipeline = pipeline.with_file(path);
         let outcome = file_pipeline
-            .edge_set_with(&source, |expansion, result| {
+            .edge_set_with_calls(&source, |expansion, result| {
                 inspected = Some(inspect(&file, expansion, result));
             })
-            .map(|edges| NamedEdges {
+            .map(|(edges, dynamic)| NamedEdges {
                 subjects: edges
                     .edges()
                     .iter()
                     .map(|edge| Self::subject_of(&edge.target, pipeline))
                     .collect(),
                 edges,
+                dynamic,
             });
         (FilePart { file, outcome }, inspected)
     }
@@ -526,7 +549,11 @@ impl ReverseGraph {
     /// Invert one file's named edge set into the graph.
     fn absorb(&mut self, part: FilePart) {
         let FilePart { file, outcome } = part;
-        let NamedEdges { edges, subjects } = match outcome {
+        let NamedEdges {
+            edges,
+            subjects,
+            dynamic,
+        } = match outcome {
             Ok(named) => named,
             Err(reason) => {
                 self.unanalysed.push(Unanalysed { file, reason });
@@ -534,6 +561,10 @@ impl ReverseGraph {
             }
         };
         let dependent = file.as_path();
+        if dynamic.run_value {
+            self.run_value_files.push(dependent.to_path_buf());
+        }
+        self.dynamic.absorb(&dynamic);
         if !edges.completeness().is_complete() {
             self.degraded.push(Degraded {
                 file: dependent.to_path_buf(),
@@ -614,6 +645,8 @@ impl ReverseGraph {
         self.unnameable.dedup();
         self.files.sort();
         self.files.dedup();
+        self.run_value_files.sort();
+        self.run_value_files.dedup();
     }
 
     /// Every file whose compilation can change when `subject` changes (R1).
@@ -751,6 +784,20 @@ impl ReverseGraph {
         let mut out: Vec<PathBuf> = seen.into_iter().collect();
         out.sort();
         out
+    }
+
+    /// The calls that no static search follows, of every file the pass
+    /// analysed.
+    pub fn dynamic_calls(&self) -> &DynamicCalls {
+        &self.dynamic
+    }
+
+    /// Whether `file` makes a `RUN VALUE`, which can run any of its internal
+    /// procedures.
+    pub fn runs_value_in(&self, file: &Path) -> bool {
+        self.run_value_files
+            .binary_search(&normalize_lexically(file))
+            .is_ok()
     }
 
     /// Files the pass could not analyse. Never folded into "depends on nothing".

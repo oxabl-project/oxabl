@@ -36,11 +36,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use oxabl_ast::Span;
+use oxabl_ast::{Span, Statement};
 use oxabl_common::{
     Diagnostic, FileId, FileSpan, LintSeverityMap, Severity, SourceMap, VirtualSpan,
 };
-use oxabl_lexer::tokenize;
+use oxabl_lexer::{Token, tokenize};
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{
     BranchState, IfBranch, Preprocessor, ResolvedInclude, SkippedInclude, SkippedText, SpanNode,
@@ -2079,6 +2079,30 @@ pub fn analyze_from_expanded(
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
 ) -> (Semantic, bool) {
+    analyze_from_expanded_inspecting(
+        expanded,
+        schema,
+        schema_loaded,
+        index,
+        source_context,
+        |_, _, _| (),
+    )
+    .0
+}
+
+/// [`analyze_from_expanded`], and what `inspect` makes of the parsed program
+/// of the expanded text, its text and its tokens, so a caller reads the parse
+/// without a second one.
+pub fn analyze_from_expanded_inspecting<T>(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+    inspect: impl FnOnce(&[Statement], &str, &[Token]) -> T,
+) -> ((Semantic, bool), T) {
+    let mut inspect = Some(inspect);
+    let mut inspected = None;
     let (semantic, first_error) = analyze_expanded(
         expanded,
         schema,
@@ -2086,8 +2110,16 @@ pub fn analyze_from_expanded(
         index,
         source_context,
         false,
+        &mut |program, text, tokens| {
+            if let Some(inspect) = inspect.take() {
+                inspected = Some(inspect(program, text, tokens));
+            }
+        },
     );
-    (semantic, first_error.is_some())
+    (
+        (semantic, first_error.is_some()),
+        inspected.expect("the parsed program was inspected"),
+    )
 }
 
 /// [`analyze_from_expanded`] with the navigation sites recorded
@@ -2113,8 +2145,19 @@ pub fn analyze_for_navigation_checked(
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
 ) -> (Semantic, Option<VirtualSpan>) {
-    analyze_expanded(expanded, schema, schema_loaded, index, source_context, true)
+    analyze_expanded(
+        expanded,
+        schema,
+        schema_loaded,
+        index,
+        source_context,
+        true,
+        &mut |_, _, _| (),
+    )
 }
+
+/// What reads the parse of an analysis: the statements, the text and the tokens.
+type ParseInspector<'a> = dyn FnMut(&[Statement], &str, &[Token]) + 'a;
 
 fn analyze_expanded(
     expanded: &ExpandedFile,
@@ -2123,6 +2166,7 @@ fn analyze_expanded(
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
     record_sites: bool,
+    inspect: &mut ParseInspector<'_>,
 ) -> (Semantic, Option<VirtualSpan>) {
     let timing = std::env::var_os("OXABL_EDGE_PROFILE").map(|_| std::time::Instant::now());
     let tokens = tokenize(&expanded.text);
@@ -2130,6 +2174,7 @@ fn analyze_expanded(
     let mut parser = Parser::new(&tokens, &expanded.text);
     let program = parser.parse_program();
     let parsed = timing.map(|t| t.elapsed());
+    inspect(&program.statements, &expanded.text, &tokens);
     let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema)
         .with_index(index)
         .with_source_context(source_context)

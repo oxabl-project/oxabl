@@ -7,13 +7,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lsp_server::{ErrorCode, Message, Request, Response};
 use lsp_types::{CodeLens, Command, Location, Position, PositionEncodingKind, Range, Uri};
 use oxabl_daemon::canonical_path;
 use oxabl_daemon::references::{
-    ReferenceAnswer, ReferenceError, ReferenceQuery, answer_references,
+    Pass, ReferenceAnswer, ReferenceError, ReferenceQuery, answer_references,
 };
 use oxabl_pipeline::{OutlineKind, OutlineSymbol};
 use serde::{Deserialize, Serialize};
@@ -32,8 +33,12 @@ pub(crate) const COMMAND: &str = "oxabl.showReferences";
 /// The longest gap text a title shows, in characters.
 const REASON_LIMIT: usize = 60;
 
-/// The most titles kept; the cache is emptied when it grows past this.
+/// The most titles kept.
 const CACHE_LIMIT: usize = 4096;
+
+/// The most places the kept titles hold together: each title holds every
+/// place of its answer.
+const LOCATION_LIMIT: usize = 100_000;
 
 /// The generations of the session a title was made at: buffers, configuration
 /// and schema.
@@ -41,7 +46,7 @@ type Generations = (u64, u64, u32);
 
 /// What tells two resolves of one lens apart: the file, the unit that asked,
 /// the kind, the name's byte and the version of the text.
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 struct CacheKey {
     uri: String,
     root: PathBuf,
@@ -50,39 +55,136 @@ struct CacheKey {
     version: i32,
 }
 
+/// A kept title, and the workspace pass its search read.
+struct Entry {
+    title: Title,
+    pass: Option<Pass>,
+}
+
+#[derive(Default)]
+struct Titles {
+    /// The generations every entry was made at. An entry of other generations
+    /// is dead, so there are none.
+    generations: Option<Generations>,
+    entries: HashMap<CacheKey, Entry>,
+    /// The places the entries hold together.
+    locations: usize,
+}
+
+impl Titles {
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.locations = 0;
+    }
+}
+
 /// The titles of resolved lenses, shared with the resolve workers. A title is
 /// used again only at the session generations it was made at, so an edit of
 /// any open file, a change of the configuration or schema, or a change of a
-/// file on disk (which empties the cache) makes a new search.
+/// file on disk (which empties the cache) makes a new search. A title that
+/// read a workspace pass is used only while that pass is the current one.
 #[derive(Clone, Default)]
 pub(crate) struct ResolveCache {
-    titles: Arc<Mutex<HashMap<CacheKey, (Generations, Title)>>>,
+    titles: Arc<Mutex<Titles>>,
+    /// Moved by every [`clear`](Self::clear), so an answer that a clear
+    /// overtook is not kept.
+    epoch: Arc<AtomicU64>,
 }
 
 impl ResolveCache {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<CacheKey, (Generations, Title)>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Titles> {
         self.titles
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn get(&self, key: &CacheKey, now: Generations) -> Option<Title> {
-        self.lock()
-            .get(key)
-            .filter(|(made, _)| *made == now)
-            .map(|(_, title)| title.clone())
+    /// The epoch to give [`put`](Self::put) for an answer that starts now.
+    fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
     }
 
-    fn put(&self, key: CacheKey, made: Generations, title: Title) {
+    /// The kept title of `key` at the generations `now`, and the pass it read.
+    /// The entries of older generations are dead and go.
+    fn get(&self, key: &CacheKey, now: Generations) -> Option<(Title, Option<Pass>)> {
         let mut titles = self.lock();
-        if titles.len() >= CACHE_LIMIT {
+        if titles.generations != Some(now) {
+            titles.clear();
+            titles.generations = Some(now);
+        }
+        titles
+            .entries
+            .get(key)
+            .map(|entry| (entry.title.clone(), entry.pass.clone()))
+    }
+
+    /// Keep a title that an answer made at `made`, unless a clear came after
+    /// `epoch`, the session has moved on, or the title is too big. The other
+    /// versions of the same file are dead and go.
+    fn put(&self, key: CacheKey, made: Generations, epoch: u64, title: Title, pass: Option<Pass>) {
+        let mut titles = self.lock();
+        if epoch != self.epoch() || titles.generations != Some(made) {
+            return;
+        }
+        let places = title.locations.len();
+        if places > LOCATION_LIMIT {
+            return;
+        }
+        let dead: Vec<CacheKey> = titles
+            .entries
+            .keys()
+            .filter(|held| held.uri == key.uri && held.version != key.version)
+            .cloned()
+            .collect();
+        for held in dead {
+            if let Some(entry) = titles.entries.remove(&held) {
+                titles.locations -= entry.title.locations.len();
+            }
+        }
+        if let Some(entry) = titles.entries.remove(&key) {
+            titles.locations -= entry.title.locations.len();
+        }
+        if titles.entries.len() >= CACHE_LIMIT || titles.locations + places > LOCATION_LIMIT {
             titles.clear();
         }
-        titles.insert(key, (made, title));
+        titles.locations += places;
+        titles.entries.insert(key, Entry { title, pass });
     }
 
     pub(crate) fn clear(&self) {
-        self.lock().clear();
+        let mut titles = self.lock();
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        titles.clear();
+    }
+}
+
+/// How many debounce windows the lenses wait after a change before the client
+/// is asked for them again: a burst of saves or edits asks once.
+const REFRESH_WINDOWS: u32 = 5;
+
+/// The debounced `workspace/codeLens/refresh` after a change that can make a
+/// count old.
+pub(crate) struct Refresh {
+    window: std::time::Duration,
+    /// The files whose lenses the client asked for.
+    files: HashSet<Uri>,
+    due: Option<std::time::Instant>,
+}
+
+impl Refresh {
+    pub(crate) fn new(debounce_window: std::time::Duration) -> Self {
+        Refresh {
+            window: debounce_window * REFRESH_WINDOWS,
+            files: HashSet::new(),
+            due: None,
+        }
+    }
+
+    pub(crate) fn due(&self) -> Option<std::time::Instant> {
+        self.due
+    }
+
+    pub(crate) fn forget(&mut self, uri: &Uri) {
+        self.files.remove(uri);
     }
 }
 
@@ -125,6 +227,42 @@ impl Server<'_> {
     /// Whether reference lenses are on and `uri` is a file that can have them.
     pub(crate) fn reference_lenses_apply(&self, uri: &Uri) -> bool {
         self.reference_lenses_on() && uri_to_path(uri).is_some_and(|path| lens_file(&path))
+    }
+
+    /// Ask the client for the lenses again once changes stop. A count and its
+    /// list of places come from the other files too, and the client asks again
+    /// for a file only when that file changes.
+    pub(crate) fn schedule_lens_refresh(&mut self) {
+        if self.reference_lenses_on() && self.lenses.refresh_supported() {
+            self.lens_refresh.due = Some(std::time::Instant::now() + self.lens_refresh.window);
+        }
+    }
+
+    /// [`schedule_lens_refresh`](Self::schedule_lens_refresh) for an edit of
+    /// `uri`, when the lenses of another file were asked for: the client asks
+    /// again for the file that changed by itself.
+    pub(crate) fn schedule_lens_refresh_for_edit(&mut self, uri: &Uri) {
+        if self.lens_refresh.files.iter().any(|other| other != uri) {
+            self.schedule_lens_refresh();
+        }
+    }
+
+    /// Send the refresh when it is due.
+    pub(crate) fn fire_lens_refresh(&mut self) {
+        let Some(due) = self.lens_refresh.due else {
+            return;
+        };
+        if due > std::time::Instant::now() {
+            return;
+        }
+        self.lens_refresh.due = None;
+        if self.reference_lenses_on() && self.lenses.refresh_supported() {
+            let _ = self.connection.sender.send(Message::Request(Request::new(
+                self.lenses.request_id(),
+                "workspace/codeLens/refresh".into(),
+                Value::Null,
+            )));
+        }
     }
 
     /// Apply the `referenceLenses` setting of `workspace/didChangeConfiguration`
@@ -170,6 +308,7 @@ impl Server<'_> {
         let Ok(symbols) = outline else {
             return Vec::new();
         };
+        self.lens_refresh.files.insert(uri.clone());
         let mut lenses = Vec::new();
         let at = |offset: u32| byte_to_position(&doc.rope, offset as usize, &self.encoding);
         let lens = |kind, start: u32, name: u32| {
@@ -283,9 +422,15 @@ impl Server<'_> {
             offset: data.offset,
             version: data.version,
         };
-        if let Some(title) = generations.and_then(|now| self.reference_cache.get(&key, now)) {
-            return self.respond(Response::new_ok(req.id, resolved(lens, &data, title)));
-        }
+        let epoch = self.reference_cache.epoch();
+        let kept = generations.and_then(|now| self.reference_cache.get(&key, now));
+        let kept = match kept {
+            // No other file is read: nothing can have made it old.
+            Some((title, None)) => {
+                return self.respond(Response::new_ok(req.id, resolved(lens, &data, title)));
+            }
+            kept => kept,
+        };
         // The text, to hold the search in a test that asks for it.
         let hold_text = oxabl_common::INJECTION_ENABLED
             .then(|| self.documents.get(&uri).map(|doc| doc.text()))
@@ -305,6 +450,16 @@ impl Server<'_> {
                 let in_flight = in_flight.clone();
                 let id = id.clone();
                 move || {
+                    // A kept title that read a workspace pass holds while the
+                    // pass is the one that find references reads now.
+                    if let Some((title, Some(pass))) = &kept
+                        && pass.is_current(&host, &session_root, &cancel)
+                    {
+                        in_flight.finish(&id);
+                        let response = Response::new_ok(id, resolved(lens, &data, title.clone()));
+                        let _ = sender.send(Message::Response(response));
+                        return;
+                    }
                     if let Some(text) = &hold_text {
                         oxabl_common::hold_if_injected(
                             oxabl_common::panic_sites::LSP_REFERENCE_LENS,
@@ -314,17 +469,29 @@ impl Server<'_> {
                     let answered = oxabl_common::catch_panic(|| {
                         answer_references(&host, &session_root, &root, &query, &cancel)
                     });
+                    if let (Some(text), Ok(Ok(_))) = (&hold_text, &answered) {
+                        oxabl_common::hold_if_injected(
+                            oxabl_common::panic_sites::LSP_REFERENCE_LENS_ANSWER,
+                            text,
+                        );
+                    }
                     in_flight.finish(&id);
                     let response = match answered {
                         Ok(Ok(answer)) => {
-                            crate::references::log_standing(&sender, &in_flight, "references and calls", &answer.gaps);
+                            crate::references::log_standing(
+                                &sender,
+                                &in_flight,
+                                "references and calls",
+                                &answer.gaps,
+                            );
                             let volatile = answer.volatile;
+                            let pass = answer.pass.clone();
                             let title = title(answer, data.kind, &encoding);
                             if !volatile
                                 && title.opens
                                 && let Some(made) = generations
                             {
-                                cache.put(key, made, title.clone());
+                                cache.put(key, made, epoch, title.clone(), pass);
                             }
                             Response::new_ok(id, resolved(lens, &data, title))
                         }
@@ -407,14 +574,16 @@ fn unknown(reason: &str) -> Title {
 }
 
 /// The title for an answer: an exact count, or a count that says it can be
-/// short. A gap of the referent marks a count, and so does a standing gap that
-/// is a property of the referent's kind (a call through a handle). Another
-/// standing gap holds for every request of the workspace and is only logged.
+/// short. A gap of the referent marks a count, and so does a call of the
+/// workspace that no search follows and that can reach it
+/// ([`ReferenceAnswer::count_reasons`]). A standing gap holds for every request
+/// of the workspace and is only logged.
 fn title(answer: ReferenceAnswer, kind: Kind, encoding: &PositionEncodingKind) -> Title {
     if !answer.resolved {
         return unknown("oxabl does not resolve this name");
     }
     let gaps = answer.gaps.clone();
+    let count_reasons = answer.count_reasons.clone();
     let wanted = answer.locations.len();
     let files: HashSet<PathBuf> = answer
         .locations
@@ -423,10 +592,14 @@ fn title(answer: ReferenceAnswer, kind: Kind, encoding: &PositionEncodingKind) -
         .collect();
     let places = locations(answer, encoding);
     let shown = places.len();
-    let reasons: Vec<String> = with_dropped(&gaps, wanted - shown)
-        .iter()
-        .filter_map(|gap| gap.count_reason().map(str::to_string))
-        .collect();
+    // The short texts first: they read well in a title that shows one reason.
+    let mut reasons = count_reasons;
+    reasons.extend(
+        with_dropped(&gaps, wanted - shown)
+            .iter()
+            .filter(|gap| !gap.standing)
+            .map(|gap| gap.reason.clone()),
+    );
     let incomplete = !reasons.is_empty();
     let plus = if incomplete { "+" } else { "" };
     let mut text = format!(
@@ -485,4 +658,152 @@ fn is_program(path: &std::path::Path) -> bool {
         && !path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("cls"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: Generations = (1, 1, 1);
+
+    fn key(uri: &str, version: i32, offset: u32) -> CacheKey {
+        CacheKey {
+            uri: uri.to_string(),
+            root: PathBuf::from(uri),
+            kind: Kind::Symbol,
+            offset,
+            version,
+        }
+    }
+
+    fn title_of(places: usize) -> Title {
+        let place = Location::new(
+            "file:///a.p".parse().unwrap(),
+            Range::new(Position::new(0, 0), Position::new(0, 1)),
+        );
+        Title {
+            text: format!("{places} references"),
+            opens: true,
+            locations: vec![place; places],
+        }
+    }
+
+    fn held(cache: &ResolveCache) -> (usize, usize) {
+        let titles = cache.lock();
+        (titles.entries.len(), titles.locations)
+    }
+
+    /// A cache synced to `NOW`, as the first resolve of a session leaves it.
+    fn cache() -> ResolveCache {
+        let cache = ResolveCache::default();
+        cache.get(&key("file:///a.p", 1, 0), NOW);
+        cache
+    }
+
+    #[test]
+    fn a_title_is_kept_for_the_generations_it_was_made_at() {
+        let cache = cache();
+        let epoch = cache.epoch();
+        cache.put(key("file:///a.p", 1, 0), NOW, epoch, title_of(2), None);
+        assert!(cache.get(&key("file:///a.p", 1, 0), NOW).is_some());
+        assert!(cache.get(&key("file:///a.p", 1, 0), (2, 1, 1)).is_none());
+        // The entries of the old generations are gone, not only unused.
+        assert_eq!(held(&cache), (0, 0));
+    }
+
+    #[test]
+    fn a_clear_after_the_search_began_keeps_no_title() {
+        let cache = cache();
+        let epoch = cache.epoch();
+        cache.clear();
+        cache.put(key("file:///a.p", 1, 0), NOW, epoch, title_of(1), None);
+        assert_eq!(held(&cache), (0, 0));
+        // A search that began after the clear is kept.
+        cache.put(
+            key("file:///a.p", 1, 0),
+            NOW,
+            cache.epoch(),
+            title_of(1),
+            None,
+        );
+        assert_eq!(held(&cache), (1, 1));
+    }
+
+    #[test]
+    fn a_title_of_older_generations_is_not_kept() {
+        let cache = cache();
+        cache.put(
+            key("file:///a.p", 1, 0),
+            (0, 1, 1),
+            cache.epoch(),
+            title_of(1),
+            None,
+        );
+        assert_eq!(held(&cache), (0, 0));
+    }
+
+    #[test]
+    fn the_titles_of_other_versions_of_a_file_are_dropped() {
+        let cache = cache();
+        for version in 1..=3 {
+            cache.put(
+                key("file:///a.p", version, 0),
+                NOW,
+                cache.epoch(),
+                title_of(4),
+                None,
+            );
+            cache.put(
+                key("file:///a.p", version, 9),
+                NOW,
+                cache.epoch(),
+                title_of(4),
+                None,
+            );
+        }
+        cache.put(
+            key("file:///b.p", 1, 0),
+            NOW,
+            cache.epoch(),
+            title_of(4),
+            None,
+        );
+        // Version 3 of `a.p` (two lenses) and the one of `b.p`.
+        assert_eq!(held(&cache), (3, 12));
+        assert!(cache.get(&key("file:///a.p", 1, 0), NOW).is_none());
+        assert!(cache.get(&key("file:///a.p", 3, 9), NOW).is_some());
+    }
+
+    #[test]
+    fn the_places_that_the_titles_hold_are_bounded() {
+        let cache = cache();
+        let big = LOCATION_LIMIT / 2 + 1;
+        cache.put(
+            key("file:///a.p", 1, 0),
+            NOW,
+            cache.epoch(),
+            title_of(big),
+            None,
+        );
+        cache.put(
+            key("file:///b.p", 1, 0),
+            NOW,
+            cache.epoch(),
+            title_of(big),
+            None,
+        );
+        // The second does not fit beside the first: the cache starts again.
+        let (entries, places) = held(&cache);
+        assert!(places <= LOCATION_LIMIT, "{places} places held");
+        assert_eq!(entries, 1);
+        // A title of more places than the limit is not kept.
+        cache.put(
+            key("file:///c.p", 1, 0),
+            NOW,
+            cache.epoch(),
+            title_of(LOCATION_LIMIT + 1),
+            None,
+        );
+        assert!(cache.get(&key("file:///c.p", 1, 0), NOW).is_none());
+    }
 }
