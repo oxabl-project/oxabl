@@ -143,7 +143,13 @@ pub fn analyze_file(
     // Reads: one effect per read, with the index of each search.
     // Per statement: the phrases seen so far, and how many were EACH.
     let mut stmt_phrases: FxHashMap<oxabl_ast::NodeId, (u8, u8)> = FxHashMap::default();
+    // Reads of a table the loaded schema does not have: the table is not
+    // known, so the unit's effects are not established, as for a write.
+    let mut unknown_reads: Vec<(UnitId, Span)> = Vec::new();
     for read in scopes.reads() {
+        if schema.is_some() && matches!(read.table, Table::Unknown(_)) {
+            unknown_reads.push((read.unit, read.at));
+        }
         let name_tok = reader.at(read.at.start);
         let statement = statement_span(flow, read.unit, read.stmt);
         let limit = statement.map_or(u32::MAX, |s| s.end);
@@ -266,6 +272,9 @@ pub fn analyze_file(
             None => list.push((reason, at)),
         }
     };
+    for (unit, at) in unknown_reads {
+        unknown(unit, EffectUnknown::UnknownTable, at);
+    }
     if calls.truncated {
         for cfg in flow.units() {
             unknown(cfg.id(), EffectUnknown::TooComplex, cfg.unit().span);

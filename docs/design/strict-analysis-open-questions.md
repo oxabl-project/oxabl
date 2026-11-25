@@ -927,7 +927,7 @@ phrase (the parser keeps only the first phrase's `WHERE`).
 |---|---|---|
 | O1 | Reads are the record reads of `oxabl_scope` (section 7.4): `FIND`, `FOR`, `PRESELECT` and `OPEN QUERY` phrases, `CAN-FIND`, `GET`, with their lock. `GET` and `FIND CURRENT` do not search, so they have no index. | Documented. |
 | O2 | Writes are the database updates of `oxabl_scope` (T3): `CREATE` is create, `DELETE` is delete, an assignment, `BUFFER-COPY` to the buffer or an input statement is update. An `EXCLUSIVE-LOCK` read is a read with that lock, not a write. Temp-table writes are not database effects. | Documented (T3). |
-| O3 | A unit's effects are **Unknown** in part when it holds a dynamic query or buffer (`CREATE QUERY`, `CREATE BUFFER`, and the methods `QUERY-PREPARE`, `QUERY-OPEN`, `GET-*`, `FIND-*`, `BUFFER-CREATE`, `BUFFER-DELETE`, `FILL`, `SAVE-ROW-CHANGES`), a statement the parser skips that names a database buffer, a write to a table the schema does not have, an unexpanded include, or when the parse recovered. Most dynamic access works on temp-tables, which the model cannot tell apart without following the handle. | Inferred. |
+| O3 | A unit's effects are **Unknown** in part when it holds a dynamic query or buffer (`CREATE QUERY`, `CREATE BUFFER`, and the methods `QUERY-PREPARE`, `QUERY-OPEN`, `GET-*`, `FIND-*`, `BUFFER-CREATE`, `BUFFER-DELETE`, `FILL`, `SAVE-ROW-CHANGES`), a statement the parser skips that names a database buffer, a read or a write of a table the loaded schema does not have, an unexpanded include, or when the parse recovered. Most dynamic access works on temp-tables, which the model cannot tell apart without following the handle. | Inferred. |
 
 ### 8.5 The call graph
 
