@@ -46,6 +46,13 @@ pub mod marker {
     /// Shown after the path of an include that the parser could not read to the
     /// end, so the symbols can be fewer than the file declares.
     pub const PARTIAL: &str = "partial";
+    /// The preprocessor expanded the include, and the outline of its text
+    /// failed (a contained internal panic).
+    pub const CANNOT_OUTLINE: &str = "cannot be outlined";
+    /// Shown after the path of an include that sits inside a statement and
+    /// shows no symbol: it can add fields, terms or other parts that the
+    /// outline does not list.
+    pub const FRAGMENT: &str = "inside a statement";
 }
 
 /// A file whose text some symbols of an [`IncludeOutline`] are in.
@@ -127,7 +134,9 @@ impl IncludeOutline {
 ///   the middle of a statement, or written through a `{&name}` value) gets one.
 /// - A symbol of an include in text that the preprocessor decided an `&IF` did
 ///   not compile is left out. Text of a branch it only guessed stays.
-/// - An include whose raw outline needed error recovery shows `partial`.
+/// - An include whose raw outline needed error recovery shows `partial`. A
+///   reference with no symbol of its own whose include shows no symbol shows
+///   `inside a statement`: it stays, never silently missing.
 ///
 /// `Err` means that the outline of `source` is unknown, as for [`outline`].
 pub fn outline_with_includes(
@@ -256,14 +265,18 @@ impl Builder<'_> {
             }
             .unwrap_or_else(|| substituted_symbol(self.exps[index].path));
             match self.expansion_nodes(index) {
-                Ok((opened, children)) if !children.is_empty() || node.span.end == 0 => {
+                Ok((opened, children)) => {
                     node.opens = Some(opened);
                     if self.partial(opened) {
                         node.detail = Some(marker::PARTIAL.to_string());
+                    } else if children.is_empty() {
+                        // The text sits inside a statement (the fields of a
+                        // temp-table, a `WHERE` term): the raw outline of the
+                        // file alone cannot tell what it adds there.
+                        node.detail = Some(marker::FRAGMENT.to_string());
                     }
                     node.children = children;
                 }
-                Ok(_) => continue,
                 Err(reason) => node.detail = Some(reason.to_string()),
             }
             node.file = file;
@@ -429,7 +442,7 @@ impl Builder<'_> {
         });
         match cached {
             Some((nodes, _)) => Ok(nodes.clone()),
-            None => Err(marker::NOT_EXPANDED),
+            None => Err(marker::CANNOT_OUTLINE),
         }
     }
 

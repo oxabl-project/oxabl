@@ -5,7 +5,7 @@ it in its Outline view, in the breadcrumbs, in "Go to Symbol in File"
 (`Ctrl+Shift+O`) and in sticky scroll.
 
 - `oxabl_pipeline::outline(source)` makes the tree of one file.
-- `oxabl_pipeline::outline_with_includes(source, expansion, sources)` adds the
+- `oxabl_pipeline::outline_with_includes(source, expansion)` adds the
   declarations of the include files under the `{file.i}` symbols (see
   [Include files](#include-files)).
 - `oxabl lsp` sends the tree as the answer to `textDocument/documentSymbol`.
@@ -125,6 +125,13 @@ branch of an `&IF` and one `END PROCEDURE`), the symbol shows the path and
 `(partial)`, because the symbols can be fewer than the file declares. Oxabl
 does not outline the compiled text of the include.
 
+An include whose text sits inside a statement, for example the fields of a
+temp-table (`DEFINE TEMP-TABLE tt NO-UNDO {flds.i}.`), is outlined on its own,
+and a piece of a statement gives no symbol. Its symbol stays with the note
+`(inside a statement)`, so the reader knows that the include adds parts that
+the outline does not list. A note `(partial)` has the same meaning for an include
+whose parse needed error recovery.
+
 A reference that has no `Include` symbol in the raw outline gets one. This is a
 reference in the middle of a statement, and a reference written through a
 `{&name}` value (`&SCOPED-DEFINE inc {defs.i}` then `{&inc}`). The symbol of a
@@ -132,7 +139,7 @@ reference in the middle of a statement, and a reference written through a
 reference. A reference that does not resolve gets the same marker as any other.
 An include that a `{&name}` value writes inside another include has no
 reference in a file that oxabl can place. It shows last under its includer,
-named by its file.
+named by its file. So does an include through a value that adds no text.
 
 ### Markers
 
@@ -149,6 +156,7 @@ when the raw outline has none.
 | `encrypted` | The file is encrypted source. Oxabl does not read it. |
 | `not compiled` | The reference is in an `&IF` branch that the preprocessor decided is not compiled. |
 | `may not be compiled` | The reference is in an `&IF` branch that the preprocessor skipped without the facts to decide. The compiler may expand it. |
+| `cannot be outlined` | The preprocessor expanded the include, and oxabl failed to outline its text (a contained internal error). |
 | `not expanded` | The preprocessor did not expand the reference: it closes a cycle, it is past the depth limit, or the expansion has no text for it. |
 | `too large` | The declarations of this include alone are more than the limit below. |
 | `outline limit reached` | The includes before this one used the symbols that the limit allows. This include can be small. |
@@ -269,7 +277,7 @@ the text of the include files, up to the limits in [Limits](#limits). It runs on
 a worker thread, so a slow include does not delay an edit. Requests for one
 buffer version wait for one run. Any edit, open or close of a document, a save,
 a change of a watched file and a change of the configuration drop the saved
-answer, because an include file can change without an edit of the buffer.
+answer, because an include file can change without an edit of the buffer. A run that is already running when such an event comes finishes with the files it read before, and its answer can be the old one. The editor shows it until the next edit of the document.
 
 A run stops when nobody needs its answer. An edit of the document replaces its
 buffer version: the request for the old version gets `ContentModified` (the

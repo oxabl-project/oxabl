@@ -374,7 +374,7 @@ fn a_panic_in_one_include_marks_it_and_keeps_the_rest() {
     session.open(&main, "{bad.i}\n{good.i}\n");
     assert_eq!(
         tree(&outline(&mut session, &main)),
-        "bad.i [not expanded]\ngood.i [good.i]\n  shown [INTEGER]\n"
+        "bad.i [cannot be outlined]\ngood.i [good.i]\n  shown [INTEGER]\n"
     );
 }
 
@@ -520,5 +520,20 @@ fn a_cancelled_request_stops_and_the_next_one_still_gets_its_outline() {
     assert_eq!(
         tree(&outline(&mut session, &main)),
         "defs.i [defs.i]\n  one [INTEGER]\n"
+    );
+}
+
+#[test]
+fn the_fields_of_a_temp_table_in_an_include_do_not_disappear() {
+    let dir = project(&[("flds.i", "FIELD fa AS CHARACTER\nFIELD fb AS INTEGER\n")]);
+    let main = dir.path().join("main.p");
+    let mut session = Session::start_with(dir.path(), hierarchical());
+    session.open(
+        &main,
+        "DEFINE TEMP-TABLE tt NO-UNDO {flds.i}.\nDEFINE VARIABLE z AS INTEGER NO-UNDO.\n",
+    );
+    assert_eq!(
+        tree(&outline(&mut session, &main)),
+        "tt\n  flds.i [flds.i (inside a statement)]\nz [INTEGER]\n"
     );
 }

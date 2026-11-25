@@ -454,3 +454,15 @@ fn an_include_that_a_version_shim_splits_shows_that_it_is_partial() {
         "got: {got}"
     );
 }
+
+#[test]
+fn fields_in_an_include_inside_a_temp_table_do_not_disappear() {
+    let got = outline_of(
+        &[("flds.i", "FIELD fa AS CHARACTER\nFIELD fb AS INTEGER\n")],
+        "DEFINE TEMP-TABLE tt NO-UNDO {flds.i}.\nDEFINE VARIABLE z AS INTEGER NO-UNDO.\n",
+    );
+    assert_eq!(
+        got,
+        "TempTable tt\n  Include flds.i [inside a statement] -> flds.i\nVariable z [INTEGER]\n"
+    );
+}
