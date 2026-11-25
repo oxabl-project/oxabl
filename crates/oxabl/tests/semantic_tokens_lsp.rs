@@ -10,7 +10,8 @@
 //! (`oxabl_common::hold_if_injected`), so the order of events does not depend
 //! on the speed of the machine. The marker `OXABL-TEST-HOLD:lsp.semantic-snapshot`
 //! makes it wait while it holds its database snapshot, so that a write to
-//! another file cancels it.
+//! another file cancels it. A number of milliseconds after `@` in a marker
+//! (`lsp.semantic-snapshot@600`) gives another hold time.
 
 #![cfg(unix)]
 
@@ -117,6 +118,18 @@ const X_TWICE: &str = "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n{x.i}\n\
 const X_HALF: &str = "PROCEDURE p:\n  DEFINE VARIABLE x AS INTEGER NO-UNDO.\n  {x.i}\nEND PROCEDURE.\n\
     PROCEDURE q:\n  FIND FIRST nosuchtable NO-LOCK.\n  {x.i}\nEND PROCEDURE.\n";
 
+/// An include that uses a variable that another include of its includer declares.
+const USES_SHARED: &str = "gcShared = \"x\".\n";
+const HOST_SHARED: &str = "{defs.i}\n{uses_shared.i}\n";
+
+/// An include that two procedures read, and that one of them reads without a
+/// part: the bytes after the part are kept by both reads, the bytes of the part
+/// by one.
+const Y_INC: &str = "DEFINE VARIABLE y AS INTEGER NO-UNDO.\n\
+    &IF {&more} = 1 &THEN\n  y = 0.\n&ENDIF\ny = y + 1.\n";
+const Y_TWICE: &str = "PROCEDURE p:\n  {y.i &more=1}\nEND PROCEDURE.\n\
+    PROCEDURE q:\n  {y.i &more=0}\nEND PROCEDURE.\n";
+
 struct Workspace {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -143,6 +156,10 @@ impl Workspace {
             ("x.i", X_INC),
             ("x_twice.p", X_TWICE),
             ("x_half.p", X_HALF),
+            ("y.i", Y_INC),
+            ("y_twice.p", Y_TWICE),
+            ("uses_shared.i", USES_SHARED),
+            ("host_shared.p", HOST_SHARED),
         ];
         for (name, text) in files {
             let path = root.join(name);
@@ -577,6 +594,29 @@ fn an_include_expanded_twice_with_one_reading_that_does_not_resolve_has_no_token
 }
 
 #[test]
+fn an_include_that_one_read_cuts_short_keeps_the_names_both_reads_agree_on() {
+    let ws = Workspace::new();
+    let include = ws.path("y.i");
+    let mut session = Session::start_with(&ws.root, capabilities());
+    session.open(&include, Y_INC);
+    let answer = session.request(
+        "oxabl/selectIncluderContext",
+        json!({"textDocument": {"uri": file_uri(&include)}, "root": ws.path("y_twice.p")}),
+    );
+    assert!(answer.get("error").is_none(), "{answer}");
+    let got = summary(&full(&mut session, &include, Y_INC));
+    assert_eq!(
+        got,
+        vec![
+            token(0, "y", "variable", &["declaration"]),
+            token(2, "y", "variable", &[]),
+            token(4, "y", "variable", &[]),
+            token(4, "y", "variable", &[]),
+        ]
+    );
+}
+
+#[test]
 fn an_include_read_in_a_context_uses_the_names_of_its_includer() {
     let ws = Workspace::new();
     let include = ws.path("uses.i");
@@ -932,41 +972,84 @@ fn a_write_to_another_file_does_not_fail_the_request() {
     );
 }
 
-/// Ten writes to another file, each while the analysis holds its snapshot,
-/// cancel ten analyses in a row. The text of the file does not change, so the
-/// request is not answered with an error.
+/// The snapshot is held for 600 ms, so that a write and a request fit in it.
+const HELD_SHORT: &str = "/* OXABL-TEST-HOLD:lsp.semantic-snapshot@600 */\n\
+    DEFINE VARIABLE iOld AS INTEGER NO-UNDO.\n\
+    iOld = 1.\n";
+
+/// A cancelled analysis of an unchanged text runs again behind the requests
+/// that came after it, not at once: the request for another file does not
+/// wait for the retry.
 #[test]
-fn a_burst_of_writes_to_another_file_does_not_fail_the_request() {
+fn a_cancelled_request_runs_again_behind_the_newer_requests() {
     let ws = Workspace::new();
-    let file = ws.path("held_snapshot.p");
+    let held = ws.path("held_short.p");
     let other = ws.path("wide.p");
-    std::fs::write(&file, HELD_SNAPSHOT).unwrap();
+    std::fs::write(&held, HELD_SHORT).unwrap();
     let mut session = Session::start_with(&ws.root, capabilities());
     session.open(&other, WIDE);
-    session.open(&file, HELD_SNAPSHOT);
+    session.open(&held, HELD_SHORT);
 
-    let slow = session.next_request_id();
+    let first = session.next_request_id();
     session.send(json!({
-        "jsonrpc": "2.0", "id": slow, "method": "textDocument/semanticTokens/full",
-        "params": {"textDocument": {"uri": file_uri(&file)}}
+        "jsonrpc": "2.0", "id": first, "method": "textDocument/semanticTokens/full",
+        "params": {"textDocument": {"uri": file_uri(&held)}}
     }));
-    // Each analysis holds its snapshot for 3 s; one write lands in each.
-    sleep(Duration::from_millis(500));
-    for version in 2..12 {
-        change(&mut session, &other, version, 1, "/* edit */\n");
-        sleep(Duration::from_millis(3200));
-    }
+    sleep(Duration::from_millis(100));
+    let second = session.next_request_id();
+    session.send(json!({
+        "jsonrpc": "2.0", "id": second, "method": "textDocument/semanticTokens/full",
+        "params": {"textDocument": {"uri": file_uri(&other)}}
+    }));
+    sleep(Duration::from_millis(100));
+    // The write lands while the first analysis holds its snapshot.
+    change(&mut session, &other, 2, 1, "/* edit */\n");
 
-    let answer = session.wait_for(|m| m["id"] == json!(slow));
+    let early = session.wait_for(|m| m["id"] == json!(first) || m["id"] == json!(second));
+    assert_eq!(
+        early["id"],
+        json!(second),
+        "the newer request is answered before the retry of the cancelled one: {early}"
+    );
+    let answer = session.wait_for(|m| m["id"] == json!(first));
     assert!(
         answer.get("error").is_none(),
-        "a burst of writes to another file gives the tokens, not an error: {answer}"
+        "the retry gives the tokens, not an error: {answer}"
     );
-    let tokens = decode(&session, HELD_SNAPSHOT, &answer["result"]["data"]);
+    let tokens = decode(&session, HELD_SHORT, &answer["result"]["data"]);
     assert_eq!(
         tokens.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
         ["iOld", "iOld"],
         "the tokens of the unchanged text"
+    );
+}
+
+/// Requests that come together wait for no delay between them: the delay is
+/// for a job that runs again.
+#[test]
+fn requests_that_come_together_are_not_delayed_one_after_another() {
+    let ws = Workspace::new();
+    let file = ws.path("kinds.p");
+    let mut session = Session::start_with(&ws.root, capabilities());
+    session.open(&file, KINDS);
+    // The first answer fills the cache.
+    full(&mut session, &file, KINDS);
+
+    let count: u64 = 30;
+    let params = (0..count)
+        .map(|_| json!({"textDocument": {"uri": file_uri(&file)}}))
+        .collect();
+    let start = std::time::Instant::now();
+    let answers = session.request_all("textDocument/semanticTokens/full", params);
+    let took = start.elapsed();
+    assert!(
+        answers.iter().all(|a| a.get("error").is_none()),
+        "{answers:?}"
+    );
+    assert!(
+        took < Duration::from_millis(50 * count),
+        "{count} requests together took {took:?}; a delay before each would take over {:?}",
+        Duration::from_millis(100 * (count - 1))
     );
 }
 
@@ -1041,6 +1124,60 @@ fn an_include_edit_asks_for_the_tokens_again_with_the_diagnostics_off() {
         !after.iter().any(|t| t.text == "gcShared" && t.line == 1),
         "the name no longer resolves: {after:?}"
     );
+}
+
+/// An open include with a selected context gets the tokens asked for again
+/// when another open include that the context reads is edited.
+fn context_include_edit_asks_again(diagnostics: bool) {
+    let ws = Workspace::new();
+    if !diagnostics {
+        std::fs::write(
+            ws.path("oxabl.toml"),
+            format!("{CONFIG}[workspace.features]\ndiagnostics = false\n"),
+        )
+        .unwrap();
+    }
+    let defs = ws.path("defs.i");
+    let uses = ws.path("uses_shared.i");
+    let mut session = Session::start_with(&ws.root, capabilities());
+    session.open(&defs, DEFS);
+    session.open(&uses, USES_SHARED);
+    let answer = session.request(
+        "oxabl/selectIncluderContext",
+        json!({"textDocument": {"uri": file_uri(&uses)}, "root": ws.path("host_shared.p")}),
+    );
+    assert!(answer.get("error").is_none(), "{answer}");
+    let before = full(&mut session, &uses, USES_SHARED);
+    assert!(
+        before.iter().any(|t| t.text == "gcShared"),
+        "the context declares the name: {before:?}"
+    );
+
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": file_uri(&defs), "version": 2},
+            "contentChanges": [{
+                "text": "DEFINE VARIABLE gcOther AS CHARACTER NO-UNDO.\n"
+            }]
+        }
+    }));
+    session.wait_for(|m| m["method"] == json!("workspace/semanticTokens/refresh"));
+    let after = full(&mut session, &uses, USES_SHARED);
+    assert!(
+        !after.iter().any(|t| t.text == "gcShared"),
+        "the name no longer resolves: {after:?}"
+    );
+}
+
+#[test]
+fn an_edit_to_an_include_of_the_context_asks_again() {
+    context_include_edit_asks_again(true);
+}
+
+#[test]
+fn an_edit_to_an_include_of_the_context_asks_again_with_the_diagnostics_off() {
+    context_include_edit_asks_again(false);
 }
 
 #[test]

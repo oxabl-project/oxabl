@@ -187,13 +187,19 @@ pub const INJECTION_ENABLED: bool = cfg!(feature = "test-panics");
 /// How long [`hold_if_injected`] waits.
 pub const HOLD_TIME: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Sleep [`HOLD_TIME`] when `source` carries this `site`'s hold marker. A no-op
-/// unless the test-only `test-panics` feature is enabled.
+/// Sleep [`HOLD_TIME`] when `source` carries this `site`'s hold marker, or the
+/// milliseconds that follow an `@` after it (`OXABL-TEST-HOLD:<site>@600`). A
+/// no-op unless the test-only `test-panics` feature is enabled.
 #[inline]
 pub fn hold_if_injected(site: &str, source: &str) {
     #[cfg(feature = "test-panics")]
-    if source.contains(&format!("{TEST_HOLD_MARKER}:{site}")) {
-        std::thread::sleep(HOLD_TIME);
+    if let Some(at) = source.find(&format!("{TEST_HOLD_MARKER}:{site}")) {
+        let rest = &source[at + TEST_HOLD_MARKER.len() + 1 + site.len()..];
+        let millis = rest.strip_prefix('@').and_then(|rest| {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            rest[..digits].parse::<u64>().ok()
+        });
+        std::thread::sleep(millis.map_or(HOLD_TIME, std::time::Duration::from_millis));
     }
 
     #[cfg(not(feature = "test-panics"))]

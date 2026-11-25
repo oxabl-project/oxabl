@@ -244,16 +244,25 @@ impl Navigation<'_, '_> {
         tokens.sort_by_key(|token| (token.span.start, token.span.end));
         // The expansions of an include that kept each byte; the analysed file
         // is read once.
+        // Counted by two sorted lists: the chunks that start at or before a
+        // byte, less the chunks that end at or before it.
         let kept = (!placer.is_root).then(|| {
-            self.expanded
-                .include_kept_spans(|path| search::normalize_lexically(path) == file)
+            let spans = self
+                .expanded
+                .include_kept_spans(|path| search::normalize_lexically(path) == file);
+            let mut starts: Vec<u32> = spans.iter().map(|span| span.start).collect();
+            let mut ends: Vec<u32> = spans.iter().map(|span| span.end).collect();
+            starts.sort_unstable();
+            ends.sort_unstable();
+            (starts, ends)
         });
         one_meaning_each(tokens, |token| match &kept {
             None => 1,
-            Some(kept) => kept
-                .iter()
-                .filter(|span| span.start <= token.span.start && token.span.start < span.end)
-                .count(),
+            Some((starts, ends)) => {
+                let at = token.span.start;
+                starts.partition_point(|&start| start <= at)
+                    - ends.partition_point(|&end| end <= at)
+            }
         })
     }
 

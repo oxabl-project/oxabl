@@ -1485,6 +1485,9 @@ pub struct NavigationAnswer {
     /// The tokens of a [`NavigationQuery::SemanticTokens`] file; the text of
     /// the file is the only entry of `texts`.
     pub tokens: Vec<oxabl_pipeline::SemanticToken>,
+    /// The include files the analysed expansion read, for a
+    /// [`NavigationQuery::SemanticTokens`] query.
+    pub dependencies: Vec<PathBuf>,
     pub texts: HashMap<PathBuf, Arc<str>>,
 }
 
@@ -1557,6 +1560,7 @@ pub fn compute_navigation(
             NavigationQuery::SemanticTokens { file, range } => {
                 let file = unit.spelled(file);
                 answer.tokens = unit.navigation.semantic_tokens(&file, to_span(*range));
+                answer.dependencies = unit.expansion.dependency_paths().to_vec();
                 let text = unit
                     .fs
                     .read(&file)

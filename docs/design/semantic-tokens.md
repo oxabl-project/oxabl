@@ -148,8 +148,9 @@ runs. `crates/oxabl_lsp/src/semantic_tokens.rs` does what rust-analyzer does:
   changes. An analysis that runs inside a single query is not interrupted: it
   ends, and the answer is checked against the version as before.
 - A cancelled analysis of a document that has the same version as the request
-  goes back to the queue, behind the jobs that came after it, and the worker
-  waits up to 100 ms for a newer job before it runs it again. The change was to
+  goes back to the queue with a start time 100 ms later, so it runs behind the
+  jobs that came after it. The worker waits only for such a job that is not yet
+  due; it never waits before a new job. The change was to
   another file, and the client does not ask again for this one. A job goes back
   at most 15 times. The request answers `ContentModified` when the version of
   its document changed, and when the job used all its attempts.
@@ -160,7 +161,8 @@ runs. `crates/oxabl_lsp/src/semantic_tokens.rs` does what rust-analyzer does:
 `oxabl_common::panic_sites::SEMANTIC_TOKENS` is the hold and panic site for
 tests (`OXABL-TEST-HOLD:lsp.semantic-tokens` and
 `OXABL-TEST-PANIC:lsp.semantic-tokens` in the source). The hold waits three
-seconds before the analysis. `SEMANTIC_SNAPSHOT`
+seconds before the analysis; a number of milliseconds after `@` gives another
+time (`OXABL-TEST-HOLD:lsp.semantic-tokens@600`). `SEMANTIC_SNAPSHOT`
 (`OXABL-TEST-HOLD:lsp.semantic-snapshot`) waits while the analysis holds its
 snapshot, so that a write to another file cancels it. `SEMANTIC_ANSWER`
 (`OXABL-TEST-HOLD:lsp.semantic-answer`) waits after the analysis and before the
@@ -187,7 +189,8 @@ file changes. They refresh too when an edit to an open file settles (after the
 debounce) and the last analysis of another open file read that file as an
 include: the tokens of the reader change with the include, and the reader has
 no edit of its own. The worker records the includes of each analysis, so this
-holds when the diagnostics are off. A file whose tokens the client never asked
+holds when the diagnostics are off. For a file with a selected context, the
+includes are the ones that the expansion of the context read. A file whose tokens the client never asked
 for has no recorded includes and gets no refresh. The check does nothing when
 the client cannot be asked again or the setting is off.
 
@@ -241,9 +244,13 @@ answer.
     tokens and not `ContentModified`;
   - an include that the root reads twice with two meanings of a name, and with
     one expansion in which the name does not resolve;
-  - a burst of ten writes to another file, one in each analysis;
+  - a cancelled request that runs again behind a newer request, and requests
+    that come together with no delay between them;
+  - an include that one read cuts short with `&IF`: the names that both reads
+    agree on keep their tokens;
   - the refresh request after an edit to an open include, also with the
-    diagnostics off.
+    diagnostics off, and after an edit to an include that the context of an
+    open include reads.
 - `crates/oxabl/tests/navigation_sweep_lsp.rs` asks for the tokens of the files
   full of awkward names that the navigation sweep uses. Each token must be
   inside its file, on one line, one name and in order. The ranges of the lines,

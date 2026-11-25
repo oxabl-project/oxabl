@@ -177,6 +177,8 @@ struct Job {
     session_root: PathBuf,
     /// How often the analysis of this job was cancelled.
     attempts: u32,
+    /// Set on a job to run again: it runs at this time or later.
+    not_before: Option<std::time::Instant>,
 }
 
 impl Server<'_> {
@@ -237,6 +239,7 @@ impl Server<'_> {
             host: self.host.clone(),
             session_root: self.session_root.clone(),
             attempts: 0,
+            not_before: None,
         };
         match self.semantic.worker(&self.connection.sender) {
             Ok(worker) => {
@@ -336,31 +339,48 @@ impl Options {
         oxabl_common::stack::builder()
             .name("oxabl-semantic-tokens".to_string())
             .spawn(move || {
-                let mut pending = std::collections::VecDeque::new();
+                let mut pending: std::collections::VecDeque<Job> = Default::default();
+                let mut closed = false;
                 loop {
-                    // A job to run again waits for the writes to settle, and
-                    // runs behind the jobs that came after it.
-                    let waiting = pending.is_empty().then(|| queue.recv().ok());
-                    match waiting {
-                        Some(Some(job)) => pending.push_back(job),
-                        Some(None) => break,
-                        None => {
-                            if let Ok(job) = queue.recv_timeout(RETRY_DELAY) {
-                                pending.push_back(job);
-                            }
-                        }
-                    }
                     while let Ok(job) = queue.try_recv() {
                         pending.push_back(job);
                     }
-                    let Some(job) = pending.pop_front() else {
+                    if pending.is_empty() {
+                        match queue.recv() {
+                            Ok(job) => pending.push_back(job),
+                            Err(_) => break,
+                        }
+                        continue;
+                    }
+                    // A job to run again waits for the writes to settle and
+                    // runs behind the jobs that came after it. Nothing else waits.
+                    let now = std::time::Instant::now();
+                    let due = pending
+                        .iter()
+                        .position(|job| closed || job.not_before.is_none_or(|at| at <= now));
+                    let Some(due) = due else {
+                        let until = pending.iter().filter_map(|job| job.not_before).min();
+                        match until.map(|at| queue.recv_deadline(at)) {
+                            Some(Ok(job)) => pending.push_back(job),
+                            Some(Err(crossbeam_channel::RecvTimeoutError::Disconnected)) => {
+                                closed = true;
+                            }
+                            _ => {}
+                        }
                         continue;
                     };
+                    let Some(mut job) = pending.remove(due) else {
+                        continue;
+                    };
+                    job.not_before = None;
                     match answer(&shared, job) {
                         Outcome::Answer(response) => {
                             let _ = sender.send(Message::Response(response));
                         }
-                        Outcome::Again(job) => pending.push_back(job),
+                        Outcome::Again(mut job) => {
+                            job.not_before = Some(std::time::Instant::now() + RETRY_DELAY);
+                            pending.push_back(job);
+                        }
                     }
                 }
             })?;
@@ -388,7 +408,7 @@ fn modified(id: RequestId) -> Response {
 /// How often a cancelled analysis of an unchanged text runs again.
 const MAX_ATTEMPTS: u32 = 16;
 
-/// How long a job to run again waits for a newer job first.
+/// How long a job to run again waits for the writes to settle.
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// What the worker does with a job.
@@ -523,29 +543,33 @@ fn tokens_of(shared: &Shared, job: &Job, marked: &str) -> Computed {
     };
     oxabl_common::hold_if_injected(oxabl_common::panic_sites::SEMANTIC_SNAPSHOT, marked);
     let dependencies = buffer.and_then(|buffer| buffer_dependencies(&snapshot, buffer));
-    if let Some(dependencies) = &dependencies {
-        lock(&shared.readers).insert(
-            job.uri.clone(),
-            dependencies
-                .iter()
-                .map(|path| canonical_path(path))
-                .collect(),
-        );
-    }
-    let computed = match buffer {
-        Some(buffer) if !unsaved_among(dependencies, &job.root, &overlay) => {
+    let cached = match buffer {
+        Some(buffer) if !unsaved_among(dependencies.clone(), &job.root, &overlay) => {
+            Some((buffer, dependencies))
+        }
+        _ => None,
+    };
+    let computed = match cached {
+        Some((buffer, dependencies)) => {
+            record_readers(shared, &job.uri, dependencies.iter().flatten());
             compute_semantic_tokens(&snapshot, buffer, schema, range)
         }
-        _ => compute_navigation(
-            &snapshot,
-            schema,
-            &job.root,
-            overlay,
-            &NavigationQuery::SemanticTokens {
-                file: job.path.clone(),
-                range,
-            },
-        ),
+        None => {
+            let computed = compute_navigation(
+                &snapshot,
+                schema,
+                &job.root,
+                overlay,
+                &NavigationQuery::SemanticTokens {
+                    file: job.path.clone(),
+                    range,
+                },
+            );
+            if let Some(Ok(answer)) = &computed {
+                record_readers(shared, &job.uri, &answer.dependencies);
+            }
+            computed
+        }
     };
     let Some(answer) = computed else {
         return Computed::Cancelled;
@@ -558,6 +582,15 @@ fn tokens_of(shared: &Shared, job: &Job, marked: &str) -> Computed {
     };
     let rope = Rope::from_str(&text);
     Computed::Tokens(encode(&answer.tokens, &rope, &text, &job.encoding))
+}
+
+/// Record the include files that the analysis of `uri` read, replacing the
+/// list of the analysis before.
+fn record_readers<'a>(shared: &Shared, uri: &Uri, files: impl IntoIterator<Item = &'a PathBuf>) {
+    lock(&shared.readers).insert(
+        uri.clone(),
+        files.into_iter().map(|path| canonical_path(path)).collect(),
+    );
 }
 
 /// The tokens as the protocol sends them: each relative to the one before.
