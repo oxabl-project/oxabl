@@ -44,7 +44,7 @@ Severities: `off`, `hint`, `info`, `warn` (or `warning`), `error`. Any finding t
 | TX003 | `transaction-spans-ui` | `strict.transactions` | A statement that waits for the user inside a transaction. |
 | TX004 | `transaction-spans-call` | `strict.transactions` | A RUN inside a transaction whose callee is not in the file. |
 | TX005 | `scope-widened` | `strict.transactions` | A reference outside a FOR block that raises the block's buffer scope to the procedure. |
-| TX006 | `missing-no-undo` | `strict.transactions` | A variable, parameter, temp-table or property without NO-UNDO. |
+| TX006 | `missing-no-undo` | `strict.transactions` | A variable, parameter, temp-table or property without NO-UNDO. Has a fix (not for a shared definition). |
 | LK001 | `default-lock` | `strict.locks` | A database read with no lock phrase, which takes SHARE-LOCK. |
 | LK002 | `lock-outlives-transaction` | `strict.locks` | A record still locked after its transaction, because the buffer scope is wider. |
 | LK003 | `lock-upgrade-in-loop` | `strict.locks` | A NO-LOCK read upgraded to EXCLUSIVE-LOCK on every iteration of a loop. |

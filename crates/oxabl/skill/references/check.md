@@ -18,25 +18,31 @@ oxabl check src --include-findings --json
 - `--include-findings`: also report findings inside includes, once per including program, at the include's own path and line. They count toward the exit code. Not combinable with `--baseline`.
 - Exit: `0` clean; `1` any finding, drift or failed file; `2` usage or `oxabl.toml` error, a missing baseline, or nothing to check (both `[workspace.features]` off, or no ABL files found).
 
-### JSON (`version` 3)
+### JSON (`version` 6)
 
 ```text
-{ "version": 3, "files_checked": 1, "lint_enabled": true,
-  "diagnostics": [ { "path": "src/update.p", "code": "LK001", "severity": "warning",
-      "source": "lint", "message": "the `FOR` phrase reads `Customer` with no lock phrase, so it takes SHARE-LOCK, the default",
-      "help": "The record is changed later in its scope: add `EXCLUSIVE-LOCK`, the lock the change takes.",
-      "span": { "start": 63, "end": 71 },
-      "start": { "byte": 63, "line": 4, "column": 10 },
-      "end": { "byte": 71, "line": 4, "column": 18 } } ],
+{ "version": 6, "files_checked": 1, "lint_enabled": true,
+  "diagnostics": [ { "path": "src/update.p", "code": "TX006", "severity": "warning",
+      "source": "lint", "message": "variable `iCount` is defined without NO-UNDO",
+      "help": "Add `NO-UNDO` to the definition.",
+      "span": { "start": 16, "end": 22 },
+      "start": { "byte": 16, "line": 1, "column": 17 },
+      "end": { "byte": 22, "line": 1, "column": 23 },
+      "fixes": [ { "title": "Add NO-UNDO", "preferred": true,
+          "edits": [ { "path": "src/update.p", "span": { "start": 33, "end": 33 },
+              "start": { "byte": 33, "line": 1, "column": 34 },
+              "end": { "byte": 33, "line": 1, "column": 34 },
+              "new_text": " NO-UNDO" } ] } ] } ],
   "format_enabled": true, "format": { "drifted": ["src/update.p"], "drifted_count": 1 },
   "preproc": [], "unjudged_symbols": 0, "failures": [] }
 ```
 
 - `path` is as you passed it (relative to your current directory). Lines and columns are one-based. `help` is present only when the rule gives one.
 - `severity`: `error`, `warning`, `info` or `hint`. All of them fail the gate.
+- `fixes`: the quick fixes of a finding, preferred first, only when it has one. Each edit replaces the bytes `span` of its `path` with `new_text`; an empty span is an insertion. Apply all edits of one fix together. A finding in an include file, in an include file checked alone, in a file with a parse error, or in a file that another checked file includes has no fix. A fix never edits text that an include or a preprocessor name writes.
 - `failures`: files that could not be read or analysed (exit 1).
 - `preproc`: include and preprocessor coverage warnings (no exit effect).
-- Optional keys: `include_files_checked`, `include_diagnostics` (`--include-findings`), `baseline` (`--baseline`; then `diagnostics` holds only new findings), `fragment_roots`.
+- Optional keys: `related`, `includers`, `fixes` on a row; `include_files_checked`, `include_diagnostics` (`--include-findings`), `baseline` (`--baseline`; then `diagnostics` holds only new findings), `summary` (`--summary`), `fragment_roots`.
 
 ### Include files
 

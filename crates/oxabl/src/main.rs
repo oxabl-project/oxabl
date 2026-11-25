@@ -1397,6 +1397,29 @@ struct CheckJsonDiagnostic {
     /// Present since version 5. The baseline key does not read it.
     #[serde(skip_serializing_if = "Option::is_none")]
     includers: Option<CheckJsonIncluders>,
+    /// The quick fixes of the finding, preferred first. Present since version
+    /// 6, when there are any. The baseline key does not read it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    fixes: Vec<CheckJsonFix>,
+}
+
+/// A quick fix of a finding: edits that remove it.
+#[derive(Serialize)]
+struct CheckJsonFix {
+    title: String,
+    preferred: bool,
+    edits: Vec<CheckJsonEdit>,
+}
+
+/// One edit of a fix, in the coordinates of a diagnostic row. An empty span is
+/// an insertion.
+#[derive(Serialize)]
+struct CheckJsonEdit {
+    path: String,
+    span: CheckJsonSpan,
+    start: CheckJsonPosition,
+    end: CheckJsonPosition,
+    new_text: String,
 }
 
 /// A related location of a finding, in the file that holds it: the checked
@@ -1749,8 +1772,12 @@ fn run_check(
     } else {
         Default::default()
     };
+    // The fixes of a finding need what is known of each `&IF` branch; only
+    // the JSON report shows them.
+    let track_branches = json_output;
     let lint = LintPipeline::new(&config, &fs)
         .with_preprocess(preprocess)
+        .with_branch_tracking(track_branches)
         .with_shared_producers(&producers);
     // The format pipeline is built from the resolved style and nothing else, so
     // it *cannot* see expanded macro text however this walk is configured (R4).
@@ -1888,6 +1915,7 @@ fn run_check(
             || {
                 let handle = LintPipeline::new(&config, &fs)
                     .with_preprocess(preprocess)
+                    .with_branch_tracking(track_branches)
                     .with_shared_producers(&producers);
                 match &summaries {
                     Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
@@ -1899,6 +1927,8 @@ fn run_check(
             |unit| totals.absorb(unit),
         );
     }
+    let included_roots = included_roots(&totals);
+    drop_fixes_of(&mut totals, &included_roots);
     let Totals {
         diagnostics,
         preproc,
@@ -1911,6 +1941,9 @@ fn run_check(
         encrypted_files,
         withheld_files,
         includers: _,
+        row_files: _,
+        included: _,
+        unread: _,
     } = totals;
     let not_checked = encrypted_files + withheld_files;
 
@@ -1940,7 +1973,8 @@ fn run_check(
             // 4: a diagnostic row carries its `related` locations.
             // 5: a finding in an include carries its `includers`, and `summary`
             // is there with `--summary`.
-            version: 5,
+            // 6: a diagnostic row carries its quick `fixes`.
+            version: 6,
             files_checked: files.len() - not_checked,
             include_files_checked,
             encrypted_files,
@@ -2084,6 +2118,69 @@ fn outside_root_note(report: &baseline::Report) -> String {
     )
 }
 
+/// The file name of an include reference as written, in lower case.
+fn include_file_name(name: &str) -> String {
+    name.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(name)
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// The files that have rows with fixes and that another root of the run
+/// includes, or may include: a root reads the file, or names an include of
+/// the same file name that it did not read. The paths are compared in their
+/// canonical spelling.
+fn included_roots(totals: &Totals) -> HashSet<PathBuf> {
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut rows = totals.diagnostics.iter();
+    let with_fixes: Vec<PathBuf> = totals
+        .row_files
+        .iter()
+        .filter_map(|(file, count)| {
+            let has_fixes = rows.by_ref().take(*count).any(|row| !row.fixes.is_empty());
+            file.as_deref().filter(|_| has_fixes).map(canonical)
+        })
+        .collect();
+    if with_fixes.is_empty() {
+        return HashSet::new();
+    }
+    let included: HashSet<PathBuf> = totals.included.iter().map(|p| canonical(p)).collect();
+    let named = |file: &Path| {
+        file.file_name().is_some_and(|name| {
+            totals
+                .unread
+                .contains(&name.to_string_lossy().to_ascii_lowercase())
+        })
+    };
+    with_fixes
+        .into_iter()
+        .filter(|file| included.contains(file) || named(file))
+        .collect()
+}
+
+/// Drop the fixes of the rows of each file in `files`: an edit there changes
+/// the root that includes it too.
+fn drop_fixes_of(totals: &mut Totals, files: &HashSet<PathBuf>) {
+    if files.is_empty() {
+        return;
+    }
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut rows = totals.diagnostics.iter_mut();
+    for (file, count) in &totals.row_files {
+        let drop = file
+            .as_deref()
+            .is_some_and(|f| files.contains(&canonical(f)));
+        for row in rows.by_ref().take(*count) {
+            if drop {
+                row.fixes.clear();
+            }
+        }
+    }
+}
+
 /// `check`'s exit code (R15): `1` when either channel produced something or a
 /// file failed, `0` otherwise.
 ///
@@ -2165,6 +2262,12 @@ struct Unit {
     /// path and the line of the root's `{...}` site. Only when the run looks
     /// for includers.
     includes: Option<(String, Vec<(PathBuf, usize)>)>,
+    /// The file the rows of `diagnostics` belong to, and every file its
+    /// expansion read. A file that another root reads gets no fixes.
+    file: Option<PathBuf>,
+    reads: Vec<PathBuf>,
+    /// The names of the includes the root's expansion did not read.
+    unread: Vec<String>,
 }
 
 /// The run's report, built from its units in file order.
@@ -2181,11 +2284,22 @@ struct Totals {
     encrypted_files: usize,
     withheld_files: usize,
     includers: Option<IncludersBuilder>,
+    /// The file of each run of rows of `diagnostics`, with the number of rows.
+    row_files: Vec<(Option<PathBuf>, usize)>,
+    /// Every file that a root of the run read through an include.
+    included: Vec<PathBuf>,
+    /// The file names of the includes that a root of the run did not read, in
+    /// lower case.
+    unread: HashSet<String>,
 }
 
 impl Totals {
     fn absorb(&mut self, unit: Unit) {
         unit.output.flush();
+        self.row_files.push((unit.file, unit.diagnostics.len()));
+        self.included.extend(unit.reads);
+        self.unread
+            .extend(unit.unread.iter().map(|name| include_file_name(name)));
         if let (Some(builder), Some((root, includes))) = (&mut self.includers, unit.includes) {
             builder.add(&root, includes);
         }
@@ -2388,6 +2502,9 @@ impl CheckPass<'_> {
         } else {
             (lint.with_file(indexed_path).run(source), None)
         };
+        unit.file = Some(indexed_path.to_path_buf());
+        unit.reads = result.dependency_paths().to_vec();
+        unit.unread = result.unread_includes().to_vec();
         if let Some(origins) = origins {
             let map = SourceMap::new(source);
             let lines = origins
@@ -3113,7 +3230,44 @@ fn check_json_diagnostic(
         end: resolved.map(|r| r.end.into()),
         related: places.map(|p| p.rows(d)).unwrap_or_default(),
         includers: None,
+        fixes: if places.is_some() {
+            check_json_fixes(path, map, d)
+        } else {
+            Vec::new()
+        },
     }
+}
+
+/// The fixes of a finding of the checked file. A fix with an edit outside that
+/// file is left out.
+fn check_json_fixes(path: &str, map: &SourceMap, d: &Diagnostic) -> Vec<CheckJsonFix> {
+    d.fixes
+        .iter()
+        .filter(|fix| {
+            !fix.edits.is_empty() && fix.edits.iter().all(|e| e.span.file == ROOT_FILE_ID)
+        })
+        .map(|fix| CheckJsonFix {
+            title: fix.title.clone(),
+            preferred: fix.preferred,
+            edits: fix
+                .edits
+                .iter()
+                .map(|edit| {
+                    let resolved = position::resolve_file_span(map, &edit.span);
+                    CheckJsonEdit {
+                        path: path.to_string(),
+                        span: CheckJsonSpan {
+                            start: edit.span.span.start,
+                            end: edit.span.span.end,
+                        },
+                        start: resolved.start.into(),
+                        end: resolved.end.into(),
+                        new_text: edit.new_text.clone(),
+                    }
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// `oxabl analyze`: dump one file's resolved semantic model, in the versioned
