@@ -1808,7 +1808,7 @@ fn a_supertype_name_means_what_go_to_definition_says_it_means() {
 }
 
 // ---------------------------------------------------------------------------
-// Round-two cases
+// Fail-closed cases: built-in names, cut lists, enums and access
 // ---------------------------------------------------------------------------
 
 const BROKEN_APP_ERROR: &str = "CLASS app.AppError INHERITS Progress.Lang.AppError:\n\

@@ -304,8 +304,11 @@ The name span comes from the lexed head of the file (`class_name_span`), checked
 against the name that the index holds, and not from a parse of the whole file.
 A header that the head does not show plainly is placed with the outline. A list
 is cut at `MAX_LISTED` items and checks for a cancel before each one, so the
-subtypes of `Progress.Lang.Object` cost a fixed amount and not a cost in
-proportion to the number of classes.
+placement costs a bounded amount. The index build, the filter over all nodes and
+the search bases of root-relative paths still grow with the number of class
+files. The `range` of a list item is the name of its class, the same as its
+`selectionRange`; an item from prepare or supertypes has the whole declaration
+as its `range`.
 
 **Root-relative paths.** With `root_relative_include_paths`, each class file
 needs its search base, which comes from its package root. The daemon reads each
