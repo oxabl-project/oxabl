@@ -74,7 +74,8 @@ expression it holds the names in scope and the built-in functions, with the name
 fits an assignment first. After `FIND FIRST`, `FOR EACH`, `CREATE` and the other record
 positions it holds the buffers, temp-tables and tables. After `Customer.` it holds the fields of
 the record, with type and format; after a database name (the file name of its `.df`), its
-tables. In a `WHERE` the fields of the statement's records come first. After `RUN` it holds the
+tables. In a `WHERE` the fields of the statement's records come first, with their record
+when another record in reach has a field of that name. After `RUN` it holds the
 internal procedures and the programs and directories on the include path; after `{` the
 include files and, in an include of a selected root, its arguments; after `{&` the
 preprocessor names that are defined at the cursor. Keywords are in the case of `keyword_case`; `Preserve` follows the

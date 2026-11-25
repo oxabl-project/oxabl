@@ -72,7 +72,10 @@ you also get, with no setup:
   the internal procedures and the programs on the include path, after `{` the
   include files, and after `{&` the preprocessor names. The `find` and
   `foreach` snippets offer the tables as a choice when the schema has at most
-  30. Keywords are written in the case of
+  30. A list that opens after `.`, `:`, `{`, `&` or `/` has no row
+  selected, so Enter after `DISPLAY Customer.` writes a new line (the
+  extension sets `editor.suggest.selectionMode` to `whenQuickSuggestion` for
+  ABL files). Keywords are written in the case of
   `keyword_case`; with `Preserve` or no setting, in the case of the word you
   type, else of the nearest keyword before it. Where oxabl does not know what
   the cursor needs (in a comment or a string, after a statement end), the

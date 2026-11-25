@@ -64,7 +64,7 @@ document highlights.
 | `oxabl_pipeline` | The engine (`completion` module): the context finder, the collectors, keyword tables, keyword case, matching, ranking and the limit. It works on a base and the current text, with no salsa. |
 | `oxabl_semantic` | The span of each scope, and the class source with `class_surface`, the members a receiver reaches. |
 | `oxabl_workspace` | `FileSystem::list_dir`, to list the entries of a directory on the include path. |
-| `oxabl_preprocessor` | Each `&GLOBAL-DEFINE`, `&SCOPED-DEFINE` and `&UNDEFINE` it carries out and the arguments of each include expansion, for `{&` and `{n}` completion; `oxabl_analyze::ExpandedFile` carries them, placed in the expanded text. |
+| `oxabl_preprocessor` | Each `&GLOBAL-DEFINE`, `&SCOPED-DEFINE` and `&UNDEFINE` it carries out and the arguments of each include expansion, for `{&` and `{n}` completion; `oxabl_analyze::ExpandedFile` carries them, placed in the expanded text. Only the expansions of completion record them (`with_define_record`), so other runs do not pay for them. |
 | `oxabl_codegen` | The static snippets table of the server, from `clients/vscode/snippets/abl.json`. |
 | `clients/vscode` | The extension stops its own snippet provider when the server has a completion provider. |
 
@@ -435,8 +435,15 @@ Fields:
 - In a `WHERE`, the fields of the records the statement names (the record
   after `FIND ...`, each record after `EACH`, `FIRST` or `LAST` of a `FOR`,
   `PRESELECT` or `OPEN QUERY` header, and after `CAN-FIND(`, with a database
-  qualifier when it has one) come first and are inserted without a
-  qualifier. The values follow. A record name that does not resolve adds
+  qualifier when it has one) come first. The values follow. A field is
+  inserted without a qualifier only when no other record that the cursor can
+  reach has a field of that name: the other records of the statement, and the
+  buffers bound in the scope at the cursor and its ancestors. Else the
+  compiler finds the bare name ambiguous, so the field is inserted with its
+  record (`Order.CustNum`), once for each record of the statement that has
+  it. A record whose fields are not all known (an unknown table, a `LIKE`
+  that does not resolve) can have any name, so with one in reach every field
+  is qualified. A record name that does not resolve adds
   `isIncomplete: true`. On the right of a comparison (`Customer.CustNum >`,
   or `CustNum =` for a field of a record of the statement), the type of that
   field is the expected type of "Match, rank and limit".
@@ -650,9 +657,10 @@ and the item has an `additionalTextEdits` entry that adds
 
 - Internal procedures of the unit (the `Procedures` namespace of the file
   scope), wherever they are declared. The `RUN` statement at the cursor is not
-  complete, so the parser can read a `PROCEDURE` on the next line as its
-  target and lose that declaration. So each `PROCEDURE name` of the current
-  text that starts a statement or a line is an item too.
+  complete, so the parser reads a `PROCEDURE` right after it as its target
+  and loses that one declaration. So when the first token after the cursor is
+  `PROCEDURE name`, that name is an item too. No other `PROCEDURE` of the
+  text is read: one in an `&IF` branch that is not compiled is not offered.
 - Programs on the include path: the directory part of the word is listed in
   each root-relative entry and each include path entry
   (`FileSystem::list_dir`). Files with an extension of `run_extensions`
@@ -667,12 +675,22 @@ and the item has an `additionalTextEdits` entry that adds
   `isIncomplete: true`.
 - The word is the whole path (`util/he`), and the replace range is the path.
   Names that start with `.` are not offered.
+- The cost is bound. A request lists each directory once, and an include
+  path entry that is named twice is read once. The daemon keeps each listing
+  for three seconds (`Listings` in `oxabl_daemon::completion`, at most 256
+  directories, dropped with the bases), so the requests of the next keys do
+  not read the disk again; a file created or deleted shows after that time.
+  The entries are filtered by the last part of the word before items are
+  made, and at most 1000 matches of one directory are offered; more make the
+  list incomplete, and the client asks again as the word grows.
 
 `list_dir` returns `None` when the file system cannot list (the in-memory
 file system of a test can). `None` gives `isIncomplete: true`, never an empty
 directory. The one exception is a directory that does not exist: its parent
-lists, and holds no directory of that name. That directory is empty, as
-`util/` under the entry `lib` when only the entry `.` has it.
+lists, and holds no entry of that name. That directory is empty, as
+`util/` under the entry `lib` when only the entry `.` has it. An entry that
+is a file (a procedure library, `lib/app.pl`) cannot be listed, so it makes
+the list incomplete.
 
 ### Include files, preprocessor names and include arguments
 
@@ -682,12 +700,22 @@ lists, and holds no directory of that name. That directory is empty, as
   extension.
 - `{&`: the preprocessor names defined at the cursor. The preprocessor records
   each `&GLOBAL-DEFINE`, `&SCOPED-DEFINE` and `&UNDEFINE` it carries out in a
-  branch it takes (`PreprocessedFile::defines`), and `ExpandedFile::defines`
+  branch it takes (`PreprocessedFile::defines`) when the run asks for it
+  (`Preprocessor::with_define_record`, `ExpandOptions::record_defines`,
+  `LintPipeline::with_define_record`; only the bases of completion set it,
+  so `check`, `format`, `build` and the lint runs copy no name or value),
+  and `ExpandedFile::defines`
   places each in the expanded text, between the text before and after it in
   its file (`PlacedDefine`). A `&SCOPED-DEFINE` holds up to the end of the
-  file that writes it; the others hold to the end of the unit. The names are
-  the ones whose last directive before the cursor (of those that still hold)
-  defines them, with the value as the detail; the named arguments the root
+  file that writes it; the others hold to the end of the unit. The engine
+  replays the directives before the cursor as the preprocessor's table does,
+  with a stack for each name: a `&SCOPED-DEFINE` pushes a definition (or
+  replaces the one its file made), a `&GLOBAL-DEFINE` sets the global one and
+  is ignored over a scoped one, an `&UNDEFINE` removes the newest so that the
+  one under it shows again, and a scoped one ends with its file. The names
+  are the ones a definition holds at the cursor, with the value as the
+  detail. With a stale base, a directive whose name lies in the changed text
+  is not replayed; the named arguments the root
   passes to the include (`{x.i &name=value}`, `ExpandedFile::include_arguments`)
   in a root context, unless a directive in the include sets the name again;
   and the names the preprocessor defines itself (`OPSYS`, `WINDOW-SYSTEM`,
@@ -756,18 +784,22 @@ losing items. A path matches on its last part.
 
 **Rank.** `sortText` orders the items by these keys, in order:
 
-1. Fit: an item whose type fits the expected type comes first. The expected
+1. Where the match starts: a match from the start of the label comes before
+   one that starts at a later part of it (`c` in `iCount`), whatever the fit.
+   A fitting name in the middle of a word does not go above a name whose
+   start the person typed.
+2. Fit: an item whose type fits the expected type comes first. The expected
    type is known on the right of an assignment (`x = |` reads the declared
    type of `x`), of a comparison in a `WHERE` (`Customer.CustNum = |`), and
    after `RETURN` in a function or method with a return type. A type fits when
    `oxabl_semantic::coercion::assignable` says so. In a `WHERE`, the fields of
    the statement's records come next.
-2. Match quality: the same text (without case), then a prefix, then a match at
+3. Match quality: the same text (without case), then a prefix, then a match at
    the starts of parts, then any other match.
-3. Nearness: a name of the innermost scope, then each outer scope, then
+4. Nearness: a name of the innermost scope, then each outer scope, then
    members the class inherits, then keywords and snippets, then schema tables
    and fields, then workspace types and programs.
-4. The label, without case.
+5. The label, without case.
 
 **Limit.** At most 200 items. A longer list is cut after ranking and gets
 `isIncomplete: true`, so the client asks again as the person types.
@@ -787,7 +819,17 @@ request that a trigger character made (`context.triggerKind` 2) gets a list
 only in a context that character starts: `:` members, `.` a qualified name,
 `{` include files and arguments, `&` preprocessor names, `/` the path of
 `RUN` or of an include. Any other gets `null`, so a `.` that ends a statement
-or a `/` that starts a comment pops no list.
+after a record keyword (`RELEASE Customer.`) or a `/` that starts a comment
+pops no list.
+
+A `.` after a name in any other statement (`DISPLAY Customer.`) can be the
+end of the statement or a qualifier, and the server cannot tell them apart:
+it gives the fields. In VS Code the list then opens with its first row
+selected, and Enter would write a field name in place of a new line. So the
+extension sets `editor.suggest.selectionMode` to `whenQuickSuggestion` for
+`[abl]` (`configurationDefaults`): a list that a trigger character opens has
+no row selected, and Enter writes a new line. Tab, the arrow keys and a
+click still choose an item. A person can set it back in the settings.
 
 The daemon finds the context before it reads a base. A position with no
 context, or one whose collector does not exist yet, answers `null` and makes
@@ -922,13 +964,15 @@ It is measured in two ways:
 
   | Context | Fresh | Stale |
   | --- | --- | --- |
-  | `statement`: a statement start in a procedure (`FI`), keywords, snippets and names | 3.4 ms | 6.5 ms |
+  | `statement`: a statement start in a procedure (`FI`), keywords, snippets and names | 2.7 ms | 5.6 ms |
   | `define`: after `DEFINE ` | 2.4 ms | 5.3 ms |
-  | `expression`: `total = c`, names and built-in functions | 2.7 ms | 5.5 ms |
-  | `find_first`: after `FIND FIRST `, buffers, temp-tables and tables | 2.6 ms | 5.4 ms |
-  | `qualified`: after `DISPLAY Customer.`, the fields | 2.4 ms | 5.2 ms |
-  | `where`: after `WHERE Customer.CustNum > `, fields and values | 2.8 ms | 5.6 ms |
-  | `run`: after `RUN `, 721 procedures and 40 programs | 3.0 ms | 5.9 ms |
+  | `expression`: `total = c`, names and built-in functions | 2.6 ms | 5.5 ms |
+  | `find_first`: after `FIND FIRST `, buffers, temp-tables and tables | 2.7 ms | 5.4 ms |
+  | `qualified`: after `DISPLAY Customer.`, the fields | 2.4 ms | 5.3 ms |
+  | `where`: after `WHERE Customer.CustNum > `, fields and values, with the check for a field another record has | 3.1 ms | 6.0 ms |
+  | `run`: after `RUN `, 721 procedures and 40 programs | 2.6 ms | 5.4 ms |
+  | `run_large`: after `RUN ` in a small file, with an include path entry of 20,000 programs named three times; no listing cache | 8.7 ms | |
+  | `run_large_word`: the same after `RUN prog1` | 8.7 ms | |
 
   Measured on a quiet machine (load average 2 to 5), release build. A stale
   base lexes the base text too, to find a token that opens or closes a scope
