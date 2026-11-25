@@ -1976,12 +1976,14 @@ impl<'a> ResolveWalker<'a> {
                             resolved.push(parent);
                         }
                     }
-                    TypeLookup::Builtin(_)
-                    | TypeLookup::External
-                    | TypeLookup::NotFound
-                    | TypeLookup::Unusable
-                    | TypeLookup::Unknowable
-                    | TypeLookup::NotLooked => {}
+                    // A built-in or .NET class never inherits a workspace class.
+                    TypeLookup::Builtin(_) | TypeLookup::External => {}
+                    TypeLookup::NotFound | TypeLookup::Unusable | TypeLookup::Unknowable => {
+                        self.symbols.record_incomplete_chain(class)
+                    }
+                    // No index: nothing was searched, and a single-file
+                    // analysis keeps its answer.
+                    TypeLookup::NotLooked => {}
                 }
             }
             self.symbols.record_resolved_supertypes(class, resolved);
@@ -2499,12 +2501,13 @@ impl<'a> ResolveWalker<'a> {
                             resolved.push(parent);
                         }
                     }
-                    TypeLookup::Builtin(_)
-                    | TypeLookup::External
-                    | TypeLookup::NotFound
-                    | TypeLookup::Unusable
-                    | TypeLookup::Unknowable
-                    | TypeLookup::NotLooked => {}
+                    TypeLookup::Builtin(_) | TypeLookup::External => {}
+                    TypeLookup::NotFound | TypeLookup::Unusable | TypeLookup::Unknowable => {
+                        self.symbols.record_incomplete_chain(sym)
+                    }
+                    // No index: nothing was searched, and a single-file
+                    // analysis keeps its answer.
+                    TypeLookup::NotLooked => {}
                 }
             }
             self.symbols.record_resolved_supertypes(sym, resolved);

@@ -506,6 +506,9 @@ struct SymbolSideMaps {
     /// Supertype identities resolved by the resolve pass. The authored names
     /// above remain for diagnostics; assignability consumes these edges.
     resolved_supertypes: FxHashMap<SymbolId, Vec<SymbolId>>,
+    /// Classes whose header names a workspace supertype that did not resolve.
+    /// The class lattice cannot say what such a class widens to past that point.
+    incomplete_chains: FxHashSet<SymbolId>,
     /// The indexed file that supplies each synthesized external-program symbol —
     /// the file a literal `RUN` target resolved to.
     ///
@@ -691,6 +694,19 @@ impl SymbolTable {
             .as_deref()
             .and_then(|side| side.resolved_supertypes.get(&sym))
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// Record that `sym`'s header names a supertype that did not resolve, so
+    /// its inheritance chain is not known past that class.
+    pub(crate) fn record_incomplete_chain(&mut self, sym: SymbolId) {
+        self.side_mut().incomplete_chains.insert(sym);
+    }
+
+    /// Whether `sym`'s header names a supertype that did not resolve.
+    pub fn has_incomplete_chain(&self, sym: SymbolId) -> bool {
+        self.side
+            .as_deref()
+            .is_some_and(|side| side.incomplete_chains.contains(&sym))
     }
 
     pub(crate) fn record_method_signature(&mut self, sym: SymbolId, signature: Vec<String>) {

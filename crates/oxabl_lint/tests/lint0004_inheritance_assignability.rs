@@ -573,3 +573,32 @@ v-count = NEW orders.base().
     assert_eq!(diags.len(), 1, "one mismatch: {diags:?}");
     assert!(lint(source).2.is_empty(), "and nothing without an index");
 }
+
+// ---------------------------------------------------------------------------
+// A chain that stops at a workspace class no file supplies
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_chain_through_a_missing_workspace_class_is_not_judged() {
+    // `app.Middle` may inherit `app.Top`: the chain is not known past
+    // `app.Bottom`, so the assignment is not judged.
+    let source = r#"DEFINE VARIABLE oTop AS CLASS app.Top NO-UNDO.
+oTop = NEW app.Bottom().
+"#;
+    let workspace = [
+        ("/src/app/Top.cls", "CLASS app.Top: END CLASS."),
+        (
+            "/src/app/Bottom.cls",
+            "CLASS app.Bottom INHERITS app.Middle: END CLASS.",
+        ),
+    ];
+    let (_stmts, _sem, diags) = lint_with_index(source, &workspace);
+    assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+
+    // When `app.Middle` exists and does not inherit `app.Top`, the whole chain
+    // is known and the mismatch stands.
+    let mut complete = workspace.to_vec();
+    complete.push(("/src/app/Middle.cls", "CLASS app.Middle: END CLASS."));
+    let (_stmts, _sem, diags) = lint_with_index(source, &complete);
+    assert_eq!(diags.len(), 1, "one mismatch: {diags:?}");
+}

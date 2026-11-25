@@ -72,9 +72,17 @@ impl<'a> ClassLattice<'a> {
     /// path — so the ordinary assignment, and every assignment between
     /// primitives, allocates nothing and walks nothing.
     pub fn widens_to(self, from: SymbolId, to: SymbolId) -> bool {
+        self.reaches(from, to) == Reach::Widens
+    }
+
+    /// Whether `from` widens to `to`, with a third answer for a climb that
+    /// meets a class whose header names a supertype that did not resolve
+    /// before it finds `to`: then the chain past that class is not known.
+    pub fn reaches(self, from: SymbolId, to: SymbolId) -> Reach {
         if from == to {
-            return true;
+            return Reach::Widens;
         }
+        let mut incomplete = false;
         let mut visited: SmallVec<[SymbolId; CHAIN_INLINE]> = SmallVec::new();
         visited.push(from);
         let mut stack: SmallVec<[SymbolId; CHAIN_INLINE]> = SmallVec::new();
@@ -82,9 +90,10 @@ impl<'a> ClassLattice<'a> {
         // Depth-first: the question is reachability, so visit order is
         // immaterial, and a stack keeps both containers the same shape.
         while let Some(current) = stack.pop() {
+            incomplete |= self.symbols.has_incomplete_chain(current);
             for &ancestor in self.symbols.resolved_supertypes(current) {
                 if ancestor == to {
-                    return true;
+                    return Reach::Widens;
                 }
                 if !visited.contains(&ancestor) {
                     visited.push(ancestor);
@@ -92,8 +101,24 @@ impl<'a> ClassLattice<'a> {
                 }
             }
         }
-        false
+        if incomplete {
+            Reach::NotKnown
+        } else {
+            Reach::DoesNot
+        }
     }
+}
+
+/// The answer of [`ClassLattice::reaches`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// The class widens to the target.
+    Widens,
+    /// The whole chain is known and does not reach the target.
+    DoesNot,
+    /// The chain stops at a supertype that did not resolve before it reaches
+    /// the target.
+    NotKnown,
 }
 
 /// Whether a value of type `from` may be assigned to a location of type
@@ -123,7 +148,8 @@ pub fn assignable(from: &ResolvedType, to: &ResolvedType, lattice: ClassLattice<
         // where a parent or an implemented interface is expected. Identity is
         // already settled by the `from == to` fast path above, so reaching here
         // means two genuinely different class symbols and the walk is worth it.
-        (Class(a), Class(b)) => lattice.widens_to(*a, *b),
+        // An incomplete chain may reach the target: fail closed.
+        (Class(a), Class(b)) => lattice.reaches(*a, *b) != Reach::DoesNot,
         (Buffer(a), Buffer(b)) => a == b,
         (Table(ra, ta), Table(rb, tb)) => ra == rb && ta == tb,
         _ => false,
