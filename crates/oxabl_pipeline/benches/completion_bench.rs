@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use oxabl_pipeline::completion::{CompletionBase, CompletionRequest, complete};
+use oxabl_pipeline::completion::{CompletionBase, CompletionRequest, FreshListing, complete};
 use oxabl_pipeline::{LintPipeline, PipelineConfig};
 use oxabl_schema::test_support::schema_from_df;
 use oxabl_style::KeywordCase;
@@ -93,6 +93,7 @@ fn bench_completion(c: &mut Criterion) {
         ..PipelineConfig::default()
     };
     let path = PathBuf::from("/ws/big.p");
+    let listing = FreshListing(&fs);
     let run = LintPipeline::new(&config, &fs).with_define_record(true);
     let handle = run.with_file(&path);
     // The line after `total = total + 1.` of the procedure in the middle.
@@ -121,7 +122,7 @@ fn bench_completion(c: &mut Criterion) {
             snippets: true,
             trigger: None,
             config: &config,
-            files: &fs,
+            listing: &listing,
         };
         let ask = |request: &CompletionRequest<'_>, base_text: &str| {
             let navigation = handle
@@ -159,5 +160,66 @@ fn bench_completion(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_completion);
+/// The files of `RUN` with one include path entry of 20,000 programs, named
+/// three times in the include path, and a small document: what one request
+/// pays to list and filter a large directory, with no cache.
+fn bench_large_directory(c: &mut Criterion) {
+    const PROGRAMS: usize = 20_000;
+    let mut fs = InMemoryFileSystem::new();
+    for k in 0..PROGRAMS {
+        fs.insert(PathBuf::from(format!("/big/prog{k}.p")), "MESSAGE 1.");
+    }
+    let config = PipelineConfig {
+        include_paths: vec![
+            PathBuf::from("/ws"),
+            PathBuf::from("/big"),
+            PathBuf::from("/big"),
+            PathBuf::from("/big"),
+        ],
+        ..PipelineConfig::default()
+    };
+    let listing = FreshListing(&fs);
+    let path = PathBuf::from("/ws/small.p");
+    let run = LintPipeline::new(&config, &fs).with_define_record(true);
+    let handle = run.with_file(&path);
+    let none = |_| None;
+    let mut group = c.benchmark_group("completion");
+    group.sample_size(20);
+    for (name, typed) in [("run_large", "RUN "), ("run_large_word", "RUN prog1")] {
+        let text = format!("DEFINE VARIABLE total AS INTEGER NO-UNDO.\n{typed}");
+        let expansion = handle.expand(&text);
+        let model = Arc::new(
+            handle
+                .navigation_model(&expansion)
+                .expect("it preprocesses"),
+        );
+        let request = CompletionRequest {
+            text: &text,
+            offset: text.len() as u32,
+            path: &path,
+            keyword_case: KeywordCase::Uppercase,
+            snippets: true,
+            trigger: None,
+            config: &config,
+            listing: &listing,
+        };
+        let ask = || {
+            let navigation = handle
+                .navigation_with(&expansion, Arc::clone(&model), &none)
+                .expect("it preprocesses");
+            let base = CompletionBase {
+                navigation: &navigation,
+                text: &text,
+                fragment: false,
+                stale: false,
+            };
+            complete(&request, Some(&base)).map_or(0, |list| list.items.len())
+        };
+        assert!(ask() > 0, "{name}: no items");
+        group.bench_function(format!("fresh/{name}"), |b| b.iter(|| black_box(ask())));
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_completion, bench_large_directory);
 criterion_main!(benches);

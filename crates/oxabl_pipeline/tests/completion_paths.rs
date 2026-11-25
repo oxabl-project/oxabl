@@ -6,7 +6,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use oxabl_pipeline::completion::{CompletionBase, CompletionList, CompletionRequest, complete};
+use oxabl_pipeline::completion::{
+    CompletionBase, CompletionList, CompletionRequest, FreshListing, complete,
+};
 use oxabl_pipeline::{LintPipeline, PipelineConfig};
 use oxabl_style::KeywordCase;
 use oxabl_workspace::{DirEntry, FileSystem, InMemoryFileSystem};
@@ -72,7 +74,7 @@ fn ask(fs: &dyn FileSystem, name: &str, marked: &str) -> Option<CompletionList> 
         snippets: false,
         trigger: None,
         config: &config,
-        files: fs,
+        listing: &FreshListing(fs),
     };
     complete(&request, Some(&base))
 }

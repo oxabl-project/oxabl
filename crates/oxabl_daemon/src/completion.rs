@@ -17,13 +17,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use oxabl_pipeline::completion::{
-    CompletionBase, CompletionList, CompletionRequest, complete, keyword_documentation,
-    path_documentation, symbol_documentation, table_documentation, wants_base,
+    CompletionBase, CompletionList, CompletionRequest, DirListing, complete, keyword_documentation,
+    path_documentation, sorted_listing, symbol_documentation, table_documentation, wants_base,
 };
 use oxabl_pipeline::{Expansion, LintPipeline, Navigation, NavigationModel};
-use oxabl_workspace::FileSystem;
+use oxabl_workspace::{DirEntry, FileSystem};
 
 use crate::db::{AnalysisConfig, OverlayFs, spelled_as_expanded};
 use crate::session::canonical_path;
@@ -71,10 +72,58 @@ struct Slot {
     refreshing: Option<u64>,
 }
 
+/// How long a directory listing of `RUN` and `{` is kept. A request comes at
+/// each key, and the same directory is listed for each; a file created or
+/// deleted shows in the list after this.
+const LISTING_TTL: Duration = Duration::from_secs(3);
+
+/// The most directory listings kept.
+const MAX_LISTINGS: usize = 256;
+
+/// The directory listings of the recent requests, each kept for
+/// [`LISTING_TTL`].
+#[derive(Default)]
+struct Listings(Mutex<HashMap<PathBuf, Listed>>);
+
+/// When a directory was listed, and its entries (`None`: it cannot be listed).
+type Listed = (Instant, Option<Arc<[DirEntry]>>);
+
+/// A [`DirListing`] that reads [`Listings`] before the file system.
+struct CachedListing<'c> {
+    fs: &'c dyn FileSystem,
+    cache: &'c Listings,
+}
+
+impl DirListing for CachedListing<'_> {
+    fn list(&self, dir: &Path) -> Option<Arc<[DirEntry]>> {
+        let now = Instant::now();
+        {
+            let cache = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((at, listing)) = cache.get(dir)
+                && now.duration_since(*at) < LISTING_TTL
+            {
+                return listing.clone();
+            }
+        }
+        // Listed with no lock held: a slow directory does not stop the others.
+        let listing = sorted_listing(self.fs, dir);
+        let mut cache = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= MAX_LISTINGS {
+            cache.retain(|_, (at, _)| now.duration_since(*at) < LISTING_TTL);
+            if cache.len() >= MAX_LISTINGS {
+                cache.clear();
+            }
+        }
+        cache.insert(dir.to_path_buf(), (now, listing.clone()));
+        listing
+    }
+}
+
 /// The completion bases of one session.
 #[derive(Default)]
 pub struct Bases {
     slots: Mutex<HashMap<BaseKey, Slot>>,
+    listings: Listings,
     /// Numbers the bases in the order their analysis started.
     sequence: AtomicU64,
 }
@@ -94,9 +143,14 @@ impl Bases {
         self.slots().retain(|key, _| key.document != document);
     }
 
-    /// Drop every base: the configuration or the schema changed.
+    /// Drop every base and listing: the configuration or the schema changed.
     pub fn clear(&self) {
         self.slots().clear();
+        self.listings
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// The newest base of `key` that was made under `generation`.
@@ -204,7 +258,11 @@ pub fn compute_completion(
     bases: &Arc<Bases>,
     query: &CompletionQuery,
 ) -> Result<CompletionAnswer, String> {
-    fn request<'q>(query: &'q CompletionQuery, path: &'q Path) -> CompletionRequest<'q> {
+    fn request<'q>(
+        query: &'q CompletionQuery,
+        path: &'q Path,
+        listing: &'q dyn DirListing,
+    ) -> CompletionRequest<'q> {
         CompletionRequest {
             text: &query.text,
             offset: query.offset,
@@ -213,14 +271,19 @@ pub fn compute_completion(
             snippets: query.snippets,
             trigger: query.trigger,
             config: &query.config.pipeline,
-            files: &*query.config.fs,
+            listing,
         }
     }
+    let listing = CachedListing {
+        fs: &*query.config.fs,
+        cache: &bases.listings,
+    };
+    let listing: &dyn DirListing = &listing;
     // A position that reads no analysis needs no base: a `.` that ends a
     // statement must not start one.
-    if !wants_base(&request(query, &query.path)) {
+    if !wants_base(&request(query, &query.path, listing)) {
         return Ok(CompletionAnswer {
-            list: complete(&request(query, &query.path), None),
+            list: complete(&request(query, &query.path, listing), None),
             base: 0,
         });
     }
@@ -232,7 +295,7 @@ pub fn compute_completion(
         let list = match query.key.root {
             // The root no longer reads the include: no list.
             Some(_) => None,
-            None => complete(&request(query, &query.path), None),
+            None => complete(&request(query, &query.path, listing), None),
         };
         return Ok(CompletionAnswer { list, base: 0 });
     };
@@ -248,7 +311,7 @@ pub fn compute_completion(
             fragment,
             stale,
         };
-        complete(&request(query, &document), Some(&completion))
+        complete(&request(query, &document, listing), Some(&completion))
     })
     .flatten();
     Ok(CompletionAnswer {

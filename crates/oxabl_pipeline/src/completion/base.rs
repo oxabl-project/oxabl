@@ -30,6 +30,15 @@ pub(crate) struct Mapped {
 }
 
 impl Mapped {
+    /// Whether `span` of file `file` touches the bytes of the base's own
+    /// text that the current text changed.
+    pub(crate) fn touches_changed(&self, file: FileId, span: oxabl_ast::Span) -> bool {
+        let Some((from, to)) = self.changed else {
+            return false;
+        };
+        self.ids.contains(&file) && span.start < to && from < span.end
+    }
+
     /// Whether the base declares a name at expanded byte `virt` in text that
     /// the current text changed.
     pub(crate) fn in_changed(&self, base: &CompletionBase<'_, '_, '_>, virt: u32) -> bool {

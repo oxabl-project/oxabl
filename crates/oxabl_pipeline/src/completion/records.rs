@@ -405,8 +405,11 @@ impl Engine<'_, '_, '_, '_> {
     }
 
     /// An expression in the `WHERE` of a record phrase: the fields of the
-    /// records the statement names, inserted without a qualifier, then the
-    /// values.
+    /// records the statement names, then the values. A field is inserted
+    /// without a qualifier only when no other record the cursor can reach has
+    /// a field of that name; else the compiler would find the name ambiguous,
+    /// and it is inserted with the name of its record (`Order.CustNum`), once
+    /// for each record of the statement that has it.
     pub(super) fn where_names(&self) -> Option<(Vec<Candidate>, bool)> {
         let text = self.request.text;
         let window: Vec<&Token> = self.tokens[..self.found.before]
@@ -416,33 +419,104 @@ impl Engine<'_, '_, '_, '_> {
             })
             .collect();
         let mut incomplete = false;
-        let mut records = Vec::new();
+        let mut records: Vec<(&str, Record)> = Vec::new();
         for name in statement_records(text, &window) {
             match self.record_named(name) {
-                Some(record) => records.push(record),
+                Some(record) => records.push((name, record)),
                 None => incomplete = true,
             }
         }
-        let expected = self.compared_type(text, &window, &records);
+        let only: Vec<Record> = records.iter().map(|(_, record)| *record).collect();
+        let expected = self.compared_type(text, &window, &only);
         let (mut items, names_incomplete) = self.names_with(Wanted::Values, expected.as_ref())?;
         incomplete |= names_incomplete;
-        let mut seen = HashSet::new();
-        for record in records {
-            let Some((fields, fields_incomplete)) = self.fields(record, expected.as_ref()) else {
+        let mut lists = Vec::new();
+        for (name, record) in &records {
+            let Some((fields, fields_incomplete)) = self.fields(*record, expected.as_ref()) else {
                 incomplete = true;
                 continue;
             };
             incomplete |= fields_incomplete;
+            lists.push((*name, *record, fields));
+        }
+        // The fields of each other record the cursor can reach; `None` for a
+        // record whose fields are not all known, which can have any name.
+        let mut reach: Vec<(Option<Record>, Option<HashSet<String>>)> = Vec::new();
+        let mut add = |record: Option<Record>, engine: &Self| {
+            let Some(record) = record else {
+                reach.push((None, None));
+                return;
+            };
+            if reach.iter().any(|(known, _)| *known == Some(record)) {
+                return;
+            }
+            let names = engine
+                .fields(record, None)
+                .and_then(|(fields, incomplete)| {
+                    (!incomplete).then(|| {
+                        fields
+                            .iter()
+                            .map(|field| field.label.to_ascii_lowercase())
+                            .collect()
+                    })
+                });
+            reach.push((Some(record), names));
+        };
+        for (_, record, _) in &lists {
+            add(Some(*record), self);
+        }
+        for record in self.records_in_reach() {
+            add(record, self);
+        }
+        let mut seen = HashSet::new();
+        for (name, record, fields) in lists {
             for field in fields {
-                if seen.insert(field.label.to_ascii_lowercase()) {
-                    items.push(Candidate {
-                        fit: field.fit.min(fit::STATEMENT_FIELD),
-                        ..field
-                    });
+                let key = field.label.to_ascii_lowercase();
+                let shared = reach.iter().any(|(other, names)| {
+                    *other != Some(record)
+                        && names.as_ref().is_none_or(|names| names.contains(&key))
+                });
+                let fit = field.fit.min(fit::STATEMENT_FIELD);
+                if shared {
+                    let qualified = format!("{name}.{}", field.label);
+                    if seen.insert(qualified.to_ascii_lowercase()) {
+                        items.push(Candidate {
+                            label: qualified.clone(),
+                            insert: qualified,
+                            fit,
+                            ..field
+                        });
+                    }
+                } else if seen.insert(key) {
+                    items.push(Candidate { fit, ..field });
                 }
             }
         }
         Some((items, incomplete))
+    }
+
+    /// The records of the buffers bound in the scope at the cursor and its
+    /// ancestors, at each place of the cursor; `None` for a buffer whose
+    /// record is not known.
+    fn records_in_reach(&self) -> Vec<Option<Record>> {
+        let Some((base, mapped)) = self.based() else {
+            return Vec::new();
+        };
+        let semantic = &base.navigation.model.semantic;
+        let tree = &semantic.scope_tree;
+        let symbols = &semantic.symbols;
+        let mut out = Vec::new();
+        for place in &mapped.places {
+            for id in tree.ancestors(base::scope_at(base, *place)) {
+                for (_, sym) in tree.get(id).bindings[NamespaceId::Buffers.index()].iter() {
+                    out.push(symbols.record_source(sym).map(|source| match source {
+                        RecordSource::Schema(table) => Record::Table(table),
+                        RecordSource::TempTable(temp_table) => Record::TempTable(temp_table),
+                    }));
+                }
+            }
+        }
+        out
     }
 
     /// The type of the field on the left of the comparison the window ends
@@ -479,9 +553,14 @@ impl Engine<'_, '_, '_, '_> {
                 let record = self.record_named(&text[from..q.end])?;
                 self.field_type(record, spelled(f), 0)
             }
-            [.., f] if f.kind == Kind::Identifier => records
-                .iter()
-                .find_map(|record| self.field_type(*record, spelled(f), 0)),
+            [.., f] if f.kind == Kind::Identifier => {
+                // A name that two records of the statement have is ambiguous.
+                let mut types = records
+                    .iter()
+                    .filter_map(|record| self.field_type(*record, spelled(f), 0));
+                let ty = types.next()?;
+                types.next().is_none().then_some(ty)
+            }
             _ => None,
         }
     }

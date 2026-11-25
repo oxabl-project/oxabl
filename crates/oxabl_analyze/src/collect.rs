@@ -403,6 +403,8 @@ pub struct PlacedDefine {
     pub directive: DefineDirective,
     /// The value after expansion; empty for `&UNDEFINE`.
     pub value: String,
+    /// The directive, in the bytes of the file that writes it.
+    pub site: FileSpan,
     /// Where the directive lies in the expanded text.
     pub offset: u32,
     /// Where the directive stops to hold in the expanded text: the end of
@@ -1364,6 +1366,7 @@ pub fn expand_source_recording(
                         name: define.name.clone(),
                         directive: define.directive,
                         value: define.value.clone(),
+                        site: define.site,
                         offset,
                         scope_end: match define.directive {
                             DefineDirective::Scoped => file_end,

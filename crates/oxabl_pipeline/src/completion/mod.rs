@@ -21,11 +21,12 @@ mod records;
 mod snippets;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use oxabl_lexer::{Kind, Token};
 use oxabl_semantic::{ScopeId, ScopeKind};
 use oxabl_style::KeywordCase;
-use oxabl_workspace::FileSystem;
+use oxabl_workspace::{DirEntry, FileSystem};
 
 use crate::keyword_docs::KEYWORD_DOCS;
 use crate::{Navigation, PipelineConfig};
@@ -59,8 +60,32 @@ pub struct CompletionRequest<'r> {
     /// The configuration of the document: the include paths and the
     /// extensions of `RUN`, and the schema when no base is read.
     pub config: &'r PipelineConfig,
-    /// The file system that lists the directories of the include paths.
-    pub files: &'r dyn FileSystem,
+    /// What lists the directories of the include paths.
+    pub listing: &'r dyn DirListing,
+}
+
+/// The entries of a directory, for the paths of `RUN` and `{`.
+pub trait DirListing {
+    /// The entries of `dir`, sorted by name; `None` when they cannot be
+    /// listed (as [`FileSystem::list_dir`]), never for an empty directory.
+    fn list(&self, dir: &Path) -> Option<Arc<[DirEntry]>>;
+}
+
+/// A [`DirListing`] that lists each directory through a file system when it
+/// is asked, with no cache.
+pub struct FreshListing<'f>(pub &'f dyn FileSystem);
+
+impl DirListing for FreshListing<'_> {
+    fn list(&self, dir: &Path) -> Option<Arc<[DirEntry]>> {
+        sorted_listing(self.0, dir)
+    }
+}
+
+/// The entries of `dir` that `fs` lists, sorted by name.
+pub fn sorted_listing(fs: &dyn FileSystem, dir: &Path) -> Option<Arc<[DirEntry]>> {
+    let mut entries = fs.list_dir(dir)?;
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Some(entries.into())
 }
 
 /// The analysis completion reads, with the text of the document it was made

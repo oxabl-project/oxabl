@@ -6,14 +6,17 @@
 //! makes the list incomplete; it never reads as empty.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use oxabl_analyze::DefineDirective;
-use oxabl_ast::NodeId;
+use oxabl_workspace::DirEntry;
+
+use oxabl_analyze::{DefineDirective, PlacedDefine};
+use oxabl_ast::{NodeId, Span};
 use oxabl_lexer::Kind;
 use oxabl_semantic::{NamespaceId, ScopeId};
 
-use super::rank::{fit, nearness};
+use super::rank::{self, fit, nearness};
 use super::{Candidate, Engine, ItemData, ItemKind};
 
 /// The names the preprocessor defines itself.
@@ -64,41 +67,27 @@ impl Engine<'_, '_, '_, '_> {
             }
             None => true,
         };
-        // The statement at the cursor is not complete, so the parser can read
-        // the next `PROCEDURE` as its target and lose the declaration: a
-        // `PROCEDURE` that starts a statement or a line of the current text
-        // names one too.
+        // The statement at the cursor is not complete, so the parser reads a
+        // `PROCEDURE` right after it as the target of `RUN` and loses that
+        // one declaration. Only that one: a `PROCEDURE` anywhere else is in
+        // the base, or in an `&IF` branch the preprocessor did not take.
         let text = self.request.text;
-        let mut known: HashSet<String> = items
+        let mut after = self.tokens[self.found.before..]
             .iter()
-            .map(|item| item.label.to_ascii_lowercase())
-            .collect();
-        let mut previous = None;
-        for (at, token) in self.tokens.iter().enumerate() {
-            if token.kind == Kind::Comment {
-                continue;
-            }
-            let starts = || {
-                previous.is_none_or(|kind| matches!(kind, Kind::Period | Kind::Colon))
-                    || text[..token.start]
-                        .rfind('\n')
-                        .map_or(&text[..token.start], |at| &text[at + 1..token.start])
-                        .trim()
-                        .is_empty()
-            };
-            if token.kind == Kind::Procedure
-                && starts()
-                && let Some(name) = self.tokens[at + 1..]
-                    .iter()
-                    .find(|next| next.kind != Kind::Comment)
-                    .filter(|next| next.kind == Kind::Identifier)
+            .filter(|token| token.start >= self.found.word_end as usize)
+            .filter(|token| token.kind != Kind::Comment);
+        if after
+            .next()
+            .is_some_and(|token| token.kind == Kind::Procedure)
+            && let Some(name) = after.next().filter(|token| token.kind == Kind::Identifier)
+        {
+            let label = &text[name.start..name.end];
+            if !items
+                .iter()
+                .any(|item| item.label.eq_ignore_ascii_case(label))
             {
-                let label = &text[name.start..name.end];
-                if known.insert(label.to_ascii_lowercase()) {
-                    items.push(procedure(label));
-                }
+                items.push(procedure(label));
             }
-            previous = Some(token.kind);
         }
         let extensions = &self.request.config.run_extensions;
         incomplete |= self.list_paths(&mut items, |name| {
@@ -182,42 +171,42 @@ impl Engine<'_, '_, '_, '_> {
     pub(super) fn preprocessor_names(&self) -> Option<(Vec<Candidate>, bool)> {
         let (base, mapped) = self.based()?;
         let expanded = &base.navigation.expanded;
-        // Lower-case name, then the name as written, its value and where the
-        // last directive that set it lies.
-        type Defined<'d> = HashMap<String, Option<(&'d str, &'d str, u32)>>;
-        let mut each: Vec<Defined<'_>> = Vec::new();
-        for place in &mapped.places {
-            let mut defined: Defined<'_> = HashMap::new();
-            for define in expanded.defines() {
-                if define.offset > *place || *place >= define.scope_end {
-                    continue;
-                }
-                let state = match define.directive {
-                    DefineDirective::Undefine => None,
-                    DefineDirective::Global | DefineDirective::Scoped => {
-                        Some((define.name.as_str(), define.value.as_str(), define.offset))
-                    }
-                };
-                defined.insert(define.name.to_ascii_lowercase(), state);
-            }
-            each.push(defined);
-        }
+        // The directives the current text no longer holds (a stale base) are
+        // not replayed.
+        let defines: Vec<&PlacedDefine> = expanded
+            .defines()
+            .iter()
+            .filter(|define| {
+                !self.mapped.is_some_and(|m| {
+                    m.touches_changed(define.site.file, name_span(base.text, define))
+                })
+            })
+            .collect();
+        let each: Vec<HashMap<String, Visible<'_>>> = mapped
+            .places
+            .iter()
+            .map(|place| visible_at(&defines, *place))
+            .collect();
         let (first, others) = each.split_first()?;
         let mut names: Vec<(String, Option<String>)> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        for (key, state) in first {
-            let Some((name, value, _)) = state else {
-                seen.insert(key.clone());
-                continue;
-            };
-            seen.insert(key.clone());
+        // A name a directive set or undefined; a predefined name of the same
+        // spelling is not offered again.
+        let mut seen: HashSet<String> = defines
+            .iter()
+            .map(|define| define.name.to_ascii_lowercase())
+            .collect();
+        for (key, visible) in first {
             if others
                 .iter()
-                .all(|other| other.get(key).is_some_and(Option::is_some))
+                .all(|other| other.get(key).is_some_and(|o| o.value == visible.value))
             {
-                names.push((name.to_string(), Some(value.to_string())));
+                names.push((visible.name.to_string(), Some(visible.value.to_string())));
             }
         }
+        let first: HashMap<&str, u32> = first
+            .iter()
+            .map(|(key, visible)| (key.as_str(), visible.offset))
+            .collect();
         // The named arguments of the reference: a define in the include
         // after its start sets the name again.
         for id in &mapped.ids {
@@ -231,9 +220,12 @@ impl Engine<'_, '_, '_, '_> {
                 .map_or(0, |expansion| expansion.expanded.start);
             for (name, value) in &arguments.named {
                 let key = name.to_ascii_lowercase();
-                let later = first
-                    .get(&key)
-                    .is_some_and(|state| state.is_none_or(|(_, _, at)| at >= start));
+                // A directive in the include after its start sets the name
+                // again, or undefines it.
+                let later = defines
+                    .iter()
+                    .any(|define| define.offset >= start && define.name.eq_ignore_ascii_case(name))
+                    && first.get(key.as_str()).is_none_or(|at| *at >= start);
                 if later {
                     continue;
                 }
@@ -256,66 +248,80 @@ impl Engine<'_, '_, '_, '_> {
 
     /// Add the entries of the directory part of the word, under each entry of
     /// the include path, to `items`: directories, and the files `keep` gives
-    /// a nearness. A name that two entries give counts once. True when the
-    /// list can miss entries: no include path, or a directory that cannot be
-    /// listed.
+    /// a nearness, whose name matches the last part of the word. A name that
+    /// two entries give counts once. True when the list can miss entries: no
+    /// include path, a directory that cannot be listed, or more than
+    /// [`MAX_MATCHES`] matches in one directory.
     fn list_paths(&self, items: &mut Vec<Candidate>, keep: impl Fn(&str) -> Option<u8>) -> bool {
         let request = self.request;
         let word = &request.text[self.found.word_start as usize..request.offset as usize];
-        let dir = &word[..word.rfind(['/', '\\']).map_or(0, |at| at + 1)];
+        let split = word.rfind(['/', '\\']).map_or(0, |at| at + 1);
+        let (dir, typed) = word.split_at(split);
         let entries = request
             .config
             .include_paths_for(Some(request.path), request.text);
         if entries.is_empty() {
             return true;
         }
+        // Each directory is listed once in a request.
+        let mut listed: HashMap<PathBuf, Option<Arc<[DirEntry]>>> = HashMap::new();
+        let mut list = |path: &Path| {
+            listed
+                .entry(path.to_path_buf())
+                .or_insert_with(|| request.listing.list(path))
+                .clone()
+        };
         let mut incomplete = false;
         let mut seen: HashSet<String> = items
             .iter()
             .filter(|item| matches!(item.kind, ItemKind::File | ItemKind::Folder))
             .map(|item| item.label.clone())
             .collect();
+        let mut done: HashSet<PathBuf> = HashSet::new();
         for entry in entries.iter() {
-            let listed = entry.join(dir);
-            let Some(mut listing) = request.files.list_dir(&listed) else {
-                incomplete |= !self.missing(&listed);
+            let path = entry.join(dir);
+            if !done.insert(path.clone()) {
+                continue;
+            }
+            let Some(listing) = list(&path) else {
+                incomplete |= !missing(&path, &mut list);
                 continue;
             };
-            listing.sort_by(|a, b| a.name.cmp(&b.name));
-            for found in listing {
-                if found.name.starts_with('.') {
+            let mut matches = 0;
+            for found in listing.iter() {
+                if found.name.starts_with('.') || rank::quality(typed, &found.name).is_none() {
                     continue;
                 }
-                let (label, kind, near, detail) = if found.is_dir {
+                let (label, kind, near) = if found.is_dir {
                     (
                         format!("{dir}{}/", found.name),
                         ItemKind::Folder,
                         nearness::PATH,
-                        None,
                     )
                 } else {
                     let Some(near) = keep(&found.name) else {
                         continue;
                     };
-                    (
-                        format!("{dir}{}", found.name),
-                        ItemKind::File,
-                        near,
-                        Some(listed.join(&found.name).display().to_string()),
-                    )
+                    (format!("{dir}{}", found.name), ItemKind::File, near)
                 };
+                if matches == MAX_MATCHES {
+                    incomplete = true;
+                    break;
+                }
+                matches += 1;
                 if !seen.insert(label.clone()) {
                     continue;
                 }
                 items.push(Candidate {
                     insert: label.clone(),
+                    detail: (kind == ItemKind::File)
+                        .then(|| path.join(&found.name).display().to_string()),
                     data: ItemData::Path {
                         path: label.clone(),
                         entry: entry.clone(),
                     },
                     label,
                     kind,
-                    detail,
                     snippet: false,
                     fit: fit::OTHER,
                     nearness: near,
@@ -324,19 +330,108 @@ impl Engine<'_, '_, '_, '_> {
         }
         incomplete
     }
+}
 
-    /// Whether `dir` is known not to exist: its parent lists, and holds no
-    /// directory of its name.
-    fn missing(&self, dir: &Path) -> bool {
-        let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
-            return false;
+/// The most entries of one directory that match the word and are offered.
+/// More make the list incomplete, and the client asks again as the word
+/// grows.
+const MAX_MATCHES: usize = 1000;
+
+/// Whether `dir` is known not to exist: its parent lists, and holds no entry
+/// of its name. An entry that is a file (a procedure library) cannot be
+/// listed, and is not missing.
+fn missing(dir: &Path, list: &mut impl FnMut(&Path) -> Option<Arc<[DirEntry]>>) -> bool {
+    let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return false;
+    };
+    list(parent).is_some_and(|listing| {
+        !listing
+            .iter()
+            .any(|entry| std::ffi::OsStr::new(&entry.name) == name)
+    })
+}
+
+/// The bytes of the name a directive writes, in the text of the document,
+/// when the document is the file that writes it: the first word after the
+/// directive's keyword. The whole directive when the text does not hold it.
+fn name_span(text: &str, define: &PlacedDefine) -> Span {
+    let span = define.site.span;
+    let found = text
+        .get(span.start as usize..span.end as usize)
+        .and_then(|directive| {
+            let keyword = directive.find(char::is_whitespace)?;
+            let rest = &directive[keyword..];
+            let name = rest.find(|c: char| !c.is_whitespace())?;
+            let start = span.start + (keyword + name) as u32;
+            let len = rest[name..]
+                .find(char::is_whitespace)
+                .unwrap_or(rest.len() - name);
+            (rest[name..name + len].eq_ignore_ascii_case(&define.name)).then_some(Span {
+                start,
+                end: start + len as u32,
+            })
+        });
+    found.unwrap_or(span)
+}
+
+/// The definition of a preprocessor name that `{&name}` reads.
+#[derive(Debug, Clone, Copy)]
+struct Visible<'d> {
+    /// As the directive writes it.
+    name: &'d str,
+    value: &'d str,
+    /// Where the directive lies in the expanded text.
+    offset: u32,
+    /// Where it stops to hold: the end of the file of a `&SCOPED-DEFINE`.
+    end: u32,
+    scoped: bool,
+}
+
+/// The names `{&name}` reads at expanded offset `place`, by lower-case name:
+/// the directives before it replayed as the preprocessor's table does. Each
+/// name has a stack. A `&SCOPED-DEFINE` pushes a definition that ends with
+/// its file, or replaces the one its file made; a `&GLOBAL-DEFINE` sets the
+/// global one, and is ignored over a scoped one; an `&UNDEFINE` removes the
+/// newest, and the one under it shows again.
+fn visible_at<'d>(defines: &[&'d PlacedDefine], place: u32) -> HashMap<String, Visible<'d>> {
+    let mut stacks: HashMap<String, Vec<Visible<'d>>> = HashMap::new();
+    let prune = |stack: &mut Vec<Visible<'d>>, at: u32| {
+        while stack.last().is_some_and(|top| top.end <= at) {
+            stack.pop();
+        }
+    };
+    for define in defines.iter().take_while(|define| define.offset <= place) {
+        let stack = stacks.entry(define.name.to_ascii_lowercase()).or_default();
+        prune(stack, define.offset);
+        let entry = Visible {
+            name: &define.name,
+            value: &define.value,
+            offset: define.offset,
+            end: define.scope_end,
+            scoped: define.directive == DefineDirective::Scoped,
         };
-        self.request.files.list_dir(parent).is_some_and(|listing| {
-            !listing
-                .iter()
-                .any(|entry| entry.is_dir && std::ffi::OsStr::new(&entry.name) == name)
-        })
+        match define.directive {
+            DefineDirective::Undefine => {
+                stack.pop();
+            }
+            DefineDirective::Scoped => match stack.last_mut() {
+                Some(top) if top.scoped && top.end == entry.end => *top = entry,
+                _ => stack.push(entry),
+            },
+            DefineDirective::Global => match stack.last_mut() {
+                None => stack.push(entry),
+                Some(top) if !top.scoped => *top = entry,
+                Some(_) => {}
+            },
+        }
     }
+    stacks
+        .into_iter()
+        .filter_map(|(key, mut stack)| {
+            prune(&mut stack, place);
+            Some((key, stack.pop()?))
+        })
+        .collect()
 }
 
 /// The item of an internal procedure.
