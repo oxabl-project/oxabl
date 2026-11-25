@@ -3,7 +3,8 @@
 //! cursor in the base and collects the items; it never analyses when a base
 //! exists. `fresh` reads a base of the current text; `stale` reads a base of
 //! the text before a one-line insert in the middle of the file. The contexts
-//! are a statement start inside a procedure and the words after `DEFINE`.
+//! are a statement start inside a procedure, the words after `DEFINE`, and an
+//! expression (the names in scope and the built-in functions).
 
 use std::fmt::Write;
 use std::hint::black_box;
@@ -63,7 +64,11 @@ fn procedure_file() -> String {
 }
 
 /// The contexts each bench asks for: what is typed at the cursor.
-const CONTEXTS: &[(&str, &str)] = &[("statement", "    FI"), ("define", "    DEFINE ")];
+const CONTEXTS: &[(&str, &str)] = &[
+    ("statement", "    FI"),
+    ("define", "    DEFINE "),
+    ("expression", "    total = c"),
+];
 
 fn bench_completion(c: &mut Criterion) {
     let source = procedure_file();

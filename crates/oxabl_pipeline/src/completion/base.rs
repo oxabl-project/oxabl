@@ -3,12 +3,17 @@
 
 use std::path::Path;
 
+use oxabl_common::FileId;
+use oxabl_lexer::{Kind, Token};
 use oxabl_semantic::{ScopeId, ScopeKind};
 
 use super::CompletionBase;
 
 /// The cursor and the window start of the current text, placed in a base.
 pub(crate) struct Mapped {
+    /// The file ids of the document in the base's expansion: the root, or
+    /// each expansion of an include.
+    pub ids: Vec<FileId>,
     /// Each place of the cursor in the expanded text of the base, one for each
     /// expansion of the document.
     pub places: Vec<u32>,
@@ -16,6 +21,26 @@ pub(crate) struct Mapped {
     pub window_places: Vec<u32>,
     /// The base was made from an older text.
     pub stale: bool,
+    /// The bytes of the base's own text that the current text changed, for a
+    /// stale base: a name declared there may no longer be declared.
+    pub changed: Option<(u32, u32)>,
+    /// The changed text opens or closes a scope, so the scope at the cursor
+    /// may not be the one the base gives.
+    pub scope_changed: bool,
+}
+
+impl Mapped {
+    /// Whether the base declares a name at expanded byte `virt` in text that
+    /// the current text changed.
+    pub(crate) fn in_changed(&self, base: &CompletionBase<'_, '_, '_>, virt: u32) -> bool {
+        let Some((from, to)) = self.changed else {
+            return false;
+        };
+        match base.navigation.expanded.resolve_offset(virt) {
+            Some((file, real)) => self.ids.contains(&file) && from <= real && real < to,
+            None => false,
+        }
+    }
 }
 
 /// Place the cursor at byte `cursor` and the window at `window_start` of
@@ -25,6 +50,7 @@ pub(crate) fn map(
     base: &CompletionBase<'_, '_, '_>,
     path: &Path,
     text: &str,
+    tokens: &[Token],
     cursor: u32,
     window_start: u32,
 ) -> Option<Mapped> {
@@ -104,11 +130,50 @@ pub(crate) fn map(
         return None;
     }
     let window_places = places_of(window_start);
+    let changed = stale.then(|| (prefix as u32, (old.len() - suffix) as u32));
+    let scope_changed = stale && {
+        let new_changed = (prefix, new.len() - suffix);
+        let old_changed = (prefix, old.len() - suffix);
+        opens_scope(tokens, new_changed) || {
+            let old_tokens = oxabl_lexer::tokenize(base.text);
+            opens_scope(&old_tokens, old_changed)
+        }
+    };
     Some(Mapped {
+        ids,
         places,
         window_places,
         stale,
+        changed,
+        scope_changed,
     })
+}
+
+/// Whether a token that touches the bytes `from..to` opens or closes a scope.
+fn opens_scope(tokens: &[Token], (from, to): (usize, usize)) -> bool {
+    let first = tokens.partition_point(|token| token.end < from);
+    tokens[first..]
+        .iter()
+        .take_while(|token| token.start <= to)
+        .any(|token| {
+            matches!(
+                token.kind,
+                Kind::Procedure
+                    | Kind::Function
+                    | Kind::Method
+                    | Kind::Constructor
+                    | Kind::Destructor
+                    | Kind::Class
+                    | Kind::Interface
+                    | Kind::KwEnum
+                    | Kind::End
+                    | Kind::Catch
+                    | Kind::Finally
+                    | Kind::On
+                    | Kind::Get
+                    | Kind::Set
+            )
+        })
 }
 
 /// The scope that holds expanded byte `virt`, past the implicit scopes of a

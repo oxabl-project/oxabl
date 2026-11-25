@@ -169,7 +169,10 @@ its use.
 - **An include with a selected root context.** The base is the analysis of
   the root, with the open buffers over the disk, as go to definition makes it
   (`with_navigation`). It is not memoized by salsa, so the daemon keeps it in
-  `Bases` under the key of the include and the root, and refreshes it as above.
+  `Bases` under the key of the include and the root, and refreshes it as above
+  when only the include changed. When the text of the root changed, the daemon
+  makes the base again on the request's thread, because only a new expansion
+  says whether the root still reads the include.
   The cursor maps to each place where the root expands the include. When there
   are several, the names are the names visible at every place (same name and
   same kind), so each name is valid in each expansion. When the root no longer
@@ -318,11 +321,22 @@ The names that are valid in an expression at the cursor:
 - A name declared in the same routine is valid only when its declaration ends
   before the cursor: ABL needs a definition before its use. Class members,
   internal procedures, and functions declared before the cursor or with a
-  `FORWARD` before the cursor, are valid everywhere in their scope.
+  `FORWARD` before the cursor, are valid everywhere in their scope. The symbol
+  table merges a `FORWARD` with the definition, so for a function the engine
+  also looks for a `FUNCTION <name>` statement before the window in the
+  current text.
 - In a class body: the members that the class inherits, from the class source
-  (role `ThisObject`).
-- Built-in functions (`oxabl_lexer::BUILTIN_FUNCTIONS`) and user functions,
-  and `THIS-OBJECT`, `SUPER`, `NEW` where they are valid.
+  (role `ThisObject`). Until step 5 there are none, and every list in a class
+  has `isIncomplete: true`.
+- Built-in functions (the `Function` entries of the keyword documentation
+  index, which name each function once by its full name, with the title as the
+  detail) and user functions, and `THIS-OBJECT`, `SUPER` (when the class names
+  a parent) and `NEW` where they are valid.
+- A name keeps the spelling of its declaration: the label is the text of its
+  name in the analysed text, not the folded name of the symbol table.
+- The label and kind identify a name. With several places of the cursor (an
+  include that the root reads twice), a name is offered only when each place
+  has a name with the same label (without case) and kind.
 - Synthesized symbols (schema fields, inherited members that the resolve pass
   made at a use) are never taken from the symbol table: they are not
   declarations, and their name span is a use site.
@@ -821,10 +835,13 @@ It is measured in two ways:
 
   | Context | Fresh | Stale |
   | --- | --- | --- |
-  | `statement`: a statement start in a procedure (`FI`) | 1.6 ms | 3.5 ms |
-  | `define`: after `DEFINE ` | 1.5 ms | 3.4 ms |
+  | `statement`: a statement start in a procedure (`FI`), keywords, snippets and names | 3.2 ms | 7.9 ms |
+  | `define`: after `DEFINE ` | 2.8 ms | 6.0 ms |
+  | `expression`: `total = c`, names and built-in functions | 3.2 ms | 6.5 ms |
 
-  Measured on a loaded machine, release build.
+  Measured on a loaded machine, release build. A stale base lexes the base
+  text too, to find a token that opens or closes a scope in the changed text;
+  that is most of the difference.
 - A black-box test over stdio (`crates/oxabl/tests/completion_budget_lsp.rs`)
   shows that the request path does not wait for an analysis: the refresh of a
   source with the marker `OXABL-TEST-HOLD:completion.refresh` waits three

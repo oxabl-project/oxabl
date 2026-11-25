@@ -52,13 +52,26 @@ Install the extension and open an ABL file. These features need nothing else:
   between the placeholders. The snippets write keywords in the case of
   `keyword_case` in `[workspace.style]` of the nearest `oxabl.toml`. Upper case
   is the default, also for `Preserve`. The placeholders hold sample names, not
-  names from your schema.
+  names from your schema. When the language server runs, it serves the
+  snippets in its own completion list (below).
 
 ## What needs the oxabl language server
 
 The extension starts `oxabl lsp` when it finds the `oxabl` executable. Then
 you also get, with no setup:
 
+- **Code completion.** The suggestions at a statement start hold the
+  statements that are valid in the scope at the cursor (no `METHOD` in a
+  procedure file, no `PROCEDURE` in a method), the words after `DEFINE`, and
+  the snippets where their body is valid. The names in scope come too: the
+  variables, parameters, buffers and functions that are defined before the
+  cursor, the members of the class, and the built-in functions, with the type
+  that fits an assignment first. Keywords are written in the case of
+  `keyword_case`; with `Preserve` or no setting, in the case of the word you
+  type, else of the nearest keyword before it. Where oxabl does not know what
+  the cursor needs (in a comment or a string, after a statement end), the
+  server gives no list, and VS Code shows the words of the open files. See
+  [completion.md](https://github.com/oxabl-project/oxabl/blob/master/docs/design/completion.md).
 - **Document outline.** The Outline view, the breadcrumbs, "Go to Symbol in
   File" (`Ctrl+Shift+O`) and sticky scroll show the declarations of the file:
   classes and their members, procedures, functions, temp-tables with their

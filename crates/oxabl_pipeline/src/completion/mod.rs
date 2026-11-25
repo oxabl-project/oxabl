@@ -14,6 +14,7 @@ mod base;
 mod case;
 mod context;
 mod keywords;
+mod names;
 mod rank;
 mod snippets;
 
@@ -29,6 +30,7 @@ use base::Mapped;
 use case::Case;
 use context::{Context, Found};
 use keywords::{Keyword, Place};
+use names::Wanted;
 use rank::{Quality, nearness};
 
 /// The most items one answer holds. A longer list is cut after ranking and is
@@ -198,6 +200,7 @@ pub fn complete(
             base,
             request.path,
             text,
+            &tokens,
             cursor,
             found.window_start,
         )?),
@@ -229,12 +232,47 @@ impl Engine<'_, '_, '_, '_> {
     /// The candidates of the context, and whether the list is incomplete.
     /// `None` when the context has no answer.
     fn collect(&self) -> Option<(Vec<Candidate>, bool)> {
+        if self.found.reaches_start && !self.window_may_start_here() {
+            return None;
+        }
         match &self.found.context {
             Context::StatementStart => self.statement_start(),
             Context::DefineKeywords { modifiers } => self.define_keywords(modifiers),
+            Context::Values { .. } | Context::Where => self.names(Wanted::Values),
+            Context::Records(after) => self.names(Wanted::Records(*after)),
             // The other contexts have no collector yet.
             _ => None,
         }
+    }
+
+    /// Whether a window that reaches the start of the document starts a
+    /// statement there. In a file that is its own root it does. In an include,
+    /// the statement can have begun in the includer: in a selected root, the
+    /// window starts here only when the expanded text before the include ends
+    /// a statement; an include analysed alone cannot tell.
+    fn window_may_start_here(&self) -> bool {
+        let Some((base, mapped)) = self.based() else {
+            return !is_include(self.request.path);
+        };
+        let navigation = base.navigation;
+        let own_root = navigation.root_path().as_deref()
+            == Some(oxabl_index::search::normalize_lexically(self.request.path).as_path());
+        if own_root {
+            return !base.fragment;
+        }
+        let text = navigation.expanded.text.as_bytes();
+        mapped
+            .ids
+            .iter()
+            .flat_map(|id| navigation.expanded.expanded_offsets(*id, 0))
+            .all(|start| {
+                let before = &text[..(start as usize).min(text.len())];
+                let end = before
+                    .iter()
+                    .rposition(|b| !b.is_ascii_whitespace())
+                    .map(|at| before[at]);
+                matches!(end, None | Some(b'.' | b':'))
+            })
     }
 
     /// The base and the cursor in it: both are needed by every collector
@@ -263,9 +301,11 @@ impl Engine<'_, '_, '_, '_> {
     /// snippets.
     fn statement_start(&self) -> Option<(Vec<Candidate>, bool)> {
         let place = self.place()?;
+        let (names, incomplete) = self.names(Wanted::StatementStart)?;
         let mut items: Vec<Candidate> = keywords::statement_keywords(place)
             .iter()
             .map(|keyword| Candidate::keyword(keyword, self.case))
+            .chain(names)
             .collect();
         if self.request.snippets {
             items.extend(
@@ -284,7 +324,7 @@ impl Engine<'_, '_, '_, '_> {
                     }),
             );
         }
-        Some((items, self.base_incomplete()))
+        Some((items, incomplete))
     }
 
     /// The words after `DEFINE` and `modifiers`.
@@ -394,6 +434,10 @@ impl Engine<'_, '_, '_, '_> {
             cursor,
         }
     }
+}
+
+fn is_include(path: &Path) -> bool {
+    oxabl_workspace::is_include_fragment(path)
 }
 
 fn is_class_file(path: &Path) -> bool {

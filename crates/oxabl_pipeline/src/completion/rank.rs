@@ -79,8 +79,12 @@ fn part_starts(label: &[u8]) -> Vec<usize> {
 
 /// How near an item is to the cursor, nearest first.
 pub(crate) mod nearness {
+    /// A name of the innermost scope; each outer scope adds one.
+    pub const SCOPE: u8 = 0;
     /// A keyword, a built-in function or a snippet.
     pub const KEYWORD: u8 = 50;
+    /// A table or a field of the schema.
+    pub const SCHEMA: u8 = 60;
 }
 
 /// The `sortText` of an item: fit, match quality, nearness, then the label

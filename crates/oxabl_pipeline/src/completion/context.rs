@@ -65,6 +65,8 @@ pub(crate) struct Found {
     /// The first byte of the statement window (the word start when the window
     /// is empty).
     pub window_start: u32,
+    /// The window holds tokens and reaches the start of the text.
+    pub reaches_start: bool,
     /// The index of the first token at or after the word.
     pub before: usize,
     pub context: Context,
@@ -94,10 +96,11 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
         end += 1;
     }
     let before = tokens.partition_point(|token| token.end <= start && token.kind != Kind::Eof);
-    let found = |context, window_start: u32| Found {
+    let found = |context, window_start: u32, reaches_start| Found {
         word_start: start as u32,
         word_end: end as u32,
         window_start,
+        reaches_start,
         before,
         context,
     };
@@ -120,7 +123,7 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
         };
         return Some(Found {
             word_start: open as u32 + 1,
-            ..found(context, open as u32)
+            ..found(context, open as u32, false)
         });
     }
     if inside_text(tokens, bytes, cursor) {
@@ -151,7 +154,7 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
                             Kind::Identifier | Kind::RightParen | Kind::ThisObject
                         ) =>
                     {
-                        Some(found(Context::Members, start as u32))
+                        Some(found(Context::Members, start as u32, false))
                     }
                     // `DO:` and its kind, or a colon on its own.
                     _ => None,
@@ -159,7 +162,7 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
             }
             b'.' => {
                 let joined = start >= 2 && is_word_byte(bytes[start - 2]);
-                return joined.then(|| found(Context::Qualified, start as u32));
+                return joined.then(|| found(Context::Qualified, start as u32, false));
             }
             _ => {}
         }
@@ -167,6 +170,7 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
 
     // The statement window.
     let mut window: Vec<usize> = Vec::new();
+    let mut boundary = false;
     let mut i = before;
     while i > 0 {
         i -= 1;
@@ -174,12 +178,15 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
         match token.kind {
             Kind::Comment => continue,
             Kind::Period if !joined_both(bytes, token) => {
+                boundary = true;
                 break;
             }
             Kind::Colon if followed_by_space(bytes, token.end) => {
+                boundary = true;
                 break;
             }
             Kind::Then | Kind::KwElse | Kind::Otherwise if !in_expression(tokens, i) => {
+                boundary = true;
                 break;
             }
             kind if is_directive(kind) => {
@@ -188,6 +195,7 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
                     .find('\n')
                     .map_or(text.len(), |at| token.end + at + 1);
                 window.retain(|at| tokens[*at].start >= line_end);
+                boundary = true;
                 break;
             }
             _ => window.push(i),
@@ -197,6 +205,7 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
     let window_start = window
         .first()
         .map_or(start as u32, |at| tokens[*at].start as u32);
+    let reaches_start = !boundary && !window.is_empty();
     if window.iter().any(|at| {
         matches!(
             tokens[*at].kind,
@@ -206,7 +215,7 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
         return None;
     }
     let context = classify(text, tokens, &window, start)?;
-    Some(found(context, window_start))
+    Some(found(context, window_start, reaches_start))
 }
 
 /// The row of the context table that the window ends with.

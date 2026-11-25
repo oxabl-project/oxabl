@@ -176,6 +176,11 @@ defined after the cursor fail.
 
 ## Step 4. Records and fields
 
+Step 3 already answers the "Records" rows with the records in scope and the
+tables of the schema (`names.rs`, `Wanted::Records`), because a statement
+start offers records too. Step 4 adds `records.rs` with the qualified names
+and the fields, and can move the record rows there.
+
 - `crates/oxabl_pipeline/src/completion/records.rs`: the "Records" collector
   (buffers, temp-tables, tables, metaschema tables only after `_`, the rows of
   the design), the "Qualified names and fields" collector (schema fields with
