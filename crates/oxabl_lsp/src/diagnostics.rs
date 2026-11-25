@@ -213,6 +213,7 @@ mod tests {
                 },
                 labels: Vec::new(),
                 help: None,
+                fixes: Vec::new(),
             },
             source: DiagnosticSource::Parse,
         }

@@ -46,6 +46,7 @@ mod printer;
 mod tree;
 
 pub use attach::{CommentMap, NodeComments, attach};
+pub use guard::{Tok, literal_tab_columns, token_stream, tokens_equal};
 
 use oxabl_common::{InternalPanic, SourceMap, catch_panic, panic_if_injected, panic_sites};
 use oxabl_parser::Program;

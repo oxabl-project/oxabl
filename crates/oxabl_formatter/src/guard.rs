@@ -29,10 +29,13 @@
 
 use oxabl_lexer::{Kind, Token, TokenValue, tokenize};
 
-struct Tok<'a> {
-    kind: Kind,
-    text: &'a str,
-    value: TokenValue,
+/// One non-trivia token of a comparison stream: its kind, its source text
+/// and its literal value.
+#[derive(Debug, Clone)]
+pub struct Tok<'a> {
+    pub kind: Kind,
+    pub text: &'a str,
+    pub value: TokenValue,
 }
 
 fn is_literal(kind: Kind) -> bool {
@@ -86,7 +89,7 @@ fn is_end_type_keyword(kind: Kind) -> bool {
 /// Column of every TAB byte inside a string literal, modulo 8 (the compiler's
 /// tab stop), in source order. Two layouts expand every such literal to the same
 /// value iff these sequences are equal.
-fn literal_tab_columns(src: &str, toks: &[Token]) -> Vec<u8> {
+pub fn literal_tab_columns(src: &str, toks: &[Token]) -> Vec<u8> {
     let bytes = src.as_bytes();
     let mut out = Vec::new();
     for t in toks.iter().filter(|t| t.kind == Kind::StringLiteral) {
@@ -109,7 +112,7 @@ fn literal_tab_columns(src: &str, toks: &[Token]) -> Vec<u8> {
 /// Build the comparison stream from `src` and a pre-computed token slice,
 /// dropping trivia. Borrows the tokens rather than owning them so the caller can
 /// share one tokenization of the input across the printer and this guard.
-fn stream_from<'a>(src: &'a str, toks: &[Token]) -> Vec<Tok<'a>> {
+pub fn token_stream<'a>(src: &'a str, toks: &[Token]) -> Vec<Tok<'a>> {
     toks.iter()
         .filter(|t| t.kind != Kind::Comment && t.kind != Kind::Eof)
         .map(|t| Tok {
@@ -120,7 +123,9 @@ fn stream_from<'a>(src: &'a str, toks: &[Token]) -> Vec<Tok<'a>> {
         .collect()
 }
 
-fn tokens_equal(a: &Tok, b: &Tok) -> bool {
+/// Whether two stream tokens are the same: keywords and punctuation by kind,
+/// literals by value, identifiers and references by text.
+pub fn tokens_equal(a: &Tok, b: &Tok) -> bool {
     if a.kind != b.kind {
         return false;
     }
@@ -155,8 +160,8 @@ pub(crate) fn preserves_with_input_tokens(
 ) -> bool {
     let candidate_tokens = tokenize(candidate);
     compare(
-        &stream_from(input, input_tokens),
-        &stream_from(candidate, &candidate_tokens),
+        &token_stream(input, input_tokens),
+        &token_stream(candidate, &candidate_tokens),
     ) && literal_tab_columns(input, input_tokens)
         == literal_tab_columns(candidate, &candidate_tokens)
 }

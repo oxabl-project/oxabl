@@ -67,6 +67,86 @@ pub struct Diagnostic {
     pub span: FileSpan,
     pub labels: Vec<Label>,
     pub help: Option<String>,
+    /// The fixes of this finding, preferred first. Empty for most findings.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub fixes: Vec<Fix>,
+}
+
+/// A set of text edits that removes a finding (`docs/design/quick-fixes.md`).
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fix {
+    /// The text a client shows, for example "Add NO-UNDO".
+    pub title: String,
+    /// The edits, sorted by start, not overlapping.
+    pub edits: Vec<Edit>,
+    /// Whether `--fix` applies this fix and the editor marks it preferred.
+    pub preferred: bool,
+    /// What the edits must keep true before a client can see the fix.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub conditions: Vec<FixCondition>,
+    /// A fix whose edits the pipeline makes. `edits` is empty until then; the
+    /// pipeline fills the edits or drops the fix, so no client sees one.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub deferred: Option<Deferred>,
+}
+
+impl Fix {
+    /// A fix with one edit and no conditions.
+    pub fn new(title: impl Into<String>, edit: Edit, preferred: bool) -> Self {
+        Fix {
+            title: title.into(),
+            edits: vec![edit],
+            preferred,
+            conditions: Vec::new(),
+            deferred: None,
+        }
+    }
+
+    /// Add a condition the edits must keep true.
+    pub fn with_condition(mut self, condition: FixCondition) -> Self {
+        self.conditions.push(condition);
+        self
+    }
+}
+
+/// A fix whose edits the pipeline makes, because the rule cannot see what they
+/// need.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Deferred {
+    /// Add `USING <the one class of this simple name>.`.
+    AddUsing { name: String },
+}
+
+/// One text edit of a fix: a byte range and its new text. An empty range is
+/// an insertion.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edit {
+    /// While the rule runs: a span of the expanded text. After the collector:
+    /// a span of the own text of one file.
+    pub span: FileSpan,
+    /// The new text. A rule writes keywords in upper case and a line break as
+    /// `\n`; the pipeline writes the project's keyword case and the file's
+    /// line break.
+    pub new_text: String,
+    /// The statement or phrase that the edit changes, in the same coordinates
+    /// as `span`.
+    pub statement: FileSpan,
+}
+
+/// A fact a fix needs beyond its own edits.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixCondition {
+    /// No edit lies in an `&IF` branch, taken or not.
+    OutsideConditionalBranch,
+    /// No text in a branch that was not taken holds this word
+    /// (case-insensitive, whole word), in the analysed file or an include.
+    NotInSkippedText(String),
+    /// The expansion lost no text.
+    WholeExpansion,
 }
 
 impl Diagnostic {
@@ -79,6 +159,7 @@ impl Diagnostic {
             span,
             labels: Vec::new(),
             help: None,
+            fixes: Vec::new(),
         }
     }
 
@@ -91,6 +172,7 @@ impl Diagnostic {
             span,
             labels: Vec::new(),
             help: None,
+            fixes: Vec::new(),
         }
     }
 
@@ -103,7 +185,14 @@ impl Diagnostic {
             span,
             labels: Vec::new(),
             help: None,
+            fixes: Vec::new(),
         }
+    }
+
+    /// Add a fix. A rule adds its preferred fix first.
+    pub fn with_fix(mut self, fix: Fix) -> Self {
+        self.fixes.push(fix);
+        self
     }
 
     /// Add a secondary label to this diagnostic.
