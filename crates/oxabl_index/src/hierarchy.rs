@@ -16,9 +16,12 @@
 //!
 //! Built-in Progress types have no source file. [`builtin_type`] says what
 //! oxabl knows about their names, kinds and supertypes, and
-//! [`builtin_may_declare`] says whether it knows their methods. These two
-//! functions are the only places that read the built-in tables: a catalog of
-//! built-in classes with members changes them and nothing else.
+//! [`builtin_may_declare`] says whether it knows their methods. Other code
+//! reads built-in types too: `ImportContext::resolve_class`, the built-in
+//! type at the cursor (`Navigation::builtin_type_at`), the implicit parent
+//! `Progress.Lang.Object` of the daemon, and `OBJECT_METHODS` here. A catalog
+//! of built-in classes with members changes all of them; see
+//! `docs/design/type-hierarchy.md`.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -824,7 +827,16 @@ pub fn overrides_below<'a>(
         let mut at = class;
         let mut walked: FxHashSet<(IndexName, IndexedFileId)> = FxHashSet::default();
         loop {
-            let declared = declared_in_node(at, source, &name, wanted, wanted_in);
+            let mut declared = declared_in_node(at, source, &name, wanted, wanted_in);
+            if implements && !std::ptr::eq(at, class) {
+                // An interface method is implemented by a public method only.
+                let members = methods_named(&at.members, &name);
+                declared.ordinals.retain(|ordinal| {
+                    members
+                        .get(*ordinal)
+                        .is_some_and(|member| member.access == oxabl_ast::AccessModifier::Public)
+                });
+            }
             if !declared.ordinals.is_empty() {
                 if !declared.certain {
                     gaps.push(uncertain_gap(&at.name, &name));
@@ -1111,8 +1123,9 @@ pub fn super_methods(
             interfaces.extend(ups);
         }
     }
-    if reaches_object && walk.found.is_empty() && builtin_may_declare("Progress.Lang.Object", &name)
-    {
+    // Only the parent chain decides: an interface match does not rule out an
+    // override of an `Object` method.
+    if reaches_object && builtin_may_declare("Progress.Lang.Object", &name) {
         walk.gaps.push(format!(
             "`{}` can override a method of `Progress.Lang.Object`, which oxabl does not know",
             name.as_written()

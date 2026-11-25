@@ -106,7 +106,9 @@ pub use config::{
     resolve_from_config_deferred,
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
-pub use hierarchy::{ClassDecl, MethodAt, MethodDecl, MethodsAt, TypeAt, class_decl};
+pub use hierarchy::{
+    ClassDecl, MethodAt, MethodDecl, MethodsAt, TypeAt, class_decl, class_name_span,
+};
 pub use hints::{HintKinds, InlayHint, InlayKind};
 pub use includers::{IncluderPools, PoolVerdict};
 pub use lint::{

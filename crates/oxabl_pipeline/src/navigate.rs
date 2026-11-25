@@ -31,8 +31,8 @@ use oxabl_index::calls::{
 use oxabl_index::search::{self, NameKind};
 use oxabl_schema::{FieldResolution, TableId};
 use oxabl_semantic::{
-    ClassResolution, ImportContext, IndexName, IndexedFileId, NullIndex, Resolution, ScopeKind,
-    Semantic, SiteTarget, SourceContext, SymbolFlags, SymbolId, SymbolKind, UnresolvedReason,
+    ClassResolution, ImportContext, IndexName, IndexedFileId, Resolution, ScopeKind, Semantic,
+    SiteTarget, SourceContext, SymbolFlags, SymbolId, SymbolKind, UnresolvedReason,
 };
 use oxabl_workspace::is_include_fragment;
 
@@ -534,7 +534,10 @@ impl Navigation<'_, '_> {
             };
             let written = self.text(span)?;
             let imports = ImportContext::from_statements(&self.parsed().program.statements);
-            return match imports.resolve_class(written, &NullIndex) {
+            let resolved = self
+                .run
+                .with_run_index(|index| imports.resolve_class(written, index));
+            return match resolved {
                 ClassResolution::Builtin(known) => Some((known.name, self.physical(span, &file)?)),
                 _ => None,
             };

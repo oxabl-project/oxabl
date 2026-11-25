@@ -73,6 +73,57 @@ pub fn class_decl(text: &str) -> Option<ClassDecl> {
     symbols.iter().find_map(class_of)
 }
 
+/// How much of a file's head `class_name_span` lexes.
+const HEAD_BYTES: usize = 4096;
+
+/// The span of the name `name` in the `CLASS`, `INTERFACE` or `ENUM`
+/// statement at the head of `text`, found by lexing the head only: it costs
+/// far less than the parse of [`class_decl`] and gives the same selection.
+/// `None` when the head does not show the name as that of the first such
+/// statement, with no preprocessor construct before it: use [`class_decl`]
+/// then.
+pub fn class_name_span(text: &str, name: &str) -> Option<Span> {
+    let mut end = text.len().min(HEAD_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &text[..end];
+    let tokens: Vec<_> = oxabl_lexer::tokenize(head)
+        .into_iter()
+        .filter(|token| token.kind != oxabl_lexer::Kind::Comment)
+        .collect();
+    let word = |at: usize| &head[tokens[at].start..tokens[at].end];
+    let at = tokens.iter().position(|token| {
+        matches!(
+            token.kind,
+            oxabl_lexer::Kind::Class | oxabl_lexer::Kind::Interface | oxabl_lexer::Kind::KwEnum
+        )
+    })?;
+    let starts_statement = match at.checked_sub(1) {
+        None => true,
+        Some(before) => {
+            tokens[before].kind == oxabl_lexer::Kind::Period
+                || ["final", "abstract", "serializable"]
+                    .iter()
+                    .any(|modifier| word(before).eq_ignore_ascii_case(modifier))
+        }
+    };
+    let hidden = (0..at).any(|before| word(before).starts_with(['&', '{']));
+    if !starts_statement || hidden {
+        return None;
+    }
+    let first = tokens.get(at + 1)?.start;
+    let written = head.get(first..first + name.len())?;
+    let continues = head[first + name.len()..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || "_-.$#%&".contains(c));
+    (written.eq_ignore_ascii_case(name) && !continues).then(|| Span {
+        start: first as u32,
+        end: (first + name.len()) as u32,
+    })
+}
+
 fn class_of(symbol: &OutlineSymbol) -> Option<ClassDecl> {
     matches!(
         symbol.kind,

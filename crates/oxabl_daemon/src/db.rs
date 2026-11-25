@@ -1679,6 +1679,9 @@ pub struct HierarchyUnit<'a> {
     /// One resolver for each search base: the base of a class file is its
     /// package root, so class files of different packages can differ.
     resolvers: RefCell<HashMap<Option<PathBuf>, Rc<LookupMemo<SnapshotIndex<'a>>>>>,
+    /// The search base of each class file asked, so a file is read and
+    /// lexed for it once in a request.
+    bases: RefCell<HashMap<PathBuf, Option<PathBuf>>>,
 }
 
 impl<'a> HierarchyUnit<'a> {
@@ -1689,10 +1692,17 @@ impl<'a> HierarchyUnit<'a> {
         let base = if config.pipeline.root_relative_include_paths.is_empty() {
             None
         } else {
-            let text = self.read(path);
-            config
-                .pipeline
-                .search_base(Some(path), text.as_deref().unwrap_or(""))
+            let known = self.bases.borrow().get(path).cloned();
+            known.unwrap_or_else(|| {
+                let text = self.read(path);
+                let base = config
+                    .pipeline
+                    .search_base(Some(path), text.as_deref().unwrap_or(""));
+                self.bases
+                    .borrow_mut()
+                    .insert(path.to_path_buf(), base.clone());
+                base
+            })
         };
         let mut resolvers = self.resolvers.borrow_mut();
         let found = resolvers.entry(base.clone()).or_insert_with(|| {
@@ -1823,6 +1833,7 @@ pub fn with_hierarchy<T>(
                 inner: Arc::clone(&config.fs),
             },
             resolvers: RefCell::default(),
+            bases: RefCell::default(),
         };
         answer(&unit)
     }))

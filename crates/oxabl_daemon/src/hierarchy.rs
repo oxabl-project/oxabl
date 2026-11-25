@@ -23,7 +23,9 @@ use oxabl_index::hierarchy::{
     builtin_type, methods_named, overridable, overrides_below, simple_name, super_methods,
     supertypes_of,
 };
-use oxabl_pipeline::{ClassDecl, Gap, MethodAt, MethodsAt, Span, Target, class_decl};
+use oxabl_pipeline::{
+    ClassDecl, Gap, MethodAt, MethodsAt, Span, Target, class_decl, class_name_span,
+};
 use oxabl_semantic::{ClassDescriptor, ClassKind, IndexName, MemberDescriptor};
 
 use crate::SessionHost;
@@ -34,6 +36,11 @@ use crate::session::canonical_path;
 /// The most class files the reverse index reads. A workspace with more is
 /// cut, and the answer says so.
 pub const MAX_CLASSES: usize = 20_000;
+
+/// The most classes a list answer places: the subtypes of a type, and the
+/// classes below it for go to implementation. A longer list is cut, and the
+/// answer says so.
+pub const MAX_LISTED: usize = 1_000;
 
 /// What a type hierarchy item stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,6 +284,13 @@ fn supertypes(
                         let mut named =
                             supertypes_of(&class.descriptor, &*unit.resolver(&key.path));
                         implicit_object(&class.descriptor, &mut named);
+                        if class.descriptor.kind == ClassKind::Enum {
+                            answer.gaps.push(Gap::of_referent(format!(
+                                "`{}` is an enum and extends a built-in enum type that oxabl \
+                                 does not list",
+                                key.name
+                            )));
+                        }
                         named
                     }
                     _ => {
@@ -502,7 +516,12 @@ fn subtypes(
                 no_parent.then_some((node, Relation::Inherits))
             }));
         }
+        if direct.len() > MAX_LISTED {
+            gaps.push(Gap::of_referent(too_many(&key.name, direct.len())));
+            direct.truncate(MAX_LISTED);
+        }
         for (node, relation) in direct {
+            check_cancel(cancel)?;
             match node_item(unit, &key.root, node, Some(relation), &mut answer.texts) {
                 Some(item) => answer.items.push(item),
                 None => answer.gaps.push(Gap::of_referent(unreadable(&node.path))),
@@ -576,6 +595,7 @@ fn implementations_below(
             .ok_or(ReferenceError::Cancelled)?;
         let mut visited: Vec<IndexName> = Vec::new();
         for subject in &subjects {
+            let name: String;
             let below: Vec<&ClassNode> = match subject {
                 Subject::Class(found) => {
                     let facts = unit.facts(&found.path);
@@ -583,31 +603,44 @@ fn implementations_below(
                         answer.gaps.push(Gap::of_referent(unreadable(&found.path)));
                         continue;
                     };
+                    name = class.descriptor.name.as_written().to_string();
                     visited.push(class.descriptor.name.clone());
                     index.all_subtypes(&SuperKey::Class(class.descriptor.name.clone(), facts.file))
                 }
-                Subject::Builtin(name) => {
+                Subject::Builtin(builtin) => {
                     answer.gaps.push(Gap::of_referent(format!(
                         "only the classes of the workspace are listed: the built-in types that \
-                         extend `{name}` are not"
+                         extend `{builtin}` are not"
                     )));
-                    visited.push(IndexName::new(name));
-                    if is_object(name) {
+                    name = (*builtin).to_string();
+                    visited.push(IndexName::new(builtin));
+                    if is_object(builtin) {
                         index.nodes().iter().collect()
                     } else {
-                        index.all_subtypes(&SuperKey::Builtin(IndexName::new(name)))
+                        index.all_subtypes(&SuperKey::Builtin(IndexName::new(builtin)))
                     }
                 }
             };
+            let classes = below
+                .iter()
+                .filter(|node| node.kind == ClassKind::Class)
+                .count();
+            let mut placed = 0;
             for node in below {
                 visited.push(node.name.clone());
                 if node.kind != ClassKind::Class {
                     continue;
                 }
-                match place_class(unit, &node.path, &mut answer.texts) {
-                    Some(decl) => answer.locations.push(Target {
+                if placed == MAX_LISTED {
+                    answer.gaps.push(Gap::of_referent(too_many(&name, classes)));
+                    break;
+                }
+                check_cancel(cancel)?;
+                placed += 1;
+                match place_name(unit, node, &mut answer.texts) {
+                    Some((_, selection)) => answer.locations.push(Target {
                         path: node.path.clone(),
-                        span: Some(decl.selection),
+                        span: Some(selection),
                     }),
                     None => answer.gaps.push(Gap::of_referent(unreadable(&node.path))),
                 }
@@ -676,6 +709,7 @@ fn implementations_of_method(
             .gaps
             .extend(below.gaps.into_iter().map(Gap::of_referent));
         for found in &below.found {
+            check_cancel(cancel)?;
             match method_spans(
                 unit,
                 &found.class.path,
@@ -1082,7 +1116,7 @@ fn node_item(
     relation: Option<Relation>,
     texts: &mut HashMap<PathBuf, Arc<str>>,
 ) -> Option<TypeItem> {
-    let decl = place_class(unit, &node.path, texts)?;
+    let (span, selection) = place_name(unit, node, texts)?;
     Some(TypeItem {
         key: TypeKey {
             root: root.to_path_buf(),
@@ -1094,9 +1128,39 @@ fn node_item(
         kind: item_kind(node.kind),
         detail: relation.map(|relation| relation.keyword().to_string()),
         path: node.path.clone(),
-        span: decl.span,
-        selection: decl.selection,
+        span,
+        selection,
     })
+}
+
+/// Where the class of a node of the index is written: the span of its name
+/// from the head of its file, which the index has already read, and for a
+/// header that the head does not show plainly, the whole declaration and name
+/// from the outline.
+fn place_name(
+    unit: &HierarchyUnit<'_>,
+    node: &ClassNode,
+    texts: &mut HashMap<PathBuf, Arc<str>>,
+) -> Option<(Span, Span)> {
+    let text = match texts.get(&node.path) {
+        Some(text) => Arc::clone(text),
+        None => {
+            let text = unit.read(&node.path)?;
+            texts.insert(node.path.clone(), Arc::clone(&text));
+            text
+        }
+    };
+    match class_name_span(&text, node.name.as_written()) {
+        Some(name) => Some((name, name)),
+        None => class_decl(&text).map(|decl| (decl.span, decl.selection)),
+    }
+}
+
+fn too_many(name: &str, found: usize) -> String {
+    format!(
+        "`{name}` has {found} classes below it and the answer lists the first {MAX_LISTED}: \
+         the list is cut"
+    )
 }
 
 fn sort_locations(locations: &mut Vec<Target>) {

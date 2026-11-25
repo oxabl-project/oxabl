@@ -34,8 +34,12 @@ is empty and says so.
 
 The name of a built-in type is found with the `USING` imports of the file that
 writes it (`Navigation::builtin_type_at`), when go to definition finds no
-class for it. A class of the workspace wins over a built-in type of the same
-name, as in the resolve pass.
+class for it. The name is resolved again as the resolve pass resolves it, with
+the real index of the unit (`ImportContext::resolve_class`), and counts only
+when that gives a built-in type. A class of the workspace wins over a built-in
+type of the same name. So a class that oxabl cannot use (its file does not
+parse, or two files can supply it) is never shown as the built-in type: the
+name has no item.
 
 **Each class header is resolved as its own file resolves it.** The search
 paths of a class file include its root-relative paths, resolved against the
@@ -115,8 +119,8 @@ An unresolved item has no supertypes and no subtypes. A built-in item lists
 the classes of the workspace that name it, and says that the built-in types
 that extend it are not listed.
 
-**The seam for built-in classes.** Two functions of `oxabl_index::hierarchy`
-read the built-in tables, and no other code does:
+**The seam for built-in classes.** The code that reads the tables of built-in
+types is in these places:
 
 - `builtin_type(name)` gives the name, the kind and the supertypes of a
   built-in type. Today it reads the table of documented types in
@@ -127,21 +131,33 @@ read the built-in tables, and no other code does:
   The super method walk and the walk up from an interface implementation call
   it, and add the gap "oxabl does not know its methods" only when it answers
   `true`.
+- `ImportContext::resolve_class` asks `builtin_class`, as the resolve pass
+  does, for each name of a header and for the name at the cursor.
+- `Navigation::builtin_type_at` keys on a type that the resolve pass leaves
+  `Unresolved`, and then asks `resolve_class` for a built-in answer.
+- `implicit_object`, `OBJECT` and `is_object` in `oxabl_daemon::hierarchy`
+  give a class with no parent the parent `Progress.Lang.Object`, and list the
+  classes with no parent as its subtypes.
+- `OBJECT_METHODS` in `oxabl_index::hierarchy` holds the four methods of
+  `Progress.Lang.Object`. It is a copy of what the resolve pass knows as a
+  name rule.
 
 A catalog of built-in classes that has members (the design of #154 offers one
-surface for classes of every origin) changes these two functions: the items,
-the reverse index and the gaps stay the same. The places that still name a
-built-in type are the walk that resolves a header
-(`ImportContext::resolve_class`, which asks `builtin_class` as the resolve pass
-does) and the `Progress.Lang.Object` rule for classes with no parent. They
-change with the catalog too.
+surface for classes of every origin) changes all of these places. In that
+design a sure built-in type resolves to a symbol and not to `Unresolved`, so
+`builtin_type_at` changes with the resolve pass. The items, the reverse index
+and the gaps stay the same. `builtin_may_declare` answers by name only: it
+cannot say that a method overrides a given built-in method. A super method
+that lists built-in methods is a later change of `super_methods`.
 
 ## Subtypes
 
 The direct subtypes are the classes whose header names the item. The editor
-asks again for each level. `textDocument/implementation` on a type lists the
+asks again for each level. A list is cut at `oxabl_daemon::hierarchy::MAX_LISTED`
+classes and the answer says so: the subtypes of `Progress.Lang.Object` are
+every class with no parent, and a workspace can have thousands. `textDocument/implementation` on a type lists the
 classes (not the interfaces) below it, through any number of headers: the
-classes that implement or extend it. A class that implements an interface
+classes that implement or extend it, also cut at `MAX_LISTED`. A class that implements an interface
 through its parent is listed.
 
 ## Methods
@@ -168,8 +184,9 @@ match is listed and says that it may be an overload.
   interface that declares nothing of the name still implements it through the
   public method it inherits (the compiler accepts this): the nearest
   declaration up its parent chain is listed, also when that class is not
-  below the interface. A parent that oxabl cannot resolve on that walk is a
-  gap. A class in an inheritance cycle is never listed as its own
+  below the interface. Only a public method counts on that walk, because the
+  compiler needs a public method for an interface method. A parent that oxabl
+  cannot resolve on that walk is a gap. A class in an inheritance cycle is never listed as its own
   implementation.
 - **Super method.** Two searches, because one method can override a class
   method and implement an interface method. The parent chain gives the nearest
@@ -189,8 +206,10 @@ match is listed and says that it may be an overload.
 
 `Progress.Lang.Object` has four methods (`Clone`, `Equals`, `GetClass`,
 `ToString`) that oxabl does not model. A super method search for one of these
-names that finds nothing, in a class whose parent chain ends there, says so, as
-the member lookup does (`docs/design/class-members.md`).
+names, in a class whose parent chain ends there without a match, says so, as
+the member lookup does (`docs/design/class-members.md`). An interface match
+does not remove this gap: the same method can also override the `Object`
+method.
 
 ### Why `oxabl/superMethod` and not a code action
 
@@ -216,9 +235,11 @@ fact of the workspace.
 
 | Gap | Kind |
 | --- | --- |
-| The workspace index is not ready, is out of date, or the pass ran again and is still behind (`OXABL-TEST-HOLD:daemon.hierarchy-index` and the unit tests of `class_files_of` pin the text) | This answer |
+| The workspace index is not ready, is out of date, or the pass ran again and is still behind (the unit tests of `class_files_of` pin the text; no stdio test reaches this state) | This answer |
 | No include path is configured, so the classes are not searched | This answer |
 | The index read only the first `MAX_CLASSES` class files | This answer |
+| The list has more than `MAX_LISTED` classes, so it is cut | This answer |
+| The class is an enum: its built-in parent is not listed | This answer |
 | A header names a supertype that did not resolve, spelled like a class of the answer (the last segment of the name is the same): it can extend that class | This answer |
 | A subtype declares the method with parameters oxabl cannot compare, or has members that an `{include}` or `&IF` hides | This answer |
 | A class file cannot be read, or the header of the item cannot be read | This answer or a standing gap |
@@ -278,6 +299,36 @@ The first reading of the facts is serial and costs about 0.12 ms for each class
 file of this size. It is checked for a cancel before each file, so a client can
 stop it.
 
+**Placing the items.** An item of a list is placed at the name of its class.
+The name span comes from the lexed head of the file (`class_name_span`), checked
+against the name that the index holds, and not from a parse of the whole file.
+A header that the head does not show plainly is placed with the outline. A list
+is cut at `MAX_LISTED` items and checks for a cancel before each one, so the
+subtypes of `Progress.Lang.Object` cost a fixed amount and not a cost in
+proportion to the number of classes.
+
+**Root-relative paths.** With `root_relative_include_paths`, each class file
+needs its search base, which comes from its package root. The daemon reads each
+file and lexes its head once for each request (`HierarchyUnit::resolver`), and
+`search_base` lexes only the head of the file, at most 4 KB, when the head shows
+the header.
+
+Measured with 3,000 class files of 186 lines, 2,002 of them with no parent, one
+run each, on the same 4-core machine, warm (the second request):
+
+| Request | Build | `include_paths` | `root_relative_include_paths` |
+| --- | --- | --- | --- |
+| Subtypes of a class with 999 direct subtypes | release | 0.09 s | 0.19 s |
+| Subtypes of a class with 999 direct subtypes | debug | 0.55 s | 1.38 s |
+| Subtypes of `Progress.Lang.Object`, cut at 1,000 | release | 0.09 s | 0.17 s |
+| Subtypes of `Progress.Lang.Object`, cut at 1,000 | debug | 0.57 s | 1.60 s |
+
+The first request, with the facts not yet read, takes 0.42 s (release) and
+3.7 s (debug) with `include_paths`, and 0.85 s and 5.2 s with root-relative
+paths. Before the cap and the head lexing, a debug build took 6.6 s for the
+same request with root-relative paths and 9.0 s for the subtypes of
+`Progress.Lang.Object`, with a 1.2 MB answer.
+
 ## Tests
 
 `crates/oxabl/tests/hierarchy_lsp.rs` runs the real `oxabl lsp` over stdio
@@ -296,7 +347,14 @@ method; a class-typed parameter that two files read as two classes; the open
 buffer of a parent; root-relative search paths; a built-in type at the cursor
 and in a header; a cursor on no method; a cycle; a class that is not saved
 yet; the implicit `Progress.Lang.Object`; a supertype name that go to
-definition and the hierarchy must read alike; and a cancel in the middle of
-the index (`OXABL-TEST-HOLD:daemon.hierarchy-index`). The
+definition and the hierarchy must read alike; a workspace class that oxabl cannot read, which is not
+taken for the built-in type of the same name; an interface match that does not
+hide an `Object` override; an enum; a protected method that does not implement
+an interface method; a list cut at `MAX_LISTED`; and a cancel in the middle of
+the index (`OXABL-TEST-HOLD:daemon.hierarchy-index`, after a request that waits
+for the workspace pass, so that the cancel cannot meet the pass).
+`crates/oxabl_pipeline/tests/class_name_span.rs` and
+`crates/oxabl_index/tests/search_base_head.rs` check the two readers of the head
+of a file against the readers of the whole file. The
 `vitest` tests of `clients/vscode/src/superMethodModel.test.ts` pin what the
 command shows.

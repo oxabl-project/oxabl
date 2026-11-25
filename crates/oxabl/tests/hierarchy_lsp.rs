@@ -1808,6 +1808,174 @@ fn a_supertype_name_means_what_go_to_definition_says_it_means() {
 }
 
 // ---------------------------------------------------------------------------
+// Round-two cases
+// ---------------------------------------------------------------------------
+
+const BROKEN_APP_ERROR: &str = "CLASS app.AppError INHERITS Progress.Lang.AppError:\n\
+    \x20   METHOD PUBLIC VOID (:\n\
+    END CLASS.\n";
+
+const OTHER_ERR: &str = "CLASS app.Other INHERITS Progress.Lang.AppError:\n\
+    END CLASS.\n";
+
+const SHADOW_USE: &str = "USING app.*.\n\
+    DEFINE VARIABLE e AS AppError NO-UNDO.\n";
+
+#[test]
+fn a_workspace_class_that_oxabl_cannot_read_is_not_taken_for_the_built_in_type() {
+    // `app.AppError` does not parse, so it is not known; the compiler would
+    // not pick `Progress.Lang.AppError` for the name either.
+    let ws = small(&[
+        ("app/AppError.cls", BROKEN_APP_ERROR),
+        ("app/Other.cls", OTHER_ERR),
+        ("use.p", SHADOW_USE),
+    ]);
+    let user = ws.path("use.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&user, SHADOW_USE);
+
+    let answer = ask(
+        &mut session,
+        "textDocument/prepareTypeHierarchy",
+        position(&user, SHADOW_USE, "AppError", 0),
+    );
+    assert_eq!(
+        answer.result.as_array().map_or(0, Vec::len),
+        0,
+        "no item: {}",
+        answer.result
+    );
+    let (found, _) = implementation(&mut session, &user, SHADOW_USE, "AppError", 0);
+    assert_eq!(found, Vec::<Value>::new());
+}
+
+const CT_IFACE: &str = "INTERFACE app.IT:\n\
+    \x20   METHOD PUBLIC CHARACTER ToString().\n\
+    END INTERFACE.\n";
+
+const CT_CLASS: &str = "CLASS app.CT IMPLEMENTS app.IT:\n\
+    \x20   METHOD PUBLIC OVERRIDE CHARACTER ToString():\n\
+    \x20       RETURN \"ct\".\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn an_interface_match_does_not_hide_an_override_of_an_object_method() {
+    let ws = small(&[("app/IT.cls", CT_IFACE), ("app/CT.cls", CT_CLASS)]);
+    let ct = ws.path("app/CT.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&ct, CT_CLASS);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&ct, CT_CLASS, "ToString()", 0),
+    );
+    assert_eq!(
+        answer.result["locations"],
+        json!([name_in(
+            &ws.path("app/IT.cls"),
+            CT_IFACE,
+            "CHARACTER ToString(",
+            "ToString"
+        )])
+    );
+    let gaps = answer.result["gaps"].as_array().expect("gaps");
+    assert!(
+        gaps.iter().any(|gap| gap
+            .as_str()
+            .unwrap_or_default()
+            .contains("Progress.Lang.Object")),
+        "{gaps:?}"
+    );
+}
+
+const ENUM_COLOR: &str = "ENUM app.Color:\n\
+    \x20   DEFINE ENUM Red Green.\n\
+    END ENUM.\n";
+
+#[test]
+fn an_enum_says_that_its_built_in_parent_is_not_listed() {
+    let ws = small(&[("app/Color.cls", ENUM_COLOR)]);
+    let color = ws.path("app/Color.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&color, ENUM_COLOR);
+    let item = prepared(&mut session, &color, ENUM_COLOR, "app.Color", 0);
+    let answer = supertypes(&mut session, &item);
+    let (marker, found) = without_marker(&answer.result);
+    assert_eq!(found, Vec::new(), "{}", answer.result);
+    let marker = marker.expect("an enum with no listed parent must say so");
+    assert!(marker.contains("is an enum"), "{marker}");
+}
+
+const PROTECTED_BASE: &str = "CLASS app.PBase:\n\
+    \x20   METHOD PROTECTED VOID M():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const PROTECTED_HEIR: &str = "CLASS app.PHeir INHERITS app.PBase IMPLEMENTS app.I:\n\
+    END CLASS.\n";
+
+#[test]
+fn a_method_that_is_not_public_does_not_implement_an_interface_method() {
+    let ws = small(&[
+        ("app/I.cls", IFACE_I),
+        ("app/Base.cls", CLASS_BASE),
+        ("app/C.cls", CLASS_C),
+        ("app/PBase.cls", PROTECTED_BASE),
+        ("app/PHeir.cls", PROTECTED_HEIR),
+    ]);
+    let i = ws.path("app/I.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&i, IFACE_I);
+    let (found, _) = implementation(&mut session, &i, IFACE_I, "M()", 0);
+    // `app.C` has the public `app.Base.M`; `app.PHeir` has only a protected
+    // one.
+    assert_eq!(
+        found,
+        vec![name_in(
+            &ws.path("app/Base.cls"),
+            CLASS_BASE,
+            "VOID M(",
+            "M"
+        )]
+    );
+}
+
+#[test]
+fn a_list_of_many_classes_is_cut_and_says_so() {
+    let base = "CLASS app.Base:\nEND CLASS.\n";
+    let names: Vec<String> = (0..1_100).map(|n| format!("app/B{n:04}.cls")).collect();
+    let texts: Vec<String> = (0..1_100)
+        .map(|n| format!("CLASS app.B{n:04} INHERITS app.Base:\nEND CLASS.\n"))
+        .collect();
+    let mut files: Vec<(&str, &str)> = vec![("oxabl.toml", CONFIG), ("app/Base.cls", base)];
+    files.extend(
+        names
+            .iter()
+            .map(String::as_str)
+            .zip(texts.iter().map(String::as_str)),
+    );
+    let ws = Workspace::new(&files);
+    let base_path = ws.path("app/Base.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&base_path, base);
+    let item = prepared(&mut session, &base_path, base, "app.Base", 0);
+
+    let answer = subtypes(&mut session, &item);
+    let (marker, found) = without_marker(&answer.result);
+    assert_eq!(found.len(), 1_000);
+    let marker = marker.expect("a cut list must be marked");
+    assert!(marker.contains("the list is cut"), "{marker}");
+
+    let (found, warnings) = implementation(&mut session, &base_path, base, "app.Base", 0);
+    assert_eq!(found.len(), 1_000);
+    assert!(
+        warnings.iter().any(|w| w.contains("the list is cut")),
+        "{warnings:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Cancel
 // ---------------------------------------------------------------------------
 
@@ -1831,6 +1999,11 @@ fn a_request_that_is_cancelled_stops_the_index_between_two_files() {
     let mut session = Session::start(&ws.root);
     session.open(&base_path, base);
     let item = prepared(&mut session, &base_path, base, "app.Base", 0);
+    // A references request waits for the workspace pass without reading the
+    // held files, so the cancel below meets the index and not the pass.
+    let mut params = position(&base_path, base, "app.Base", 0);
+    params["context"] = json!({"includeDeclaration": true});
+    ask(&mut session, "textDocument/references", params);
 
     let id = session.next_request_id();
     let started = std::time::Instant::now();

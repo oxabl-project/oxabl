@@ -53,6 +53,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use crate::declared::{Declared, declared_name};
 use oxabl_semantic::{IndexAnswer, IndexName};
 use oxabl_workspace::{FileSystem, is_root_file, normalize_run_extension};
 
@@ -121,9 +122,30 @@ pub fn search_base(file: &Path, source: &str) -> Option<PathBuf> {
     if !is_class_file(file) {
         return Some(dir);
     }
-    let declared = crate::declared::declared_name(source);
+    let declared = declared_in_head(source);
     let root = declared.name().and_then(|name| package_root(&dir, name));
     Some(root.unwrap_or(dir))
+}
+
+/// How much of a source `search_base` lexes first.
+const HEAD_BYTES: usize = 4096;
+
+/// [`declared_name`](crate::declared::declared_name) from the head of
+/// `source`, which is almost always enough, cut at the end of a line so that no
+/// name is cut in two. A head that shows no statement gives the answer for
+/// the whole source.
+fn declared_in_head(source: &str) -> Declared {
+    if source.len() > HEAD_BYTES
+        && let Some(cut) = source.as_bytes()[..HEAD_BYTES]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+    {
+        let declared = declared_name(&source[..cut]);
+        if declared != Declared::Absent {
+            return declared;
+        }
+    }
+    declared_name(source)
 }
 
 fn is_class_file(file: &Path) -> bool {
