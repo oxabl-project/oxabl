@@ -71,6 +71,7 @@ describe("inlayHintSettings", () => {
       index: true,
       scope: true,
       transactions: true,
+      parameters: true,
     });
   });
 
@@ -80,6 +81,17 @@ describe("inlayHintSettings", () => {
       index: false,
       scope: true,
       transactions: true,
+      parameters: true,
+    });
+  });
+
+  it("turns the parameter-name hints off on their own", () => {
+    expect(inlayHintSettings((kind) => (kind === "parameters" ? false : undefined))).toEqual({
+      locks: true,
+      index: true,
+      scope: true,
+      transactions: true,
+      parameters: false,
     });
   });
 

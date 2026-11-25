@@ -268,6 +268,21 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   Code's `editor.inlayHints.enabled`. The hints need the schema under
   `[workspace.schema]`. The index hint costs one analysis of the file for each
   version of its text, also in a project with no strict rule.
+- **Signature help and parameter-name hints.** Inside the parentheses of a
+  call, VS Code shows the parameters of the routine the call reaches and
+  marks the argument at the cursor. It works for a user function, a method of
+  a class of the workspace (through the type of the receiver), a constructor
+  (`NEW`, `SUPER(`, `THIS-OBJECT(`), a `RUN` of an internal or external
+  procedure, and the common built-in functions. A method with overloads shows
+  all of them, and the one that the arguments pick comes first; when the
+  arguments pick none, no overload is marked. A call that oxabl cannot
+  resolve shows no signature, and the methods of a built-in class show none
+  yet. The same calls get the name of the parameter as an inlay hint before
+  each argument (`OUTPUT` or `INPUT-OUTPUT` as well, when the parameter has
+  that mode and the call does not write it). A call gets hints only when
+  exactly one declaration is known, and an argument that is the name of its
+  parameter gets none. Turn the hints off with `oxabl.inlayHints.parameters`;
+  the signature help follows VS Code's `editor.parameterHints.enabled`.
 - **ABL Schema view.** The Explorer has an **ABL Schema** view of the `.df`
   files that `[workspace.schema]` in `oxabl.toml` names, with no database
   connection: each file is a database, with its tables, their fields and
@@ -514,6 +529,7 @@ itself once a day when you run it.
 | `oxabl.inlayHints.index` | `true` | Show the index oxabl expects a search to use. Needs no strict rule. |
 | `oxabl.inlayHints.scope` | `true` | Show where a raised buffer scope starts and ends. |
 | `oxabl.inlayHints.transactions` | `true` | Show where an implicit transaction starts and ends. |
+| `oxabl.inlayHints.parameters` | `true` | Show the name of the parameter before each argument of a call that resolves to one declaration. |
 
 Lint and style rules are not VS Code settings. They live in `oxabl.toml`.
 

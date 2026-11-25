@@ -20,8 +20,11 @@ export function shouldRestartForConfigChange(
   return RESTART_CONFIG_KEYS.some((key) => affectsConfiguration(key));
 }
 
-/** The inlay hint kinds, each turned off on its own by `oxabl.inlayHints.<kind>`. */
-export const INLAY_HINT_KINDS = ["locks", "index", "scope", "transactions"] as const;
+/**
+ * The inlay hint kinds, each turned off on its own by `oxabl.inlayHints.<kind>`.
+ * `parameters` is the parameter name before each argument of a call.
+ */
+export const INLAY_HINT_KINDS = ["locks", "index", "scope", "transactions", "parameters"] as const;
 
 export type InlayHintKind = (typeof INLAY_HINT_KINDS)[number];
 

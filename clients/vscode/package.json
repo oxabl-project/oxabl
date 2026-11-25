@@ -248,6 +248,11 @@
           "default": true,
           "markdownDescription": "Show where a transaction starts and ends when a block becomes a transaction only because it updates the database (`implicit-transaction`, TX001, and `procedure-wide-transaction`, TX002). Shown where `oxabl.toml` turns on the rule that reports the block."
         },
+        "oxabl.inlayHints.parameters": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show the name of the parameter before each argument of a call to a function, a method, a constructor or a procedure that oxabl resolves to one declaration. An argument that already is the name gets no hint, and a call whose overloads the arguments do not pick between gets none. Needs no strict rule; it shows when `diagnostics` is on in `[workspace.features]`."
+        },
         "oxabl.inactiveRegions.enable": {
           "type": "boolean",
           "default": true,
