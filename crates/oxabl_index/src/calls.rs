@@ -167,6 +167,11 @@ pub struct DynamicCalls {
     /// `GetProperty`, `GetConstructor`, `GetEvent`): a class and its members
     /// by a name that the call computes.
     pub reflection: bool,
+    /// The folded method names that the string form of a class event's
+    /// `Subscribe` or `Unsubscribe` names (`Subscribe(THIS-OBJECT, "Name")`).
+    pub subscribed: std::collections::BTreeSet<String>,
+    /// That form with a name that is computed: any method.
+    pub subscribed_computed: bool,
 }
 
 impl DynamicCalls {
@@ -182,6 +187,13 @@ impl DynamicCalls {
         self.dynamic_invoke |= other.dynamic_invoke;
         self.dynamic_property |= other.dynamic_property;
         self.reflection |= other.reflection;
+        self.subscribed.extend(other.subscribed.iter().cloned());
+        self.subscribed_computed |= other.subscribed_computed;
+    }
+
+    /// Whether a `Subscribe` of the workspace can run a method named `name`.
+    pub fn subscribes(&self, name: &str) -> bool {
+        self.subscribed_computed || self.subscribed.contains(&name.to_ascii_lowercase())
     }
 }
 
@@ -700,6 +712,41 @@ fn receiver(source: &str, toks: &[&Token], colon: usize, decls: &Decls) -> Recei
     }
 }
 
+/// The string form of `Subscribe`: its second argument, from the token at
+/// `from` (after the parenthesis), is the name of a method of the subscriber.
+/// The form with one argument names the method by symbol and is not read here.
+fn note_subscribe(source: &str, toks: &[&Token], from: usize, dynamic: &mut DynamicCalls) {
+    let mut depth = 0i32;
+    let mut arg = 0;
+    let mut second: Vec<&Token> = Vec::new();
+    for t in &toks[from.min(toks.len())..] {
+        match t.kind {
+            Kind::LeftParen => depth += 1,
+            Kind::RightParen if depth == 0 => break,
+            Kind::RightParen => depth -= 1,
+            Kind::Comma if depth == 0 => {
+                arg += 1;
+                if arg > 1 {
+                    break;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if arg == 1 {
+            second.push(t);
+        }
+    }
+    match second.as_slice() {
+        [] => {}
+        [only] if only.kind == Kind::StringLiteral => {
+            let name = text(source, only).trim_matches(['"', '\'']);
+            dynamic.subscribed.insert(name.to_ascii_lowercase());
+        }
+        _ => dynamic.subscribed_computed = true,
+    }
+}
+
 /// Whether `word` is a method of `Progress.Lang.Class` that gives a class or
 /// a member by a name that the caller computes.
 fn is_reflection(word: &str) -> bool {
@@ -765,6 +812,12 @@ fn expression_calls(
             let word = text(source, t);
             if next == Some(Kind::LeftParen) && prev == Some(Kind::Colon) && is_reflection(word) {
                 dynamic.reflection = true;
+            }
+            if next == Some(Kind::LeftParen)
+                && prev == Some(Kind::Colon)
+                && (same(word, "Subscribe") || same(word, "Unsubscribe"))
+            {
+                note_subscribe(source, &toks, i + 2, dynamic);
             }
             if word.len() >= "dynamic-prop".len()
                 && word.is_char_boundary("dynamic-prop".len())

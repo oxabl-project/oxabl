@@ -196,6 +196,7 @@ const DYNAMIC_NEW_SHORT: &str = "a DYNAMIC-NEW can create it";
 const DYNAMIC_INVOKE_CLASS_SHORT: &str = "a DYNAMIC-INVOKE can name it";
 const DYNAMIC_INVOKE_SHORT: &str = "a DYNAMIC-INVOKE can call it";
 const DYNAMIC_PROPERTY_SHORT: &str = "a DYNAMIC-PROPERTY can name it";
+const SUBSCRIBE_SHORT: &str = "a class event Subscribe can call it";
 const REFLECTION_SHORT: &str = "a class reflection call can reach it";
 const UNKNOWN_FILE_SHORT: &str = "a file oxabl cannot read can reach it";
 
@@ -463,6 +464,9 @@ impl Referent {
                     );
                 }
                 Reach::Member { class } => {
+                    if dynamic.subscribes(&self.name) {
+                        note(SUBSCRIBE_SHORT);
+                    }
                     if dynamic.dynamic_invoke {
                         note(DYNAMIC_INVOKE_SHORT);
                     }

@@ -246,6 +246,17 @@ fn dynamic_calls_are_read_by_kind() {
         assert!(found.reflection, "{call}");
         assert!(!found.dynamic_new && !found.run_value, "{call}");
     }
+    // The string form of a class event's Subscribe names a method.
+    let named = dynamic(
+        "p:Changed:Subscribe(THIS-OBJECT, \"OnChanged\").\np:Changed:UNSUBSCRIBE(THIS-OBJECT, \"Other\").\n",
+    );
+    assert!(named.subscribes("onchanged") && named.subscribes("OTHER"));
+    assert!(!named.subscribes("third") && !named.subscribed_computed);
+    let computed = dynamic("p:Changed:Subscribe(THIS-OBJECT, cName).\n");
+    assert!(computed.subscribed_computed && computed.subscribes("anything"));
+    // The symbolic form names no string.
+    assert!(dynamic("p:Changed:Subscribe(OnSym).\n").is_empty());
+
     // A method of another name is no reflection.
     assert!(dynamic("x = o:GetName().\nGetClass = 1.\n").is_empty());
 

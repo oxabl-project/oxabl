@@ -91,6 +91,7 @@ and keeps which of these exist:
 | Method, property | A `DYNAMIC-INVOKE` or a `CREATE CALL` | `a DYNAMIC-INVOKE can call it` |
 | Method, property | A `DYNAMIC-PROPERTY` | `a DYNAMIC-PROPERTY can name it` |
 | Class, interface, method, property | A `Progress.Lang.Class` call that gives a class or a member by a name (`GetClass`, `GetMethod`, `GetProperty`, `GetConstructor`, `GetEvent`) | `a class reflection call can reach it` |
+| Method, property | A `Subscribe` or `Unsubscribe` of a class event with the method name as a string (`Subscribe(THIS-OBJECT, "OnChanged")`): marks the method of that name, or every member when the name is computed | `a class event Subscribe can call it` |
 | Method | It overrides a method (`OVERRIDE`, also of a `Progress.Lang.Object` method such as `ToString`) or implements an interface method, or oxabl cannot tell (a supertype that it cannot resolve or read, an overload it cannot match) | `calls through a supertype are not counted` |
 | Property | Its class names a parent or an interface | `calls through a supertype are not counted` |
 | Program, class, interface, method, property | A file that oxabl cannot analyse, or that has an include that does not resolve or cannot be read, a parse error, or text that the preprocessor drops without the facts to decide (an `&IF` on `PROVERSION` with no `proversion` set) | `a file oxabl cannot read can reach it` |

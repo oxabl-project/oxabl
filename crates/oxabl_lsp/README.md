@@ -47,7 +47,7 @@ length of the find references answer without the declaration. A count that can b
 `12+ references · incomplete: <reason>`. A procedure or function always says that calls through a
 handle are not followed; a method that overrides or implements another says that calls through a supertype are not counted; a
 program, class or member says it when a `RUN VALUE`, `CREATE CALL`, `DYNAMIC-NEW`, `DYNAMIC-INVOKE`,
-`DYNAMIC-PROPERTY` or a class reflection call of the workspace, or a file that oxabl cannot read, can reach it. A declaration that oxabl does not resolve says
+`DYNAMIC-PROPERTY`, a class event `Subscribe` with a method name as a string, or a class reflection call of the workspace, or a file that oxabl cannot read, can reach it. A declaration that oxabl does not resolve says
 `references not known: ...` and shows no number. The command is `oxabl.showReferences`, with the file URI, the position of the name and the list
 of places that the count counts. The server keeps resolved titles for an unchanged session and sends a debounced `workspace/codeLens/refresh`
 after a save, a change on disk and an edit of another file. See `docs/design/reference-lenses.md`.

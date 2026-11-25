@@ -128,7 +128,7 @@ you also get, with no setup:
   follows. A method that overrides or implements another says that calls
   through a supertype are not counted. A program, class or member says it when a
   `RUN VALUE`, `CREATE CALL`, `DYNAMIC-NEW`, `DYNAMIC-INVOKE`,
-  `DYNAMIC-PROPERTY` or a class reflection call of the workspace can reach it,
+  `DYNAMIC-PROPERTY`, a class event `Subscribe` with a method name as a string, or a class reflection call of the workspace can reach it,
   or when a file of the workspace cannot be read. Without such a call the count is exact, but it does not count a caller
   from outside the workspace (an AppServer client, a `-p` program). The lenses ask
   again after a save, a change on disk and an edit of another file. A declaration that oxabl does

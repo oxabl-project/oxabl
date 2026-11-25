@@ -1529,3 +1529,56 @@ fn a_persistent_trigger_with_a_computed_program_makes_a_program_count_incomplete
         format!("0+ references · used by 0+ files · incomplete: {RUN_VALUE}")
     );
 }
+
+const SUBSCRIBE: &str = "a class event Subscribe can call it";
+
+const PUB: &str = "CLASS app.Pub:\n  DEFINE PUBLIC EVENT Changed SIGNATURE VOID ().\n\
+    \x20 METHOD PUBLIC VOID Fire():\n    Changed:Publish().\n  END METHOD.\nEND CLASS.\n";
+
+/// A class that subscribes to `app.Pub` with `subscribe`, and has the methods
+/// `OnChanged`, `OnSym` and `Quiet`.
+fn subscriber(subscribe: &str) -> String {
+    format!(
+        "CLASS app.Sub:\n  CONSTRUCTOR PUBLIC Sub(INPUT p AS app.Pub):\n    {subscribe}\n\
+         \x20 END CONSTRUCTOR.\n  METHOD PUBLIC VOID OnChanged():\n  END METHOD.\n\
+         \x20 METHOD PRIVATE VOID OnSym():\n  END METHOD.\n  METHOD PUBLIC VOID Quiet():\n\
+         \x20 END METHOD.\nEND CLASS.\n"
+    )
+}
+
+#[test]
+fn a_method_that_a_class_event_subscribes_by_name_never_has_an_exact_count() {
+    // The lenses of `Sub`: the class, then `OnChanged`, `OnSym` and `Quiet`.
+    let titles_for = |subscribe: &str| {
+        let sub = subscriber(subscribe);
+        let ws = Workspace::new(&[
+            ("oxabl.toml", CONFIG),
+            ("app/Pub.cls", PUB),
+            ("app/Sub.cls", &sub),
+        ]);
+        let mut session = start(&ws);
+        titles_of(&mut session, &ws, "app/Sub.cls", &sub)
+    };
+    // The string form names `OnChanged`: only that method is marked.
+    let titles = titles_for("p:Changed:Subscribe(THIS-OBJECT, \"OnChanged\").");
+    assert_eq!(titles[1], short(0, SUBSCRIBE), "{titles:?}");
+    assert_eq!(titles[3], exact(0), "{titles:?}");
+    // The name is computed: any method can run.
+    let titles = titles_for(
+        "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n    p:Changed:Subscribe(THIS-OBJECT, c).",
+    );
+    for method in &titles[1..] {
+        assert_eq!(method, &short(0, SUBSCRIBE), "{titles:?}");
+    }
+    // The symbolic form: the method is marked by its unresolved name.
+    let titles = titles_for("p:Changed:Subscribe(OnSym).");
+    assert!(
+        titles[2].starts_with("0+ references · incomplete:"),
+        "{titles:?}"
+    );
+    // No Subscribe: all exact.
+    let titles = titles_for("MESSAGE 1.");
+    for method in &titles[1..] {
+        assert_eq!(method, &exact(0), "{titles:?}");
+    }
+}
