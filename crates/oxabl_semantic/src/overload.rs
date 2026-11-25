@@ -33,6 +33,9 @@ pub(crate) enum Fit {
 pub(crate) struct Candidate<'a> {
     pub ret: Option<&'a ResolvedType>,
     pub params: Option<&'a [CallParam]>,
+    /// Whether the parameter modes are known. A built-in method's are not:
+    /// each of its positions is read as a position of mixed modes.
+    pub modes_known: bool,
 }
 
 /// The candidates of the overload set that `anchor` resolves to: its own
@@ -60,6 +63,7 @@ pub(crate) fn call_type(
         .map(|&id| Candidate {
             ret: symbols.get(id).data_type.as_ref(),
             params: symbols.method_params(id),
+            modes_known: !symbols.modes_unknown(id),
         })
         .collect();
     pick(&candidates, args, ClassLattice::new(symbols))
@@ -83,7 +87,7 @@ fn fitted<'a>(
                 .zip(args)
                 .enumerate()
                 .map(|(at, (param, arg))| {
-                    if mixed.get(at).copied().unwrap_or(false) {
+                    if !candidate.modes_known || mixed.get(at).copied().unwrap_or(false) {
                         fit_any_mode(param, arg, lattice)
                     } else {
                         fit(param, arg, lattice)
@@ -198,7 +202,14 @@ fn mixed_modes<'c, 'a: 'c>(
 ) -> SmallVec<[bool; 8]> {
     let mut seen: SmallVec<[Option<ParamMode>; 8]> = SmallVec::from_elem(None, count);
     let mut mixed: SmallVec<[bool; 8]> = SmallVec::from_elem(false, count);
-    for params in candidates.filter_map(|c| c.params) {
+    for candidate in candidates {
+        let Some(params) = candidate.params else {
+            continue;
+        };
+        // A candidate whose modes are not known may have any mode anywhere.
+        if !candidate.modes_known {
+            mixed.iter_mut().for_each(|m| *m = true);
+        }
         for (at, param) in params.iter().enumerate() {
             match seen[at] {
                 None => seen[at] = Some(param.mode),
@@ -276,6 +287,8 @@ fn never_converts(
     use ResolvedType::{Array, Class, Primitive};
     match (arg, param) {
         (Class(_), Primitive(_)) | (Primitive(_), Class(_)) => true,
+        // Two arrays never convert when their elements never convert.
+        (Array { element: a, .. }, Array { element: p, .. }) => never_converts(a, p, lattice, mode),
         (Array { .. }, Primitive(_) | Class(_)) | (Primitive(_) | Class(_), Array { .. }) => true,
         (Class(a), Class(p)) => {
             // The class that must widen to the other one.
@@ -337,6 +350,7 @@ mod tests {
             .map(|(ret, params)| Candidate {
                 ret: Some(ret),
                 params: Some(params),
+                modes_known: true,
             })
             .collect();
         pick(&candidates, args, ClassLattice::new(&table))
@@ -526,10 +540,12 @@ mod tests {
             Candidate {
                 ret: Some(&int),
                 params: Some(&params),
+                modes_known: true,
             },
             Candidate {
                 ret: Some(&chr),
                 params: None,
+                modes_known: true,
             },
         ];
         assert_eq!(
@@ -544,9 +560,62 @@ mod tests {
         let candidates = [Candidate {
             ret: None,
             params: Some(&[]),
+            modes_known: true,
         }];
         assert_eq!(
             pick(&candidates, &[], ClassLattice::new(&table)),
+            ResolvedType::Unknown
+        );
+    }
+
+    #[test]
+    fn two_arrays_never_convert_when_their_elements_never_convert() {
+        let table = SymbolTable::new();
+        let lattice = ClassLattice::new(&table);
+        let array = |t: PrimitiveTy| ResolvedType::Array {
+            element: Box::new(prim(t)),
+            extent: None,
+        };
+        assert_eq!(
+            fit(&input(array(Date)), &array(Character), lattice),
+            Fit::No
+        );
+        assert_eq!(
+            fit(&input(array(Longchar)), &array(Character), lattice),
+            Fit::Maybe
+        );
+    }
+
+    #[test]
+    fn a_candidate_whose_modes_are_not_known_is_never_picked_by_its_fit() {
+        let table = SymbolTable::new();
+        let (int, date) = (prim(Integer), prim(Date));
+        let longchar = [input(prim(Longchar))];
+        let character = [input(prim(Character))];
+        let candidates = |modes_known| {
+            [
+                Candidate {
+                    ret: Some(&int),
+                    params: Some(&longchar[..]),
+                    modes_known,
+                },
+                Candidate {
+                    ret: Some(&date),
+                    params: Some(&character[..]),
+                    modes_known,
+                },
+            ]
+        };
+        let lattice = ClassLattice::new(&table);
+        // With known INPUT modes, the exact fit picks `DATE` (rule 3).
+        assert_eq!(
+            pick(&candidates(true), &[prim(Character)], lattice),
+            prim(Date)
+        );
+        // With modes that are not known, both fits are `Maybe`, and the
+        // candidates do not agree.
+        assert_eq!(
+            pick(&candidates(false), &[prim(Character)], lattice),
             ResolvedType::Unknown
         );
     }

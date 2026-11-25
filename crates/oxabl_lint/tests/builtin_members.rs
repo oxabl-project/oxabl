@@ -94,3 +94,27 @@ fn a_workspace_enum_value_has_the_methods_of_progress_lang_enum() {
         ["type mismatch: cannot assign `INT64` to `LOGICAL`"]
     );
 }
+
+#[test]
+fn the_pick_over_built_in_overloads() {
+    let source = "DEFINE VARIABLE oErr AS Progress.Lang.AppError NO-UNDO.\n\
+                  DEFINE VARIABLE oJson AS Progress.Json.ObjectModel.JsonObject NO-UNDO.\n\
+                  DEFINE VARIABLE oStr AS OpenEdge.Core.String NO-UNDO.\n\
+                  DEFINE VARIABLE cArr AS CHARACTER EXTENT 2 NO-UNDO.\n\
+                  DEFINE VARIABLE lc AS LONGCHAR NO-UNDO.\n\
+                  DEFINE VARIABLE d AS DATE NO-UNDO.\n\
+                  d = oErr:GetMessage(1).\n\
+                  d = oJson:Write(lc, TRUE).\n\
+                  d = OpenEdge.Core.String:Join(cArr, \",\").\n\
+                  d = oStr:CompareTo(oStr).\n\
+                  MESSAGE oErr oJson oStr cArr[1] lc d.\n";
+    assert_eq!(
+        messages(&lint0004_without_index(source)),
+        [
+            "type mismatch: cannot assign `CHARACTER` to `DATE`",
+            "type mismatch: cannot assign `LOGICAL` to `DATE`",
+            "type mismatch: cannot assign `LONGCHAR` to `DATE`",
+            "type mismatch: cannot assign `INTEGER` to `DATE`",
+        ]
+    );
+}
