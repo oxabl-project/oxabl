@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use oxabl_pipeline::completion::{
     CompletionBase, CompletionList, CompletionRequest, complete, keyword_documentation,
-    symbol_documentation, wants_base,
+    path_documentation, symbol_documentation, table_documentation, wants_base,
 };
 use oxabl_pipeline::{Expansion, LintPipeline, Navigation, NavigationModel};
 use oxabl_workspace::FileSystem;
@@ -212,13 +212,15 @@ pub fn compute_completion(
             keyword_case: query.config.pipeline.style.keyword_case,
             snippets: query.snippets,
             trigger: query.trigger,
+            config: &query.config.pipeline,
+            files: &*query.config.fs,
         }
     }
-    // A position that asks for nothing needs no base: a `.` that ends a
-    // statement must not start an analysis.
+    // A position that reads no analysis needs no base: a `.` that ends a
+    // statement must not start one.
     if !wants_base(&request(query, &query.path)) {
         return Ok(CompletionAnswer {
-            list: None,
+            list: complete(&request(query, &query.path), None),
             base: 0,
         });
     }
@@ -485,16 +487,24 @@ fn with_base<T>(base: &Base, answer: impl FnOnce(&Navigation<'_, '_>) -> T) -> O
 }
 
 /// What `completionItem/resolve` asks for one item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveQuery {
     /// An entry of the keyword documentation index.
     Doc(u16),
     /// A symbol of base `base`.
     Symbol { base: u64, symbol: u32 },
+    /// A table of the schema of base `base`, by its raw id.
+    Table { base: u64, table: u32 },
+    /// Field `field` of a table of the schema of base `base`.
+    Field { base: u64, table: u32, field: u32 },
+    /// A program or include file, as the item writes it, under an include
+    /// path entry.
+    Path { path: String, entry: PathBuf },
 }
 
 /// The Markdown documentation of an item. `None` when there is none, or the
-/// base of a symbol is no longer kept. Unguarded: run it inside a panic guard.
+/// base of a symbol or a table is no longer kept. Unguarded: run it inside a
+/// panic guard.
 pub fn compute_resolve(bases: &Bases, query: ResolveQuery) -> Option<String> {
     match query {
         ResolveQuery::Doc(doc) => keyword_documentation(doc),
@@ -502,6 +512,15 @@ pub fn compute_resolve(bases: &Bases, query: ResolveQuery) -> Option<String> {
             let base = bases.by_id(base)?;
             with_base(&base, |navigation| symbol_documentation(navigation, symbol)).flatten()
         }
+        ResolveQuery::Table { base, table } => {
+            let base = bases.by_id(base)?;
+            table_documentation(&base.config.pipeline.schema, table, None)
+        }
+        ResolveQuery::Field { base, table, field } => {
+            let base = bases.by_id(base)?;
+            table_documentation(&base.config.pipeline.schema, table, Some(field))
+        }
+        ResolveQuery::Path { path, entry } => Some(path_documentation(&path, &entry)),
     }
 }
 

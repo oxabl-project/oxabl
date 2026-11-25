@@ -3,8 +3,10 @@
 //! cursor in the base and collects the items; it never analyses when a base
 //! exists. `fresh` reads a base of the current text; `stale` reads a base of
 //! the text before a one-line insert in the middle of the file. The contexts
-//! are a statement start inside a procedure, the words after `DEFINE`, and an
-//! expression (the names in scope and the built-in functions).
+//! are a statement start inside a procedure, the words after `DEFINE`, an
+//! expression (the names in scope and the built-in functions), the records
+//! after `FIND FIRST`, the fields after `Customer.`, the fields and values of a
+//! `WHERE`, and the procedures and programs after `RUN`.
 
 use std::fmt::Write;
 use std::hint::black_box;
@@ -68,15 +70,26 @@ const CONTEXTS: &[(&str, &str)] = &[
     ("statement", "    FI"),
     ("define", "    DEFINE "),
     ("expression", "    total = c"),
+    ("find_first", "    FIND FIRST "),
+    ("qualified", "    DISPLAY Customer."),
+    (
+        "where",
+        "    FOR EACH Customer NO-LOCK WHERE Customer.CustNum > ",
+    ),
+    ("run", "    RUN "),
 ];
 
 fn bench_completion(c: &mut Criterion) {
     let source = procedure_file();
     assert!(source.lines().count() >= 10_000);
-    let fs = InMemoryFileSystem::new();
+    let mut fs = InMemoryFileSystem::new();
+    for k in 0..40 {
+        fs.insert(PathBuf::from(format!("/ws/prog{k}.p")), "MESSAGE 1.");
+    }
     let config = PipelineConfig {
         schema: schema_from_df(SCHEMA),
         schema_loaded: true,
+        include_paths: vec![PathBuf::from("/ws")],
         ..PipelineConfig::default()
     };
     let path = PathBuf::from("/ws/big.p");
@@ -107,6 +120,8 @@ fn bench_completion(c: &mut Criterion) {
             keyword_case: KeywordCase::Uppercase,
             snippets: true,
             trigger: None,
+            config: &config,
+            files: &fs,
         };
         let ask = |request: &CompletionRequest<'_>, base_text: &str| {
             let navigation = handle

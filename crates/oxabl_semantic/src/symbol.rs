@@ -1161,7 +1161,7 @@ impl SymbolTable {
     /// The record buffer-like symbol `sym` reads from: its schema table, the
     /// temp-table itself, or the temp-table a buffer was defined for. `None`
     /// for a buffer whose table is unknown.
-    pub(crate) fn record_source(&self, sym: SymbolId) -> Option<RecordSource> {
+    pub fn record_source(&self, sym: SymbolId) -> Option<RecordSource> {
         let symbol = self.get(sym);
         if let Some(tid) = symbol.table_id {
             return Some(RecordSource::Schema(tid));
@@ -1184,7 +1184,7 @@ impl SymbolTable {
     }
 
     /// The scope holding `temp_table`'s own `FIELD` symbols.
-    pub(crate) fn temp_table_fields(&self, temp_table: SymbolId) -> Option<ScopeId> {
+    pub fn temp_table_fields(&self, temp_table: SymbolId) -> Option<ScopeId> {
         self.records.as_deref()?.fields.get(&temp_table).copied()
     }
 

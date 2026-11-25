@@ -15,17 +15,15 @@ pub(crate) enum Quality {
 
 /// Whether `label` matches `word`, and how well. The characters of the word
 /// appear in the label in the same order, without case, and the first one is
-/// the first character of the label. A label that matches a word also matches
-/// each prefix of it, so a client can filter the list itself.
+/// the first character of the label or of a part of it. A label that matches
+/// a word also matches each prefix of it, so a client can filter the list
+/// itself.
 pub(crate) fn quality(word: &str, label: &str) -> Option<Quality> {
     if word.is_empty() {
         return Some(Quality::Other);
     }
     let w = word.as_bytes();
     let l = label.as_bytes();
-    if !l.first()?.eq_ignore_ascii_case(&w[0]) {
-        return None;
-    }
     if l.len() >= w.len() && l[..w.len()].eq_ignore_ascii_case(w) {
         return Some(if l.len() == w.len() {
             Quality::Same
@@ -33,32 +31,36 @@ pub(crate) fn quality(word: &str, label: &str) -> Option<Quality> {
             Quality::Prefix
         });
     }
-    // A subsequence, with the first character at the start.
-    let mut at = 1;
-    for c in &w[1..] {
-        let found = l[at..].iter().position(|b| b.eq_ignore_ascii_case(c))?;
+    let starts = part_starts(l);
+    starts
+        .iter()
+        .filter(|start| l[**start].eq_ignore_ascii_case(&w[0]))
+        .filter_map(|start| match_from(l, &starts, &w[1..], start + 1))
+        .min()
+}
+
+/// How the rest of a word, `rest`, matches `label` after byte `from`: on the
+/// starts of parts, or anywhere in order. `None` when it does not.
+fn match_from(label: &[u8], starts: &[usize], rest: &[u8], from: usize) -> Option<Quality> {
+    let mut at = from;
+    for c in rest {
+        let found = label
+            .get(at..)?
+            .iter()
+            .position(|b| b.eq_ignore_ascii_case(c))?;
         at += found + 1;
     }
-    let starts = part_starts(l);
-    let mut at = 1;
-    let mut on_starts = true;
-    for c in &w[1..] {
+    let mut at = from;
+    for c in rest {
         match starts
             .iter()
-            .find(|start| **start >= at && l[**start].eq_ignore_ascii_case(c))
+            .find(|start| **start >= at && label[**start].eq_ignore_ascii_case(c))
         {
             Some(start) => at = start + 1,
-            None => {
-                on_starts = false;
-                break;
-            }
+            None => return Some(Quality::Other),
         }
     }
-    Some(if on_starts {
-        Quality::PartStarts
-    } else {
-        Quality::Other
-    })
+    Some(Quality::PartStarts)
 }
 
 /// The byte index of the first character of each part of `label`: after `-`,
@@ -85,14 +87,29 @@ pub(crate) mod nearness {
     pub const KEYWORD: u8 = 50;
     /// A table or a field of the schema.
     pub const SCHEMA: u8 = 60;
+    /// An include file (`.i`) after `{`.
+    pub const INCLUDE: u8 = 70;
+    /// A directory, a program, or another file.
+    pub const PATH: u8 = 71;
+    /// A file after `{` that is not an include file.
+    pub const OTHER_FILE: u8 = 72;
+}
+
+/// How well an item fits the place, best first.
+pub(crate) mod fit {
+    /// Its type fits the type the place expects.
+    pub const FITS: u8 = 0;
+    /// A field of a record the statement names, in its `WHERE`.
+    pub const STATEMENT_FIELD: u8 = 1;
+    pub const OTHER: u8 = 2;
 }
 
 /// The `sortText` of an item: fit, match quality, nearness, then the label
 /// without case.
-pub(crate) fn sort_text(fits: bool, quality: Quality, nearness: u8, label: &str) -> String {
+pub(crate) fn sort_text(fit: u8, quality: Quality, nearness: u8, label: &str) -> String {
     format!(
         "{}{}{:02}{}",
-        if fits { 0 } else { 1 },
+        fit.min(9),
         quality as u8,
         nearness.min(99),
         label.to_ascii_lowercase()
@@ -104,13 +121,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_first_character_must_start_the_label() {
+    fn the_first_character_must_start_the_label_or_a_part() {
         assert_eq!(quality("cusnu", "CustNum"), Some(Quality::Other));
         assert_eq!(quality("cn", "CustNum"), Some(Quality::PartStarts));
-        assert_eq!(quality("nu", "CustNum"), None);
+        assert_eq!(quality("nu", "CustNum"), Some(Quality::Other));
+        assert_eq!(quality("cu", "bCust"), Some(Quality::Other));
+        assert_eq!(quality("us", "CustNum"), None);
         assert_eq!(quality("fi", "FIND"), Some(Quality::Prefix));
         assert_eq!(quality("find", "FIND"), Some(Quality::Same));
         assert_eq!(quality("fi", "DEFINE"), None);
+        assert_eq!(quality("ne", "NO-ERROR"), Some(Quality::PartStarts));
+        assert_eq!(quality("er", "NO-ERROR"), Some(Quality::Other));
         assert_eq!(quality("", "DEFINE"), Some(Quality::Other));
         assert_eq!(quality("dtz", "DATETIME-TZ"), Some(Quality::Other));
         assert_eq!(quality("dt", "DATETIME-TZ"), Some(Quality::PartStarts));
@@ -123,6 +144,7 @@ mod tests {
             ("cusnu", "CustNum"),
             ("dtz", "DATETIME-TZ"),
             ("vari", "VARIABLE"),
+            ("cust", "bCust"),
         ] {
             for end in 1..=word.len() {
                 assert!(
