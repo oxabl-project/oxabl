@@ -186,7 +186,9 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   gives them, and no other line changes. A selection that starts or ends inside
   a statement takes the whole statement. When the file does not format, or the
   selection holds no statement, nothing changes and the `oxabl` output channel
-  says why. This also applies to format on paste. Format on type is not
+  says why. This also applies to format on paste. The later lines of a comment
+  that follows code on a line keep their indentation, unless the selection
+  includes the block around it. Format on type is not
   offered.
 - **Live diagnostics.** Lint and semantic diagnostics show in the Problems
   panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`

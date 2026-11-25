@@ -248,6 +248,10 @@ fn allowed(src: &str, program: &Program, ranges: &[Range<usize>]) -> Vec<Range<u
     let mut out = Vec::new();
     for r in ranges {
         let (rs, re) = if r.start >= r.end {
+            // A point after the final line feed is on no line with content.
+            if r.start >= src.len() && src.ends_with('\n') {
+                continue;
+            }
             let l = line_of(r.start);
             (starts[l], starts.get(l + 1).copied().unwrap_or(src.len()))
         } else {
@@ -353,11 +357,34 @@ fn all_statements(program: &Program) -> Vec<&Statement> {
     out
 }
 
-/// The line of `text` that holds byte `at`, without its line ending.
-fn line_at(text: &str, at: usize) -> &str {
-    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
-    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
-    text[start..end].trim_end_matches('\r')
+/// The lines of `text` from the first line of `stmt` to its last, as
+/// `(content, tail_of_outside_comment)` for each line with content. Blank lines
+/// are left out: the formatter may delete or clamp them. A tail line of a
+/// comment that starts before the statement is flagged: its indent follows the
+/// comment's anchor, which is outside the statement.
+fn content_lines<'a>(
+    text: &'a str,
+    stmt: &Statement,
+    comments: &[(usize, usize)],
+) -> Vec<(&'a str, bool)> {
+    let first = text[..stmt.span.start as usize]
+        .rfind('\n')
+        .map_or(0, |i| i + 1);
+    let last = (stmt.span.end as usize).saturating_sub(1).max(first);
+    let end = text[last..].find('\n').map_or(text.len(), |i| last + i);
+    let mut out = Vec::new();
+    let mut at = first;
+    for line in text[first..end].split('\n') {
+        let outside = comments
+            .iter()
+            .any(|&(cs, ce)| cs < stmt.span.start as usize && cs < at && at < ce);
+        let line = line.trim_end_matches('\r');
+        if !line.trim().is_empty() {
+            out.push((line, outside));
+        }
+        at += line.len() + 1 + usize::from(text.as_bytes().get(at + line.len()) == Some(&b'\r'));
+    }
+    out
 }
 
 /// The indexes (in [`all_statements`] order) of statements a range surely
@@ -432,6 +459,15 @@ fn check_style(style_name: &str, style: &StyleGuide) {
                 );
                 continue;
             };
+            // An empty range after the final line feed touches nothing.
+            if text.ends_with('\n') {
+                let at = text.len();
+                assert_eq!(
+                    format_ranges(&text, &program, &style, &one(at..at)),
+                    Err(RangeBail::NoStatement),
+                    "{label}: an empty range at the end of the file"
+                );
+            }
             let expected_program = parse(&expected);
             let expected_statements = all_statements(&expected_program);
             let statements = all_statements(&program);
@@ -440,6 +476,11 @@ fn check_style(style_name: &str, style: &StyleGuide) {
                 .iter()
                 .filter(|t| !matches!(t.kind, Kind::Comment | Kind::Eof))
                 .map(|t| (t.start, t.end))
+                .collect();
+            let comment_spans: Vec<(usize, usize)> = program
+                .comments
+                .iter()
+                .map(|c| (c.span.start as usize, c.span.end as usize))
                 .collect();
             for ranges in ranges_for(&text) {
                 let edits = match format_ranges(&text, &program, &style, &ranges) {
@@ -473,21 +514,31 @@ fn check_style(style_name: &str, style: &StyleGuide) {
                     );
                 }
 
-                // Completeness: the first line of every statement the range
-                // overlaps is the whole-file line. Such a line takes no indent
-                // from another line, so it never keeps its old one.
+                // Completeness: every content line of every statement the range
+                // touches is the whole-file line, but for the tail of a comment
+                // that starts before the statement.
                 let wanted = overlapped(&text, &code, &statements, &ranges);
                 if !wanted.is_empty() {
                     let applied_program = parse(&applied);
                     let applied_statements = all_statements(&applied_program);
                     assert_eq!(applied_statements.len(), statements.len(), "{label}");
                     for i in wanted {
-                        let got = line_at(&applied, applied_statements[i].span.start as usize);
-                        let want = line_at(&expected, expected_statements[i].span.start as usize);
+                        let before = content_lines(&text, statements[i], &comment_spans);
+                        let got = content_lines(&applied, applied_statements[i], &[]);
+                        let want = content_lines(&expected, expected_statements[i], &[]);
                         assert_eq!(
-                            got, want,
-                            "{label} {ranges:?}: the first line of a touched statement is not formatted\nedits: {edits:?}"
+                            (got.len(), want.len()),
+                            (before.len(), before.len()),
+                            "{label} {ranges:?}: the content lines of a statement changed"
                         );
+                        for ((got, want), (_, outside)) in got.iter().zip(&want).zip(&before) {
+                            if !outside {
+                                assert_eq!(
+                                    got.0, want.0,
+                                    "{label} {ranges:?}: a line of a touched statement is not formatted\nedits: {edits:?}"
+                                );
+                            }
+                        }
                         starts_checked += 1;
                     }
                 }

@@ -120,8 +120,9 @@ One request parses and formats the whole file, lexes it again for the selection
 rules and for the guard, and walks the tree once. A file of 10,000 lines takes
 about 15 to 20 ms in a release build, about the same as format document. The
 cost does not depend on the size of the selection. Each range looks only at the
-top-level statements and comments near it, and the server removes duplicate
-ranges, so 2,000 ranges also take about 20 ms.
+top-level statements and comments near it. The server removes duplicate ranges
+and ranges inside another range, so 2,000 nested ranges also take about 20 ms.
+The cost of distinct ranges that overlap only in part grows with their number.
 
 ## Format on type
 

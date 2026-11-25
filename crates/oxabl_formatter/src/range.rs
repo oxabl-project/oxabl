@@ -149,10 +149,21 @@ pub fn format_ranges(
     let mut ranges: Vec<(usize, usize)> = ranges.iter().map(|r| (r.start, r.end)).collect();
     ranges.sort_unstable();
     ranges.dedup();
+    // A range inside an earlier, longer one touches a subset of what that one
+    // touches. An empty range stands for its whole line, so it stays.
+    let mut reach_end = 0;
+    ranges.retain(|&(start, end)| {
+        let inside = start < end && end <= reach_end;
+        if start < end {
+            reach_end = reach_end.max(end);
+        }
+        !inside
+    });
     for (range_start, range_end) in ranges {
         let (mut start, mut end) = (range_start.min(source.len()), range_end.min(source.len()));
         if start >= end {
-            if source.is_empty() {
+            // A point after the final line feed is on an empty last line.
+            if source.is_empty() || (start >= source.len() && source.ends_with('\n')) {
                 continue;
             }
             // The line, or on a blank line the point itself: it touches only

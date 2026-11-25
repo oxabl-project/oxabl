@@ -300,6 +300,15 @@ fn a_selection_with_no_statement_gives_no_edits_and_a_log_line() {
 }
 
 #[test]
+fn an_empty_range_after_the_final_line_feed_touches_nothing() {
+    // The cursor is on the empty last line, as after a deleted last line.
+    let text = "PROCEDURE p:\nMESSAGE \"a\".\nEND PROCEDURE.\n";
+    let (_dir, mut session, path) = open(text);
+    let answer = format_range(&mut session, &path, range((3, 0), (3, 0)));
+    assert_logged_only(&answer, "no statement");
+}
+
+#[test]
 fn an_internal_failure_gives_no_edits_and_a_popup() {
     // A test build panics in the formatter on this marker.
     let text = "/* OXABL-TEST-PANIC:format */\nDO:\nMESSAGE \"a\".\nEND.\n";
