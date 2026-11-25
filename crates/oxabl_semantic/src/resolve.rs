@@ -1861,8 +1861,8 @@ struct CrossFileState {
     builtin_ancestors: FxHashSet<SymbolId>,
     /// The built-in levels of each walked class, in walk order.
     builtin_levels: FxHashMap<SymbolId, SmallVec<[&'static BuiltinClass; 4]>>,
-    /// The `(class, name)` pairs already read from [`Self::builtin_levels`].
-    builtin_probed: FxHashSet<(SymbolId, OxablAtom)>,
+    /// The class [`ResolveWalker::walk_member_surface`] walked last.
+    last_walked: Option<SymbolId>,
 }
 
 /// The atom carried by the resolution recorded for a run-time-computed `RUN`
@@ -2082,6 +2082,15 @@ fn same_param_type(shape: &MemberParamShape, ty: BuiltinType) -> bool {
         }
         _ => false,
     }
+}
+
+/// Push `key` unless `list` has it; whether it was pushed.
+fn push_new(list: &mut Vec<LevelKey>, key: LevelKey) -> bool {
+    if list.contains(&key) {
+        return false;
+    }
+    list.push(key);
+    true
 }
 
 /// A level of a member surface: a workspace class, or a built-in type.
@@ -7447,10 +7456,20 @@ impl<'a> ResolveWalker<'a> {
     ///
     /// Only the *first* call per class does any of this; the rest is a set probe.
     fn walk_member_surface(&mut self, class: SymbolId) {
-        if !self.cross_file_mut().inherited_walked.insert(class) {
+        // The last class walked is checked first: one class asks many times.
+        if self
+            .cross_file()
+            .is_some_and(|cf| cf.last_walked == Some(class))
+        {
             return;
         }
-        let mut visited: FxHashSet<LevelKey> = FxHashSet::default();
+        let cf = self.cross_file_mut();
+        cf.last_walked = Some(class);
+        if !cf.inherited_walked.insert(class) {
+            return;
+        }
+        // Chains are short: a list is cheaper than a hash set.
+        let mut visited: Vec<LevelKey> = Vec::new();
         // Each level with whether it is on the `INHERITS` chain.
         let mut queue: VecDeque<(Level, bool)> = VecDeque::new();
         // Cloned out rather than borrowed: the `None` arm below reads
@@ -7466,7 +7485,7 @@ impl<'a> ResolveWalker<'a> {
             queue.push_back((Level::Workspace(name), true));
             MemberRole::Outside
         } else {
-            visited.insert(LevelKey::Name(IndexName::new(
+            visited.push(LevelKey::Name(IndexName::new(
                 &self.symbols.get(class).name,
             )));
             let authored: Vec<(SupertypeRef, bool)> = self
@@ -7492,9 +7511,9 @@ impl<'a> ResolveWalker<'a> {
         };
 
         // The names on the `INHERITS` chain: one that comes back is a cycle.
-        let mut chain: FxHashSet<LevelKey> = FxHashSet::default();
+        let mut chain: Vec<LevelKey> = Vec::new();
         if role == MemberRole::Subclass {
-            chain.insert(LevelKey::Name(IndexName::new(
+            chain.push(LevelKey::Name(IndexName::new(
                 &self.symbols.get(class).name,
             )));
         }
@@ -7513,10 +7532,10 @@ impl<'a> ResolveWalker<'a> {
                 break;
             };
             let key = level.key();
-            if superclass && !chain.insert(level.key()) {
+            if superclass && !push_new(&mut chain, level.key()) {
                 self.cross_file_mut().cyclic_classes.insert(class);
             }
-            if !visited.insert(key) {
+            if !push_new(&mut visited, key) {
                 continue;
             }
             match level {
@@ -7572,15 +7591,21 @@ impl<'a> ResolveWalker<'a> {
         let Some(cf) = self.cross_file.as_mut() else {
             return;
         };
-        let Some(count) = cf.builtin_levels.get(&class).map(|l| l.len()) else {
+        let Some(levels) = cf.builtin_levels.get(&class) else {
             return;
         };
-        // Each name is read from the catalog once per class.
-        if !cf.builtin_probed.insert((class, atom.clone())) {
+        // A binary search per level: most names are in none, and then nothing
+        // is hashed. A name added twice adds nothing (`add_inherited` keeps
+        // one candidate per parameter list).
+        let has = |b: &&'static BuiltinClass| {
+            !b.members_named(atom).is_empty() || b.enum_member(atom).is_some()
+        };
+        if !levels.iter().any(has) {
             return;
         }
-        for at in 0..count {
-            let builtin = self.cross_file().expect("probed above").builtin_levels[&class][at];
+        let found: SmallVec<[&'static BuiltinClass; 4]> =
+            levels.iter().copied().filter(|b| has(b)).collect();
+        for builtin in found {
             for (kind, namespace, member) in builtin_level_members_named(builtin, atom) {
                 let candidate = InheritedCandidate {
                     flags: SymbolFlags::PUBLIC | flag_if(member.is_static(), SymbolFlags::STATIC),

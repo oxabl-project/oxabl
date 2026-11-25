@@ -311,6 +311,18 @@ impl BuiltinClass {
     /// The members named `name` (any case), overloads in catalog order.
     pub fn members_named(&self, name: &str) -> &'static [BuiltinMember] {
         let all = self.members();
+        // Most types have few members: a scan that compares lengths first
+        // rejects a name in a few instructions.
+        if all.len() <= 16 {
+            let Some(start) = all.iter().position(|m| m.name.eq_ignore_ascii_case(name)) else {
+                return &[];
+            };
+            let len = all[start..]
+                .iter()
+                .take_while(|m| m.name.eq_ignore_ascii_case(name))
+                .count();
+            return &all[start..start + len];
+        }
         let start = all.partition_point(|m| compare_name_folded(m.name, name).is_lt());
         let end = all.partition_point(|m| compare_name_folded(m.name, name).is_le());
         &all[start..end]
@@ -324,6 +336,9 @@ impl BuiltinClass {
 
     /// The enum member named `name` (any case), as documented.
     pub fn enum_member(&self, name: &str) -> Option<&'static str> {
+        if self.enum_members == self.enum_members_end {
+            return None;
+        }
         self.enum_members()
             .iter()
             .copied()
