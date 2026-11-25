@@ -71,7 +71,7 @@ pub use symbol::{
 };
 pub use types::{AblType, PrimitiveTy, ResolvedType};
 
-use oxabl_ast::Span;
+use oxabl_ast::{NodeId, Span};
 use oxabl_common::{Diagnostic, FileId, LintSeverityMap, VirtualSpan};
 use oxabl_schema::{Schema, SchemaRevision};
 
@@ -164,6 +164,10 @@ pub struct AnalysisContext<'a> {
     /// Whether the resolve pass records where each name is written
     /// ([`SymbolTable::sites`]), for editor navigation. Off by default.
     pub record_sites: bool,
+    /// The block statements whose `END` the end of the text replaced
+    /// (`oxabl_parser::Program::unclosed_blocks`). Their scopes run to the end
+    /// of the text.
+    pub unclosed_blocks: &'a [NodeId],
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -190,7 +194,14 @@ impl<'a> AnalysisContext<'a> {
             elided: &[],
             elided_includes: &[],
             record_sites: false,
+            unclosed_blocks: &[],
         }
+    }
+
+    /// Record the blocks that the end of the text closed (builder-style).
+    pub fn with_unclosed_blocks(mut self, blocks: &'a [NodeId]) -> Self {
+        self.unclosed_blocks = blocks;
+        self
     }
 
     /// Record navigation sites (builder-style); see

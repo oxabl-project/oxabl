@@ -74,6 +74,15 @@ pub trait FileSystem: Send + Sync {
         self.find_ignoring_case(dir, relative)
     }
 
+    /// The entries of directory `dir`, in no fixed order. `None` when this
+    /// filesystem cannot list it: the directory is missing or unreadable, or
+    /// the filesystem cannot list at all (the default). `None` never means an
+    /// empty directory.
+    fn list_dir(&self, dir: &Path) -> Option<Vec<DirEntry>> {
+        let _ = dir;
+        None
+    }
+
     /// Whether [`observe`](Self::observe) records what runs under it. `false`
     /// by default.
     fn observes(&self) -> bool {
@@ -111,6 +120,30 @@ pub trait FileSystem: Send + Sync {
     }
 }
 
+/// One entry of a directory that [`FileSystem::list_dir`] listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEntry {
+    /// The entry's file name, as the disk spells it.
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// The entries of `dir` on disk. A name that is not valid UTF-8 is left out.
+fn list_dir_on_disk(dir: &Path) -> Option<Vec<DirEntry>> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    Some(
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                // A symbolic link counts as what it points to.
+                let is_dir = std::fs::metadata(entry.path()).ok()?.is_dir();
+                Some(DirEntry { name, is_dir })
+            })
+            .collect(),
+    )
+}
+
 /// Components of `relative` as text; `None` when one is not a plain name.
 fn plain_components(relative: &Path) -> Option<Vec<&std::ffi::OsStr>> {
     relative
@@ -139,6 +172,10 @@ impl FileSystem for RealFileSystem {
 
     fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
         find_on_disk_ignoring_case(dir, relative, None)
+    }
+
+    fn list_dir(&self, dir: &Path) -> Option<Vec<DirEntry>> {
+        list_dir_on_disk(dir)
     }
 
     fn find_ignoring_case_listing(
@@ -181,6 +218,10 @@ impl FileSystem for EncodedFileSystem {
 
     fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
         find_on_disk_ignoring_case(dir, relative, None)
+    }
+
+    fn list_dir(&self, dir: &Path) -> Option<Vec<DirEntry>> {
+        list_dir_on_disk(dir)
     }
 
     fn find_ignoring_case_listing(
@@ -270,6 +311,27 @@ impl FileSystem for InMemoryFileSystem {
         self.files.contains_key(path)
     }
 
+    /// The files and directories below `dir` that the map holds. `None` when
+    /// no file lies below `dir`.
+    fn list_dir(&self, dir: &Path) -> Option<Vec<DirEntry>> {
+        let mut entries: Vec<DirEntry> = Vec::new();
+        for path in self.files.keys() {
+            let Ok(below) = path.strip_prefix(dir) else {
+                continue;
+            };
+            let mut parts = below.components();
+            let Some(std::path::Component::Normal(first)) = parts.next() else {
+                continue;
+            };
+            let name = first.to_string_lossy().into_owned();
+            let is_dir = parts.next().is_some();
+            if !entries.iter().any(|e| e.name == name && e.is_dir == is_dir) {
+                entries.push(DirEntry { name, is_dir });
+            }
+        }
+        (!entries.is_empty()).then_some(entries)
+    }
+
     fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
         self.find_ignoring_case_listing(dir, relative, &mut Vec::new())
     }
@@ -328,6 +390,56 @@ impl FileSystem for InMemoryFileSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sorted(mut entries: Vec<DirEntry>) -> Vec<(String, bool)> {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries.into_iter().map(|e| (e.name, e.is_dir)).collect()
+    }
+
+    #[test]
+    fn list_dir_lists_files_and_directories_in_memory() {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert(PathBuf::from("/w/top.p"), "");
+        fs.insert(PathBuf::from("/w/util/helper.p"), "");
+        fs.insert(PathBuf::from("/w/util/deep/x.i"), "");
+        assert_eq!(
+            sorted(fs.list_dir(Path::new("/w")).unwrap()),
+            vec![("top.p".to_string(), false), ("util".to_string(), true)]
+        );
+        assert_eq!(
+            sorted(fs.list_dir(Path::new("/w/util")).unwrap()),
+            vec![("deep".to_string(), true), ("helper.p".to_string(), false)]
+        );
+        assert_eq!(fs.list_dir(Path::new("/w/missing")), None);
+    }
+
+    #[test]
+    fn list_dir_lists_files_and_directories_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("top.p"), "").unwrap();
+        std::fs::create_dir(dir.path().join("util")).unwrap();
+        std::fs::create_dir(dir.path().join("empty")).unwrap();
+        let expected = vec![
+            ("empty".to_string(), true),
+            ("top.p".to_string(), false),
+            ("util".to_string(), true),
+        ];
+        assert_eq!(
+            sorted(RealFileSystem.list_dir(dir.path()).unwrap()),
+            expected
+        );
+        let encoded = EncodedFileSystem::default();
+        assert_eq!(sorted(encoded.list_dir(dir.path()).unwrap()), expected);
+        let cached = crate::CachedFileSystem::new(RealFileSystem);
+        assert_eq!(sorted(cached.list_dir(dir.path()).unwrap()), expected);
+        assert_eq!(
+            RealFileSystem.list_dir(&dir.path().join("empty")),
+            Some(Vec::new()),
+            "an empty directory is listed"
+        );
+        assert_eq!(RealFileSystem.list_dir(&dir.path().join("missing")), None);
+        assert_eq!(RealFileSystem.list_dir(&dir.path().join("top.p")), None);
+    }
 
     #[test]
     fn real_file_system_is_strict_utf8_and_drops_a_bom() {

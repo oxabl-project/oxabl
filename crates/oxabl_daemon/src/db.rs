@@ -1983,6 +1983,11 @@ impl FileSystem for OverlayFs {
     fn exists(&self, path: &Path) -> bool {
         self.overlay.contains_key(path) || self.inner.exists(path)
     }
+
+    /// The disk's entries: an open buffer is a file on disk or not at all.
+    fn list_dir(&self, dir: &Path) -> Option<Vec<oxabl_workspace::DirEntry>> {
+        self.inner.list_dir(dir)
+    }
 }
 
 /// The include file paths a buffer transitively depends on, for the watcher's

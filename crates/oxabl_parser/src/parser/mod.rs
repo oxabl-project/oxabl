@@ -117,6 +117,9 @@ pub struct Program {
     /// with no comments. Never read by semantic/lint/analyze passes. See
     /// `docs/design/ast-invariants.md` §13.
     pub comments: Vec<Comment>,
+    /// The block statements that the end of the text closed: their `END` is
+    /// missing. Their body runs to the end of the text.
+    pub unclosed_blocks: Vec<NodeId>,
 }
 
 impl Program {
@@ -227,6 +230,12 @@ pub struct Parser<'a> {
     /// `failed_creates`, so a test sees what the memo hides.
     #[cfg(test)]
     reread_failed_creates: bool,
+    /// Blocks whose `END` the end of the text replaced, not yet given to the
+    /// statement that owns them. The next statements built at the end of the
+    /// text take them, innermost first.
+    unclosed_pending: u32,
+    /// See [`Program::unclosed_blocks`].
+    unclosed_blocks: Vec<NodeId>,
 }
 
 impl<'a> Parser<'a> {
@@ -259,6 +268,8 @@ impl<'a> Parser<'a> {
             failed_creates: HashMap::new(),
             #[cfg(test)]
             reread_failed_creates: false,
+            unclosed_pending: 0,
+            unclosed_blocks: Vec::new(),
         }
     }
 
@@ -356,6 +367,10 @@ impl<'a> Parser<'a> {
         // The span defaults to DUMMY here; the `parse_statement` funnel
         // overwrites it with the real full-extent span (KTD2).
         let mut stmt = Statement::with_id(self.node_ids.alloc(), Span::DUMMY, kind);
+        if self.unclosed_pending > 0 && self.at_end() {
+            self.unclosed_pending -= 1;
+            self.unclosed_blocks.push(stmt.id);
+        }
         if !self.dropped.is_empty() {
             stmt.skipped_tail = Some(Box::new(SkippedTail {
                 names: Vec::new(),
@@ -517,6 +532,7 @@ impl<'a> Parser<'a> {
             statements,
             errors: std::mem::take(&mut self.errors),
             comments,
+            unclosed_blocks: std::mem::take(&mut self.unclosed_blocks),
         }
     }
 
@@ -706,6 +722,15 @@ impl<'a> Parser<'a> {
                 message: end_msg.to_string(),
                 span: self.current_span(),
             });
+            self.note_unclosed();
+        }
+    }
+
+    /// Record that the end of the text closed the block being parsed. The
+    /// block's statement, built next, takes the mark.
+    pub(crate) fn note_unclosed(&mut self) {
+        if self.at_end() {
+            self.unclosed_pending += 1;
         }
     }
 

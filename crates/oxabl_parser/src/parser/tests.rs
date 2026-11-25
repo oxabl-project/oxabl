@@ -15504,3 +15504,74 @@ fn a_using_read_in_a_rewound_create_does_not_reach_an_earlier_create() {
         program.statements[1].kind
     );
 }
+
+// ---- blocks the end of the text closes -------------------------------------
+
+/// The kinds of the statements in `unclosed_blocks`, outermost last.
+fn unclosed_kinds(source: &str) -> Vec<&'static str> {
+    fn walk(stmts: &[Statement], ids: &[NodeId], out: &mut Vec<(NodeId, &'static str)>) {
+        for stmt in stmts {
+            let (name, body): (&'static str, &[Statement]) = match &stmt.kind {
+                StatementKind::Procedure { body, .. } => ("PROCEDURE", body),
+                StatementKind::Function { body, .. } => ("FUNCTION", body),
+                StatementKind::Class { body, .. } => ("CLASS", body),
+                StatementKind::Method { body, .. } => ("METHOD", body),
+                StatementKind::Do { body, .. } => ("DO", body),
+                _ => ("other", &[]),
+            };
+            if ids.contains(&stmt.id) {
+                out.push((stmt.id, name));
+            }
+            walk(body, ids, out);
+        }
+    }
+    let program = parse_with_errors(source);
+    let mut found = Vec::new();
+    walk(&program.statements, &program.unclosed_blocks, &mut found);
+    assert_eq!(
+        found.len(),
+        program.unclosed_blocks.len(),
+        "every unclosed block is a block statement of the tree"
+    );
+    let mut kinds: Vec<_> = program
+        .unclosed_blocks
+        .iter()
+        .map(|id| found.iter().find(|(f, _)| f == id).unwrap().1)
+        .collect();
+    kinds.reverse();
+    kinds
+}
+
+#[test]
+fn a_procedure_without_end_at_the_end_of_the_text_is_unclosed() {
+    assert_eq!(
+        unclosed_kinds("PROCEDURE p:\n    DEFINE VARIABLE x AS INTEGER NO-UNDO.\n    "),
+        vec!["PROCEDURE"]
+    );
+}
+
+#[test]
+fn a_closed_procedure_is_not_unclosed() {
+    assert!(unclosed_kinds("PROCEDURE p:\n    MESSAGE 1.\nEND PROCEDURE.\n").is_empty());
+    assert!(unclosed_kinds("PROCEDURE p:\nEND.").is_empty());
+}
+
+#[test]
+fn nested_unclosed_blocks_are_each_unclosed() {
+    assert_eq!(
+        unclosed_kinds("PROCEDURE p:\n    DO:\n        MESSAGE 1.\n"),
+        vec!["PROCEDURE", "DO"]
+    );
+    assert_eq!(
+        unclosed_kinds("PROCEDURE p:\n    DO:\n        MESSAGE 1.\n    END.\n"),
+        vec!["PROCEDURE"]
+    );
+    assert_eq!(
+        unclosed_kinds("CLASS c:\n    METHOD PUBLIC VOID m():\n        x = 1.\n"),
+        vec!["CLASS", "METHOD"]
+    );
+    assert_eq!(
+        unclosed_kinds("FUNCTION f RETURNS INTEGER ():\n    RETURN 1.\n"),
+        vec!["FUNCTION"]
+    );
+}

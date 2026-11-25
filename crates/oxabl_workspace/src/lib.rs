@@ -31,7 +31,9 @@ pub use encrypted::{
     include_note as encrypted_include_note, is_encrypted, looks_encrypted, may_be_encrypted,
     read_head as read_encrypted_head,
 };
-pub use file_system::{EncodedFileSystem, FileSystem, InMemoryFileSystem, RealFileSystem};
+pub use file_system::{
+    DirEntry, EncodedFileSystem, FileSystem, InMemoryFileSystem, RealFileSystem,
+};
 pub use include_paths::{
     DLC_SOURCES_VARIABLE, IncludeEntry, dlc_sources, find_workspace_root, include_entry,
 };

@@ -334,6 +334,17 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// The text a scope that `stmt` owns covers: the statement, or up to the
+    /// end of the text when the end of the text closed it.
+    fn scope_span(&self, stmt: &Statement) -> VirtualSpan {
+        let end = if self.ctx.unclosed_blocks.contains(&stmt.id) {
+            u32::MAX
+        } else {
+            stmt.span.end
+        };
+        VirtualSpan::new(stmt.span.start, end)
+    }
+
     /// Whether `prior` and a declaration made now sit in different arms of one
     /// `&IF`. Only one such arm is compiled, so they cannot collide.
     fn in_exclusive_arm(&self, prior: SymbolId) -> bool {
@@ -427,7 +438,9 @@ impl<'a> Walker<'a> {
                     flags,
                     None,
                 );
-                let event_scope = self.tree.push(ScopeKind::Method, scope, stmt.id);
+                let event_scope =
+                    self.tree
+                        .push(ScopeKind::Method, scope, stmt.id, self.scope_span(stmt));
                 let _ = sym;
                 self.walk_block(parameters, event_scope);
             }
@@ -458,18 +471,33 @@ impl<'a> Walker<'a> {
                     None,
                 );
                 if let Some(body) = get_body {
-                    let getter = self.tree.push(ScopeKind::PropertyGet, scope, stmt.id);
+                    let getter = self.tree.push(
+                        ScopeKind::PropertyGet,
+                        scope,
+                        stmt.id,
+                        self.scope_span(stmt),
+                    );
                     self.walk_block(body, getter);
                 }
                 if let Some(body) = set_body {
-                    let setter = self.tree.push(ScopeKind::PropertySet, scope, stmt.id);
+                    let setter = self.tree.push(
+                        ScopeKind::PropertySet,
+                        scope,
+                        stmt.id,
+                        self.scope_span(stmt),
+                    );
                     // SET (INPUT pv AS TYPE) parameters bind in the setter scope
                     // so the body can reference them (#58 item B).
                     self.walk_block(set_parameters, setter);
                     self.walk_block(body, setter);
                 } else if !set_parameters.is_empty() {
                     // Defensive: params without a body still get a scope.
-                    let setter = self.tree.push(ScopeKind::PropertySet, scope, stmt.id);
+                    let setter = self.tree.push(
+                        ScopeKind::PropertySet,
+                        scope,
+                        stmt.id,
+                        self.scope_span(stmt),
+                    );
                     self.walk_block(set_parameters, setter);
                 }
             }
@@ -574,7 +602,9 @@ impl<'a> Walker<'a> {
                     },
                     None,
                 );
-                let proc_scope = self.tree.push(ScopeKind::Procedure, scope, stmt.id);
+                let proc_scope =
+                    self.tree
+                        .push(ScopeKind::Procedure, scope, stmt.id, self.scope_span(stmt));
                 self.walk_block(body, proc_scope);
             }
             StatementKind::Function {
@@ -602,7 +632,9 @@ impl<'a> Walker<'a> {
                     flags,
                     None,
                 );
-                let fn_scope = self.tree.push(ScopeKind::Function, scope, stmt.id);
+                let fn_scope =
+                    self.tree
+                        .push(ScopeKind::Function, scope, stmt.id, self.scope_span(stmt));
                 self.walk_block(body, fn_scope);
             }
 
@@ -637,7 +669,9 @@ impl<'a> Walker<'a> {
                     inherits.as_ref().map(supertype_ref),
                     implements.iter().map(supertype_ref).collect(),
                 );
-                let class_scope = self.tree.push(ScopeKind::Class, scope, stmt.id);
+                let class_scope =
+                    self.tree
+                        .push(ScopeKind::Class, scope, stmt.id, self.scope_span(stmt));
                 self.walk_block(body, class_scope);
             }
             StatementKind::Interface {
@@ -659,7 +693,9 @@ impl<'a> Walker<'a> {
                 // go to `implements` — see [`Supertypes`] for why that loses
                 // nothing.
                 self.record_supertypes(sym, None, inherits.iter().map(supertype_ref).collect());
-                let iface_scope = self.tree.push(ScopeKind::Interface, scope, stmt.id);
+                let iface_scope =
+                    self.tree
+                        .push(ScopeKind::Interface, scope, stmt.id, self.scope_span(stmt));
                 self.walk_block(body, iface_scope);
             }
             StatementKind::Method {
@@ -681,7 +717,9 @@ impl<'a> Walker<'a> {
                     .as_ref()
                     .map(|dt| ResolvedType::from_declared(dt, *extent));
                 self.declare_method(stmt, scope, name, parameters, ret, flags);
-                let method_scope = self.tree.push(ScopeKind::Method, scope, stmt.id);
+                let method_scope =
+                    self.tree
+                        .push(ScopeKind::Method, scope, stmt.id, self.scope_span(stmt));
                 self.walk_block(parameters, method_scope);
                 self.walk_block(body, method_scope);
             }
@@ -691,13 +729,20 @@ impl<'a> Walker<'a> {
                 body,
                 ..
             } => {
-                let cs = self.tree.push(ScopeKind::Constructor, scope, stmt.id);
+                let cs = self.tree.push(
+                    ScopeKind::Constructor,
+                    scope,
+                    stmt.id,
+                    self.scope_span(stmt),
+                );
                 let _ = access;
                 self.walk_block(parameters, cs);
                 self.walk_block(body, cs);
             }
             StatementKind::Destructor { body } => {
-                let ds = self.tree.push(ScopeKind::Destructor, scope, stmt.id);
+                let ds =
+                    self.tree
+                        .push(ScopeKind::Destructor, scope, stmt.id, self.scope_span(stmt));
                 self.walk_block(body, ds);
             }
 
@@ -707,7 +752,9 @@ impl<'a> Walker<'a> {
                 error_type: _,
                 body,
             } => {
-                let cs = self.tree.push(ScopeKind::Catch, scope, stmt.id);
+                let cs = self
+                    .tree
+                    .push(ScopeKind::Catch, scope, stmt.id, self.scope_span(stmt));
                 // v1: record the error variable as a local. Type carries
                 // its declared class name as an opaque string; Phase 4a
                 // resolves it into the types namespace.
@@ -724,13 +771,17 @@ impl<'a> Walker<'a> {
                 self.walk_block(body, cs);
             }
             StatementKind::Finally { body } => {
-                let fs = self.tree.push(ScopeKind::Finally, scope, stmt.id);
+                let fs = self
+                    .tree
+                    .push(ScopeKind::Finally, scope, stmt.id, self.scope_span(stmt));
                 self.walk_block(body, fs);
             }
 
             // ---- Block-introducing statements ----------------------------
             StatementKind::Do { loop_var, body, .. } => {
-                let bs = self.tree.push(ScopeKind::Block, scope, stmt.id);
+                let bs = self
+                    .tree
+                    .push(ScopeKind::Block, scope, stmt.id, self.scope_span(stmt));
                 if let Some(id) = loop_var {
                     // A DO counter references an existing variable — ABL never
                     // implicitly declares it. Only mint a block-scoped counter
@@ -760,11 +811,15 @@ impl<'a> Walker<'a> {
                 self.walk_block(body, bs);
             }
             StatementKind::Repeat { body, .. } => {
-                let bs = self.tree.push(ScopeKind::Block, scope, stmt.id);
+                let bs = self
+                    .tree
+                    .push(ScopeKind::Block, scope, stmt.id, self.scope_span(stmt));
                 self.walk_block(body, bs);
             }
             StatementKind::ForEach { buffer, body, .. } => {
-                let bs = self.tree.push(ScopeKind::Block, scope, stmt.id);
+                let bs = self
+                    .tree
+                    .push(ScopeKind::Block, scope, stmt.id, self.scope_span(stmt));
                 // The record phrase names a *buffer*. A buffer of that name
                 // already in scope (`DEFINE BUFFER`, a parameter buffer, a
                 // temp-table's default buffer, an enclosing FOR EACH) is the one
@@ -824,7 +879,12 @@ impl<'a> Walker<'a> {
                 match kind {
                     OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => {
                         if let OnAction::Block(body) = action {
-                            let ts = self.tree.push(ScopeKind::Trigger, scope, stmt.id);
+                            let ts = self.tree.push(
+                                ScopeKind::Trigger,
+                                scope,
+                                stmt.id,
+                                self.scope_span(stmt),
+                            );
                             self.walk_statement(body, ts);
                         }
                     }
@@ -836,7 +896,9 @@ impl<'a> Walker<'a> {
                 target: CreateTarget::Handle { triggers, .. },
                 ..
             } if !triggers.is_empty() => {
-                let ts = self.tree.push(ScopeKind::Trigger, scope, stmt.id);
+                let ts = self
+                    .tree
+                    .push(ScopeKind::Trigger, scope, stmt.id, self.scope_span(stmt));
                 for trigger in triggers {
                     if let oxabl_ast::OnAction::Block(body) = &trigger.action {
                         self.walk_statement(body, ts);
@@ -852,7 +914,12 @@ impl<'a> Walker<'a> {
                 // body that follows. Currently just records the scope
                 // without lifting the subsequent statements into it —
                 // parse-level ordering already nests them.
-                let _ = self.tree.push(ScopeKind::TriggerProcedure, scope, stmt.id);
+                let _ = self.tree.push(
+                    ScopeKind::TriggerProcedure,
+                    scope,
+                    stmt.id,
+                    self.scope_span(stmt),
+                );
                 // `NEW BUFFER n` / `OLD BUFFER n` are buffers of the target table.
                 // A target that does not resolve declares neither, so a use of
                 // one still reports the unknown name.
@@ -1118,7 +1185,9 @@ impl<'a> Walker<'a> {
         let Some(tt_sym) = tt_sym else {
             return;
         };
-        let field_scope = self.tree.push(ScopeKind::TempTable, scope, stmt.id);
+        let field_scope =
+            self.tree
+                .push(ScopeKind::TempTable, scope, stmt.id, self.scope_span(stmt));
         self.symbols.record_temp_table(tt_sym, field_scope, like);
         for field in fields {
             let data_type = match &field.type_source {
