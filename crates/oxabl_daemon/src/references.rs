@@ -88,6 +88,9 @@ pub enum ReferenceQuery {
         offset: u32,
         include_declaration: bool,
     },
+    /// The places that run the program of the unit that asks (a root file
+    /// that is neither a class nor an include). A program has no declaration.
+    Program,
     /// The call hierarchy items at byte `offset` of `file`.
     Prepare { file: PathBuf, offset: u32 },
     /// The callers of an item.
@@ -107,6 +110,9 @@ pub struct ReferenceAnswer {
     /// Why the answer can miss something. Empty for a complete answer.
     pub gaps: Vec<Gap>,
     pub texts: HashMap<PathBuf, Arc<str>>,
+    /// Whether the name or item asked about refers to something. An empty
+    /// `locations` of an answer that is not `resolved` is not a count of zero.
+    pub resolved: bool,
 }
 
 /// Why a request has no answer.
@@ -261,6 +267,7 @@ pub fn answer_references(
     finish_incoming(&mut answer.incoming);
     answer.gaps = gaps;
     answer.texts = texts;
+    answer.resolved = true;
     Ok(answer)
 }
 
@@ -330,6 +337,13 @@ fn local_answer(unit: &NavigationUnit<'_, '_, '_>, query: &ReferenceQuery) -> Lo
                 None => Local::Done(answer),
             }
         }
+        ReferenceQuery::Program => match navigation.program_referent() {
+            Some(referent) => {
+                let (part, texts) = unit_part(unit, &referent, false);
+                Local::Search(referent, part, texts)
+            }
+            None => Local::Done(answer),
+        },
         ReferenceQuery::Incoming(item) => match navigation.referent_of(item) {
             Some(referent) => {
                 let (part, texts) = unit_part(unit, &referent, true);

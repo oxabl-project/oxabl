@@ -563,6 +563,12 @@ impl Navigation<'_, '_> {
         self.referent(vec![key])
     }
 
+    /// The program of this unit as a whole, for the places that run it. `None`
+    /// for an include, or when the unit has no item.
+    pub fn program_referent(&self) -> Option<Referent> {
+        self.unit_item().and_then(|item| self.referent_of(&item))
+    }
+
     fn referent(&self, keys: Vec<Key>) -> Option<Referent> {
         let mut kept = Vec::new();
         let mut name = None;

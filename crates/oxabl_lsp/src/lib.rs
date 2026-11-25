@@ -8,7 +8,8 @@
 //! `textDocument/definition`, `textDocument/hover`, `textDocument/documentHighlight` and
 //! `textDocument/documentLink` (see `docs/design/navigation.md`), `textDocument/semanticTokens`
 //! (see `docs/design/semantic-tokens.md`), and `textDocument/references` and the call
-//! hierarchy (see `docs/design/references.md`). Strict database rules can also enable effect code lenses and
+//! hierarchy (see `docs/design/references.md`), and the reference-count code lenses
+//! (`docs/design/reference-lenses.md`). Strict database rules can also enable effect code lenses and
 //! database inlay hints (`docs/design/inlay-hints.md`). An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
@@ -46,6 +47,7 @@ mod inlay_hint;
 mod navigation;
 pub mod position;
 mod range_formatting;
+mod reference_lens;
 mod references;
 mod schema;
 mod semantic_tokens;
@@ -856,7 +858,11 @@ fn finish_handshake(
 
     let encoding = negotiate_position_encoding(&init.capabilities);
     let workspace_root = declared_workspace_root(&init);
-    let options = code_lens::Options::from_client(&init.capabilities, encoding.clone());
+    let options = code_lens::Options::from_client(
+        &init.capabilities,
+        encoding.clone(),
+        init.initialization_options.as_ref(),
+    );
     let inlay =
         inlay_hint::Options::from_client(&init.capabilities, init.initialization_options.as_ref());
     let semantic = semantic_tokens::Options::from_client(
@@ -887,16 +893,18 @@ fn finish_handshake(
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
-        && workspace_root.as_ref().is_some_and(|root| {
-            let (config, _) = PipelineConfig::resolve_for_editor(root, &ConfigOverrides::default());
-            let fs = oxabl_workspace::RealFileSystem;
-            oxabl_pipeline::LintPipeline::new(&config, &fs)
-                .with_file(root)
-                .effect_lenses_enabled()
-        })
+        && (options.reference_lenses
+            || workspace_root.as_ref().is_some_and(|root| {
+                let (config, _) =
+                    PipelineConfig::resolve_for_editor(root, &ConfigOverrides::default());
+                let fs = oxabl_workspace::RealFileSystem;
+                oxabl_pipeline::LintPipeline::new(&config, &fs)
+                    .with_file(root)
+                    .effect_lenses_enabled()
+            }))
     {
         capabilities.code_lens_provider = Some(lsp_types::CodeLensOptions {
-            resolve_provider: Some(false),
+            resolve_provider: Some(options.reference_lenses),
         });
     }
     if inlay.supported {
@@ -1156,6 +1164,8 @@ impl<'c> Server<'c> {
                                 self.respond(Response::new_ok(req.id, serde_json::Value::Null))?;
                             } else if req.method == "textDocument/codeLens" {
                                 self.handle_code_lens(req, &lens_tx)?;
+                            } else if req.method == "codeLens/resolve" {
+                                self.handle_code_lens_resolve(req)?;
                             } else if req.method == InlayHintRequest::METHOD {
                                 self.handle_inlay_hint(req)?;
                             } else if req.method == SemanticTokensFullRequest::METHOD {
@@ -1512,6 +1522,7 @@ impl<'c> Server<'c> {
             }
             "workspace/didChangeConfiguration" => {
                 self.handle_semantic_tokens_settings(&not.params);
+                self.handle_reference_lens_settings(&not.params);
                 self.handle_configuration_change(not.params);
             }
             DidCloseTextDocument::METHOD => {
@@ -2279,6 +2290,7 @@ mod tests {
                     supported: false,
                     dynamic: false,
                     refresh: false,
+                    reference_lenses: false,
                 },
                 completion: completion::Options::default(),
                 inlay: inlay_hint::Options::from_client(&Default::default(), None),

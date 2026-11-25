@@ -8,11 +8,17 @@ import {
 import { CliManager, resolveBinary } from "./binary";
 import { BuildController } from "./builds";
 import { binaryVersion, supportsYield } from "./cli";
-import { inlayHintSettings, semanticTokenSettings, shouldRestartForConfigChange } from "./config";
+import {
+  inlayHintSettings,
+  referenceLensSettings,
+  semanticTokenSettings,
+  shouldRestartForConfigChange,
+} from "./config";
 import { ExpandedUnits } from "./expandedUnit";
 import { InactiveRegions } from "./inactiveRegions";
 import { IncluderContexts } from "./includerContext";
 import { installRecordPath, isManaged } from "./install";
+import { SHOW_REFERENCES, withoutDeclaration } from "./referenceLens";
 import { SchemaBrowser } from "./schemaView";
 import { registerSnippets } from "./snippetCompletion";
 import { installSkill } from "./skill";
@@ -70,6 +76,10 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     vscode.commands.registerCommand("oxabl.showExpandedUnit", () => expandedUnits.show()),
     vscode.commands.registerCommand("oxabl.selectIncluderContext", () => includerContexts.select()),
     vscode.commands.registerCommand("oxabl.goToSuperMethod", () => goToSuperMethod(() => client)),
+    vscode.commands.registerCommand(
+      SHOW_REFERENCES,
+      (uri: string, position: { line: number; character: number }) => showReferences(uri, position),
+    ),
     vscode.commands.registerCommand("oxabl.restartServer", restartServer),
     vscode.commands.registerCommand("oxabl.installCli", () => cli.installOrUpdate()),
     vscode.commands.registerCommand("oxabl.installSkill", installSkillCommand),
@@ -90,6 +100,11 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
       if (event.affectsConfiguration("oxabl.semanticTokens")) {
         void client?.sendNotification("workspace/didChangeConfiguration", {
           settings: { oxabl: { semanticTokens: readSemanticTokens() } },
+        });
+      }
+      if (event.affectsConfiguration("oxabl.referenceLenses")) {
+        void client?.sendNotification("workspace/didChangeConfiguration", {
+          settings: { oxabl: { referenceLenses: readReferenceLenses() } },
         });
       }
       if (event.affectsConfiguration("oxabl.build.enable")) {
@@ -205,6 +220,29 @@ function readSemanticTokens(): { enable: boolean } {
   return semanticTokenSettings(config.get<boolean>("enable"));
 }
 
+/** The `oxabl.referenceLenses.enable` setting, for the server. */
+function readReferenceLenses(): { enable: boolean } {
+  const config = vscode.workspace.getConfiguration("oxabl.referenceLenses");
+  return referenceLensSettings(config.get<boolean>("enable"));
+}
+
+/** Show the uses of the symbol at `position` in `uri`, as the lens above it counts them. */
+async function showReferences(uri: string, position: { line: number; character: number }): Promise<void> {
+  const target = vscode.Uri.parse(uri);
+  const at = new vscode.Position(position.line, position.character);
+  const found = await vscode.commands.executeCommand<vscode.Location[]>(
+    "vscode.executeReferenceProvider",
+    target,
+    at,
+  );
+  await vscode.commands.executeCommand(
+    "editor.action.showReferences",
+    target,
+    at,
+    withoutDeclaration(found ?? [], uri, at),
+  );
+}
+
 /** Start the client if enabled; a no-op (silent) when `oxabl.enable` is false. */
 async function startClient(): Promise<void> {
   const config = vscode.workspace.getConfiguration("oxabl");
@@ -235,7 +273,11 @@ async function startClient(): Promise<void> {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "abl" }],
     outputChannel: log,
-    initializationOptions: { inlayHints: readInlayHints(), semanticTokens: readSemanticTokens() },
+    initializationOptions: {
+      inlayHints: readInlayHints(),
+      semanticTokens: readSemanticTokens(),
+      referenceLenses: readReferenceLenses(),
+    },
     synchronize: {
       // The server watches these itself, but forwarding the events lets live
       // reload work even when the client owns the file watcher (#90 / U2).

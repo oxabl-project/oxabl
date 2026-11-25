@@ -48,7 +48,7 @@ impl InFlight {
         flag
     }
 
-    fn finish(&self, id: &RequestId) {
+    pub(crate) fn finish(&self, id: &RequestId) {
         self.lock().remove(id);
     }
 
@@ -573,7 +573,7 @@ pub(crate) fn invalid(id: RequestId, message: &str) -> Response {
     )
 }
 
-fn locations(answer: ReferenceAnswer, encoding: &PositionEncodingKind) -> Vec<Location> {
+pub(crate) fn locations(answer: ReferenceAnswer, encoding: &PositionEncodingKind) -> Vec<Location> {
     let mut ropes = Ropes::new(&answer.texts);
     answer
         .locations

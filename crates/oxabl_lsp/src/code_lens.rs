@@ -12,12 +12,15 @@ pub(crate) struct Options {
     pub supported: bool,
     pub dynamic: bool,
     pub refresh: bool,
+    /// The user turned the reference-count lenses on.
+    pub reference_lenses: bool,
 }
 
 impl Options {
     pub(crate) fn from_client(
         caps: &lsp_types::ClientCapabilities,
         encoding: PositionEncodingKind,
+        initialization: Option<&serde_json::Value>,
     ) -> Self {
         let lens = caps
             .text_document
@@ -33,6 +36,10 @@ impl Options {
                 .and_then(|c| c.code_lens.as_ref())
                 .and_then(|c| c.refresh_support)
                 .unwrap_or(false),
+            reference_lenses: initialization
+                .and_then(|o| o.get("referenceLenses"))
+                .and_then(crate::reference_lens::enabled_in)
+                .unwrap_or(false),
         }
     }
 }
@@ -43,6 +50,7 @@ pub(crate) struct LensCache {
     generations: Option<(u64, u64, u32)>,
     options: Options,
     registered: Vec<String>,
+    registered_resolve: bool,
     // An absent result marks an in-flight request, avoiding duplicate workers.
     ready: HashMap<Uri, Option<Vec<CodeLens>>>,
 }
@@ -61,8 +69,26 @@ impl LensCache {
             generations: None,
             options,
             registered: Vec::new(),
+            registered_resolve: false,
             ready: HashMap::new(),
         }
+    }
+
+    pub(crate) fn supported(&self) -> bool {
+        self.options.supported
+    }
+
+    pub(crate) fn refresh_supported(&self) -> bool {
+        self.options.refresh
+    }
+
+    pub(crate) fn reference_lenses(&self) -> bool {
+        self.options.reference_lenses
+    }
+
+    /// Set the reference-lens choice; returns the one it replaced.
+    pub(crate) fn set_reference_lenses(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.options.reference_lenses, enabled)
     }
 
     pub(crate) fn request_id(&mut self) -> lsp_server::RequestId {
@@ -93,7 +119,7 @@ impl Server<'_> {
         let Some(path) = crate::uri_to_path(uri) else {
             return false;
         };
-        if !oxabl_workspace::is_root_file(&path) && !oxabl_workspace::is_include_fragment(&path) {
+        if !lens_file(&path) {
             return false;
         }
         self.host.with(|sessions| {
@@ -115,19 +141,20 @@ impl Server<'_> {
         let mut files: Vec<String> = self
             .documents
             .uris()
-            .filter(|uri| self.lens_enabled(uri))
+            .filter(|uri| self.lens_enabled(uri) || self.reference_lenses_apply(uri))
             .filter_map(crate::uri_to_path)
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
         files.sort();
-        if files == self.lenses.registered {
+        let resolve = self.reference_lenses_on();
+        if files == self.lenses.registered && resolve == self.lenses.registered_resolve {
             return;
         }
         if !self.lenses.registered.is_empty() {
             let _ = self.connection.sender.send(lsp_server::Message::Request(Request::new(
                 self.lenses.request_id(),
                 "client/unregisterCapability".into(),
-                serde_json::json!({"unregisterations": [{"id": "oxabl-effects", "method": "textDocument/codeLens"}]}),
+                serde_json::json!({"unregisterations": [{"id": "oxabl-lenses", "method": "textDocument/codeLens"}]}),
             )));
         }
         if !files.is_empty() {
@@ -138,11 +165,12 @@ impl Server<'_> {
             let _ = self.connection.sender.send(lsp_server::Message::Request(Request::new(
                 self.lenses.request_id(),
                 "client/registerCapability".into(),
-                serde_json::json!({"registrations": [{"id": "oxabl-effects", "method": "textDocument/codeLens",
-                    "registerOptions": {"documentSelector": selector, "resolveProvider": false}}]}),
+                serde_json::json!({"registrations": [{"id": "oxabl-lenses", "method": "textDocument/codeLens",
+                    "registerOptions": {"documentSelector": selector, "resolveProvider": resolve}}]}),
             )));
         }
         self.lenses.registered = files;
+        self.lenses.registered_resolve = resolve;
     }
 
     pub(crate) fn handle_code_lens(
@@ -161,9 +189,26 @@ impl Server<'_> {
             }
         };
         let uri = params.text_document.uri;
-        if !self.lenses.options.supported || !self.lens_enabled(&uri) {
+        if !self.lenses.options.supported {
             return self.respond(Response::new_ok(req.id, Vec::<CodeLens>::new()));
         }
+        let mut lenses = if self.lens_enabled(&uri) {
+            self.effect_lenses(&uri, tx)
+        } else {
+            Vec::new()
+        };
+        lenses.extend(self.reference_lens_ranges(&uri));
+        self.respond(Response::new_ok(req.id, lenses))
+    }
+
+    /// The effect lenses that are ready; the first request starts the worker
+    /// that makes them.
+    fn effect_lenses(
+        &mut self,
+        uri: &Uri,
+        tx: &crossbeam_channel::Sender<LensResult>,
+    ) -> Vec<CodeLens> {
+        let uri = uri.clone();
         let generations = self.host.with(|sessions| {
             sessions.get(&self.session_root).map(|s| {
                 (
@@ -178,7 +223,7 @@ impl Server<'_> {
             self.lenses.generations = generations;
         }
         if let Some(ready) = self.lenses.ready.get(&uri) {
-            return self.respond(Response::new_ok(req.id, ready.clone().unwrap_or_default()));
+            return ready.clone().unwrap_or_default();
         }
         if let Some(doc) = self.documents.get(&uri)
             && let Some((buffer, snapshot, schema)) = self.host.with(|sessions| {
@@ -225,6 +270,11 @@ impl Server<'_> {
                 })
                 .expect("failed to spawn an analysis thread");
         }
-        self.respond(Response::new_ok(req.id, Vec::<CodeLens>::new()))
+        Vec::new()
     }
+}
+
+/// A file that can have lenses: a root file or an include.
+pub(crate) fn lens_file(path: &std::path::Path) -> bool {
+    oxabl_workspace::is_root_file(path) || oxabl_workspace::is_include_fragment(path)
 }

@@ -113,6 +113,19 @@ you also get, with no setup:
   workspace index that is not ready. A reason that holds for the whole
   workspace and leaves out only a part of the search (a file that oxabl could
   not analyse) is written once to the `oxabl language server` output instead.
+- **Reference-count code lenses.** Set `oxabl.referenceLenses.enable` to
+  `true` to show a lens above each procedure, function, method, class,
+  interface and property, with the number of places that use it
+  (`3 references`), and above a program, with the number of files that run it
+  (`3 references · used by 2 files`). A click lists the references. The count is
+  the length of Find All References without the declaration, and it is made when
+  the lens comes into view, so a large file does not run a search for each
+  declaration at once. A count that can be short says so
+  (`12+ references · incomplete: <reason>`), and a declaration that oxabl does
+  not resolve shows `references not known`, never a number. These lenses are
+  off by default, and apart from the database effect lenses, which follow the
+  rules in `oxabl.toml`. VS Code's `editor.codeLens` turns off both. See
+  `docs/design/reference-lenses.md` in the repository.
 - **Call hierarchy** (`Shift+Alt+H`). Shows the callers of a procedure,
   function, method or program, and the `RUN`, function and method calls it
   makes. On a name that is no routine, or on a keyword, it shows the routine
@@ -538,6 +551,7 @@ itself once a day when you run it.
 | `oxabl.updates` | `auto` | `auto`, `notify` or `off`. See [Updates](#updates). |
 | `oxabl.trace.server` | `off` | Trace the JSON-RPC traffic with the server, for debugging. |
 | `oxabl.semanticTokens.enable` | `true` | Colour names by what they are, from the language server. The grammar colours everything else. A change applies at once. |
+| `oxabl.referenceLenses.enable` | `false` | Show the number of references above each declaration. Each lens runs a search when it comes into view. A change applies at once. |
 | `oxabl.inlayHints.locks` | `true` | Show the lock a read takes when it names none. A change applies at once. |
 | `oxabl.inlayHints.index` | `true` | Show the index oxabl expects a search to use. Needs no strict rule. |
 | `oxabl.inlayHints.scope` | `true` | Show where a raised buffer scope starts and ends. |

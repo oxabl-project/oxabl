@@ -156,6 +156,7 @@ LSP features:
 - Signature help and parameter-name inlay hints
 - Clickable links on {includes}, RUN targets, and USING
 - Database-effect code lenses (only with strict database rules enabled)
+- Reference-count code lenses (off until the editor turns them on)
 - List all files that include a specific include file, and pick one as the include's context
 - Expand a file to resolve its pre-processing directives and include files.
 

@@ -126,6 +126,8 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 
 - `crates/oxabl_semantic` - The declare, resolve and type-check passes: scopes, symbols, references and types per file. The resolve pass finds the class of a receiver (`obj:Name`, `THIS-OBJECT`, `SUPER`, `CAST`, a type name, a chain) and its member, through the scope tree or the workspace index; the type-check pass types the member and picks the method overload from the argument types (`overload.rs`). An unknown fact gives `Unknown`. See `docs/design/class-members.md`
 
+- `crates/oxabl_lsp` - The language server. Its code lenses are of two kinds with their own settings: the database effect lenses (`code_lens.rs`, from the rules of `oxabl.toml`) and the reference-count lenses (`reference_lens.rs`, from the client's `referenceLenses` setting; the count is the find references answer, see `docs/design/reference-lenses.md`). `crates/oxabl/tests/reference_lens_lsp.rs` tests the second kind through `oxabl lsp`
+
 (Not exhaustive — the workspace also holds `oxabl_preprocessor`, `oxabl_schema`, `oxabl_lint`, `oxabl_analyze`, `oxabl_formatter`, `oxabl_style`, `oxabl_workspace`, `oxabl_lsp`, and `oxabl_wasm`; see the status section below.)
 
 ### Lexer (`oxabl_lexer`)

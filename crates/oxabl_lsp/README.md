@@ -33,6 +33,21 @@ After changing this setting, restart a static client to update its capabilities.
 
 The daemon protocol and the existing check and analyze JSON documents are unchanged.
 
+## Reference-count code lenses
+
+A separate kind of lens counts the references of a declaration. It is off until the client turns it
+on: `referenceLenses` (a boolean, or an object with a boolean `enable`) in the initialization options or in
+`workspace/didChangeConfiguration` (`settings.oxabl.referenceLenses`). It does not depend on `oxabl.toml`,
+and the effect lenses do not depend on it.
+
+Each procedure, function, method, class, interface and property gets a lens, and each program gets one on
+line 1. `textDocument/codeLens` gives the ranges. `codeLens/resolve` runs the search of find references and
+fills in the title: `3 references`, and for a program `3 references · used by 2 files`. The count is the
+length of the find references answer without the declaration. A count that can be short says so:
+`12+ references · incomplete: <reason>`. A declaration that oxabl does not resolve says
+`references not known: ...` and shows no number. The command is `oxabl.showReferences`, with the file URI and
+the position of the name. See `docs/design/reference-lenses.md`.
+
 ## Semantic tokens
 
 The server answers `textDocument/semanticTokens/full`, `full/delta` and `range` for a client
