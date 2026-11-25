@@ -392,7 +392,12 @@ A `TempTableField` has a `span` too: from `FIELD` to its last option.
   that is the end of the include site. An include fragment analysed on its own is exempt: a
   fragment that opens a block is valid, because the file that includes it closes the block
   (the same exemption as `handle_support::not_judged`). A parse error inside an include file
-  has no position in the root file and is not reported.
+  has no position in the root file. It is reported at the `{...}` site of the include in the
+  root (the outermost site, for a nested include), with the file and the position in the
+  include in its message, and also in the include file itself as a finding of include origin.
+  It is never dropped: when no site leads to the text, it sits at the end of the root. An
+  error in text that no file wrote (a `{&name}` value) is reported at the site only, and its
+  message says "in the value of a preprocessor name or an include argument". An include fragment analysed alone holds its own errors in its own bytes.
 
 ## 11. Ancillary invariants
 
