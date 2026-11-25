@@ -4,7 +4,7 @@
 # `cargo run -p oxabl_codegen -- builtin-class-table` applies them before it
 # compiles the catalog. Each entry names a type, the documentation page a
 # person checked the fix against, and exactly one change: `inherits`,
-# `drop_member`, `extent_return`, `extent_property`, `add_member` or
+# `drop_member`, `extent_return`, `extent_property`, `param_type`, `add_member` or
 # `replace_member`. An entry that matches
 # nothing fails the codegen, so a later scrape cannot leave a stale fix.
 
@@ -368,3 +368,133 @@ extent_return = "GetOptionNames"
 type = "OpenEdge.Messaging.TopicConfiguration"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Messaging.TopicConfiguration.html"
 extent_return = "GetOptionNames"
+
+# The API reference links the primitive MEMPTR to the page of the class
+# OpenEdge.Core.Memptr, so the scrape writes the class for both. The
+# normaliser reads a scraped OpenEdge.Core.Memptr as a type it does not know.
+# The short signature of a member on the page keeps the case: `memptr` is the
+# primitive and `Memptr` the class (`PutBytes (memptr)` and `PutBytes
+# (Memptr)` on the ByteBucket page). These entries give the type of each
+# parameter that the short signature shows; `CLASS` marks the class.
+
+[[override]]
+type = "OpenEdge.Core.ByteBucket"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.ByteBucket.html"
+param_type = { member = "PutBytes", param = "pmData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Core.ByteBucket"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.ByteBucket.html"
+param_type = { member = "PutBytes", param = "poData", type = "CLASS OpenEdge.Core.Memptr" }
+
+[[override]]
+type = "OpenEdge.Core.ByteBucket"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.ByteBucket.html"
+param_type = { member = "ReadBytes", param = "pData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Core.Memptr"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Memptr.html"
+param_type = { member = "Memptr", param = "pmValue", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Core.Memptr"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Memptr.html"
+param_type = { member = "PutBytes", param = "pmData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Security.Principal"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Security.Principal.html"
+param_type = { member = "Import", param = "pmCP", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Security.Principal"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Security.Principal.html"
+param_type = { member = "Import", param = "poCP", type = "CLASS OpenEdge.Core.Memptr" }
+
+[[override]]
+type = "OpenEdge.Net.ServerConnection.ClientSocket"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.ServerConnection.ClientSocket.html"
+param_type = { member = "WriteData", param = "poData", type = "CLASS OpenEdge.Core.Memptr" }
+
+[[override]]
+type = "OpenEdge.Net.ServerConnection.SocketReadEventArgs"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.ServerConnection.SocketReadEventArgs.html"
+param_type = { member = "SocketReadEventArgs", param = "poData", type = "CLASS OpenEdge.Core.Memptr" }
+
+[[override]]
+type = "OpenEdge.Net.HTTP.Filter.Payload.BinaryBodyWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.BinaryBodyWriter.html"
+param_type = { member = "Write", param = "pData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Net.HTTP.Filter.Payload.BinaryEntityWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.BinaryEntityWriter.html"
+param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Net.HTTP.Filter.Payload.ClientSocketResponseWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.ClientSocketResponseWriter.html"
+param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Net.HTTP.Filter.Payload.FormDataEntityWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.FormDataEntityWriter.html"
+param_type = { member = "Write", param = "pData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Net.HTTP.Filter.Payload.JsonBodyWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.JsonBodyWriter.html"
+param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Net.HTTP.Filter.Payload.JsonEntityWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.JsonEntityWriter.html"
+param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Net.HTTP.Filter.Payload.MultipartEntityWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.MultipartEntityWriter.html"
+param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Net.HTTP.Filter.Payload.StringBodyWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.StringBodyWriter.html"
+param_type = { member = "Write", param = "pData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Net.HTTP.Filter.Payload.StringEntityWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.StringEntityWriter.html"
+param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Net.HTTP.Filter.Payload.XmlEntityWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.XmlEntityWriter.html"
+param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Web.DataObject.Writer.CollectionValueWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.Writer.CollectionValueWriter.html"
+param_type = { member = "Write", param = "pValue", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Web.DataObject.Writer.JsonValueWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.Writer.JsonValueWriter.html"
+param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Web.DataObject.Writer.MemptrArrayValueWriter"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.Writer.MemptrArrayValueWriter.html"
+param_type = { member = "Write", param = "pData", type = "MEMPTR" }
+
+# `Value` of these classes implements `Ccs.Common.Support.IMemptrHolder:Value`,
+# which is MEMPTR; the property must have the type of the interface.
+[[override]]
+type = "OpenEdge.Core.ByteBucket"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.ByteBucket.html"
+replace_member = { kind = "property", name = "Value", type = "MEMPTR" }
+
+[[override]]
+type = "OpenEdge.Core.Memptr"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Memptr.html"
+replace_member = { kind = "property", name = "Value", type = "MEMPTR" }

@@ -731,6 +731,32 @@ mod tests {
                 "SslProtocols",
                 &["PROPERTY CHARACTER EXTENT SslProtocols"],
             ),
+            ("OpenEdge.Core.Memptr", "Value", &["PROPERTY MEMPTR Value"]),
+            (
+                "OpenEdge.Core.ByteBucket",
+                "Value",
+                &["PROPERTY MEMPTR Value"],
+            ),
+            (
+                "OpenEdge.Core.ByteBucket",
+                "PutBytes",
+                &[
+                    "VOID PutBytes(OpenEdge.Core.Memptr)",
+                    "VOID PutBytes(INT64, INT64)",
+                    "VOID PutBytes(MEMPTR)",
+                ],
+            ),
+            // The page links the primitive and the class to one page: a
+            // return of either is not known.
+            (
+                "OpenEdge.Core.ByteBucket",
+                "GetBytes",
+                &[
+                    "? GetBytes()",
+                    "? GetBytes(INT64)",
+                    "? GetBytes(INT64, INT64)",
+                ],
+            ),
             (
                 "OpenEdge.Messaging.ProducerRecord",
                 "GetOptionNames",

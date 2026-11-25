@@ -107,7 +107,7 @@ The numbers are from a check of the checked-in file by the planner. Step 1 of
 | An `OpenEdge.*` or `Ccs.*` method with no return type | 3420 | `VOID` (the Javadoc renderer omits it). |
 | A `Progress.*` method with no return type | 1 | Damaged. |
 | A primitive return that is an `EXTENT` read as a scalar (`JsonObject:GetNames`, `OpenEdge.Core.String:Split(LONGCHAR)`, ...): the API reference writes the return type without `EXTENT`, the ABL Reference writes `CHARACTER` for `GetNames` | 26 found | An override (`extent_return`) for each one whose documentation comment says `@return <type>[]` or "an EXTENT" (found with a scan of the pages of the complete classes). `CL006` also fails closed for the rest (see the property row). |
-| A property that is an `EXTENT`: the scrape writes no `EXTENT` on any of the 3,244 properties (`Ccs.Common.Support.ICharacterArrayHolder:Value` reads `CHARACTER`) | 33 with an override; any property may be one | An override (`extent_property`) where a page shows the array: the constructor or setter that fills the property takes `<type>[]` (`DateArrayHolder (date[])`, `ClientLibraryBuilder:SetSslProtocols (character[])`, `RowImpl (..., pKeyValues AS CHARACTER[])`), or an interface that such a class implements (the 13 `Ccs.Common.Support.I*ArrayHolder`, `IObjectArrayHolder`, `IRow`). Every other built-in property, and every primitive return, fails closed: `CL006` never rules out a parameter that is an `EXTENT` of a type a scalar built-in member result may convert to (a primitive, or a class to one of its supertypes; `overload::no_fit`), and `LINT0004` gives no finding for an `EXTENT` assigned to a scalar built-in property when its element converts (`type_mismatch_assignment`). A scalar from a built-in property into a scalar variable is still judged. |
+| A property that is an `EXTENT`: the scrape writes no `EXTENT` on any of the 3,244 properties (`Ccs.Common.Support.ICharacterArrayHolder:Value` reads `CHARACTER`) | 33 with an override; any property may be one | An override (`extent_property`) where a page shows the array: the constructor or setter that fills the property takes `<type>[]` (`DateArrayHolder (date[])`, `ClientLibraryBuilder:SetSslProtocols (character[])`, `RowImpl (..., pKeyValues AS CHARACTER[])`), or an interface that such a class implements (the 12 `Ccs.Common.Support.I*ArrayHolder`, `IObjectArrayHolder`, `IRow`). Every other built-in property, and every primitive return, fails closed: `CL006` never rules out a parameter that is an `EXTENT` of a type a scalar built-in member result may convert to (a primitive, or a class to one of its supertypes; `overload::no_fit`), and `LINT0004` gives no finding for an `EXTENT` assigned to a scalar built-in property when its element converts (`type_mismatch_assignment`). A scalar from a built-in property into a scalar variable is still judged. |
 | A parameter name that is not an ABL name (`) PUBLIC MemoryOutputStream (INPUT size`) | 1 | Damaged. |
 | A member name that is not an ABL name (HTML text, a code sample, `[ return-value = ] class-reference:Invoke`) | 71 in 35 types | Damaged. A name `&ltFile> Files` (7 of the 71: a generic return type that the renderer split) is read as the name `Files` with the generic type, which is `Unknown`. |
 | A typo or a fragment as a type (`Progrss.Reflect.Flags`, `Progress.Lang.Class \|`, `INTEGER )`) | 53 members in 28 types | Damaged. |
@@ -115,7 +115,10 @@ The numbers are from a check of the checked-in file by the planner. Step 1 of
 | No supertype on a class that has one (`Progress.Lang.AppError`, the `Progress.Util.*` helpers, `Progress.Data.*`, `Progress.IO.ByteOrder`) | 13 types | The header is not known: an override gives it, else the surface is opaque. |
 | An undocumented supertype (`Progress.Web.AbstractWebRouter`) | 1 | The header is not known. |
 | A wrong member (`Progress.Lang.Error` and `Progress.Lang.ProError` list `CallStack` as `file-name at line line-number`) | 2 | An override fixes it. |
-| The same signature twice | 28 | The normaliser keeps the first. |
+| The same row twice (the page lists a member twice) | 27 | The normaliser keeps the first. |
+| Two different rows that read as one signature (`ByteBucket:PutBytes(poData)` and `PutBytes(pmData)`, both scraped as `OpenEdge.Core.Memptr`) | 2 | A codegen error, unless an override tells them apart (`param_type`). ABL cannot declare two overloads with one signature, so the rows show a type the scrape lost. |
+| A class named like an ABL primitive (`OpenEdge.Core.Memptr`, `Decimal`, `Integer`, `WidgetHandle`): the API reference links the primitive (`memptr`) to the page of the class, so the scrape writes the class for both | 4 such classes; 36 member types name one (35 `Memptr`, 1 `WidgetHandle`) | Such a scraped type reads as not known (`Names::conflated`), so it gives no finding. The short signature on the page keeps the case (`PutBytes (memptr)` is the primitive, `PutBytes (Memptr)` the class), so `param_type` overrides give the type of 23 of the 24 parameters (`MEMPTR`, or `CLASS OpenEdge.Core.Memptr`: an explicit `CLASS` keeps the class). `RecordHeader(name, val)` stays not known: the page has a `memptr` and a `Memptr` constructor, and the scrape kept one. A return has no short signature, so `GetBytes`, `Empty`, `GetRawEntity`, `SocketReadEventArgs:Data` and `Session:GetFirstRunningProc` stay not known. `Memptr:Value` and `ByteBucket:Value` are `MEMPTR` by the `IMemptrHolder` contract (`replace_member`). The other wrapper classes (`OpenEdge.Core.String`, `LogicalValue`, the date holders) are not named like a primitive, and no parameter typed as one has a `pc`, `pl` or `pd` prefix. |
+| A member whose type disagrees with the interface member it implements | 2 (`Memptr:Value`, `ByteBucket:Value`) | A codegen error (`interface_disagreements`): ABL requires an implementation to keep the type of the interface member. The check compares the types as scraped, before a conflated name is read as not known, for every property and every method with the same parameter types. |
 | A parameter with no name | 11 | Kept with no name. |
 
 "Damaged" means: the normaliser drops the member, and the type is not
@@ -592,24 +595,30 @@ and "the supertypes of X", for user and built-in classes alike. This work adds
 that interface in `oxabl_semantic` (`surface.rs`), and the resolve pass reads its
 levels through it, so the two cannot disagree.
 
-- `SymbolTable::class_origin(sym) -> Option<ClassOrigin>`: `Local(ScopeId)` (a
+- `SymbolTable::class_origin(sym) -> Option<ClassOrigin>`: `Local(SymbolId)` (a
   class of the analysed file), `Workspace(IndexName)`, `Builtin(&'static
   BuiltinClass)`. Recorded for every class symbol that the resolve pass mints
   or declares.
 - `surface(origin, index, catalog, role) -> ClassSurface`: the members the role
-  reaches, nearest first, each a `SurfaceMember` with the name, the kind, the
-  access, `is_static`, the type as written (`MemberType`), the parameters (with
-  `mode: Option<ParamMode>`, `None` for a built-in one), the declaring class
-  (`ClassOrigin`), and its origin (`File(IndexedFileId)` or
-  `Builtin(&'static BuiltinMember)`, which gives the documentation URL).
+  reaches, nearest first, one `SurfaceMember` for each overload, with the
+  name, the kind, the access (`None` for a built-in member: the catalog has
+  no access), `is_static`, the type as written (`MemberType`), the parameters
+  (with `mode: Option<ParamMode>`, `None` for a built-in one), the declaring
+  class (`ClassOrigin`), and its origin (`Local(SymbolId)`,
+  `File(IndexedFileId)` or `Builtin(BuiltinMemberRef)`, whose `doc()` gives
+  the title and the documentation URL). A class of the analysed file needs
+  its `Semantic`: `local_surface(sem, origin, index, role)`.
   `ClassSurface::complete` says whether the list is whole, by the rules of
   "Completeness".
 - `supertypes(origin, index, catalog) -> Supertypes`: the parent and the
   interfaces, each a `ClassOrigin` or an unresolved name, and whether the
   header is known.
 
-The hover of a built-in member is the first consumer. The others come with
-their issues.
+- `BuiltinCatalog::classes_in(package)`: the built-in types of a package.
+
+The hover of a built-in member is the first consumer. Code completion
+(`docs/design/completion.md`, "The class source"), signature help and the
+type hierarchy read the same interface.
 
 ## Incremental analysis in the daemon
 

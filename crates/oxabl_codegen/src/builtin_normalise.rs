@@ -82,6 +82,9 @@ pub struct NParam {
     /// Empty when the catalog has no name.
     pub name: String,
     pub ty: NType,
+    /// The type as the scrape gives it, before a conflated name is read as
+    /// `Unknown` (see [`Names::conflated`]). Compared by the interface check.
+    pub scraped: NType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +97,8 @@ pub struct NMember {
     /// The return type of a method, the type of a property; `Void` for a
     /// constructor and an event.
     pub ty: NType,
+    /// [`Self::ty`] as the scrape gives it (see [`NParam::scraped`]).
+    pub scraped: NType,
     pub params: Vec<NParam>,
 }
 
@@ -176,6 +181,9 @@ struct Override {
     /// A property whose type is an `EXTENT` that the scrape read as a scalar
     /// (the scrape writes no `EXTENT` on any property): its type gets `[]`.
     extent_property: Option<String>,
+    /// The type of one parameter, by its name, in every overload of a member
+    /// that has a parameter of that name.
+    param_type: Option<OverrideParamType>,
     add_member: Option<OverrideMember>,
     replace_member: Option<OverrideMember>,
 }
@@ -191,6 +199,15 @@ struct OverrideMember {
     params: Vec<OverrideParam>,
     #[serde(default)]
     is_static: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverrideParamType {
+    member: String,
+    param: String,
+    #[serde(rename = "type")]
+    type_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,12 +272,13 @@ pub fn apply_overrides(index: &mut BuiltinIndex, text: &str) -> Result<(), Strin
             o.drop_member.is_some(),
             o.extent_return.is_some(),
             o.extent_property.is_some(),
+            o.param_type.is_some(),
             o.add_member.is_some(),
             o.replace_member.is_some(),
         ];
         if what.iter().filter(|b| **b).count() != 1 {
             return Err(format!(
-                "override of `{}` must name exactly one of inherits, drop_member, extent_return, extent_property, add_member, replace_member",
+                "override of `{}` must name exactly one of inherits, drop_member, extent_return, extent_property, param_type, add_member, replace_member",
                 o.type_name
             ));
         }
@@ -325,15 +343,60 @@ pub fn apply_overrides(index: &mut BuiltinIndex, text: &str) -> Result<(), Strin
                 ));
             };
             rt.push_str("[]");
+        } else if let Some(t) = &o.param_type {
+            let mut found = false;
+            for list in [&mut entry.constructors, &mut entry.methods] {
+                for m in list
+                    .iter_mut()
+                    .filter(|m| m.name.eq_ignore_ascii_case(&t.member))
+                {
+                    for p in m
+                        .params
+                        .iter_mut()
+                        .filter(|p| p.name.as_deref() == Some(t.param.as_str()))
+                    {
+                        // An `EXTENT` parameter keeps its marker.
+                        let wanted = match p.type_name.trim_end().ends_with("[]") {
+                            true => format!("{}[]", t.type_name),
+                            false => t.type_name.clone(),
+                        };
+                        if p.type_name == wanted {
+                            return Err(format!(
+                                "stale override: `{}:{}` parameter `{}` is already `{}`",
+                                o.type_name, t.member, t.param, t.type_name
+                            ));
+                        }
+                        p.type_name = wanted;
+                        found = true;
+                    }
+                }
+            }
+            if !found {
+                return Err(format!(
+                    "stale override: `{}` has no member `{}` with a parameter `{}`",
+                    o.type_name, t.member, t.param
+                ));
+            }
         } else if let Some(m) = &o.add_member {
             let list = member_list(entry, &m.kind)?;
-            if list.iter().any(|x| x.name.eq_ignore_ascii_case(&m.name)) {
+            let added = to_member(m);
+            let same_types = |x: &Member| {
+                x.params.len() == added.params.len()
+                    && x.params
+                        .iter()
+                        .zip(&added.params)
+                        .all(|(a, b)| a.type_name.eq_ignore_ascii_case(&b.type_name))
+            };
+            if list
+                .iter()
+                .any(|x| x.name.eq_ignore_ascii_case(&m.name) && same_types(x))
+            {
                 return Err(format!(
-                    "stale override: `{}` already has a {} `{}`",
+                    "stale override: `{}` already has a {} `{}` with these parameter types",
                     o.type_name, m.kind, m.name
                 ));
             }
-            list.push(to_member(m));
+            list.push(added);
         } else if let Some(m) = &o.replace_member {
             let list = member_list(entry, &m.kind)?;
             let Some(slot) = list
@@ -449,6 +512,12 @@ struct Names {
     by_key: HashMap<String, usize>,
     /// Folded simple name to the indexes of the types that have it.
     by_simple: HashMap<String, Vec<usize>>,
+    /// The types whose simple name is the name of an ABL primitive
+    /// (`OpenEdge.Core.Memptr`, `Decimal`, `Integer`, `WidgetHandle`). The API
+    /// reference links the primitive to the page of such a type, so a scraped
+    /// type with this name may be either: it reads as `Unknown`, unless the
+    /// text says `CLASS` (an override that knows it is the class).
+    conflated: Vec<bool>,
 }
 
 impl Names {
@@ -482,8 +551,25 @@ struct Owner<'a> {
     type_params: &'a [String],
 }
 
-/// Read a raw type of a member of `owner`.
-fn read_type(raw: &str, owner: &Owner, names: &Names) -> NTypeOrDamaged {
+/// Read a raw type of a member of `owner`, and the type as scraped: they
+/// differ for a conflated name (see [`Names::conflated`]), which reads as
+/// `Unknown`.
+fn read_type(raw: &str, owner: &Owner, names: &Names) -> (NTypeOrDamaged, NType) {
+    let read = read_scraped(raw, owner, names);
+    let explicit_class = raw.trim().len() > 6 && raw.trim()[..6].eq_ignore_ascii_case("CLASS ");
+    match read {
+        NTypeOrDamaged::Type(t @ (NType::Class(i) | NType::ClassArray(i)))
+            if names.conflated[i] && !explicit_class =>
+        {
+            (NTypeOrDamaged::Type(NType::Unknown), t)
+        }
+        NTypeOrDamaged::Type(t) => (NTypeOrDamaged::Type(t), t),
+        NTypeOrDamaged::Damaged => (NTypeOrDamaged::Damaged, NType::Unknown),
+    }
+}
+
+/// [`read_type`] with no rule for conflated names.
+fn read_scraped(raw: &str, owner: &Owner, names: &Names) -> NTypeOrDamaged {
     let mut t = raw.trim().to_string();
     if t.len() > 6 && t[..6].eq_ignore_ascii_case("CLASS ") {
         t = t[6..].trim().to_string();
@@ -588,6 +674,10 @@ fn split_generic_name(name: &str) -> Option<&str> {
 // The normaliser
 // =============================================================================
 
+/// The kind, static-constructor flag, folded name and folded parameter types
+/// of a member row.
+type Signature = (NMemberKind, bool, String, Vec<String>);
+
 /// Normalise `index` (with the overrides already applied).
 pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
     let mut entries: Vec<(&String, &TypeEntry)> = index.types.iter().collect();
@@ -606,7 +696,21 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
             .or_default()
             .push(i);
     }
-    let names = Names { by_key, by_simple };
+    let conflated = entries
+        .iter()
+        .map(|(name, _)| {
+            let base = split_generic(name).0;
+            let simple = base.rsplit('.').next().unwrap_or(base).replace('-', "");
+            PRIMITIVES
+                .iter()
+                .any(|(p, _)| p.replace('-', "").eq_ignore_ascii_case(&simple))
+        })
+        .collect();
+    let names = Names {
+        by_key,
+        by_simple,
+        conflated,
+    };
 
     let mut types = Vec::with_capacity(entries.len());
     for (i, (full_name, e)) in entries.iter().enumerate() {
@@ -621,7 +725,7 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
         let api_bundle = !base.starts_with("Progress.");
         let mut damaged = false;
         let mut members: Vec<NMember> = Vec::new();
-        let mut seen: Vec<(NMemberKind, bool, String, Vec<String>)> = Vec::new();
+        let mut seen: Vec<(Signature, &Member)> = Vec::new();
         let groups = [
             (NMemberKind::Constructor, &e.constructors),
             (NMemberKind::Method, &e.methods),
@@ -649,11 +753,22 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
                         .map(|p| p.type_name.to_ascii_lowercase())
                         .collect::<Vec<_>>(),
                 );
-                if seen.contains(&sig) {
-                    continue;
+                // A row the page repeats is dropped. Two different rows with
+                // one signature are a scrape that lost a type (an override
+                // must say which is which).
+                if let Some((_, first)) = seen.iter().find(|(s, _)| *s == sig) {
+                    if *first == m {
+                        continue;
+                    }
+                    return Err(format!(
+                        "`{base}` has two {kind:?} rows `{}` with one signature: \
+                         {first:?} and {m:?}; add an override that tells them apart",
+                        m.name
+                    ));
                 }
-                seen.push(sig);
+                seen.push((sig, m));
                 let mut is_static = m.is_static;
+                let mut scraped = NType::Unknown;
                 let ty = match kind {
                     NMemberKind::Constructor => {
                         is_static |= static_ctor;
@@ -673,8 +788,11 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
                                     continue;
                                 }
                                 Some(raw) => match read_type(raw, &owner, &names) {
-                                    NTypeOrDamaged::Type(t) => t,
-                                    NTypeOrDamaged::Damaged => {
+                                    (NTypeOrDamaged::Type(t), s) => {
+                                        scraped = s;
+                                        t
+                                    }
+                                    (NTypeOrDamaged::Damaged, _) => {
                                         damaged = true;
                                         continue;
                                     }
@@ -692,11 +810,12 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
                         continue;
                     }
                     match read_type(&p.type_name, &owner, &names) {
-                        NTypeOrDamaged::Type(ty) => params.push(NParam {
+                        (NTypeOrDamaged::Type(ty), scraped) => params.push(NParam {
                             name: p.name.clone().unwrap_or_default(),
                             ty,
+                            scraped,
                         }),
-                        NTypeOrDamaged::Damaged => bad_param = true,
+                        (NTypeOrDamaged::Damaged, _) => bad_param = true,
                     }
                 }
                 if bad_param {
@@ -709,6 +828,11 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
                     is_static,
                     is_abstract: m.is_abstract,
                     is_final: m.is_final,
+                    scraped: if matches!(ty, NType::Unknown) {
+                        scraped
+                    } else {
+                        ty
+                    },
                     ty,
                     params,
                 });
@@ -746,6 +870,14 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
             header_known,
             complete: false,
         });
+    }
+
+    let disagreements = interface_disagreements(&types);
+    if !disagreements.is_empty() {
+        return Err(format!(
+            "members disagree with the interfaces they implement; add overrides:\n{}",
+            disagreements.join("\n")
+        ));
     }
 
     // Completeness: own facts, then every supertype complete. A cycle is an
@@ -794,6 +926,78 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
         version: index.version.clone(),
         types,
     })
+}
+
+/// Each member of a type whose type, as scraped, disagrees with the member
+/// of an interface the type implements (directly or through a supertype):
+/// a property of another type, or a method with the same parameter types and
+/// another return type. ABL requires them to agree, so a disagreement is a
+/// scrape that read a type wrongly (`OpenEdge.Core.Memptr:Value` read as the
+/// class where `IMemptrHolder:Value` says `MEMPTR`). A type that either side
+/// does not know is not compared.
+pub fn interface_disagreements(types: &[NTypeEntry]) -> Vec<String> {
+    let known = |t: &NType| !matches!(t, NType::Unknown | NType::TypeParam(_));
+    let mut out = Vec::new();
+    for t in types {
+        // Every interface above `t`, each once.
+        let mut stack: Vec<usize> = t
+            .parent
+            .iter()
+            .chain(&t.interfaces)
+            .filter_map(|s| match s {
+                NSuper::Catalog(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        let mut seen = Vec::new();
+        while let Some(i) = stack.pop() {
+            if seen.contains(&i) {
+                continue;
+            }
+            seen.push(i);
+            let up = &types[i];
+            stack.extend(
+                up.parent
+                    .iter()
+                    .chain(&up.interfaces)
+                    .filter_map(|s| match s {
+                        NSuper::Catalog(j) => Some(*j),
+                        _ => None,
+                    }),
+            );
+            if up.kind != TypeKind::Interface {
+                continue;
+            }
+            for wanted in &up.members {
+                for own in t
+                    .members
+                    .iter()
+                    .filter(|m| m.kind == wanted.kind && m.name.eq_ignore_ascii_case(&wanted.name))
+                {
+                    let same_params = own.params.len() == wanted.params.len()
+                        && own.params.iter().zip(&wanted.params).all(|(a, b)| {
+                            known(&a.scraped) && known(&b.scraped) && a.scraped == b.scraped
+                        });
+                    let comparable = match wanted.kind {
+                        NMemberKind::Property => true,
+                        NMemberKind::Method => same_params,
+                        NMemberKind::Constructor | NMemberKind::Event => false,
+                    };
+                    if comparable
+                        && known(&own.scraped)
+                        && known(&wanted.scraped)
+                        && own.scraped != wanted.scraped
+                    {
+                        out.push(format!(
+                            "`{}:{}` is {:?}, but `{}:{}` is {:?}",
+                            t.name, own.name, own.scraped, up.name, wanted.name, wanted.scraped
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Read the JSON and the overrides from the workspace `root` and normalise.
@@ -1140,14 +1344,149 @@ mod tests {
     }
 
     #[test]
-    fn a_duplicate_signature_is_kept_once() {
+    fn a_repeated_row_is_kept_once_and_two_rows_with_one_signature_fail() {
         let t = one(
             r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
                 "methods": [{"name": "M", "return_type": "INTEGER", "params": [{"name": "a", "type_name": "CHARACTER"}]},
-                            {"name": "m", "return_type": "LOGICAL", "params": [{"name": "b", "type_name": "character"}]}]}"#,
+                            {"name": "M", "return_type": "INTEGER", "params": [{"name": "a", "type_name": "CHARACTER"}]}]}"#,
         );
         assert_eq!(t.members.len(), 1);
-        assert_eq!(t.members[0].ty, NType::Primitive("Integer"));
+        let index = index_with(&[
+            OBJECT,
+            (
+                "A.B",
+                r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
+                    "methods": [{"name": "M", "params": [{"name": "poData", "type_name": "A.C"}]},
+                                {"name": "m", "params": [{"name": "pmData", "type_name": "A.C"}]}]}"#,
+            ),
+            (
+                "A.C",
+                r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object"}"#,
+            ),
+        ]);
+        assert!(
+            normalise(&index)
+                .unwrap_err()
+                .contains("with one signature")
+        );
+    }
+
+    /// `A.Memptr` is named like the primitive `MEMPTR`.
+    const MEMPTR_CLASS: (&str, &str) = (
+        "A.Memptr",
+        r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object"}"#,
+    );
+
+    #[test]
+    fn a_class_named_like_a_primitive_is_not_known_unless_written_class() {
+        let index = index_with(&[
+            OBJECT,
+            MEMPTR_CLASS,
+            (
+                "A.User",
+                r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
+                    "methods": [{"name": "Get", "return_type": "A.Memptr"},
+                                {"name": "Put", "params": [{"name": "o", "type_name": "CLASS A.Memptr"}]},
+                                {"name": "All", "return_type": "A.Memptr[]"}]}"#,
+            ),
+        ]);
+        let c = normalise(&index).unwrap();
+        let user = c.get("A.User").unwrap();
+        let member = |n: &str| user.members.iter().find(|m| m.name == n).unwrap();
+        let memptr = c.types.iter().position(|t| t.name == "A.Memptr").unwrap();
+        assert_eq!(member("Get").ty, NType::Unknown);
+        assert_eq!(member("Get").scraped, NType::Class(memptr));
+        assert_eq!(member("All").ty, NType::Unknown);
+        assert_eq!(member("Put").params[0].ty, NType::Class(memptr));
+        assert!(user.members_trusted);
+    }
+
+    #[test]
+    fn a_member_that_disagrees_with_its_interface_fails() {
+        let types = [
+            OBJECT,
+            MEMPTR_CLASS,
+            (
+                "A.IHolder",
+                r#"{"kind": "interface", "package": "A", "page": "p",
+                    "properties": [{"name": "Value", "return_type": "MEMPTR"}],
+                    "methods": [{"name": "Size", "return_type": "INT64", "params": [{"name": "a", "type_name": "INTEGER"}]}]}"#,
+            ),
+        ];
+        let holder = |value: &str, size: &str| {
+            format!(
+                r#"{{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
+                    "implements": ["A.IHolder"],
+                    "properties": [{{"name": "Value", "return_type": "{value}"}}],
+                    "methods": [{{"name": "Size", "return_type": "{size}", "params": [{{"name": "a", "type_name": "INTEGER"}}]}},
+                                {{"name": "Size", "return_type": "LOGICAL", "params": [{{"name": "a", "type_name": "CHARACTER"}}]}}]}}"#
+            )
+        };
+        let run = |value: &str, size: &str| {
+            let entry = holder(value, size);
+            let mut all = types.to_vec();
+            all.push(("A.Holder", entry.as_str()));
+            normalise(&index_with(&all))
+        };
+        // The scraped class where the interface says MEMPTR, even though the
+        // normaliser reads it as not known.
+        let err = run("A.Memptr", "INT64").unwrap_err();
+        assert!(
+            err.contains("`A.Holder:Value`") && err.contains("`A.IHolder:Value`"),
+            "{err}"
+        );
+        let err = run("MEMPTR", "INTEGER").unwrap_err();
+        assert!(err.contains("`A.Holder:Size`"), "{err}");
+        // An overload with other parameter types is not the interface method.
+        assert!(run("MEMPTR", "INT64").is_ok());
+    }
+
+    #[test]
+    fn a_param_type_override_types_each_overload_and_keeps_the_extent() {
+        let mut index = index_with(&[
+            OBJECT,
+            MEMPTR_CLASS,
+            (
+                "A.W",
+                r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
+                    "methods": [{"name": "Write", "params": [{"name": "pData", "type_name": "A.Memptr"}]},
+                                {"name": "Write", "params": [{"name": "pData", "type_name": "A.Memptr[]"}]}]}"#,
+            ),
+        ]);
+        let text = "[[override]]\ntype = \"A.W\"\nchecked_against = \"x\"\nparam_type = { member = \"write\", param = \"pData\", type = \"MEMPTR\" }\n";
+        apply_overrides(&mut index, text).unwrap();
+        let c = normalise(&index).unwrap();
+        let tys: Vec<_> = c
+            .get("A.W")
+            .unwrap()
+            .members
+            .iter()
+            .map(|m| m.params[0].ty)
+            .collect();
+        assert_eq!(
+            tys,
+            [NType::Primitive("Memptr"), NType::PrimitiveArray("Memptr")]
+        );
+        // The same entry again matches nothing new.
+        assert!(
+            apply_overrides(&mut index, text)
+                .unwrap_err()
+                .contains("already")
+        );
+        let missing = "[[override]]\ntype = \"A.W\"\nchecked_against = \"x\"\nparam_type = { member = \"Write\", param = \"pNope\", type = \"MEMPTR\" }\n";
+        assert!(
+            apply_overrides(&mut index, missing)
+                .unwrap_err()
+                .contains("no member `Write` with a parameter `pNope`")
+        );
+    }
+
+    #[test]
+    fn the_checked_in_catalog_agrees_with_its_interfaces() {
+        assert_eq!(
+            interface_disagreements(&checked_in().types),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

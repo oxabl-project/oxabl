@@ -1,5 +1,7 @@
-//! Built-in classes through `oxabl check`: a scalar return or property that
-//! may be an `EXTENT`, a `SUPER:` receiver, and a project on an OpenEdge
+//! Built-in classes through `oxabl check`, where the catalog scraped from the
+//! documentation is not sure: a scalar return or property that may be an
+//! `EXTENT`, a `MEMPTR` that the documentation links to the class
+//! `OpenEdge.Core.Memptr`, a `SUPER:` receiver, and a project on an OpenEdge
 //! version newer than the catalog.
 
 #![cfg(unix)]
@@ -217,6 +219,46 @@ fn a_built_in_property_may_hold_an_extent() {
                 "MESSAGE NEW OpenEdge.Core.Collections.Array(oKV).",
                 "CL006",
                 "no constructor of `OpenEdge.Core.Collections.Array` takes arguments of these types: `OpenEdge.Core.KeyValuePair`"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_memptr_is_not_taken_for_the_class_memptr() {
+    let source = "DEFINE VARIABLE mp AS MEMPTR NO-UNDO.\n\
+        DEFINE VARIABLE oMp AS OpenEdge.Core.Memptr NO-UNDO.\n\
+        DEFINE VARIABLE oBB AS OpenEdge.Core.ByteBucket NO-UNDO.\n\
+        DEFINE VARIABLE oResp AS OpenEdge.Net.HTTP.IHttpResponse NO-UNDO.\n\
+        DEFINE VARIABLE oReq AS OpenEdge.Web.IWebRequest NO-UNDO.\n\
+        DEFINE VARIABLE i AS INTEGER NO-UNDO.\n\
+        mp = CAST(oResp:Entity, OpenEdge.Core.Memptr):Value.\n\
+        mp = oMp:Value.\n\
+        mp = oBB:GetBytes():Value.\n\
+        mp = oReq:GetRawEntity():Value.\n\
+        oBB:PutBytes(mp).\n\
+        oBB:PutBytes(oMp).\n\
+        oBB:ReadBytes(1, mp).\n\
+        MESSAGE NEW OpenEdge.Core.Memptr(mp).\n\
+        i = oMp:Value.\n\
+        oBB:PutBytes(mp, 1, 2).\n\
+        MESSAGE mp oMp oBB oResp oReq i.\n";
+    // `Value` is MEMPTR (the `IMemptrHolder` contract); the `PutBytes`,
+    // `ReadBytes` and constructor parameters follow the short signatures of
+    // the page. A return the page links to the class page is not known
+    // (`GetBytes`, `GetRawEntity`), so nothing is said about it.
+    assert_eq!(
+        typed(source),
+        [
+            typed_row(
+                "i = oMp:Value.",
+                "LINT0004",
+                "type mismatch: cannot assign `MEMPTR` to `INTEGER`"
+            ),
+            typed_row(
+                "oBB:PutBytes(mp, 1, 2).",
+                "CL006",
+                "no overload of `OpenEdge.Core.ByteBucket:PutBytes` takes 3 arguments"
             ),
         ]
     );

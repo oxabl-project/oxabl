@@ -39,7 +39,7 @@ which break you tried.
   collector file under `crates/oxabl_pipeline/src/completion/` and one arm in
   the dispatch of `completion/mod.rs`; that arm is the only shared line, and a
   rebase resolves it.
-- Step 6 needs the `ClassSource` trait of step 5.
+- Step 6 needs the members step 5 groups from `local_surface`.
 - Step 2 writes the whole context finder (`completion/context.rs`), every row
   of the design's table, so later steps do not edit it. A context with no
   collector yet answers `null`.
@@ -155,7 +155,7 @@ fail; make `Preserve` always upper case, and see the keyword case test fail.
   symbols and symbols declared in the changed region of a stale base. The
   scope-token rule of a stale base (no names when the changed region opens or
   closes a scope).
-- Inherited members of the own class need `class_surface` (step 5). Until
+- Inherited members of the own class need `local_surface` (step 5). Until
   then, a class whose `INHERITS` names a class gives its own members and
   `isIncomplete: true`.
 - `crates/oxabl_daemon/src/completion.rs`: bases for an include with a
@@ -201,21 +201,19 @@ offer tables after an unknown qualifier, and see the `null` case fail.
 
 ## Step 5. Members after `obj:`
 
-- `crates/oxabl_semantic/src/surface.rs` (new): `ClassSource` (with
-  `classes_in`; the workspace index answers it with an empty, incomplete list
-  until step 6), `ClassRef`, `Reach`, `ClassSurface`, `SurfaceMember`,
-  `MemberSignature`, `MemberOrigin`, and `class_surface` with the access,
-  static and completeness rules of `class-members.md`. It walks supertypes
-  with `lookup_supertype` and a visited set. Every class surface is
-  incomplete until a source answers for `Progress.Lang.Object`.
+- `crates/oxabl_semantic/src/surface.rs` exists (#154): `local_surface`,
+  `surface`, `supertypes`, `ClassOrigin`, `SurfaceRole`, `SurfaceMember`
+  (one entry per overload; `access` is `None` for a built-in member),
+  `MemberOrigin` and `ClassSurface`, with the access, static and completeness
+  rules of `class-members.md`. Completion reads it; it does not add a trait.
 - `crates/oxabl_pipeline/src/completion/members.rs`: receiver typing from
   tokens (the forms of the design's table, and `null` for every other form),
   one item per member name, method details with the overload count.
-- Step 3's inherited members of the own class now come from `class_surface`
+- Step 3's inherited members of the own class now come from `local_surface`
   with role `ThisObject`.
 - Resolve: the signature of each overload and the declaring class.
 - `docs/design/class-members.md`: a line in "Out of scope, and the seams
-  left" that completion reads the same rules through `class_surface`.
+  left" that completion reads the same rules through `local_surface`.
 
 Tests (tester): `crates/oxabl/tests/completion_members_lsp.rs`.
 
@@ -230,8 +228,8 @@ the test file; clippy. Extend `completion_bench` with `obj:`. Break: let
   `list_dir`, the header scan for kind and `ABSTRACT`, the 50,000-file limit,
   the first entry wins), made on a worker thread at the first type request,
   dropped on a watched `.cls` create or delete and on a configuration change,
-  remade after 60 seconds for entries outside the watched folders. The
-  workspace `ClassSource::classes_in` answers from it.
+  remade after 60 seconds for entries outside the watched folders. Workspace
+  types come from it; built-in types from `BuiltinCatalog::classes_in`.
 - `crates/oxabl_pipeline/src/completion/types.rs`: the "Types" collector, the
   data types by position, packages with `editor.action.triggerSuggest`, and
   the `USING` edit with its rules (made from the current text).

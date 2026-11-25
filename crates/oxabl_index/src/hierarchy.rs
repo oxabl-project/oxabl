@@ -322,9 +322,7 @@ pub trait ClassSource {
     /// Whether the workspace compiles with an OpenEdge version newer than the
     /// catalog of built-in types (`[workspace.preprocessor].proversion`), so a
     /// built-in type may have methods the catalog does not list.
-    fn builtins_may_lack_members(&self) -> bool {
-        false
-    }
+    fn builtins_may_lack_members(&self) -> bool;
 }
 
 impl SubtypeIndex {
