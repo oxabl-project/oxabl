@@ -103,16 +103,17 @@ pub struct CollectedDiagnostics {
     /// Whether the parser recovered from at least one error, wherever in the
     /// expansion it occurred.
     ///
-    /// Not derivable from `diagnostics` alone: a parse error that originates
-    /// inside an include is reported there at the include's site, so a count of
-    /// the parse entries would also include it, but it has no span of its own
-    /// in the root's bytes.
+    /// Not derivable from `diagnostics`: a parse error at the end of an include
+    /// fragment is not in that list, and neither is one that a rule selection
+    /// other than `All` leaves out, while the statements it skipped are gone
+    /// from the model all the same.
     pub parse_recovered: bool,
-    /// Semantic, lint and parse findings that sit in an include, with the include
-    /// chain that produced each. They are not in `diagnostics`, which keeps only
-    /// the findings in the root's own bytes. A parse error here is also in
-    /// `diagnostics`, as a diagnostic at the include's site in the root. Each is a finding about this one root
-    /// after expansion; see [`IncludeOriginDiagnostic`].
+    /// Semantic, lint and parse findings that sit in an include, with the
+    /// include chain that produced each. They are not in `diagnostics`, which
+    /// keeps only the findings in the root's own bytes. A parse error here is
+    /// also in `diagnostics`, at the include's site in the root. Each is a
+    /// finding about this one root after expansion; see
+    /// [`IncludeOriginDiagnostic`].
     pub include_origin: Vec<IncludeOriginDiagnostic>,
     /// Findings of a use-site rule ([`RuleMeta::use_site_in_includer`]) that sit
     /// in an include. They are not in `diagnostics`: the includer's own run
@@ -731,6 +732,16 @@ impl ExpandedFile {
             })
             .ok()?;
         Some(self.include_regions[found].site)
+    }
+
+    /// Where the text that the `{...}` site `site` in the root brought in
+    /// starts in the **expanded** buffer. `None` when no site in the root is
+    /// `site`. A site that brings in nothing has an empty start.
+    pub fn include_site_start(&self, site: Span) -> Option<u32> {
+        self.include_regions
+            .iter()
+            .find(|region| region.site == site)
+            .map(|region| region.virt_start)
     }
 
     /// Where a span in the **expanded** buffer lies in the include file that
@@ -1775,12 +1786,10 @@ pub fn collect_from_expanded_with_summaries(
             // its own. It is never dropped: it is reported at the include's
             // site in the root and in the include file.
             Err(d) if !at_end => {
-                if let Some(site) = include_parse_error_at_site(&d, expanded) {
-                    out.diagnostics.push(CollectedDiagnostic {
-                        diagnostic: site,
-                        source: DiagnosticSource::Parse,
-                    });
-                }
+                out.diagnostics.push(CollectedDiagnostic {
+                    diagnostic: include_parse_error_at_site(&d, expanded),
+                    source: DiagnosticSource::Parse,
+                });
                 include_rows.add(d, DiagnosticSource::Parse, expanded, &mut out);
             }
             Err(_) => {}
@@ -2123,12 +2132,12 @@ fn analyze_expanded(
     (sem, recovered)
 }
 
-/// The parse error `d`, whose span is in an include, as a diagnostic at the
-/// `{...}` site in the root that brought the include in. Its message says
-/// where in the include the error is. `None` when no site in the root
-/// leads to the text.
-fn include_parse_error_at_site(d: &Diagnostic, expanded: &ExpandedFile) -> Option<Diagnostic> {
-    let site = expanded.resolve_include_site(d.span.span)?;
+/// The parse error `d`, whose span is not in the root's own bytes, as a
+/// diagnostic at the `{...}` site in the root that brought the text in. Its
+/// message says where the error is: in an include file, or in the value of a
+/// preprocessor name or an include argument. When no site leads to the text,
+/// it sits at the end of the root, so it is never dropped.
+fn include_parse_error_at_site(d: &Diagnostic, expanded: &ExpandedFile) -> Diagnostic {
     let place = expanded
         .resolve_include_span(d.span.span)
         .map(|(path, span, _)| {
@@ -2144,15 +2153,18 @@ fn include_parse_error_at_site(d: &Diagnostic, expanded: &ExpandedFile) -> Optio
                 .unwrap_or_default();
             format!("{name}{line_col}")
         })
-        .unwrap_or_else(|| "an include".to_string());
+        .unwrap_or_else(|| "the value of a preprocessor name or an include argument".to_string());
     let mut at_site = d.clone();
     at_site.message = format!("{} (in {place})", d.message);
-    at_site.span = FileSpan {
-        file: expanded.root,
-        span: site,
+    at_site.span = match expanded.resolve_include_site(d.span.span) {
+        Some(site) => FileSpan {
+            file: expanded.root,
+            span: site,
+        },
+        None => expanded.resolve_end(),
     };
     at_site.labels.clear();
-    Some(at_site)
+    at_site
 }
 
 /// `d` as a finding at the `{...}` site of the include that holds its anchor,

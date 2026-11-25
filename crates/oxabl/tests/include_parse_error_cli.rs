@@ -134,3 +134,43 @@ fn a_clean_include_reports_no_parse_error() {
     assert_eq!(run.code, Some(0), "{}\n{}", run.stdout, run.stderr);
     assert!(parse_errors(&run).is_empty(), "{}", run.stdout);
 }
+
+#[test]
+fn an_error_in_a_name_value_of_the_root_is_reported_at_the_reference() {
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("c6.p"),
+        "&GLOBAL-DEFINE bad DISPLAY ) .\nMESSAGE \"a\".\n{&bad}\n",
+    );
+    let run = check(tmp.path(), &["c6.p"]);
+    assert_eq!(run.code, Some(1), "{}\n{}", run.stdout, run.stderr);
+    assert!(
+        run.stdout.contains("c6.p:3:1: error[PARSE001]"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("(in the value of a preprocessor name or an include argument)"),
+        "{}",
+        run.stdout
+    );
+    assert!(!run.stdout.contains("an include)"), "{}", run.stdout);
+}
+
+#[test]
+fn an_error_in_a_name_value_inside_an_include_is_reported_at_the_root_site() {
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("c7.i"),
+        "&SCOPED-DEFINE bad DISPLAY ) .\nMESSAGE \"a\".\n{&bad}\n",
+    );
+    write(&tmp.path().join("c7.p"), "MESSAGE \"r\".\n{c7.i}\n");
+    let run = check(tmp.path(), &["-I", ".", "c7.p"]);
+    assert_eq!(run.code, Some(1), "{}\n{}", run.stdout, run.stderr);
+    assert!(
+        run.stdout.contains("c7.p:2:1: error[PARSE001]"),
+        "{}",
+        run.stdout
+    );
+}

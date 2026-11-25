@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use lsp_server::{ErrorCode, Message, Request, Response};
 use lsp_types::{DiagnosticSeverity, Position, PositionEncodingKind, Range, Uri};
-use oxabl_analyze::{CollectedDiagnostics, ExpandedFile, IncludeExpansion, TextLossKind};
+use oxabl_analyze::{
+    CollectedDiagnostics, DiagnosticSource, ExpandedFile, IncludeExpansion, TextLossKind,
+};
 use oxabl_common::{Diagnostic, FileId, Severity};
 use oxabl_daemon::canonical_path;
 use oxabl_daemon::db::{ExpandedUnit, compute_expanded_unit};
@@ -633,17 +635,23 @@ impl<'a> Renderer<'a> {
         let diagnostics: &CollectedDiagnostics = &self.unit.diagnostics;
         let root_file = self.expanded.root_file();
         let mut findings = Vec::new();
-        let mut place = |diagnostic: &Diagnostic, file: FileId, path: &Path| {
+        let mut place = |diagnostic: &Diagnostic, file: FileId, path: &Path, at_site: bool| {
             let span = diagnostic.span.span;
-            let range = self
-                .expanded
-                .expanded_offset(file, span.start)
+            let width = span.end.saturating_sub(span.start);
+            // A parse error in an include is also reported at the include's
+            // `{...}` site, whose bytes the expansion did not keep: it sits
+            // where the text of that site starts.
+            let (virt, width) = match self.expanded.expanded_offset(file, span.start) {
+                Some(virt) => (Some(virt), width),
+                None if at_site => (self.expanded.include_site_start(span), 0),
+                None => (None, width),
+            };
+            let range = virt
                 .and_then(|virt| self.output_at(virt))
                 .map(|start| {
-                    let end = start + span.end.saturating_sub(span.start);
                     Range::new(
                         byte_to_position(&out_source.rope, start as usize, self.encoding),
-                        byte_to_position(&out_source.rope, end as usize, self.encoding),
+                        byte_to_position(&out_source.rope, (start + width) as usize, self.encoding),
                     )
                 })
                 .unwrap_or(Range::new(Position::new(0, 0), Position::new(0, 0)));
@@ -656,18 +664,24 @@ impl<'a> Renderer<'a> {
             });
         };
         for collected in diagnostics.all() {
-            place(&collected.diagnostic, root_file, &self.unit.root);
+            place(
+                &collected.diagnostic,
+                root_file,
+                &self.unit.root,
+                collected.source == DiagnosticSource::Parse,
+            );
         }
         for finding in &diagnostics.include_origin {
             place(
                 &finding.diagnostic,
                 finding.diagnostic.span.file,
                 &finding.path,
+                false,
             );
         }
         for diagnostic in self.expanded.nested_preprocessor_diagnostics() {
             if let Some(path) = self.expanded.file_path(diagnostic.span.file) {
-                place(diagnostic, diagnostic.span.file, path);
+                place(diagnostic, diagnostic.span.file, path, false);
             }
         }
         findings

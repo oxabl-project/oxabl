@@ -106,7 +106,9 @@ It reads through the open buffers, like the root context, and runs
 - `diagnostics`: the findings of the same analysis (root findings, findings
   in includes, preprocessor errors in includes), placed in `text`, each with
   its physical `source` location. A finding whose text the expansion did not
-  keep sits on the first line.
+  keep sits on the first line. A parse error in an include is also a finding
+  at the include's `{...}` site in the root. That finding sits at the start of
+  the text of that site, with no width, and its `source` is the site.
 - `problems`: what makes the expansion reduced: an include that was not found
   or could not be read, a lost stretch of text (the depth limit, an unclosed
   `&IF`, a condition oxabl cannot decide), and preprocessor errors in includes
