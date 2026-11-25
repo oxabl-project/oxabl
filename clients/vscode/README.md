@@ -66,7 +66,13 @@ you also get, with no setup:
   the snippets where their body is valid. The names in scope come too: the
   variables, parameters, buffers and functions that are defined before the
   cursor, the members of the class, and the built-in functions, with the type
-  that fits an assignment first. Keywords are written in the case of
+  that fits an assignment first. After `FIND FIRST` or `FOR EACH` come the
+  buffers, temp-tables and tables of the schema; after `Customer.` its fields;
+  in a `WHERE` the fields of the statement's records first. After `RUN` come
+  the internal procedures and the programs on the include path, after `{` the
+  include files, and after `{&` the preprocessor names. The `find` and
+  `foreach` snippets offer the tables as a choice when the schema has at most
+  30. Keywords are written in the case of
   `keyword_case`; with `Preserve` or no setting, in the case of the word you
   type, else of the nearest keyword before it. Where oxabl does not know what
   the cursor needs (in a comment or a string, after a statement end), the

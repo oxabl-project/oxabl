@@ -195,6 +195,16 @@ and the fields, and can move the record rows there.
 
 Tests (tester): `crates/oxabl/tests/completion_records_lsp.rs`.
 
+As built: the record rows stay in `names.rs`; `records.rs` holds the table
+items (moved from `names.rs`), the qualified names, the fields and the
+`WHERE` collector. Right after a record keyword only a database qualifies
+(`FIND FIRST shop.`), and that case needs no base. Fields come from the
+semantic record links (`SymbolTable::record_source`, `temp_table_fields`,
+`temp_table_like`, now public), which give the type of each field, in the
+order of `EffectiveTable::declare`. The match rule now lets the first
+character of the word start any part of the label, as the design says (`cu`
+matches `bCust`).
+
 Verify: `cargo test -p oxabl_pipeline -p oxabl_daemon` and the test file;
 clippy. Extend `completion_bench` with `FIND FIRST` and `Customer.`. Break:
 offer tables after an unknown qualifier, and see the `null` case fail.
@@ -256,6 +266,16 @@ the include case fail.
 - Resolve: the path relative to its include path entry.
 
 Tests (tester): `crates/oxabl/tests/completion_paths_lsp.rs`.
+
+As built: the preprocessor keeps `PreprocessedFile::defines` (`DefineSite`,
+in the coordinates of the file that writes each) and
+`PreprocessedFile::include_arguments`; `define_offsets` places the defines
+in the expanded text, and `ExpandedFile::defines` (`PlacedDefine`) and
+`ExpandedFile::include_arguments` carry them. `CompletionRequest` has the
+configuration and the file system, so `RUN` and `{` list directories with no
+base. Crate tests: `crates/oxabl_pipeline/tests/completion_paths.rs` (a
+directory that cannot be listed, a directory that does not exist, the scope
+of a `&SCOPED-DEFINE`).
 
 Verify: `cargo test -p oxabl_preprocessor -p oxabl_analyze -p oxabl_pipeline -p oxabl_daemon`
 and the test file; clippy. Break: list directories with `None` treated as
