@@ -351,6 +351,12 @@ order: the `oxabl.server.path` setting, `~/.local/bin/oxabl` (the directory in
 (**Output** panel) says when the binary was not found. Install the binary later,
 then run **oxabl: Restart Server**.
 
+The language server uses a shared oxabl daemon for each workspace. On a busy
+machine the daemon can take some seconds to start. The language server then
+waits for it, for 60 seconds at most, and the status bar shows that it starts.
+The `oxabl` output channel shows a line for a start that takes more than one
+second.
+
 In a project, these features follow `[workspace.features]` in `oxabl.toml`:
 `diagnostics = false` stops the diagnostics, the dimming of inactive branches, the code lenses and the inlay hints, and `format = false` stops formatting, so format on save and Format Selection do
 nothing. An `oxabl.toml` that oxabl cannot read turns both off until you fix
