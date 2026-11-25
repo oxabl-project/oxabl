@@ -1372,6 +1372,63 @@ pub const FIXTURES: &[ParityFixture] = &[
         needs: &[],
         edges: &[],
     },
+    // A member of a built-in type has the type the catalog gives it, on every
+    // client and with no index: `GetMessage` returns CHARACTER.
+    ParityFixture {
+        name: "builtin_member_type",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "DEFINE VARIABLE oErr AS Progress.Lang.AppError NO-UNDO.\nDEFINE VARIABLE l AS LOGICAL NO-UNDO.\nl = oErr:GetMessage(1).\nMESSAGE oErr l.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0004",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Lint,
+            start: 94,
+            end: 95,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[],
+    },
+    // A class of the file that inherits a built-in class reaches the built-in
+    // members by their bare names.
+    ParityFixture {
+        name: "builtin_parent_local_class",
+        root_file: "app/MyErr.cls",
+        siblings: &[],
+        resolutions: &[],
+        source: "CLASS app.MyErr INHERITS Progress.Lang.AppError:\n    METHOD PUBLIC VOID Go():\n        DEFINE VARIABLE l AS LOGICAL NO-UNDO.\n        l = GetMessage(1).\n        MESSAGE l.\n    END METHOD.\nEND CLASS.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0004",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Lint,
+            start: 132,
+            end: 133,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[],
+    },
+    // `Progress.Lang.Object` is the root of every class: `ToString` returns
+    // CHARACTER.
+    ParityFixture {
+        name: "builtin_object_method",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "DEFINE VARIABLE oObj AS Progress.Lang.Object NO-UNDO.\nDEFINE VARIABLE l AS LOGICAL NO-UNDO.\nl = oObj:ToString().\nMESSAGE oObj l.\n",
+        diagnostics: &[ExpectedDiagnostic {
+            code: "LINT0004",
+            severity: Severity::Warning,
+            source: DiagnosticSource::Lint,
+            start: 92,
+            end: 93,
+        }],
+        format: ExpectedFormat::Unchanged,
+        needs: &[],
+        edges: &[],
+    },
     // Defined inside a conditional DO block, assigned only there, read outside
     // it: the read sees the default value whenever the block was skipped.
     ParityFixture {
@@ -2949,8 +3006,8 @@ pub const FIXTURES: &[ParityFixture] = &[
                  MESSAGE VALID-OBJECT(v-calc).\n        \
                  AddMessage(\"x\", 1).\n    \
                  END METHOD.\nEND CLASS.\n",
-        // The shipped parent's own members are not modelled, so the inherited call
-        // is unknowable either way, not undefined.
+        // The inherited call resolves to the built-in member, which returns
+        // nothing: no finding.
         diagnostics: &[],
         needs: &[],
         target: "orders.calc-base",
