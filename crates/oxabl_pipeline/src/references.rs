@@ -1688,7 +1688,7 @@ fn routine_kind(kind: OutlineKind) -> Option<CallItemKind> {
 
 /// The symbol whose name is at `span`, at any depth, and the kind of the
 /// symbol that holds it.
-fn find_selected(
+pub(crate) fn find_selected(
     symbols: &[OutlineSymbol],
     span: Span,
 ) -> Option<(&OutlineSymbol, Option<OutlineKind>)> {
@@ -1837,7 +1837,7 @@ fn unknown_reason(reason: UnknownCall) -> &'static str {
     }
 }
 
-fn is_class_file(path: &Path) -> bool {
+pub(crate) fn is_class_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("cls"))

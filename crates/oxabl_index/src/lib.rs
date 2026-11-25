@@ -55,6 +55,7 @@ mod closure;
 pub mod declared;
 mod deps;
 mod facts;
+pub mod hierarchy;
 mod producers;
 // Public because a second cache lives outside this crate: the language server's
 // salsa-backed index does its own memoization but must use the *same*

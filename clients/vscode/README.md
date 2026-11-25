@@ -108,6 +108,27 @@ you also get, with no setup:
   cannot follow) shows as a call with no icon and the detail
   `unresolved: ...`. When the list can be short, its first entry is
   `incomplete`, with the reason.
+- **Go to Implementation** (`Ctrl+F12`). On an interface, a class, an abstract
+  method or a method, lists the classes that implement or extend it, through
+  any number of levels and in files that are not open. A method counts only
+  with the same parameters: an overload is another method. When the list can be
+  short, a warning says why: for example a class whose parent oxabl cannot
+  resolve, a class file it cannot read, no include path, or a workspace index
+  that is not ready.
+- **Go to Super Method** (**oxabl: Go to Super Method** in the Command Palette
+  and the editor menu). On a method, goes to the method it overrides or
+  implements in the nearest supertype, or lists several in a peek view. An
+  empty answer with a reason (a parent that oxabl cannot resolve, a method of
+  `Progress.Lang.Object`) says that oxabl does not know, not that nothing is
+  overridden. A method that overrides a class method and implements an
+  interface method goes to both. On a name that is no method that oxabl reads,
+  the command says so.
+- **Type hierarchy** (**Peek Type Hierarchy** in the Command Palette and the
+  editor menu). Shows the supertypes and the subtypes of a class, interface or
+  enum, one level at a time. A supertype that oxabl cannot
+  resolve is an item with no icon and the detail `unresolved: ...`, and a
+  built-in type shows by name with no file. When the list can be short, its
+  first entry is `incomplete`, with the reason.
 - **Hover.** Point at a name to see what it is: a variable, parameter or
   property with its type, `EXTENT`, `INITIAL` and `NO-UNDO`; the signature of
   an internal procedure, function or method (each overload of an inherited

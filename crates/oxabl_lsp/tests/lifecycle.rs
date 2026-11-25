@@ -74,7 +74,7 @@ fn handshake_advertises_only_incremental_sync_and_push_diagnostics() {
     // Push diagnostics need no capability; pull diagnostics must NOT be offered.
     assert!(caps.diagnostic_provider.is_none());
     // Navigation is advertised: go to definition, hover, highlights, document links, find
-    // references and the call hierarchy.
+    // references, the call hierarchy and go to implementation.
     assert_eq!(caps.definition_provider, Some(OneOf::Left(true)));
     assert_eq!(
         caps.hover_provider,
@@ -87,10 +87,13 @@ fn handshake_advertises_only_incremental_sync_and_push_diagnostics() {
         caps.call_hierarchy_provider,
         Some(lsp_types::CallHierarchyServerCapability::Simple(true))
     );
+    assert_eq!(
+        caps.implementation_provider,
+        Some(lsp_types::ImplementationProviderCapability::Simple(true))
+    );
     // No other feature advertised.
     assert!(caps.completion_provider.is_none());
     assert!(caps.rename_provider.is_none());
-    assert!(caps.implementation_provider.is_none());
 
     // Clean shutdown.
     client

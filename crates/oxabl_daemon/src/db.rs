@@ -96,11 +96,14 @@
 //! database with no concurrent writer; anything `pub` would take on the
 //! obligation, which is why neither is.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use oxabl_analyze::CollectedDiagnostics;
+use oxabl_index::hierarchy::{ClassFile, ClassSource, LookupMemo, SubtypeIndex};
 use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, IncludeContext, index_file_at, program_signatures_at};
 use oxabl_pipeline::{
@@ -1662,6 +1665,177 @@ pub fn with_navigation<T>(
             expansion: &expansion,
             fs: &fs,
         }))
+    }))
+    .ok()
+}
+
+/// The class files of a workspace as one snapshot reads them, for the
+/// hierarchy requests: the facts of each file (an open buffer over the disk),
+/// the resolution of the names a class header writes, and the file behind an
+/// index id.
+pub struct HierarchyUnit<'a> {
+    snapshot: &'a AnalysisDatabase,
+    fs: OverlayFs,
+    /// One resolver for each search base: the base of a class file is its
+    /// package root, so class files of different packages can differ.
+    resolvers: RefCell<HashMap<Option<PathBuf>, Rc<LookupMemo<SnapshotIndex<'a>>>>>,
+    /// The search base of each class file asked, so a file is read and
+    /// lexed for it once in a request.
+    bases: RefCell<HashMap<PathBuf, Option<PathBuf>>>,
+}
+
+impl<'a> HierarchyUnit<'a> {
+    /// The index that resolves the names the class file `path` writes, with
+    /// the search paths the file has: the same answer as go to definition.
+    pub fn resolver(&self, path: &Path) -> Rc<dyn WorkspaceIndex + 'a> {
+        let config = self.snapshot.config();
+        let base = if config.pipeline.root_relative_include_paths.is_empty() {
+            None
+        } else {
+            let known = self.bases.borrow().get(path).cloned();
+            known.unwrap_or_else(|| {
+                let text = self.read(path);
+                let base = config
+                    .pipeline
+                    .search_base(Some(path), text.as_deref().unwrap_or(""));
+                self.bases
+                    .borrow_mut()
+                    .insert(path.to_path_buf(), base.clone());
+                base
+            })
+        };
+        let mut resolvers = self.resolvers.borrow_mut();
+        let found = resolvers.entry(base.clone()).or_insert_with(|| {
+            Rc::new(LookupMemo::new(SnapshotIndex::new(
+                self.snapshot,
+                None,
+                base.as_deref(),
+            )))
+        });
+        Rc::clone(found) as Rc<dyn WorkspaceIndex + 'a>
+    }
+
+    /// The facts of the class file `path`. An open buffer gives its own text;
+    /// any other file is read through the memoized per-file facts, so only a
+    /// file that changed is read again.
+    pub fn facts(&self, path: &Path) -> Arc<FileFacts> {
+        let config = self.snapshot.config();
+        let file = config.index.file_for(self.snapshot, path);
+        let open = self
+            .fs
+            .overlay
+            .get(path)
+            .or_else(|| self.fs.overlay.get(&crate::session::canonical_path(path)));
+        let Some(text) = open else {
+            return indexed_facts(self.snapshot, file);
+        };
+        let environment = config.index.environment(self.snapshot);
+        let includes = IncludeContext {
+            fs: &self.fs,
+            include_paths: environment.include_paths(self.snapshot),
+            root_relative_paths: environment.root_relative_include_paths(self.snapshot),
+            predefined: environment.preprocessor(self.snapshot),
+        };
+        let id = IndexedFileId::new(*file.index_id(self.snapshot));
+        Arc::new(index_file_at(id, path, text, &includes).0)
+    }
+
+    /// The path of the file the index minted `id` for, if a lookup reached it.
+    pub fn path_of(&self, id: IndexedFileId) -> Option<PathBuf> {
+        self.snapshot
+            .config()
+            .index
+            .registered()
+            .into_iter()
+            .find(|(_, known)| *known == id)
+            .map(|(file, _)| file.path(self.snapshot).clone())
+    }
+
+    /// A file's text through the open buffers over the disk.
+    pub fn read(&self, path: &Path) -> Option<Arc<str>> {
+        self.fs.read(path).ok()
+    }
+
+    /// The open buffers that hold a class file, by the path the editor gave.
+    pub fn open_class_files(&self) -> Vec<PathBuf> {
+        self.fs
+            .overlay
+            .keys()
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("cls"))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The reverse inheritance index of `files`, class files of the
+    /// workspace. `None` when `cancelled` says so, checked before each file.
+    pub fn subtype_index(
+        &self,
+        files: &[PathBuf],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<SubtypeIndex> {
+        let stopped = Cell::new(false);
+        let built = SubtypeIndex::build(
+            files.iter().map_while(|path| {
+                if cancelled() {
+                    stopped.set(true);
+                    return None;
+                }
+                if oxabl_common::INJECTION_ENABLED
+                    && let Some(text) = self.read(path)
+                {
+                    oxabl_common::hold_if_injected(
+                        oxabl_common::panic_sites::HIERARCHY_INDEX,
+                        &text,
+                    );
+                }
+                Some(ClassFile {
+                    path: path.clone(),
+                    facts: self.facts(path),
+                })
+            }),
+            &|path| self.resolver(path),
+        );
+        (!stopped.get()).then_some(built)
+    }
+}
+
+impl ClassSource for HierarchyUnit<'_> {
+    fn path_of(&self, file: IndexedFileId) -> Option<PathBuf> {
+        HierarchyUnit::path_of(self, file)
+    }
+
+    fn resolver(&self, path: &Path) -> Rc<dyn WorkspaceIndex + '_> {
+        HierarchyUnit::resolver(self, path)
+    }
+
+    fn facts(&self, path: &Path) -> Arc<FileFacts> {
+        HierarchyUnit::facts(self, path)
+    }
+}
+
+/// Run `answer` over a snapshot with `overlay` over the configured file
+/// system. `None` when a concurrent write cancelled the read.
+pub fn with_hierarchy<T>(
+    snapshot: &AnalysisDatabase,
+    overlay: HashMap<PathBuf, Arc<str>>,
+    answer: impl FnOnce(&HierarchyUnit<'_>) -> T,
+) -> Option<T> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let config = snapshot.config();
+        let unit = HierarchyUnit {
+            snapshot,
+            fs: OverlayFs {
+                overlay,
+                inner: Arc::clone(&config.fs),
+            },
+            resolvers: RefCell::default(),
+            bases: RefCell::default(),
+        };
+        answer(&unit)
     }))
     .ok()
 }

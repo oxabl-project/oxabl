@@ -384,11 +384,11 @@ fn finish_incoming(calls: &mut [IncomingCall]) {
     }
 }
 
-type GraphAnswer = Result<Result<ReferenceGraph, String>, crate::MethodError>;
+pub(crate) type GraphAnswer = Result<Result<ReferenceGraph, String>, crate::MethodError>;
 
 /// The workspace graph, from a thread of its own, so a cancel stops the wait
 /// for a workspace pass. The pass goes on and is kept for later requests.
-fn graph_or_cancel(
+pub(crate) fn graph_or_cancel(
     host: &SessionHost,
     session_root: &Path,
     cancel: &AtomicBool,
@@ -511,7 +511,7 @@ fn search_units<T: Send>(
 
 /// Analyse `root` on a fresh snapshot of the session at `session_root`.
 /// `None` when an edit cancelled the analysis.
-fn analyse<T>(
+pub(crate) fn analyse<T>(
     host: &SessionHost,
     session_root: &Path,
     root: &Path,

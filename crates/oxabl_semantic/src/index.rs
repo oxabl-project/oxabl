@@ -491,6 +491,53 @@ impl ImportContext {
     }
 }
 
+/// What a type name written in a class header stands for, found with the
+/// search order the resolve pass uses (see [`ImportContext::resolve_class`]).
+#[derive(Debug, Clone)]
+pub enum ClassResolution {
+    /// A class or interface of the workspace.
+    Class(Arc<ClassDescriptor>),
+    /// A documented built-in type. The AVM supplies it, so no workspace file
+    /// holds it.
+    Builtin(&'static crate::BuiltinClass),
+    /// An import from a .NET assembly, which oxabl does not read.
+    Assembly,
+    /// An index is attached and no candidate spelling matched a class.
+    NotFound,
+    /// A file that would declare the class was located and could not be used.
+    Unusable,
+    /// The index declined to choose between candidate files.
+    Unknowable,
+}
+
+impl ImportContext {
+    /// Resolve the type name `raw`, written in the file these imports belong
+    /// to, through `index`: the dotted name, the explicit imports, the
+    /// wildcard prefixes, the bare name, then the implicit `Progress.Lang`
+    /// import. A workspace class wins over a built-in one of the same name.
+    ///
+    /// This is the lookup of `search_in_imports` in the resolve pass, without
+    /// the scope tree and without minting a symbol, for a consumer that has a
+    /// class header and no analysed file.
+    pub fn resolve_class(&self, raw: &str, index: &dyn WorkspaceIndex) -> ClassResolution {
+        for candidate in self.candidates(raw) {
+            let ImportCandidate::Name(name) = candidate else {
+                return ClassResolution::Assembly;
+            };
+            match index.class(&name) {
+                IndexAnswer::Found(descriptor) => return ClassResolution::Class(descriptor),
+                IndexAnswer::NotFound => {}
+                IndexAnswer::Unusable => return ClassResolution::Unusable,
+                IndexAnswer::Unknowable => return ClassResolution::Unknowable,
+            }
+            if let Some(class) = crate::builtin_class(name.as_written()) {
+                return ClassResolution::Builtin(class);
+            }
+        }
+        ClassResolution::NotFound
+    }
+}
+
 /// What the index knows about one class or interface, *before* any chain
 /// walking.
 ///

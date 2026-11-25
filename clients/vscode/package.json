@@ -41,6 +41,7 @@
     "onCommand:oxabl.build",
     "onCommand:oxabl.selectIncluderContext",
     "onCommand:oxabl.showExpandedUnit",
+    "onCommand:oxabl.goToSuperMethod",
     "onCommand:oxabl.schema.refresh",
     "onCommand:oxabl.schema.filter",
     "onCommand:oxabl.cancelBuild",
@@ -83,6 +84,10 @@
       {
         "command": "oxabl.showExpandedUnit",
         "title": "oxabl: Show Expanded Compilation Unit"
+      },
+      {
+        "command": "oxabl.goToSuperMethod",
+        "title": "oxabl: Go to Super Method"
       },
       {
         "command": "oxabl.schema.refresh",
@@ -303,6 +308,13 @@
       ]
     },
     "menus": {
+      "editor/context": [
+        {
+          "command": "oxabl.goToSuperMethod",
+          "when": "editorLangId == abl",
+          "group": "navigation@10"
+        }
+      ],
       "view/title": [
         {
           "command": "oxabl.schema.filter",
