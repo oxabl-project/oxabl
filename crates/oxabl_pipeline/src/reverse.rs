@@ -318,8 +318,6 @@ pub struct ReverseGraph {
     /// The calls that no static search follows, of every file the pass
     /// analysed.
     dynamic: DynamicCalls,
-    /// The files that make a `RUN VALUE`, normalised and sorted.
-    run_value_files: Vec<PathBuf>,
 }
 
 impl ReverseGraph {
@@ -377,18 +375,6 @@ impl ReverseGraph {
             + self.files.capacity() * std::mem::size_of::<PathBuf>()
             + self
                 .files
-                .iter()
-                .map(|path| path.to_string_lossy().len())
-                .sum::<usize>()
-            + self
-                .dynamic
-                .handle_names
-                .iter()
-                .map(String::len)
-                .sum::<usize>()
-            + self.run_value_files.capacity() * std::mem::size_of::<PathBuf>()
-            + self
-                .run_value_files
                 .iter()
                 .map(|path| path.to_string_lossy().len())
                 .sum::<usize>()
@@ -509,7 +495,6 @@ impl ReverseGraph {
                 .map(|root| normalize_lexically(root))
                 .collect(),
             dynamic: DynamicCalls::default(),
-            run_value_files: Vec::new(),
         }
     }
 
@@ -561,9 +546,6 @@ impl ReverseGraph {
             }
         };
         let dependent = file.as_path();
-        if dynamic.run_value {
-            self.run_value_files.push(dependent.to_path_buf());
-        }
         self.dynamic.absorb(&dynamic);
         if !edges.completeness().is_complete() {
             self.degraded.push(Degraded {
@@ -645,8 +627,6 @@ impl ReverseGraph {
         self.unnameable.dedup();
         self.files.sort();
         self.files.dedup();
-        self.run_value_files.sort();
-        self.run_value_files.dedup();
     }
 
     /// Every file whose compilation can change when `subject` changes (R1).
@@ -792,12 +772,21 @@ impl ReverseGraph {
         &self.dynamic
     }
 
-    /// Whether `file` makes a `RUN VALUE`, which can run any of its internal
-    /// procedures.
-    pub fn runs_value_in(&self, file: &Path) -> bool {
-        self.run_value_files
-            .binary_search(&normalize_lexically(file))
-            .is_ok()
+    /// Whether the pass can have missed a dynamic call: a file it could not
+    /// analyse, or one with an include that did not resolve or could not be
+    /// read, can hold any of them.
+    pub fn dynamic_calls_unknown(&self) -> bool {
+        !self.unanalysed.is_empty()
+            || self.degraded.iter().any(|file| {
+                file.reasons.iter().any(|reason| {
+                    matches!(
+                        reason,
+                        DegradedReason::UnresolvedInclude
+                            | DegradedReason::UnreadableInclude
+                            | DegradedReason::ParseRecovered
+                    )
+                })
+            })
     }
 
     /// Files the pass could not analyse. Never folded into "depends on nothing".

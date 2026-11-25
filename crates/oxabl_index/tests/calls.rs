@@ -212,39 +212,48 @@ fn components_come_callees_first() {
 fn dynamic_calls_are_read_by_kind() {
     let dynamic = |src: &str| calls(src).dynamic;
     assert!(dynamic("PROCEDURE p:\nEND PROCEDURE.\nRUN p.\nRUN a.p.\n").is_empty());
+    // A call through a handle or a super procedure is no fact of this kind:
+    // it can reach only a routine.
+    assert!(dynamic("RUN doWork IN h.\nRUN SUPER.\nRUN VALUE(c) IN h.\n").run_value);
+    assert!(dynamic("RUN doWork IN h.\nRUN SUPER.\n").is_empty());
 
     let run_value = dynamic("RUN VALUE(c).\n");
-    assert!(run_value.run_value && !run_value.run_value_in_handle);
-    assert!(!run_value.handle_reaches("p"));
-
-    let in_handle = dynamic("RUN VALUE(c) IN h.\n");
-    assert!(in_handle.run_value && in_handle.run_value_in_handle);
-    assert!(in_handle.handle_reaches("anything"));
+    assert!(run_value.run_value && !run_value.dynamic_new && !run_value.reflection);
 
     let new = dynamic("o = DYNAMIC-NEW \"demo.Thing\" ().\n");
-    assert!(new.dynamic_new && !new.dynamic_invoke && !new.dynamic_function);
+    assert!(new.dynamic_new && !new.dynamic_invoke && !new.run_value);
     let invoke = dynamic("DYNAMIC-INVOKE(o, \"Go\").\n");
     assert!(invoke.dynamic_invoke && !invoke.dynamic_new);
-    let function = dynamic("x = DYNAMIC-FUNCTION(\"f\", 1).\n");
-    assert!(function.dynamic_function && !function.dynamic_invoke);
+    let property = dynamic("x = DYNAMIC-PROPERTY(o, \"Total\").\n");
+    assert!(property.dynamic_property && !property.dynamic_invoke);
+    // A DYNAMIC-FUNCTION can reach only a function, and every routine is
+    // marked anyway.
+    assert!(dynamic("x = DYNAMIC-FUNCTION(\"f\", 1).\n").is_empty());
 
-    // A call through a handle names its routine, in any spelling of the case.
-    let named = dynamic("RUN DoWork IN h.\nRUN other IN h.\n");
-    assert!(named.handle_reaches("dowork") && named.handle_reaches("OTHER"));
-    assert!(!named.handle_reaches("third") && !named.unnamed_handle);
-    // A call with no name to read can reach any routine.
-    let unnamed = dynamic("PROCEDURE p:\n    RUN SUPER.\nEND PROCEDURE.\n");
-    assert!(unnamed.unnamed_handle && unnamed.handle_reaches("third"));
-    // A routine declared `IN SUPER` is named where it is called.
-    let delegated = dynamic("PROCEDURE viaSuper IN SUPER.\nRUN viaSuper.\n");
-    assert!(delegated.handle_reaches("viasuper") && !delegated.unnamed_handle);
+    // A reflection call, by any method that gives a class or a member.
+    for call in [
+        "o = Progress.Lang.Class:GetClass(\"a.B\"):New().\n",
+        "o:GetClass():Invoke(o, \"Go\").\n",
+        "m = c:GetMethod(\"Go\").\n",
+        "m = c:GETPROPERTY(\"Total\").\n",
+    ] {
+        let found = dynamic(call);
+        assert!(found.reflection, "{call}");
+        assert!(!found.dynamic_new && !found.run_value, "{call}");
+    }
+    // A method of another name is no reflection.
+    assert!(dynamic("x = o:GetName().\nGetClass = 1.\n").is_empty());
+
+    // A CALL object runs a program or a method by a name it computes.
+    let call = dynamic("DEFINE VARIABLE h AS HANDLE NO-UNDO.\nCREATE CALL h.\n");
+    assert!(call.run_value && call.dynamic_invoke && !call.dynamic_new);
 }
 
 #[test]
 fn the_dynamic_calls_of_two_files_join() {
-    let mut joined = calls("RUN VALUE(c).\nRUN a IN h.\n").dynamic;
-    joined.absorb(&calls("o = DYNAMIC-NEW \"x\" ().\nRUN b IN h.\n").dynamic);
-    assert!(joined.run_value && joined.dynamic_new && !joined.dynamic_invoke);
-    assert!(joined.handle_reaches("a") && joined.handle_reaches("b"));
-    assert!(!joined.handle_reaches("c"));
+    let mut joined = calls("RUN VALUE(c).\n").dynamic;
+    joined.absorb(&calls("o = DYNAMIC-NEW \"x\" ().\n").dynamic);
+    joined.absorb(&calls("x = DYNAMIC-PROPERTY(o, \"p\").\n").dynamic);
+    assert!(joined.run_value && joined.dynamic_new && joined.dynamic_property);
+    assert!(!joined.dynamic_invoke && !joined.reflection);
 }

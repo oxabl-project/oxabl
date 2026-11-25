@@ -122,10 +122,14 @@ you also get, with no setup:
   and it is made when
   the lens comes into view, so a large file does not run a search for each
   declaration at once. A count that can be short says so
-  (`12+ references · incomplete: <reason>`): for example when a call through a
-  handle, a `RUN VALUE`, a `DYNAMIC-NEW` or a `DYNAMIC-INVOKE` in the workspace
-  can reach the declaration. A caller from outside the workspace (an AppServer
-  client, a `-p` program, a published event) is never counted. The lenses ask
+  (`12+ references · incomplete: <reason>`). A procedure or function always says
+  that calls through a handle are not followed, because a super procedure, a
+  `PUBLISH`, a trigger or a callback can run it with no trace that oxabl
+  follows. A program, class or member says it when a `RUN VALUE`,
+  `DYNAMIC-NEW`, `DYNAMIC-INVOKE`, `DYNAMIC-PROPERTY` or a class reflection
+  call of the workspace can reach it, or when a file of the workspace cannot be
+  read. Without such a call the count is exact, but it does not count a caller
+  from outside the workspace (an AppServer client, a `-p` program). The lenses ask
   again after a save, a change on disk and an edit of another file. A declaration that oxabl does
   not resolve shows `references not known`, never a number. These lenses are
   off by default, and apart from the database effect lenses, which follow the

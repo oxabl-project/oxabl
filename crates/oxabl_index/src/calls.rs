@@ -143,32 +143,29 @@ pub struct FileCalls {
     pub functions: Vec<String>,
     /// More than [`MAX_SITES`] calls: the rest are not listed.
     pub truncated: bool,
-    /// The calls whose target is computed or goes through a handle, from all
-    /// the calls of the file, also past [`MAX_SITES`].
+    /// The calls whose target is computed, from all the calls of the file,
+    /// also past [`MAX_SITES`].
     pub dynamic: DynamicCalls,
 }
 
 /// The kinds of call that a file makes and that no static search can follow to
-/// a routine, a program, a class or a member. A workspace pass joins the
-/// facts of its files ([`absorb`](Self::absorb)).
+/// a program, a class or a member. A workspace pass joins the facts of its
+/// files ([`absorb`](Self::absorb)).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DynamicCalls {
-    /// `RUN VALUE(...)`: any program or internal procedure.
+    /// `RUN VALUE(...)`, and `CREATE CALL`: any program.
     pub run_value: bool,
-    /// `RUN VALUE(...) IN h`: any internal procedure of a persistent program.
-    pub run_value_in_handle: bool,
     /// `DYNAMIC-NEW`: any class.
     pub dynamic_new: bool,
-    /// `DYNAMIC-INVOKE`: any method, also a static one by class name.
+    /// `DYNAMIC-INVOKE`, and `CREATE CALL`: any method, also a static one by
+    /// class name.
     pub dynamic_invoke: bool,
-    /// `DYNAMIC-FUNCTION`: any user-defined function.
-    pub dynamic_function: bool,
-    /// A call through a handle or a super procedure with no name to read:
-    /// `RUN SUPER`, `SUPER(...)`.
-    pub unnamed_handle: bool,
-    /// The folded names of the routines that a call through a handle or a
-    /// super procedure names (`RUN name IN h`).
-    pub handle_names: std::collections::BTreeSet<String>,
+    /// `DYNAMIC-PROPERTY`: any property.
+    pub dynamic_property: bool,
+    /// A `Progress.Lang.Class` reflection call (`GetClass`, `GetMethod`,
+    /// `GetProperty`, `GetConstructor`, `GetEvent`): a class and its members
+    /// by a name that the call computes.
+    pub reflection: bool,
 }
 
 impl DynamicCalls {
@@ -180,39 +177,11 @@ impl DynamicCalls {
     /// Join the calls of another file into these.
     pub fn absorb(&mut self, other: &DynamicCalls) {
         self.run_value |= other.run_value;
-        self.run_value_in_handle |= other.run_value_in_handle;
         self.dynamic_new |= other.dynamic_new;
         self.dynamic_invoke |= other.dynamic_invoke;
-        self.dynamic_function |= other.dynamic_function;
-        self.unnamed_handle |= other.unnamed_handle;
-        self.handle_names.extend(other.handle_names.iter().cloned());
+        self.dynamic_property |= other.dynamic_property;
+        self.reflection |= other.reflection;
     }
-
-    /// Whether a call through a handle or a super procedure can reach a
-    /// routine named `name`.
-    pub fn handle_reaches(&self, name: &str) -> bool {
-        self.unnamed_handle || self.run_value_in_handle || self.handle_names.contains(&fold(name))
-    }
-
-    fn note_target(&mut self, target: &CallTarget) {
-        if let CallTarget::Unknown {
-            name,
-            reason: UnknownCall::Handle | UnknownCall::Super,
-        } = target
-        {
-            match name {
-                Some(name) => {
-                    self.handle_names.insert(fold(name));
-                }
-                None => self.unnamed_handle = true,
-            }
-        }
-    }
-}
-
-/// A routine name as the call index compares it: without quotes, in lower case.
-fn fold(name: &str) -> String {
-    name.trim_matches(['"', '\'']).to_ascii_lowercase()
 }
 
 impl FileCalls {
@@ -229,24 +198,22 @@ impl FileCalls {
         let mut dynamic = DynamicCalls::default();
         walk(program, &mut |s| {
             if let Some(site) = run_site(s, tokens, &decls) {
-                if let (
-                    CallTarget::Unknown {
-                        reason: UnknownCall::Dynamic,
-                        ..
-                    },
-                    StatementKind::Run { in_handle, .. },
-                ) = (&site.target, &s.kind)
-                {
+                if matches!(
+                    (&site.target, &s.kind),
+                    (
+                        CallTarget::Unknown {
+                            reason: UnknownCall::Dynamic,
+                            ..
+                        },
+                        StatementKind::Run { .. }
+                    )
+                ) {
                     dynamic.run_value = true;
-                    dynamic.run_value_in_handle |= in_handle.is_some();
                 }
                 out.sites.push(site);
             }
         });
         expression_calls(source, tokens, &decls, &mut out.sites, &mut dynamic);
-        for site in &out.sites {
-            dynamic.note_target(&site.target);
-        }
         out.dynamic = dynamic;
         out.sites.sort_by_key(|s| (s.at.start, s.at.end));
         if out.sites.len() > MAX_SITES {
@@ -716,6 +683,20 @@ fn receiver(source: &str, toks: &[&Token], colon: usize, decls: &Decls) -> Recei
     }
 }
 
+/// Whether `word` is a method of `Progress.Lang.Class` that gives a class or
+/// a member by a name that the caller computes.
+fn is_reflection(word: &str) -> bool {
+    [
+        "GetClass",
+        "GetMethod",
+        "GetProperty",
+        "GetConstructor",
+        "GetEvent",
+    ]
+    .iter()
+    .any(|name| word.eq_ignore_ascii_case(name))
+}
+
 /// Function and method calls in expressions, found in the tokens: a name of
 /// a function of the file, `DYNAMIC-FUNCTION(`, `DYNAMIC-INVOKE(`,
 /// `DYNAMIC-NEW`, `SUPER(` in a function, and `x:name(`.
@@ -747,11 +728,7 @@ fn expression_calls(
         };
         match t.kind {
             Kind::DynamicFunction | Kind::DynamicInvoke if next == Some(Kind::LeftParen) => {
-                if t.kind == Kind::DynamicFunction {
-                    dynamic.dynamic_function = true;
-                } else {
-                    dynamic.dynamic_invoke = true;
-                }
+                dynamic.dynamic_invoke |= t.kind == Kind::DynamicInvoke;
                 out.push(unknown(UnknownCall::Dynamic));
                 continue;
             }
@@ -760,7 +737,25 @@ fn expression_calls(
                 out.push(unknown(UnknownCall::Dynamic));
                 continue;
             }
+            Kind::Create if next == Some(Kind::Call) => {
+                // A CALL object runs a program or a method by a computed name.
+                dynamic.run_value = true;
+                dynamic.dynamic_invoke = true;
+            }
             _ => {}
+        }
+        if t.kind != Kind::StringLiteral {
+            let word = text(source, t);
+            if next == Some(Kind::LeftParen) && prev == Some(Kind::Colon) && is_reflection(word) {
+                dynamic.reflection = true;
+            }
+            if word.len() >= "dynamic-prop".len()
+                && word.is_char_boundary("dynamic-prop".len())
+                && word[.."dynamic-prop".len()].eq_ignore_ascii_case("dynamic-prop")
+                && next == Some(Kind::LeftParen)
+            {
+                dynamic.dynamic_property = true;
+            }
         }
         if next != Some(Kind::LeftParen) || t.kind == Kind::StringLiteral {
             continue;

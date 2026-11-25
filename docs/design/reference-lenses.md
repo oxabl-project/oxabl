@@ -63,35 +63,46 @@ because a workspace nearly always has one and a mark on every lens would hide
 the marks that matter. Find references and the lenses write it to the log once
 per session.
 
-A few calls are the exception. Some calls have a target that no
-search can read: a `RUN` through a handle, a shared variable or a super
-procedure, a `RUN VALUE`, a `DYNAMIC-NEW`, a `DYNAMIC-INVOKE` and a
-`DYNAMIC-FUNCTION`. A bare number would let a user delete a procedure or a
-program that such a call still reaches. So each workspace pass reads the calls
-index of every file (`FileCalls::dynamic`, `DynamicCalls` in
-`crates/oxabl_index/src/calls.rs`) and keeps which kinds of these calls exist
-and the names that the calls through a handle give. A count is marked only
-when a call of the workspace can reach that declaration:
+A few calls are the exception. Some calls have a target that no search can
+follow. A bare number would let a user delete a procedure, a program or a class
+that such a call still reaches. So a count is marked when a call of the
+workspace can reach that kind of declaration.
+
+Every procedure and function lens is marked. A call can reach an internal
+procedure with no static trace in the caller: a `RUN` through a handle, a
+shared variable or a super procedure (`SESSION:ADD-SUPER-PROCEDURE`, then a
+plain `RUN name`), `PUBLISH` and `SUBSCRIBE`, a persistent trigger
+(`ON ... PERSISTENT RUN`), a callback (`SET-CALLBACK-PROCEDURE`), a CALL
+object, `RUN VALUE`, `DYNAMIC-FUNCTION`. The lens does not follow these, and
+the calls index does not show all of them. So no routine has an exact count.
+
+The other declarations are marked only when the calls index shows a call that
+can reach them. Each workspace pass reads the calls of every file
+(`FileCalls::dynamic`, `DynamicCalls` in `crates/oxabl_index/src/calls.rs`)
+and keeps which of these exist:
 
 | Declaration | Marked when the workspace has | Text |
 | --- | --- | --- |
-| Procedure, function | A call through a handle or a super procedure that names it (`RUN name IN h`), one with no name to read (`RUN SUPER`, `SUPER(...)`), or a `RUN VALUE(...) IN h` | `calls through a handle are not followed` |
-| Procedure, function | A `RUN VALUE` in the program that declares it | `a RUN VALUE can run it` |
-| Procedure, function | A `DYNAMIC-FUNCTION` (the lens does not know if the routine is a function) | `a DYNAMIC-FUNCTION can call it` |
-| Program | A `RUN VALUE` | `a RUN VALUE can run it` |
+| Procedure, function | Always | `calls through a handle are not followed` |
+| Program | A `RUN VALUE` or a `CREATE CALL` | `a RUN VALUE can run it` |
 | Class, interface | A `DYNAMIC-NEW` | `a DYNAMIC-NEW can create it` |
-| Class, interface | A `DYNAMIC-INVOKE` (it can name a class for a static method) | `a DYNAMIC-INVOKE can name it` |
-| Method, property | A `DYNAMIC-INVOKE` | `a DYNAMIC-INVOKE can call it` |
+| Class, interface | A `DYNAMIC-INVOKE` or a `CREATE CALL` (a static method by class name) | `a DYNAMIC-INVOKE can name it` |
+| Class, interface | A `DYNAMIC-PROPERTY` | `a DYNAMIC-PROPERTY can name it` |
+| Method, property | A `DYNAMIC-INVOKE` or a `CREATE CALL` | `a DYNAMIC-INVOKE can call it` |
+| Method, property | A `DYNAMIC-PROPERTY` | `a DYNAMIC-PROPERTY can name it` |
+| Class, interface, method, property | A `Progress.Lang.Class` call that gives a class or a member by a name (`GetClass`, `GetMethod`, `GetProperty`, `GetConstructor`, `GetEvent`) | `a class reflection call can reach it` |
+| Program, class, interface, method, property | A file that oxabl cannot analyse, or that has an include that does not resolve or cannot be read, or a parse error | `a file oxabl cannot read can reach it` |
 
 ```text
 2+ references · incomplete: calls through a handle are not followed
 1+ references · used by 1+ files · incomplete: a RUN VALUE can run it
 ```
 
-A workspace with no such call shows exact counts. A procedure that no call
-through a handle names stays exact when other procedures are named. A
-`DYNAMIC-NEW` alone does not mark a member: an object that it makes is used
-through a typed variable, and that use is a reference.
+A workspace with none of these shows exact counts for programs, classes and
+members. A `DYNAMIC-NEW` alone does not mark a member: an object that it makes
+is used through a typed variable, and that use is a reference. A file that
+oxabl cannot read can hold any of these calls, so one such file marks every
+count that a dynamic call decides.
 
 Find references does not show these marks. It lists the places and claims no
 number. Its standing gap for a `RUN ... IN` a handle is as before. The search
@@ -99,10 +110,11 @@ gives the marks in `Search::counts` (`oxabl_pipeline`), the daemon in
 `ReferenceAnswer::count_reasons`, and only the title of a lens reads them.
 
 The search reads only the files of the workspace. A caller from outside is
-never visible: an AppServer client, a program started with `-p`, a
-`SUBSCRIBE ... RUN-PROCEDURE` and an event that a `PUBLISH` names. A count of
-`0` or `1` says only that the workspace has no other use. Treat it as a hint
-for a delete, not as a proof.
+never visible: an AppServer client and a program that starts with `-p`. So a
+count of `0` or `1` says only that the workspace has no other use that the
+lens follows. Treat it as a hint for a delete, not as a proof. `PUBLISH` and
+`SUBSCRIBE` are calls in the workspace that the lens does not follow: they are
+the reason that every routine is marked.
 
 A method overload has the count of all overloads of its name, as find
 references has. Two overloads of one name show the same number.
@@ -212,9 +224,13 @@ for a symbol, the places that run a program for a program); a procedure that a
 handle can call (never a bare number); the standing gap in the log, once; the
 cache (a second resolve runs no search; a change in another open file, a
 change of a file on disk with and with no watcher event, and a change that
-comes while a search runs, run a new one); the counts for each kind of call
-that a search cannot follow, and the exact counts of a workspace that has none;
-the refresh request after a save, a disk change and an edit of another file;
+comes while a search runs, run a new one; an answer that a later request can
+change is not kept); the counts for each kind of call that a search cannot
+follow (a super procedure, `PUBLISH`, a trigger, a callback and a `RUN VALUE`
+for routines; `RUN VALUE` and `CREATE CALL` for programs; the dynamic and
+reflection calls for classes and members; a file that oxabl cannot read), and
+the exact counts of a workspace that has none; the refresh request after a
+save, a disk change and an edit of another file, and one request for a burst;
 and the effect lenses with the reference lenses beside them. The cache bounds
 are tested in `crates/oxabl_lsp/src/reference_lens.rs`, because no client can see
 the size of the cache. The `reference-lenses` scenario of

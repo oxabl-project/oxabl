@@ -187,13 +187,17 @@ pub fn fold_gaps(gaps: Vec<Gap>) -> Vec<Gap> {
 }
 
 /// What a count shows when a call that no search follows can reach the
-/// referent.
+/// referent. Any procedure or function can be run by a call that no search
+/// follows (through a handle or a super procedure, `PUBLISH`, a trigger or a
+/// callback), so each of them always shows the first.
 const HANDLE_SHORT: &str = "calls through a handle are not followed";
 const RUN_VALUE_SHORT: &str = "a RUN VALUE can run it";
-const DYNAMIC_FUNCTION_SHORT: &str = "a DYNAMIC-FUNCTION can call it";
 const DYNAMIC_NEW_SHORT: &str = "a DYNAMIC-NEW can create it";
 const DYNAMIC_INVOKE_CLASS_SHORT: &str = "a DYNAMIC-INVOKE can name it";
 const DYNAMIC_INVOKE_SHORT: &str = "a DYNAMIC-INVOKE can call it";
+const DYNAMIC_PROPERTY_SHORT: &str = "a DYNAMIC-PROPERTY can name it";
+const REFLECTION_SHORT: &str = "a class reflection call can reach it";
+const UNKNOWN_FILE_SHORT: &str = "a file oxabl cannot read can reach it";
 
 /// Which other files can name a referent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -376,6 +380,7 @@ impl Referent {
         };
         let mut handles = false;
         let dynamic = graph.dynamic_calls();
+        let unknown_calls = graph.dynamic_calls_unknown();
         // What can reach the referent and that no search follows, once for each
         // text a count shows.
         let mut counts: Vec<String> = Vec::new();
@@ -407,6 +412,9 @@ impl Referent {
                     if dynamic.run_value {
                         note(RUN_VALUE_SHORT);
                     }
+                    if unknown_calls {
+                        note(UNKNOWN_FILE_SHORT);
+                    }
                     add(
                         &Subject::file(&program),
                         &[EdgeKind::ProgramReference],
@@ -415,15 +423,7 @@ impl Referent {
                 }
                 Reach::Routine { program } => {
                     handles = true;
-                    if dynamic.handle_reaches(&self.name) {
-                        note(HANDLE_SHORT);
-                    }
-                    if graph.runs_value_in(&program) {
-                        note(RUN_VALUE_SHORT);
-                    }
-                    if dynamic.dynamic_function {
-                        note(DYNAMIC_FUNCTION_SHORT);
-                    }
+                    note(HANDLE_SHORT);
                     add(
                         &Subject::file(&program),
                         &[EdgeKind::ProgramReference],
@@ -437,6 +437,15 @@ impl Referent {
                     if dynamic.dynamic_invoke {
                         note(DYNAMIC_INVOKE_CLASS_SHORT);
                     }
+                    if dynamic.dynamic_property {
+                        note(DYNAMIC_PROPERTY_SHORT);
+                    }
+                    if dynamic.reflection {
+                        note(REFLECTION_SHORT);
+                    }
+                    if unknown_calls {
+                        note(UNKNOWN_FILE_SHORT);
+                    }
                     add(
                         &Subject::file(&class),
                         &[EdgeKind::ClassReference],
@@ -446,6 +455,15 @@ impl Referent {
                 Reach::Member { class } => {
                     if dynamic.dynamic_invoke {
                         note(DYNAMIC_INVOKE_SHORT);
+                    }
+                    if dynamic.dynamic_property {
+                        note(DYNAMIC_PROPERTY_SHORT);
+                    }
+                    if dynamic.reflection {
+                        note(REFLECTION_SHORT);
+                    }
+                    if unknown_calls {
+                        note(UNKNOWN_FILE_SHORT);
                     }
                     // A class that names the class can inherit the member, and
                     // so can a class that names that one.
