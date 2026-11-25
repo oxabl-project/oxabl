@@ -15400,3 +15400,21 @@ fn property_and_method_keep_their_extent_clause() {
         assert_eq!(extent, want, "{source}");
     }
 }
+
+#[test]
+fn define_variable_keeps_an_extent_right_after_its_type() {
+    for (source, want) in [
+        ("DEFINE VARIABLE a AS CHARACTER EXTENT 3 NO-UNDO.", Some(3)),
+        ("DEFINE VARIABLE a AS CHARACTER EXTENT NO-UNDO.", Some(0)),
+        ("DEFINE VARIABLE a AS CHARACTER NO-UNDO EXTENT 2.", Some(2)),
+        ("DEFINE VARIABLE a AS CHARACTER NO-UNDO.", None),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().unwrap();
+        let StatementKind::VariableDeclaration { extent, .. } = stmt.kind else {
+            panic!("{source}: not a variable declaration");
+        };
+        assert_eq!(extent, want, "{source}");
+    }
+}

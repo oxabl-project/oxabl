@@ -1352,7 +1352,6 @@ impl Parser<'_> {
         // parse optional no-undo, initial, and extent
         let mut no_undo = false;
         let mut initial_value = None;
-        let mut extent = None;
 
         // Some coding styles write NO-UNDO before AS/LIKE; consume it here so
         // parse_type_source() sees the type-source keyword next.
@@ -1361,8 +1360,15 @@ impl Parser<'_> {
             no_undo = true;
         }
 
-        // parse type source (AS type | LIKE field)
-        let type_source = self.parse_type_source()?;
+        // parse type source (AS type | LIKE field), with an `EXTENT` right
+        // after the type. `0` is a dynamic extent, as is a size the parser
+        // cannot read.
+        let (type_source, type_extent) = self.parse_type_source_with_extent()?;
+        let mut extent = type_extent.map(|e| match e {
+            oxabl_ast::ParameterExtent::Fixed(n) => n,
+            oxabl_ast::ParameterExtent::Indeterminate
+            | oxabl_ast::ParameterExtent::Unresolved(_) => 0,
+        });
 
         loop {
             match self.peek().kind {
