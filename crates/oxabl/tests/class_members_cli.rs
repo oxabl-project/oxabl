@@ -901,3 +901,45 @@ END PROCEDURE.
         "CL003 findings"
     );
 }
+
+const STATIC_VARIABLE_CLASS: &str = r#"CLASS Box:
+    DEFINE PUBLIC STATIC VARIABLE xS AS INTEGER NO-UNDO.
+    DEFINE PUBLIC STATIC PROPERTY pS AS INTEGER NO-UNDO GET. SET.
+    METHOD PUBLIC VOID Run():
+        DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+        DEFINE VARIABLE o AS Box NO-UNDO.
+        c = Box:xS.
+        c = o:xS.
+        c = Box:pS.
+        c = o:pS.
+        MESSAGE c.
+    END METHOD.
+END CLASS.
+"#;
+
+/// A `STATIC` data member is typed as a `STATIC` property is: read through
+/// its type it has the declared type; read through an instance it reaches a
+/// member of the wrong kind, so it has no type and no finding. The class that
+/// declares it and another file (through the workspace index) agree.
+#[test]
+fn a_static_variable_is_typed_through_its_type_and_not_through_an_instance() {
+    let ws = Workspace::new();
+    ws.write("Box.cls", STATIC_VARIABLE_CLASS);
+    assert_findings(
+        &check(&ws, "Box.cls"),
+        list(&[
+            ("c = Box:xS.", mismatch("INTEGER", "CHARACTER"), "c"),
+            ("c = Box:pS.", mismatch("INTEGER", "CHARACTER"), "c"),
+        ]),
+    );
+    ws.write(
+        "app/Sv.cls",
+        "CLASS app.Sv:\n    DEFINE PUBLIC STATIC VARIABLE xS AS INTEGER NO-UNDO.\nEND CLASS.\n",
+    );
+    assert_program(
+        &ws,
+        "sv_user.p",
+        "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\nDEFINE VARIABLE o AS app.Sv NO-UNDO.\nc = app.Sv:xS.\nc = o:xS.\nMESSAGE c.\n",
+        list(&[("c = app.Sv:xS.", mismatch("INTEGER", "CHARACTER"), "c")]),
+    );
+}

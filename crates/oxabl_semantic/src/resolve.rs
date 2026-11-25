@@ -369,9 +369,11 @@ impl<'a> Walker<'a> {
                 is_new_shared,
                 is_shared,
                 is_new_global_shared,
+                is_static,
                 ..
             } => {
-                let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
+                let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared)
+                    | flag_if(*is_static, SymbolFlags::STATIC);
                 self.declare_variable(stmt, scope, name, type_source, *extent, flags);
             }
 
