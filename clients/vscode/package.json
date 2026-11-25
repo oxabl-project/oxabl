@@ -250,8 +250,8 @@
         },
         "oxabl.inlayHints.parameters": {
           "type": "boolean",
-          "default": true,
-          "markdownDescription": "Show the name of the parameter before each argument of a call to a function, a method, a constructor or a procedure that oxabl resolves to one declaration. An argument that already is the name gets no hint, and a call whose overloads the arguments do not pick between gets none. Needs no strict rule; it shows when `diagnostics` is on in `[workspace.features]`."
+          "default": false,
+          "markdownDescription": "Show the name of the parameter before each argument of a call to a function, a method, a constructor or a procedure that oxabl resolves to one declaration. Off by default: it adds about one hint for each line of code. An argument that already says the name (`cName` for `pcName`) gets no hint, and a call whose overloads the arguments do not pick between gets none. Needs no strict rule; it shows when `diagnostics` is on in `[workspace.features]`."
         },
         "oxabl.inactiveRegions.enable": {
           "type": "boolean",

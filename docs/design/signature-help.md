@@ -8,7 +8,8 @@ inlay hint before each argument.
 - `oxabl_pipeline::Navigation::signature_help` makes the answer.
 - `oxabl_pipeline::Navigation::parameter_hints` makes the hints.
 - `oxabl_lsp` sends them (`signature_help.rs`, `inlay_hint.rs`).
-- The VS Code extension sends the setting `oxabl.inlayHints.parameters`.
+- The VS Code extension sends the setting `oxabl.inlayHints.parameters`. The
+  hints are off until it is on.
 
 ## The rule that decides every case
 
@@ -23,8 +24,8 @@ active. A hint shows only when exactly one declaration is known.
 | --- | --- |
 | `f(`, a user function | The `FUNCTION` that the name resolves to. |
 | `obj:m(`, `Cls:m(`, `m(` in a class, `THIS-OBJECT:m(`, `SUPER:m(` | Every declaration of `m` that the receiver's class reaches, in the class and in its supertypes (`class-members.md`). |
-| `NEW cls(` | The constructors of the class. From outside the class, only `PUBLIC` ones. |
-| `SUPER(` | The constructors of the parent class, except `PRIVATE` ones. |
+| `NEW cls(` | The constructors of the class. From outside the class, the `PUBLIC` ones, and the `PACKAGE-PRIVATE` and `PACKAGE-PROTECTED` ones when the calling class is in the same package. |
+| `SUPER(` | The constructors of the parent class, except the `PRIVATE` ones, and the `PACKAGE-PRIVATE` ones when the calling class is in another package. |
 | `THIS-OBJECT(` | The constructors of the class itself. |
 | `RUN p (`, `RUN p IN h (`, `RUN prog.p (` | The `PROCEDURE p` of the unit; the procedure that the program of the handle declares; the `DEFINE ... PARAMETER` statements of the main block of the program. |
 | `LENGTH(`, `SUBSTRING(`, and the other built-in functions of the table | The documented syntax. |
@@ -35,14 +36,27 @@ definition resolves it (`navigation.md`): the callee's name has a navigation
 site. The signature text comes from the declaration, so it shows what the code
 writes: `Score(INPUT p AS INTEGER, OUTPUT q AS CHARACTER): DECIMAL`.
 
+A function that has a `FORWARD` prototype gets its parameters from the
+prototype when its definition leaves out the parameter list (the compiler
+allows this). A prototype with no parameters (`()`) says the function has
+none.
+
+The package of a class is its name up to the last `.`. A constructor with a
+package access is compared with the package of the calling class. When the
+caller is a procedure, the class is in a package and the caller is not (or the
+reverse), the packages differ. When both are in the unnamed package, oxabl
+does not read the rule, and the call has no signature.
+
 ## Where the cursor is
 
 The scan goes back from the cursor over the tokens of the expanded unit. It
 counts the commas at its own level, and skips a pair of parentheses or
 brackets it passes. A string is one token, so a comma in a string does not
 count. The first unmatched `(` that follows a name that can be a callee opens
-the call. A `(` that follows no such name (`(1 + 2) * 3`) is skipped, and the
-scan goes on to the call around it. The scan stops at a period that ends a
+the call. A `(` that follows no such name (`(1 + 2) * 3`), or follows a
+keyword that is no function (`IF (`, `NOT (`, `AND (`, `WHEN (`), is skipped,
+and the scan goes on to the call around it. A `(` that follows a name that can
+be a callee, and does not resolve, ends the scan with no answer. The scan stops at a period that ends a
 statement, and after 20,000 tokens.
 
 A call in an argument list is the innermost call: the cursor in
@@ -94,21 +108,51 @@ A call has no signature when:
   a static against an instance member; `SymbolTable::is_untyped_member`),
 - a candidate has no parameter list, or no declaration in the text agrees with
   it,
-- the file of a class, constructor or program does not parse, or holds an
-  `{include}` or an `&IF` where its members or parameters may be, or
+- the file of a class, constructor, procedure or program does not parse, or
+  holds an `{include}` or an `&IF` where its members or parameters may be (for
+  a procedure, anywhere in its body, also when `RUN p IN h` reads it), or
 - the receiver is a handle, a built-in class or a .NET class.
 
-### The seam for the members of built-in classes
+### The seam for the built-in classes
 
-A method of a built-in class (`Progress.Lang.*`, `OpenEdge.*`) gives no
-signature yet. The place for it is `Resolver::builtin_class_sigs` in
-`crates/oxabl_pipeline/src/navigate/signature.rs`. `Resolver::symbol_sigs`
-reads each candidate of the call (`call_candidates`). A candidate has a
-declaration in the unit or in a class file of the workspace. A candidate with
-neither goes to `builtin_class_sigs`, which gives `None` today, so the call
-has no signature. The catalog of the members of built-in classes fills this
-function in with the signature of each such candidate; nothing else needs to
-change.
+The members of built-in classes (`Progress.Lang.*`, `OpenEdge.*`) give no
+signature yet. Two functions of `Resolver` in
+`crates/oxabl_pipeline/src/navigate/signature.rs` are the places for them, and
+both give `None` today:
+
+- `builtin_class_sigs`, for the methods. `Resolver::symbol_sigs` reads each
+  candidate of the call (`call_candidates`). A candidate has a declaration in
+  the unit or in a class file of the workspace. A candidate with neither goes
+  to `builtin_class_sigs`.
+- `builtin_constructor_sigs`, for `NEW` and for `SUPER(` of a class that
+  inherits a built-in class. `Resolver::constructor_sigs` calls it for a class
+  symbol that has no class file and no declaration in the unit. It must give
+  `None` for such a symbol that is not a built-in class.
+
+A signature of a built-in class does not state the mode of its parameters: the
+catalog has none (`docs/design/builtin-classes.md`, "Overloads with modes that
+are not known", of the built-in classes work). `Sig::modes_known` says so, and
+`Param::mode` is `None`. A declaration with no known modes is never the
+declaration that the overload pick chooses (`picked_sig`), and a call that
+reaches one gets no hint, because a hint would have to name a mode. The
+signature help still shows its label, and shows it as the only declaration
+when it is the only candidate. The built-in functions are such declarations
+today.
+
+**Which reader signature help uses once the catalog lands.** The catalog gives
+each built-in member a symbol, with `NodeId::DUMMY`, the parameters as
+`method_params`, and the catalog row as `SymbolTable::builtin_member`. The
+two functions above read that row, through the candidate symbols that the
+call already resolves. They do not use `ClassSource` and `class_surface` of the
+completion work (`docs/design/completion.md`, "The class source"). That
+interface answers "which members does this receiver reach", by class name, for
+a list of items; signature help already has the candidates, from the
+analysis, and needs the declared parameters of each. So there is one catalog
+row for each built-in member, and the three features read the same rows: the
+type check by symbol, completion by `ClassSource`, and signature help by
+symbol. The signature text of a built-in member is made from the row
+(`name(type name, ...)`, with the types as the catalog spells them), and it
+has the same form in the completion item and in the signature.
 
 ## Built-in functions
 
@@ -124,8 +168,15 @@ A built-in name that is not reserved can be the name of a routine that oxabl
 does not see (an include read alone, a class with an unread ancestor). It gives
 a signature only when the analysis leaves the name unresolved and nothing may
 hide a routine (`Navigation::may_hide_routines`, as the hover decides). A
-function with two syntaxes (`DATE`, `DATETIME`) shows both, with none active.
-Built-in functions get no parameter-name hints.
+function with two syntaxes (`DATE`) or more (`DATETIME`) shows all of them,
+with none active. A function with a repeated parameter keeps its last
+parameter active up to the most arguments that the reference gives
+(`SUBSTITUTE`: nine `arg`). Built-in functions get no parameter-name hints.
+
+Each row has the title of its reference page in a comment above it, and a
+test fails when a row has no such comment or the title is not the one of the
+documentation entry of the function. The comment says where the row came from;
+a reviewer still checks the row against that page.
 
 ## A call that is still being typed
 
@@ -137,7 +188,10 @@ the call closed (`oxabl_pipeline::close_open_call`): the parentheses still open
 at the end of the cursor's line, a period, and `?` for an empty argument. It
 keeps the second answer only when it holds a signature. The cursor and
 everything before it keep their place. Closing a call never makes a name
-resolve.
+resolve. A statement that already ends on the cursor's line, with all its
+parentheses closed and no empty argument, is not asked again: closing it would
+change nothing. So a call that does not resolve (a method of a built-in class,
+a function that is not in the table) costs one analysis.
 
 ## Parameter-name hints
 
@@ -147,8 +201,18 @@ it, the hint is `OUTPUT name:` or `INPUT-OUTPUT name:`.
 
 - A call gets hints only when it is closed, has no empty argument, and reaches
   exactly one declaration: the only one known, or the one the arguments pick.
-- An argument whose text is the name of its parameter (ignoring case, and the
-  mode it writes) gets no hint.
+- An argument that already says the name of its parameter gets no hint. It
+  is one name (ignoring case, and the mode it writes) and one of:
+  - the same name;
+  - the parameter name without its prefix `p`, `ip`, `op` or `iop`
+    (`cName` for `pcName`);
+  - a name that ends with the word of the parameter after its prefix and its
+    type letter (`cCustName` for `pcName`);
+  - a parameter name that ends with the argument name (`qty` for `pdQty`).
+
+  A name of fewer than three letters counts only as the same name or as the
+  parameter without its prefix. The code of ABL projects names a variable and
+  its parameter alike, so a hint for such an argument repeats the text.
 - A parameter with no name (`$N` in a prototype) gets no hint.
 - A hint is placed in the bytes of the shown file. An argument written by a
   macro or an include of another file gives none.
@@ -157,6 +221,9 @@ it, the hint is `OUTPUT name:` or `INPUT-OUTPUT name:`.
 The hints share the rules of the database inlay hints (`inlay-hints.md`):
 
 - A file shows them when `diagnostics` is on in `[workspace.features]`.
+- They are off until the client turns them on. A project that has the hints on
+  shows about one hint for each line of code (the benchmark below has 4,200
+  hints for 7,000 lines), and each edit costs a new analysis of the file.
 - They are computed once for each version of the text, and each request returns
   the hints in its range.
 - The same worker thread answers, in order. A request whose file changed
@@ -166,8 +233,14 @@ The hints share the rules of the database inlay hints (`inlay-hints.md`):
   disk, the configuration and the schema change. The worker takes its snapshot
   of the session when it reaches the request, because a snapshot that waits in
   the queue would make an edit wait for it.
+- The analysis holds that snapshot, so a write to the database waits for it
+  and cancels it. When the text of the file is the same, the worker runs the
+  analysis again on a new snapshot (four times at most), because the client
+  does not ask again after `ContentModified`. When the text changed, also while
+  the analysis ran, the request answers `ContentModified` and the client asks
+  again.
 
-The setting is `inlayHints.parameters` (a boolean, on at the start), in the
+The setting is `inlayHints.parameters` (a boolean, off at the start), in the
 initialization options and in `workspace/didChangeConfiguration`. The VS Code
 setting is `oxabl.inlayHints.parameters`.
 

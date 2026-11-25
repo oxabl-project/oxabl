@@ -873,7 +873,14 @@ fn capabilities() -> Value {
     json!({"textDocument": {"inlayHint": {}, "signatureHelp": {}}})
 }
 
+/// A session with the parameter-name hints on, as the client turns them on;
+/// `options` replaces the initialization options when it is not null.
 fn hint_session(ws: &Workspace, options: Value) -> Session {
+    let options = if options.is_null() {
+        json!({"inlayHints": {"parameters": true}})
+    } else {
+        options
+    };
     Session::start_with_options(ws.root.path(), capabilities(), options)
 }
 
@@ -897,7 +904,6 @@ fn a_call_with_one_known_target_gets_parameter_name_hints() {
             ("x:", "a).".to_string()),
             ("x:", "2).".to_string()),
             ("piCount:", "INPUT 1, OUTPUT cName).".to_string()),
-            ("pcName:", "OUTPUT cName).".to_string()),
             ("pcName:", "INPUT \"x\", OUTPUT iResult).".to_string()),
             ("pnCount:", "OUTPUT iResult).".to_string()),
             ("seed:", "7).".to_string()),
@@ -953,13 +959,16 @@ fn a_call_oxabl_cannot_resolve_gets_no_hint() {
 fn a_parameter_the_call_does_not_write_as_output_gets_its_mode_in_the_hint() {
     let mut ws = Workspace::new();
     let mut session = hint_session(&ws, Value::Null);
-    let case = ws.program(&mut session, "RUN DoWork (1, cName).‸\n");
+    let case = ws.program(
+        &mut session,
+        "DEFINE VARIABLE cResult AS CHARACTER NO-UNDO.\nRUN DoWork (1, cResult).‸\n",
+    );
     let found = hints(&mut session, &case, 0, case.text.len());
     assert_eq!(
         found,
         [
-            ("piCount:".to_string(), "1, cName).".to_string()),
-            ("OUTPUT pcName:".to_string(), "cName).".to_string()),
+            ("piCount:".to_string(), "1, cResult).".to_string()),
+            ("OUTPUT pcName:".to_string(), "cResult).".to_string()),
         ]
     );
 }
@@ -998,6 +1007,389 @@ fn the_setting_turns_the_parameter_hints_off_and_on() {
         "params": {"settings": {"oxabl": {"inlayHints": {"parameters": false}}}}
     }));
     assert_eq!(hints(&mut session, &case, 0, case.text.len()), []);
+}
+
+// ---------------------------------------------------------------------------
+// A declaration that the text of its file does not show whole
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_procedure_with_an_include_before_its_parameters_gives_no_signature_and_no_hint() {
+    let mut ws = Workspace::new();
+    ws.write(
+        "lib_inc.p",
+        "PROCEDURE hp:\n    {hp_params.i}\n    DEFINE INPUT PARAMETER z AS INTEGER NO-UNDO.\n\
+         END PROCEDURE.\n",
+    );
+    ws.write(
+        "hp_params.i",
+        "DEFINE INPUT PARAMETER a AS CHARACTER NO-UNDO.\n\
+         DEFINE OUTPUT PARAMETER b AS INTEGER NO-UNDO.\n",
+    );
+    let mut session = hint_session(&ws, Value::Null);
+    let case = ws.open(
+        &mut session,
+        "handle_inc.p",
+        "DEFINE VARIABLE hLib AS HANDLE NO-UNDO.\nDEFINE VARIABLE iOut AS INTEGER NO-UNDO.\n\
+         RUN lib_inc.p PERSISTENT SET hLib.\nRUN hp IN hLib (\"a\", OUTPUT iOut‸, 3).\n",
+    );
+    assert_eq!(help(&mut session, &case), Value::Null);
+    assert_eq!(hints(&mut session, &case, 0, case.text.len()), []);
+}
+
+const FORWARD: &str = "\
+FUNCTION Fw RETURNS INTEGER (INPUT x AS INTEGER, INPUT y AS CHARACTER) FORWARD.
+FUNCTION Zero RETURNS INTEGER () FORWARD.
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+";
+
+const FORWARD_BODIES: &str = "\
+FUNCTION Fw RETURNS INTEGER:
+    RETURN x + LENGTH(y).
+END FUNCTION.
+FUNCTION Zero RETURNS INTEGER:
+    RETURN 0.
+END FUNCTION.
+";
+
+#[test]
+fn a_definition_after_a_forward_takes_its_parameters_from_the_prototype() {
+    let mut ws = Workspace::new();
+    let mut session = hint_session(&ws, Value::Null);
+    let fw = "Fw(INPUT x AS INTEGER, INPUT y AS CHARACTER): INTEGER";
+    for (name, call) in [
+        // The call is between the prototype and the definition.
+        (
+            "fwd_before.p",
+            format!("{FORWARD}i = Fw(1, ‸\"abc\").\n{FORWARD_BODIES}"),
+        ),
+        (
+            "fwd_after.p",
+            format!("{FORWARD}{FORWARD_BODIES}i = Fw(1, ‸\"abc\").\n"),
+        ),
+    ] {
+        let case = ws.open(&mut session, name, &call);
+        let answer = help(&mut session, &case);
+        assert_eq!(labels(&answer), [fw], "{name}: {answer}");
+        assert_eq!(answer["signatures"][0]["activeParameter"], 1, "{name}");
+        let found = hints(&mut session, &case, 0, case.text.len());
+        assert_eq!(
+            found.iter().map(|h| h.0.as_str()).collect::<Vec<_>>(),
+            ["x:", "y:"],
+            "{name}"
+        );
+    }
+    // A prototype with no parameters says that the function has none.
+    let case = ws.open(
+        &mut session,
+        "fwd_zero.p",
+        &format!("{FORWARD}{FORWARD_BODIES}i = Zero(‸).\n"),
+    );
+    assert_eq!(labels(&help(&mut session, &case)), ["Zero(): INTEGER"]);
+}
+
+// ---------------------------------------------------------------------------
+// Package access of a constructor
+// ---------------------------------------------------------------------------
+
+const PACKAGED: &str = "\
+CLASS app.Pk:
+    CONSTRUCTOR PUBLIC Pk():
+    END CONSTRUCTOR.
+    CONSTRUCTOR PACKAGE-PRIVATE Pk(INPUT n AS INTEGER):
+    END CONSTRUCTOR.
+    CONSTRUCTOR PACKAGE-PROTECTED Pk(INPUT n AS INTEGER, INPUT m AS INTEGER):
+    END CONSTRUCTOR.
+END CLASS.
+";
+
+#[test]
+fn a_package_constructor_is_shown_to_the_classes_of_its_package_only() {
+    let mut ws = Workspace::new();
+    ws.write("app/Pk.cls", PACKAGED);
+    ws.write(
+        "bare/Bare.cls",
+        "CLASS Bare:\n    CONSTRUCTOR PUBLIC Bare():\n    END CONSTRUCTOR.\n\
+         \x20   CONSTRUCTOR PACKAGE-PRIVATE Bare(INPUT n AS INTEGER):\n    END CONSTRUCTOR.\n\
+         END CLASS.\n",
+    );
+    let mut session = session_for(&ws);
+    let using = |package: &str, call: &str| {
+        format!(
+            "CLASS {package}.User:\n    METHOD PUBLIC VOID Go():\n\
+             \x20       DEFINE VARIABLE o AS app.Pk NO-UNDO.\n        {call}\n    END METHOD.\n\
+             END CLASS.\n"
+        )
+    };
+    let all = [
+        "Pk()",
+        "Pk(INPUT n AS INTEGER)",
+        "Pk(INPUT n AS INTEGER, INPUT m AS INTEGER)",
+    ];
+    // The argument picks one of them, which then comes first.
+    let sorted = |answer: Value| {
+        let mut shown = labels(&answer);
+        shown.sort();
+        shown
+    };
+    // The same package reaches both.
+    let case = ws.open(
+        &mut session,
+        "app/User.cls",
+        &using("app", "o = NEW app.Pk(‸1)."),
+    );
+    assert_eq!(sorted(help(&mut session, &case)), all);
+    // Another package, and a procedure, reach the public one only.
+    let case = ws.open(
+        &mut session,
+        "other/User.cls",
+        &using("other", "o = NEW app.Pk(‸1)."),
+    );
+    assert_eq!(labels(&help(&mut session, &case)), ["Pk()"]);
+    let case = ws.program(&mut session, "oScorer = NEW app.Pk(‸1).\n");
+    assert_eq!(labels(&help(&mut session, &case)), ["Pk()"]);
+    // `SUPER(` of a subclass: the package-protected one always, the
+    // package-private one in the package only.
+    let kid = |package: &str| {
+        format!(
+            "CLASS {package}.Kid INHERITS app.Pk:\n    CONSTRUCTOR PUBLIC Kid():\n\
+             \x20       SUPER(‸).\n    END CONSTRUCTOR.\nEND CLASS.\n"
+        )
+    };
+    let case = ws.open(&mut session, "app/Kid.cls", &kid("app"));
+    assert_eq!(sorted(help(&mut session, &case)), all);
+    let case = ws.open(&mut session, "other/Kid.cls", &kid("other"));
+    assert_eq!(
+        sorted(help(&mut session, &case)),
+        ["Pk()", "Pk(INPUT n AS INTEGER, INPUT m AS INTEGER)"]
+    );
+    // Both in the unnamed package: oxabl does not read that rule.
+    let case = ws.program(&mut session, "oScorer = NEW Bare(‸1).\n");
+    assert_eq!(help(&mut session, &case), Value::Null);
+    let case = ws.open(
+        &mut session,
+        "bare/User.cls",
+        "CLASS User:\n    METHOD PUBLIC VOID Go():\n        DEFINE VARIABLE o AS Bare NO-UNDO.\n\
+         \x20       o = NEW Bare(‸1).\n    END METHOD.\nEND CLASS.\n",
+    );
+    assert_eq!(help(&mut session, &case), Value::Null);
+}
+
+// ---------------------------------------------------------------------------
+// The table of built-in functions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_built_in_table_has_the_arguments_the_reference_gives() {
+    let mut ws = Workspace::new();
+    let mut session = session_for(&ws);
+    let mut active = |marked: &str| {
+        let case = ws.program(&mut session, marked);
+        let answer = help(&mut session, &case);
+        let at = answer["signatures"][0]["activeParameter"].clone();
+        (
+            labels(&answer),
+            at.as_u64()
+                .map(|at| parameter_text(&answer, 0, at as usize)),
+        )
+    };
+    // The second argument is the quote character, the third the string for
+    // the unknown value.
+    let (labels, parameter) = active("cName = QUOTER(cName, \"'\", ‸\"nul\").\n");
+    assert_eq!(
+        labels,
+        ["QUOTER(expression [, quote-char [, null-string]])"]
+    );
+    assert_eq!(parameter.as_deref(), Some("null-string"));
+    let (_, parameter) = active("cName = QUOTER(cName, ‸\"'\").\n");
+    assert_eq!(parameter.as_deref(), Some("quote-char"));
+    // `COMPARE` takes a collation.
+    let (_, parameter) = active("iResult = COMPARE(cName, \"=\", cName, \"RAW\", ‸\"x\").\n");
+    assert_eq!(parameter.as_deref(), Some("collation"));
+    // `SUBSTITUTE` takes a string and nine arguments.
+    let nine = "SUBSTITUTE(\"&1\", 1, 2, 3, 4, 5, 6, 7, 8, ‸9)";
+    assert_eq!(
+        active(&format!("cName = {nine}.\n")).1.as_deref(),
+        Some("arg")
+    );
+    let ten = "SUBSTITUTE(\"&1\", 1, 2, 3, 4, 5, 6, 7, 8, 9, ‸10)";
+    assert_eq!(active(&format!("cName = {ten}.\n")).1, None);
+    // `DATETIME` has a form with a string.
+    let (labels, _) = active("iResult = DATETIME(‸cName).\n");
+    assert!(
+        labels.contains(&"DATETIME(string)".to_string()),
+        "{labels:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A keyword in front of a parenthesis opens no call
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_parenthesis_after_a_keyword_leaves_the_call_around_it() {
+    let mut ws = Workspace::new();
+    let mut session = session_for(&ws);
+    for marked in [
+        "iResult = Calc(1, IF (a > ‸1) THEN \"a\" ELSE \"b\").\n",
+        "iResult = Calc(1, STRING(NOT (‸TRUE))).\n",
+        "iResult = Calc(1, STRING(a > 0 AND (‸a < 9))).\n",
+    ] {
+        let case = ws.program(&mut session, marked);
+        let answer = help(&mut session, &case);
+        // `STRING(` is a call of its own; the others show `Calc`.
+        let first = answer["signatures"][0]["label"]
+            .as_str()
+            .unwrap_or_default();
+        if marked.contains("STRING(") {
+            assert!(first.starts_with("STRING("), "{marked}: {answer}");
+        } else {
+            assert_eq!(
+                first, "Calc(INPUT a AS INTEGER, INPUT b AS CHARACTER): INTEGER",
+                "{marked}"
+            );
+            assert_eq!(answer["signatures"][0]["activeParameter"], 1, "{marked}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The setting, and the names that repeat the parameter
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_parameter_hints_are_off_until_the_setting_turns_them_on() {
+    let mut ws = Workspace::new();
+    let mut session = Session::start_with_options(ws.root.path(), capabilities(), Value::Null);
+    let case = ws.program(&mut session, "iResult = Calc(1, \"x\").‸\n");
+    assert_eq!(hints(&mut session, &case, 0, case.text.len()), []);
+
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeConfiguration",
+        "params": {"settings": {"oxabl": {"inlayHints": {"parameters": true}}}}
+    }));
+    assert_eq!(hints(&mut session, &case, 0, case.text.len()).len(), 2);
+}
+
+#[test]
+fn an_argument_that_repeats_the_parameter_name_gets_no_hint() {
+    let mut ws = Workspace::new();
+    let mut session = hint_session(&ws, Value::Null);
+    let case = ws.program(
+        &mut session,
+        "DEFINE VARIABLE iCount AS INTEGER NO-UNDO.\n\
+         DEFINE VARIABLE cCustLabel AS CHARACTER NO-UNDO.\n\
+         DEFINE VARIABLE qty AS INTEGER NO-UNDO.\n\
+         DEFINE VARIABLE iOther AS INTEGER NO-UNDO.\n\
+         PROCEDURE Prefixed:\n\
+         DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.\n\
+         DEFINE INPUT PARAMETER piCount AS INTEGER NO-UNDO.\n\
+         DEFINE INPUT PARAMETER pcLabel AS CHARACTER NO-UNDO.\n\
+         DEFINE INPUT PARAMETER pdQty AS INTEGER NO-UNDO.\n\
+         DEFINE INPUT PARAMETER pcNote AS CHARACTER NO-UNDO.\n\
+         DEFINE INPUT PARAMETER piTotal AS INTEGER NO-UNDO.\n\
+         END PROCEDURE.\n\
+         RUN Prefixed (cName, iCount, cCustLabel, qty, \"x\", iOther).‸\n",
+    );
+    // `cName` is `pcName` and `iCount` is `piCount` without their prefix,
+    // `cCustLabel` ends with the word of `pcLabel`, and `pdQty` ends with `qty`.
+    let found = hints(&mut session, &case, 0, case.text.len());
+    assert_eq!(
+        found,
+        [
+            ("pcNote:".to_string(), "\"x\", iOther).".to_string()),
+            ("piTotal:".to_string(), "iOther).".to_string()),
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A write while the hints are computed
+// ---------------------------------------------------------------------------
+
+/// The analysis of the parameter-name hints holds its snapshot for 600 ms.
+const HELD_PARAMETERS: &str = "/* OXABL-TEST-HOLD:lsp.parameter-hints@600 */\n\
+    FUNCTION Calc RETURNS INTEGER (INPUT a AS INTEGER, INPUT b AS CHARACTER):\n\
+    \x20   RETURN a.\nEND FUNCTION.\nDEFINE VARIABLE iResult AS INTEGER NO-UNDO.\n\
+    iResult = Calc(1, \"x\").‸\n";
+
+fn ask_for_hints(session: &mut Session, case: &Case) -> u64 {
+    let id = session.next_request_id();
+    session.send(json!({
+        "jsonrpc": "2.0", "id": id, "method": "textDocument/inlayHint",
+        "params": {
+            "textDocument": {"uri": file_uri(&case.file)},
+            "range": {"start": position(&case.text, 0), "end": position(&case.text, case.text.len())},
+        }
+    }));
+    id
+}
+
+fn change_text(session: &mut Session, file: &std::path::Path, version: i32, text: &str) {
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": file_uri(file), "version": version},
+            "contentChanges": [{"text": text}]
+        }
+    }));
+}
+
+#[test]
+fn an_edit_of_the_file_while_its_hints_are_computed_answers_content_modified() {
+    let mut ws = Workspace::new();
+    let mut session = hint_session(&ws, Value::Null);
+    let case = ws.open(&mut session, "held_edit.p", HELD_PARAMETERS);
+    let slow = ask_for_hints(&mut session, &case);
+    // Long enough for the worker to take its snapshot, shorter than the hold.
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let edited = format!("{}/* edit */\n", case.text);
+    change_text(&mut session, &case.file, 2, &edited);
+
+    let old = session.wait_for(|m| m["id"] == json!(slow));
+    assert_eq!(
+        old["error"]["code"].as_i64(),
+        Some(-32801),
+        "the old request answers ContentModified: {old}"
+    );
+    assert!(
+        old.get("result").is_none(),
+        "no hints of the old text: {old}"
+    );
+
+    // The client asks again for the new text.
+    let case = Case {
+        text: edited,
+        ..case
+    };
+    let found = hints(&mut session, &case, 0, case.text.len());
+    assert_eq!(
+        found.iter().map(|h| h.0.as_str()).collect::<Vec<_>>(),
+        ["a:", "b:"]
+    );
+}
+
+#[test]
+fn an_edit_of_another_file_while_the_hints_are_computed_does_not_lose_them() {
+    let mut ws = Workspace::new();
+    let mut session = hint_session(&ws, Value::Null);
+    let other = ws.open(&mut session, "other_file.p", "MESSAGE 1.‸\n");
+    let case = ws.open(&mut session, "held_other.p", HELD_PARAMETERS);
+    let slow = ask_for_hints(&mut session, &case);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    // The text of the file is the same, and the client does not ask again
+    // after `ContentModified`: the analysis runs again.
+    change_text(&mut session, &other.file, 2, "MESSAGE 2.\n");
+
+    let answer = session.wait_for(|m| m["id"] == json!(slow));
+    assert!(answer.get("error").is_none(), "{answer}");
+    let labels: Vec<_> = answer["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["label"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(labels, ["a:", "b:"], "{answer}");
 }
 
 #[test]

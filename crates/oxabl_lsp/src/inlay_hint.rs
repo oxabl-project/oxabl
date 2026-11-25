@@ -15,13 +15,17 @@
 //! (`settings.oxabl.inlayHints`).
 //!
 //! One worker thread answers the requests in order and sends each answer
-//! itself. It holds no database snapshot, so an edit never waits for it and
-//! no edit of another file cancels it. The hints of the whole file are kept
+//! itself. The database hints hold no database snapshot, so an edit never
+//! waits for them and no edit of another file cancels them. The parameter-name
+//! hints read other files, so the worker takes a snapshot for them: a write
+//! waits until it is dropped, and a write cancels the analysis that holds it.
+//! The analysis then runs again on a new snapshot while the text of the file
+//! is the same, and a few times at most. The hints of the whole file are kept
 //! per file until its text, its include context, the configuration, the
-//! schema, a file on disk or the kinds change; a request renders only the
-//! hints in its range. A request whose file changed before the worker reached
-//! it answers `ContentModified` with no analysis: the client asks again for
-//! the new text.
+//! schema, a file on disk or the kinds change (the parameter-name hints: any
+//! open buffer or file on disk); a request renders only the hints in its
+//! range. A request whose file changed before the worker reached it, or while
+//! it ran, answers `ContentModified`: the client asks again for the new text.
 
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
@@ -50,7 +54,7 @@ pub(crate) struct Options {
     pub refresh: bool,
     /// The kinds the client wants.
     pub kinds: HintKinds,
-    /// The client wants the parameter-name hints.
+    /// The client wants the parameter-name hints. Off until it says so.
     pub parameters: bool,
     /// Refresh requests sent, for their ids.
     refreshes: u64,
@@ -83,7 +87,7 @@ impl Options {
                 .map_or(HintKinds::ALL, |v| kinds_from(v, HintKinds::ALL)),
             parameters: initialization
                 .and_then(|o| o.get("inlayHints"))
-                .is_none_or(|v| parameters_from(v, true)),
+                .is_some_and(|v| parameters_from(v, false)),
             refreshes: 0,
             shared: Arc::default(),
             canonical: HashMap::new(),
@@ -403,6 +407,10 @@ struct ParameterSource {
     overlay: HashMap<PathBuf, Arc<str>>,
 }
 
+/// How many times the analysis of the parameter-name hints runs for one
+/// request, when writes to other files cancel it.
+const MAX_ATTEMPTS: u32 = 4;
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -522,7 +530,24 @@ fn answer(shared: &Shared, job: Job) -> Response {
                 .collect()
         };
         if let Some(work) = &job.parameters {
-            match parameter_hints(shared, &job.uri, work) {
+            let mut attempts = 0;
+            let kept = loop {
+                attempts += 1;
+                let kept = parameter_hints(shared, &job, work);
+                // A write to another file cancels the analysis. The text of
+                // this file is the same, and the client does not ask again
+                // after `ContentModified`, so it runs again.
+                let same = lock(&shared.versions).get(&job.uri) == Some(&job.version);
+                // An edit that came while the analysis ran leaves hints of
+                // the old text, even when the analysis finished.
+                if !same {
+                    break None;
+                }
+                if kept.is_some() || attempts == MAX_ATTEMPTS {
+                    break kept;
+                }
+            };
+            match kept {
                 Some(kept) => {
                     hints.extend(kept.iter().filter(|h| job.range.contains(&h.at)).cloned());
                     hints.sort_by_key(|h| h.at);
@@ -584,7 +609,8 @@ fn database_hints(shared: &Shared, job: &Job) -> Hints {
 /// The parameter-name hints of the whole file. `None` when an edit cancelled
 /// the analysis. A file whose analysis fails has no hints, which is only a
 /// missing decoration.
-fn parameter_hints(shared: &Shared, uri: &Uri, work: &ParameterWork) -> Option<Hints> {
+fn parameter_hints(shared: &Shared, job: &Job, work: &ParameterWork) -> Option<Hints> {
+    let uri = &job.uri;
     let source = match work {
         ParameterWork::Ready(hints) => return Some(Arc::clone(hints)),
         ParameterWork::Compute(source) => source,
@@ -593,6 +619,10 @@ fn parameter_hints(shared: &Shared, uri: &Uri, work: &ParameterWork) -> Option<H
         let session = sessions.get(&source.session_root)?;
         Some((session.database().clone(), session.schema_handle()))
     })?;
+    oxabl_common::hold_if_injected(
+        oxabl_common::panic_sites::LSP_PARAMETER_HINTS,
+        &job.source.text,
+    );
     let hints = compute_parameter_hints(
         &snapshot,
         schema,
