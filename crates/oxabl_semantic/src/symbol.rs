@@ -610,6 +610,20 @@ struct BuiltinFacts {
     members: FxHashMap<SymbolId, BuiltinMemberRef>,
     /// Method symbols whose parameter modes are not known.
     modes_unknown: FxHashSet<SymbolId>,
+    /// Member names that a complete built-in type does not have, in walk order.
+    unknown_members: Vec<UnknownMember>,
+}
+
+/// A member name that a built-in type whose whole surface the catalog knows
+/// does not have, in any namespace and for any role (`unknown-member`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownMember {
+    /// The built-in type of the receiver.
+    pub class: &'static BuiltinClass,
+    /// The member name as written.
+    pub name: String,
+    /// The member name in the source.
+    pub span: oxabl_ast::Span,
 }
 
 /// The catalog entry of a symbol minted for a built-in member.
@@ -871,6 +885,28 @@ impl SymbolTable {
         self.side
             .as_deref()
             .is_some_and(|side| side.builtin.modes_unknown.contains(&sym))
+    }
+
+    pub(crate) fn record_unknown_member(&mut self, member: UnknownMember) {
+        self.side_mut().builtin.unknown_members.push(member);
+    }
+
+    /// The member names that a complete built-in type does not have, in walk
+    /// order.
+    pub fn unknown_members(&self) -> &[UnknownMember] {
+        self.side
+            .as_deref()
+            .map_or(&[], |side| side.builtin.unknown_members.as_slice())
+    }
+
+    /// The symbol of the built-in type `class`, when the file uses it.
+    pub fn builtin_symbol_of(&self, class: &BuiltinClass) -> Option<SymbolId> {
+        let side = self.side.as_deref()?;
+        side.builtin
+            .classes
+            .iter()
+            .find(|(_, c)| std::ptr::eq(**c, class))
+            .map(|(sym, _)| *sym)
     }
 
     pub(crate) fn record_indexed_class(&mut self, sym: SymbolId, name: IndexName) {

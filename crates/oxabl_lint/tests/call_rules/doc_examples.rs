@@ -1,7 +1,7 @@
-//! The `abl` blocks of CL003 and CL004's module docs: the first is the bad
+//! The `abl` blocks of the CL003, CL004, CL006 and CL007 module docs: the first is the bad
 //! example and must fire its rule; the second is the fixed one and must not.
 
-use oxabl_lint::{signature_mismatch, unresolved_call};
+use oxabl_lint::{member_call_mismatch, signature_mismatch, unknown_member, unresolved_call};
 
 use super::{RuleFn, Setup, run_with};
 
@@ -44,6 +44,8 @@ fn examples(name: &str, rule: RuleFn, module: &str) {
     for (other, f) in [
         ("CL003", signature_mismatch::run as RuleFn),
         ("CL004", unresolved_call::run as RuleFn),
+        ("CL006", member_call_mismatch::run as RuleFn),
+        ("CL007", unknown_member::run as RuleFn),
     ] {
         let fixed = run_with(f, &blocks[1], &setup);
         assert!(
@@ -70,5 +72,23 @@ fn cl004_examples() {
         "CL004",
         unresolved_call::run,
         include_str!("../../src/rules/unresolved_call.rs"),
+    );
+}
+
+#[test]
+fn cl006_examples() {
+    examples(
+        "CL006",
+        member_call_mismatch::run,
+        include_str!("../../src/rules/member_call_mismatch.rs"),
+    );
+}
+
+#[test]
+fn cl007_examples() {
+    examples(
+        "CL007",
+        unknown_member::run,
+        include_str!("../../src/rules/unknown_member.rs"),
     );
 }

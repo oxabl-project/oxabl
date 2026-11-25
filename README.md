@@ -125,6 +125,7 @@ oxabl is shipped with a small set of essential lint rules baked in. We have seve
     - unresolved-call
     - run-value and dynamic-invoke
     - shared-state
+    - member-call-mismatch and unknown-member (built-in types)
 
 The strict groups are off by default and in preview. `enable = ["strict"]` in `[workspace.lint]` turns on all six strict groups, or you can toggle each group on its own.
 

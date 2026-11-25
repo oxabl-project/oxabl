@@ -45,8 +45,8 @@ use crate::builtin::{
 use crate::index::ImportCandidate;
 use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_records};
 use crate::signature::{CallParam, CallParamKind, MemberParamShape, ParamMode};
-use crate::symbol::BuiltinMemberRef;
 use crate::symbol::RecordSource;
+use crate::symbol::{BuiltinMemberRef, UnknownMember};
 use crate::{
     AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
     LocateKind, Located, MemberDescriptor, MemberParam, MemberRecord, MemberType, NamespaceId,
@@ -5191,6 +5191,7 @@ impl<'a> ResolveWalker<'a> {
         };
         let atom = fold_atom(&member.name);
         let Some(sym) = self.lookup_member(class, role, &atom, namespaces, member) else {
+            self.note_unknown_member(class, &atom, member);
             self.references.insert(
                 expr_id,
                 Resolution::Unresolved {
@@ -5210,6 +5211,31 @@ impl<'a> ResolveWalker<'a> {
         if static_mismatch || self.class_on_cycle(class) || (method && self.method_set_open(class))
         {
             self.symbols.mark_untyped_member(expr_id);
+        }
+    }
+
+    /// Record `member` as a name the built-in type `class` does not have, when
+    /// the catalog has the whole surface of `class` and no namespace of it has
+    /// the name. The lookup that missed has walked the surface.
+    fn note_unknown_member(&mut self, class: SymbolId, atom: &OxablAtom, member: &Identifier) {
+        if self.ctx.source_context.is_include_fragment() {
+            return;
+        }
+        let Some(builtin) = self.symbols.builtin_class(class) else {
+            return;
+        };
+        if !builtin.is_complete() {
+            return;
+        }
+        let present = self
+            .cross_file()
+            .is_some_and(|cf| cf.inherited.contains_key(&(class, atom.clone())));
+        if !present {
+            self.symbols.record_unknown_member(UnknownMember {
+                class: builtin,
+                name: member.name.to_string(),
+                span: member.span,
+            });
         }
     }
 

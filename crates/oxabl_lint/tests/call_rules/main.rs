@@ -1,4 +1,5 @@
-//! CL003 `signature-mismatch` and CL004 `unresolved-call`.
+//! CL003 `signature-mismatch`, CL004 `unresolved-call`, CL006
+//! `member-call-mismatch` and CL007 `unknown-member`.
 //!
 //! The rules read the cross-file index, so the harness drives the real
 //! [`BatchIndex`] over an in-memory filesystem rooted at `/src`. Each rule
@@ -7,6 +8,7 @@
 
 mod cl003_signature_mismatch;
 mod cl004_unresolved_call;
+mod cl006_cl007_builtin_members;
 mod doc_examples;
 mod registry_run;
 

@@ -173,7 +173,11 @@ pub fn reachable_overloads(
 ) -> CallReach {
     let candidates: Vec<Candidate<'_>> = params
         .iter()
-        .map(|&(params, _modes_known)| Candidate { ret: None, params })
+        .map(|&(params, modes_known)| Candidate {
+            ret: None,
+            params,
+            modes_known,
+        })
         .collect();
     let kept = fitted(&candidates, args, lattice);
     let picked = match kept.as_slice() {
@@ -190,6 +194,55 @@ pub fn reachable_overloads(
 /// [`candidates_of`] finds them.
 pub fn call_candidates(symbols: &SymbolTable, anchor: SymbolId) -> Vec<SymbolId> {
     candidates_of(symbols, anchor).into_vec()
+}
+
+/// Why no candidate of a call can take its arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NoFit {
+    /// No candidate has the number of arguments.
+    Count,
+    /// Each candidate with that number has an argument whose type never
+    /// converts to its parameter.
+    Types,
+}
+
+/// Whether no candidate can take `args`, and why. `None` when a candidate may
+/// take them, or when a parameter list is not known. Only a `No` fit removes a
+/// candidate, so a type oxabl is not sure of never makes a finding.
+pub(crate) fn no_fit(
+    candidates: &[Candidate<'_>],
+    args: &[ResolvedType],
+    lattice: ClassLattice<'_>,
+) -> Option<NoFit> {
+    if candidates.is_empty() || candidates.iter().any(|c| c.params.is_none()) {
+        return None;
+    }
+    let counted = |c: &&Candidate<'_>| c.params.is_some_and(|p| p.len() == args.len());
+    if !candidates.iter().any(|c| counted(&c)) {
+        return Some(NoFit::Count);
+    }
+    let mixed = mixed_modes(candidates.iter().filter(counted), args.len());
+    let refused = |candidate: &Candidate<'_>| {
+        candidate.params.is_some_and(|params| {
+            params
+                .iter()
+                .zip(args)
+                .enumerate()
+                .any(|(at, (param, arg))| {
+                    let fit = if !candidate.modes_known || mixed.get(at).copied().unwrap_or(false) {
+                        fit_any_mode(param, arg, lattice)
+                    } else {
+                        fit(param, arg, lattice)
+                    };
+                    fit == Fit::No
+                })
+        })
+    };
+    candidates
+        .iter()
+        .filter(counted)
+        .all(refused)
+        .then_some(NoFit::Types)
 }
 
 /// For each argument position, whether the candidates do not all declare the

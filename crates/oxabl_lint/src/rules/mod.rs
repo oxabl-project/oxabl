@@ -14,6 +14,7 @@ pub mod handle_not_deleted;
 pub mod implicit_transaction;
 pub mod lock_outlives_transaction;
 pub mod lock_upgrade_in_loop;
+pub mod member_call_mismatch;
 pub mod memptr_not_freed;
 pub mod missing_no_undo;
 pub mod missing_widget_pool;
@@ -29,6 +30,7 @@ pub mod transaction_spans_ui;
 pub mod type_mismatch_assignment;
 pub mod undefined_symbol;
 pub mod unknown_in_comparison;
+pub mod unknown_member;
 pub mod unknown_propagation;
 pub mod unknown_table_or_field;
 pub mod unresolved_call;
@@ -69,6 +71,10 @@ pub const CL003: &str = "CL003";
 pub const CL004: &str = "CL004";
 /// Diagnostic code for `shared-state` (CL005).
 pub const CL005: &str = "CL005";
+/// Diagnostic code for `member-call-mismatch` (CL006).
+pub const CL006: &str = "CL006";
+/// Diagnostic code for `unknown-member` (CL007).
+pub const CL007: &str = "CL007";
 /// Diagnostic code for `implicit-transaction` (TX001).
 pub const TX001: &str = "TX001";
 /// Diagnostic code for `procedure-wide-transaction` (TX002).

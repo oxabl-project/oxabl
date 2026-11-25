@@ -28,6 +28,7 @@ mod diagnostics;
 mod index;
 mod index_vec;
 mod inherited;
+mod misfit;
 mod namespace;
 mod operators;
 mod overload;
@@ -58,6 +59,7 @@ pub use index_vec::NodeIndexVec;
 pub use inherited::{
     InheritedBinding, InheritedKind, InheritedRecord, InheritedRecords, inherited_records,
 };
+pub use misfit::{CallMisfit, MisfitKind, builtin_call_misfit};
 pub use namespace::{NUM_NAMESPACES, NamespaceId};
 pub use operators::{binary_op_result, unary_negate_result, unary_not_result};
 pub use overload::{CallReach, call_candidates, reachable_overloads};
@@ -74,7 +76,7 @@ pub use signature::{
 pub use surface::ClassOrigin;
 pub use symbol::{
     BuiltinMemberRef, ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes,
-    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
+    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnknownMember, UnlinkedRun,
 };
 pub use types::{AblType, PrimitiveTy, ResolvedType};
 
