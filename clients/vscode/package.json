@@ -223,6 +223,11 @@
           "default": [],
           "description": "Extra arguments for `oxabl build`, for example `[\"--config-overlay\", \"/path/overlay.toml\"]`. Also passed when the extension reads the build setup of a project."
         },
+        "oxabl.outline.includes": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show the declarations of include files in the Outline view, the breadcrumbs and Go to Symbol in File, under the `{file.i}` reference that brings them in. An include that oxabl cannot expand shows with a marker. The declarations belong to the include file, so choosing one puts the cursor on the reference; press F12 there to open the file. Changing it restarts the language server."
+        },
         "oxabl.semanticTokens.enable": {
           "type": "boolean",
           "default": true,

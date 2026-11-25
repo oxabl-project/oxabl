@@ -60,6 +60,8 @@
 //! [`outline`] — the declarations of one file as a tree, for an editor's outline
 //! view, breadcrumbs and "Go to Symbol in File". It reads the raw source, like
 //! [`FormatPipeline`], so every span is a byte range of the buffer as written.
+//! [`outline_with_includes`] adds the declarations of the include files the
+//! preprocessor expanded under the symbol of each `{file.i}` reference.
 //!
 //! [`schema_view`] — the configured `.df` files as a tree of databases, tables,
 //! fields, indexes and sequences, for an editor's schema browser, and
@@ -95,6 +97,7 @@ mod keyword_docs;
 mod lint;
 mod navigate;
 mod outline;
+mod outline_includes;
 #[cfg(test)]
 mod parity;
 pub mod position;
@@ -124,6 +127,10 @@ pub use navigate::{
     SemanticToken, SignatureHelp, SignatureInfo, Target, close_open_call,
 };
 pub use outline::{OutlineKind, OutlineSymbol, outline};
+pub use outline_includes::{
+    IncludeFile, IncludeOutline, MAX_INCLUDED_SYMBOLS, OutlineNode, marker as outline_marker,
+    outline_with_includes,
+};
 // Re-exported so a client of navigation and the call hierarchy can name the
 // byte spans their answers carry.
 pub use oxabl_ast::Span;

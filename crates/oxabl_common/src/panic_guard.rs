@@ -179,6 +179,9 @@ pub mod panic_sites {
     /// The language server's semantic tokens after the analysis, before the
     /// answer, for [`hold_if_injected`](super::hold_if_injected).
     pub const SEMANTIC_ANSWER: &str = "lsp.semantic-answer";
+    /// The language server's outline with include files, before its
+    /// expansion, for [`hold_if_injected`](super::hold_if_injected).
+    pub const OUTLINE_INCLUDES: &str = "lsp.outline-includes";
     /// The language server's semantic tokens while the analysis holds its
     /// snapshot, for [`hold_if_injected`](super::hold_if_injected).
     pub const SEMANTIC_SNAPSHOT: &str = "lsp.semantic-snapshot";

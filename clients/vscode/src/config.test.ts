@@ -7,6 +7,7 @@ import {
   RESTART_CONFIG_KEYS,
   inlayHintSettings,
   referenceLensSettings,
+  outlineSettings,
   semanticTokenSettings,
   shouldRestartForConfigChange,
 } from "./config";
@@ -22,6 +23,10 @@ describe("shouldRestartForConfigChange", () => {
 
   it("restarts when oxabl.trace.server changes", () => {
     expect(shouldRestartForConfigChange((s) => s === "oxabl.trace.server")).toBe(true);
+  });
+
+  it("restarts when oxabl.outline.includes changes", () => {
+    expect(shouldRestartForConfigChange((s) => s === "oxabl.outline.includes")).toBe(true);
   });
 
   it("does not restart for an unrelated setting change", () => {
@@ -170,5 +175,24 @@ describe("referenceLensSettings", () => {
     expect(Object.keys(props).filter((key) => /lens/i.test(key))).toEqual([
       "oxabl.referenceLenses.enable",
     ]);
+  });
+});
+
+describe("outlineSettings", () => {
+  it("shows the declarations of includes when the setting is not set", () => {
+    expect(outlineSettings(undefined)).toEqual({ includes: true });
+  });
+
+  it("follows the setting", () => {
+    expect(outlineSettings(false)).toEqual({ includes: false });
+    expect(outlineSettings(true)).toEqual({ includes: true });
+  });
+
+  it("has a boolean setting, on by default", () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    expect(manifest.contributes.configuration.properties["oxabl.outline.includes"]).toMatchObject({
+      type: "boolean",
+      default: true,
+    });
   });
 });

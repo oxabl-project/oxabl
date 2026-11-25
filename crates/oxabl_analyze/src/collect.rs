@@ -492,6 +492,12 @@ pub struct ExpandedFile {
     branches: Vec<IfBranch>,
     /// The path of each include expansion, by the file id of its text.
     include_files: Vec<(FileId, PathBuf)>,
+    /// The preprocessor's id for each entry of `included`, also for an
+    /// expansion that kept no text. Equal to the ids of `included` where
+    /// those are known.
+    expansion_ids: Vec<Option<FileId>>,
+    /// The text of each expansion in `include_files`.
+    include_texts: Vec<(FileId, Arc<str>)>,
     /// Whether an include the compiler may expand was not expanded.
     missed_expansion: bool,
     /// Places, at any depth, where the preprocessor dropped text or decided a
@@ -608,6 +614,38 @@ impl ExpandedFile {
                 .iter()
                 .filter(|branch| branch.body.file == self.root),
         )
+    }
+
+    /// The text of the `&IF` branches that the preprocessor did not take in the
+    /// expansion with id `file` (the root or one include), in that file's own
+    /// bytes, sorted and merged. A branch it chose on a guess is not listed
+    /// (see [`oxabl_preprocessor::BranchState`]). Empty unless the expansion
+    /// tracked branches.
+    pub fn not_taken_regions(&self, file: FileId) -> Vec<Span> {
+        inactive_regions(
+            self.branches
+                .iter()
+                .filter(|branch| branch.body.file == file),
+        )
+    }
+
+    /// The preprocessor's id for each of [`Self::include_expansions`], in the
+    /// same order, also for an expansion that kept no text of its own. `None`
+    /// when the preprocessor did not list it (branch tracking was off).
+    pub fn expansion_ids(&self) -> &[Option<FileId>] {
+        &self.expansion_ids
+    }
+
+    /// The text of the expansion with id `file`, the one the preprocessor read:
+    /// also when the expansion kept no text of its own. `None` for the root and
+    /// for an id this expansion did not list.
+    pub fn source_text(&self, file: FileId) -> Option<&Arc<str>> {
+        self.file_text(file).or_else(|| {
+            self.include_texts
+                .iter()
+                .find(|(known, _)| *known == file)
+                .map(|(_, text)| text)
+        })
     }
 
     /// [`Self::inactive_regions`] in the bytes of the include files whose path
@@ -1198,6 +1236,8 @@ pub fn expand_source_recording(
             skipped_sources: Vec::new(),
             branches: Vec::new(),
             include_files: Vec::new(),
+            expansion_ids: Vec::new(),
+            include_texts: Vec::new(),
             missed_expansion: false,
             file_texts: Vec::new(),
             text_losses: Vec::new(),
@@ -1323,6 +1363,27 @@ pub fn expand_source_recording(
                 })
                 .collect();
             preproc.extend(encrypted_include_note(&unreadable_includes, root));
+            // The expansions are listed in the same order by both: the
+            // preprocessor as it opens each include, the flattening as it meets
+            // each include node. Trust the pairing only when it agrees on the
+            // path of every expansion and on every id that a chunk gave.
+            let paired = pf.include_files.len() == included.len()
+                && included
+                    .iter()
+                    .zip(&pf.include_files)
+                    .all(|(known, (id, path))| {
+                        known.path == *path && known.file.is_none_or(|file| file == *id)
+                    });
+            let expansion_ids: Vec<Option<FileId>> = if paired {
+                pf.include_files.iter().map(|(id, _)| Some(*id)).collect()
+            } else {
+                included.iter().map(|known| known.file).collect()
+            };
+            let include_texts: Vec<(FileId, Arc<str>)> = pf
+                .include_files
+                .iter()
+                .filter_map(|(id, _)| Some((*id, Arc::clone(pf.source(*id)?))))
+                .collect();
             let mut skipped_sources: Vec<(FileId, Arc<str>)> = Vec::new();
             for skipped in &pf.skipped_text {
                 let file = skipped.site.file;
@@ -1353,6 +1414,8 @@ pub fn expand_source_recording(
                 skipped_sources,
                 branches: pf.branches.clone(),
                 include_files: pf.include_files.clone(),
+                expansion_ids,
+                include_texts,
                 missed_expansion: pf.missed_expansion,
                 file_texts,
                 text_losses: pf.text_losses.clone(),
@@ -2545,6 +2608,8 @@ mod tests {
             skipped_sources: Vec::new(),
             branches: Vec::new(),
             include_files: Vec::new(),
+            expansion_ids: Vec::new(),
+            include_texts: Vec::new(),
             missed_expansion: false,
             file_texts: Vec::new(),
             text_losses: Vec::new(),
