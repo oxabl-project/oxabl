@@ -6934,8 +6934,9 @@ impl Parser<'_> {
             .parse_access_modifier()
             .unwrap_or(AccessModifier::Public);
 
-        // Skip optional STATIC keyword (e.g. CONSTRUCTOR STATIC classname():)
-        if self.check(Kind::KwStatic) {
+        // CONSTRUCTOR STATIC classname():
+        let is_static = self.check(Kind::KwStatic);
+        if is_static {
             self.advance();
         }
 
@@ -6972,6 +6973,7 @@ impl Parser<'_> {
 
         Ok(self.stmt(StatementKind::Constructor {
             access,
+            is_static,
             parameters,
             body,
         }))

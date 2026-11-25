@@ -173,7 +173,13 @@ A `TypeName` receiver reaches only `STATIC` members. An `Instance`,
 `ThisObject` or `Super` receiver reaches only instance members. The other
 combinations keep the resolution (so go to definition still works) and give
 the type `Unknown`, because oxabl does not know for sure what the compiler
-accepts there. An unqualified name inside the class reaches both, as today.
+accepts there. An unqualified name inside the class reaches both, as today,
+with one exception. Inside a `STATIC` method, a `STATIC` property accessor
+or a `CONSTRUCTOR STATIC`, the compiler picks the overload from all
+candidates, static and instance. Then it refuses an instance pick (error
+14422). Thus an unqualified call there gives `Unknown` when one of its
+candidates is an instance method. oxabl does not remove the instance
+candidates, because the compiler does not remove them.
 
 ### Enums
 
@@ -292,10 +298,16 @@ Each argument gets one fit against each parameter at its position:
 "No" removes a candidate, so a "No" must be sure. When oxabl is not sure, the
 fit is "Maybe", which never removes a candidate.
 
-The argument mode is not in the AST, so the fit uses the parameter's mode. A
-call that compiles writes the mode the parameter has, so this is the mode of
-the argument too. Two candidates that differ only by mode both fit, and the
-rules below then give `Unknown` unless they return the same type.
+The argument mode is not in the AST. The compiler uses the mode that the
+call writes to pick the overload: with `F(INPUT DECIMAL)` and
+`F(OUTPUT INTEGER)`, the call `F(OUTPUT d)` on a `DECIMAL` reaches
+`F(OUTPUT INTEGER)`. Thus oxabl uses the parameter's mode only at a position
+where all candidates of the argument count have the same mode. A call that
+compiles writes that mode. At a position where the candidates do not all have
+the same mode, the fit is at most Maybe. It is No only when the two types
+never convert in any mode (the families above; a class pair is never No
+there). The rules below then give `Unknown` unless the candidates left
+return the same type.
 
 ### The pick
 
@@ -477,7 +489,8 @@ text above, or differ from the steps document:
 
 - **Untyped references.** The resolve pass marks each member reference whose
   type oxabl does not know (`SymbolTable::mark_untyped_member`, by node): a
-  static rule mismatch, a class on a cycle, or a method whose candidates may be
+  static rule mismatch, an unqualified call in a static member with an
+  instance candidate, a class on a cycle, or a method whose candidates may be
   incomplete. The type-check pass gives such a node `Unknown`. The marks are
   per reference, not per overload anchor, because the role decides the static
   rule.

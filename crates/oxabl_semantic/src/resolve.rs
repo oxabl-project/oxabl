@@ -689,6 +689,7 @@ impl<'a> Walker<'a> {
                 access,
                 parameters,
                 body,
+                ..
             } => {
                 let cs = self.tree.push(ScopeKind::Constructor, scope, stmt.id);
                 let _ = access;
@@ -1623,6 +1624,9 @@ struct ResolveWalker<'a> {
     /// word, and it is assigned on the ordinary class-walk path rather than from
     /// behind an index gate, so boxing it would buy nothing and cost a branch.
     current_class: Option<SymbolId>,
+    /// The walk is inside a `STATIC` method, constructor or property
+    /// accessor, which may reach only static members.
+    in_static: bool,
     /// Everything cross-file resolution needs, and **nothing a single-file run
     /// touches** — behind one `Option<Box<…>>` so a run with no index attached
     /// pays one word for the whole apparatus.
@@ -1935,6 +1939,7 @@ impl<'a> ResolveWalker<'a> {
             synth_buffers: FxHashMap::default(),
             synth_sequences: None,
             current_class: None,
+            in_static: false,
             // Deliberately not created here, not even when an index *is*
             // attached: the first cross-file write creates it, so the cost is
             // paid by the run that has something to put in it.
@@ -2992,9 +2997,11 @@ impl<'a> ResolveWalker<'a> {
                 get_body,
                 set_body,
                 set_parameters,
+                is_static,
                 ..
             } => {
                 self.note_data_type(data_type, scope, identifier_span(name));
+                let outer = std::mem::replace(&mut self.in_static, *is_static);
                 if let Some(body) = get_body
                     && let Some(gs) = self.find_child_scope(scope, stmt.id, ScopeKind::PropertyGet)
                 {
@@ -3006,6 +3013,7 @@ impl<'a> ResolveWalker<'a> {
                         self.walk_block(body, ss);
                     }
                 }
+                self.in_static = outer;
             }
 
             // ---- Scope-opening declarations ------------------------------
@@ -3084,22 +3092,30 @@ impl<'a> ResolveWalker<'a> {
                 return_type,
                 parameters,
                 body,
+                is_static,
                 ..
             } => {
                 if let Some(rt) = return_type {
                     self.note_data_type(rt, scope, identifier_span(name));
                 }
                 if let Some(ms) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
+                    let outer = std::mem::replace(&mut self.in_static, *is_static);
                     self.walk_block(parameters, ms);
                     self.walk_block(body, ms);
+                    self.in_static = outer;
                 }
             }
             StatementKind::Constructor {
-                parameters, body, ..
+                parameters,
+                body,
+                is_static,
+                ..
             } => {
                 if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Constructor) {
+                    let outer = std::mem::replace(&mut self.in_static, *is_static);
                     self.walk_block(parameters, cs);
                     self.walk_block(body, cs);
+                    self.in_static = outer;
                 }
             }
             StatementKind::Destructor { body } => {
@@ -5025,7 +5041,9 @@ impl<'a> ResolveWalker<'a> {
     /// An unqualified call of a method inside its class (`Score(1)`): gather
     /// the declarations the class inherits beside its own, so the call and
     /// `THIS-OBJECT:Score(1)` read one set, and mark the call when its
-    /// candidates may be incomplete.
+    /// candidates may be incomplete. Inside a static member the compiler
+    /// picks from every candidate and then refuses an instance one, so a set
+    /// with an instance candidate gives no type there.
     fn note_method_call(&mut self, expr_id: NodeId, name: &Identifier) {
         let Some(class) = self.current_class else {
             return;
@@ -5041,7 +5059,11 @@ impl<'a> ResolveWalker<'a> {
         if !self.symbols.get(sym).flags.contains(SymbolFlags::INHERITED) {
             self.gather_inherited(class, sym, &atom, name, false);
         }
-        if self.class_on_cycle(class) || self.method_set_open(class, &atom) {
+        let instance_in_static = self.in_static
+            && crate::overload::candidates_of(self.symbols, sym)
+                .iter()
+                .any(|&c| !self.symbols.get(c).flags.contains(SymbolFlags::STATIC));
+        if instance_in_static || self.class_on_cycle(class) || self.method_set_open(class, &atom) {
             self.symbols.mark_untyped_member(expr_id);
         }
     }
@@ -8526,6 +8548,7 @@ mod tests {
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Constructor {
                 access: AccessModifier::Public,
+                is_static: false,
                 parameters: vec![],
                 body: vec![],
             })],

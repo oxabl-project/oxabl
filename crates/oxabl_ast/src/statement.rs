@@ -709,6 +709,8 @@ pub enum StatementKind {
     Constructor {
         /// Access modifier.
         access: AccessModifier,
+        /// `CONSTRUCTOR STATIC`: the static constructor of the class.
+        is_static: bool,
         /// Parameters (reuses DefineParameter Statement variant).
         parameters: Vec<Statement>,
         /// Constructor body.

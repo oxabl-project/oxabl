@@ -71,15 +71,23 @@ pub(crate) fn pick(
     args: &[ResolvedType],
     lattice: ClassLattice<'_>,
 ) -> ResolvedType {
+    // Rule 1: the parameter count must match.
+    let counted = |c: &&Candidate<'_>| c.params.is_none_or(|p| p.len() == args.len());
+    let mixed = mixed_modes(candidates.iter().filter(counted), args.len());
     let mut kept: SmallVec<[(Candidate<'_>, Fit); 8]> = SmallVec::new();
-    for candidate in candidates {
+    for candidate in candidates.iter().filter(counted) {
         let fit = match candidate.params {
-            // Rule 1: the parameter count must match.
-            Some(params) if params.len() != args.len() => continue,
             Some(params) => params
                 .iter()
                 .zip(args)
-                .map(|(param, arg)| fit(param, arg, lattice))
+                .enumerate()
+                .map(|(at, (param, arg))| {
+                    if mixed.get(at).copied().unwrap_or(false) {
+                        fit_any_mode(param, arg, lattice)
+                    } else {
+                        fit(param, arg, lattice)
+                    }
+                })
                 .min()
                 .unwrap_or(Fit::Exact),
             None => Fit::Maybe,
@@ -118,6 +126,38 @@ pub(crate) fn pick(
     }
     // Rule 6.
     agreed.cloned().unwrap_or(ResolvedType::Unknown)
+}
+
+/// For each argument position, whether the candidates do not all declare the
+/// same mode there. The AST does not keep the mode written at the call, and
+/// the compiler matches it, so at such a position oxabl does not know which
+/// candidates the call can reach.
+fn mixed_modes<'c, 'a: 'c>(
+    candidates: impl Iterator<Item = &'c Candidate<'a>>,
+    count: usize,
+) -> SmallVec<[bool; 8]> {
+    let mut seen: SmallVec<[Option<ParamMode>; 8]> = SmallVec::from_elem(None, count);
+    let mut mixed: SmallVec<[bool; 8]> = SmallVec::from_elem(false, count);
+    for params in candidates.filter_map(|c| c.params) {
+        for (at, param) in params.iter().enumerate() {
+            match seen[at] {
+                None => seen[at] = Some(param.mode),
+                Some(mode) if mode != param.mode => mixed[at] = true,
+                Some(_) => {}
+            }
+        }
+    }
+    mixed
+}
+
+/// How an argument fits `param` when the call may write another mode than
+/// the parameter's: only a `No` that holds in every mode, else `Maybe`.
+fn fit_any_mode(param: &CallParam, arg: &ResolvedType, lattice: ClassLattice<'_>) -> Fit {
+    let any = CallParam {
+        mode: ParamMode::InputOutput,
+        kind: param.kind.clone(),
+    };
+    fit(&any, arg, lattice).min(Fit::Maybe)
 }
 
 /// How an argument of type `arg` fits `param`.
@@ -356,6 +396,64 @@ mod tests {
             (prim(Character), vec![input(prim(Handle))]),
         ];
         assert_eq!(pick_of(&rows, &[prim(Integer)]), ResolvedType::Unknown);
+    }
+
+    #[test]
+    fn candidates_of_other_modes_at_a_position_pick_nothing() {
+        // `F(OUTPUT d)` reaches the `OUTPUT INTEGER` one, which the fit by
+        // the parameter's own mode would rank below the `INPUT DECIMAL` one.
+        let rows = [
+            (prim(Integer), vec![input(prim(Decimal))]),
+            (
+                prim(Character),
+                vec![with_mode(ParamMode::Output, prim(Integer))],
+            ),
+        ];
+        assert_eq!(pick_of(&rows, &[prim(Decimal)]), ResolvedType::Unknown);
+        assert_eq!(pick_of(&rows, &[prim(Integer)]), ResolvedType::Unknown);
+        // A family that never converts still removes a candidate.
+        assert_eq!(pick_of(&rows, &[prim(Logical)]), ResolvedType::Unknown);
+        let rows = [
+            (prim(Integer), vec![input(prim(Decimal))]),
+            (
+                prim(Character),
+                vec![with_mode(ParamMode::Output, prim(Character))],
+            ),
+        ];
+        assert_eq!(pick_of(&rows, &[prim(Character)]), prim(Character));
+    }
+
+    #[test]
+    fn candidates_of_one_mode_keep_the_pick() {
+        let rows = [
+            (
+                prim(Integer),
+                vec![with_mode(ParamMode::Output, prim(Logical))],
+            ),
+            (
+                prim(Character),
+                vec![with_mode(ParamMode::Output, prim(Integer))],
+            ),
+        ];
+        assert_eq!(pick_of(&rows, &[prim(Integer)]), prim(Character));
+        // A position where the modes agree still picks when another differs.
+        let rows = [
+            (
+                prim(Integer),
+                vec![input(prim(Integer)), input(prim(Decimal))],
+            ),
+            (
+                prim(Character),
+                vec![
+                    input(prim(Character)),
+                    with_mode(ParamMode::Output, prim(Decimal)),
+                ],
+            ),
+        ];
+        assert_eq!(
+            pick_of(&rows, &[prim(Integer), prim(Decimal)]),
+            prim(Integer)
+        );
     }
 
     #[test]

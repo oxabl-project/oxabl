@@ -7382,15 +7382,32 @@ fn parse_constructor_with_params() {
     match stmt.kind {
         StatementKind::Constructor {
             access,
+            is_static,
             parameters,
             body,
         } => {
             assert_eq!(access, AccessModifier::Public);
+            assert!(!is_static);
             assert_eq!(parameters.len(), 1);
             assert_eq!(body.len(), 1);
         }
         _ => panic!("Expected Constructor statement"),
     }
+}
+
+#[test]
+fn parse_static_constructor() {
+    let source = "CONSTRUCTOR STATIC MyClass(): END CONSTRUCTOR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    assert!(matches!(
+        stmt.kind,
+        StatementKind::Constructor {
+            is_static: true,
+            ..
+        }
+    ));
 }
 
 #[test]
