@@ -91,10 +91,10 @@ not final.
 `oxabl_semantic::reachable_overloads` does the pick. It is the pick of the
 type-check pass, with the candidate as the result and not its return type.
 Each parameter list goes in with a flag that says whether the list states the
-modes of its parameters (`Sig::modes_known`). The pick does not read the flag
-yet, because every list that has parameters states its modes. It is there for
-the candidates of built-in classes, which state none: the type check fits such
-a candidate in any mode, and the pick must do the same.
+modes of its parameters (`Sig::modes_known`). A list of a built-in class
+states no modes, so the pick fits such a candidate in any mode, as the type
+check does. Signature help gives no signature for a built-in member yet: the
+catalog has its parameters, but no source to show.
 
 Each signature has its own `activeParameter`: the number of the argument at the
 cursor when the signature has a parameter there, else `null`. A built-in
