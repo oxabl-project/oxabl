@@ -1848,6 +1848,12 @@ struct CrossFileState {
     /// resolved to, so two `RUN post-order.p` sites in one file point at the
     /// *same* symbol rather than minting one each.
     synth_programs: FxHashMap<IndexName, SymbolId>,
+    /// One symbol per built-in type the file uses, by catalog row.
+    builtin_symbols: FxHashMap<u16, SymbolId>,
+    /// Classes whose `INHERITS` chain reaches a built-in type other than
+    /// `Progress.Lang.Object`. The catalog does not say which members are
+    /// protected, so a bare name such a class does not declare is not judged.
+    builtin_ancestors: FxHashSet<SymbolId>,
 }
 
 /// The atom carried by the resolution recorded for a run-time-computed `RUN`
@@ -1888,8 +1894,11 @@ enum TypeLookup {
     /// Supplied by an explicitly external source such as `FROM ASSEMBLY`.
     External,
     /// A documented built-in type. The AVM supplies it, so it is no
-    /// dependency and no gap, and a reference to it stays `External`.
-    Builtin(&'static BuiltinClass),
+    /// dependency and no gap. The symbol is present when the answer is sure
+    /// (no earlier candidate spelling could be a workspace class oxabl did not
+    /// look up) and the type is not generic; then a reference to it resolves
+    /// to that symbol. Otherwise the reference stays `External`.
+    Builtin(&'static BuiltinClass, Option<SymbolId>),
     /// An index is attached and no candidate spelling matched a class.
     NotFound,
     /// A file that would declare the class was located and could not be used.
@@ -2110,8 +2119,14 @@ impl<'a> ResolveWalker<'a> {
                             resolved.push(parent);
                         }
                     }
-                    // A built-in or .NET class never inherits a workspace class.
-                    TypeLookup::Builtin(_) | TypeLookup::External => {}
+                    TypeLookup::Builtin(_, Some(parent)) => {
+                        if !resolved.contains(&parent) {
+                            resolved.push(parent);
+                        }
+                    }
+                    // A built-in type that may not be the one meant.
+                    TypeLookup::Builtin(_, None) => self.symbols.record_incomplete_chain(class),
+                    TypeLookup::External => {}
                     TypeLookup::NotFound | TypeLookup::Unusable | TypeLookup::Unknowable => {
                         self.symbols.record_incomplete_chain(class)
                     }
@@ -2225,6 +2240,12 @@ impl<'a> ResolveWalker<'a> {
     /// `local` also looks each candidate up in this file's `Types` namespace,
     /// for a header written elsewhere whose parent may be a class declared
     /// here; a name written in this file has had step 1 already.
+    ///
+    /// A `Progress.*` built-in type wins over a workspace file of the same
+    /// qualified name: the AVM supplies it, and the compiler binds it. An
+    /// `OpenEdge.*` or `Ccs.*` type is ABL source on the PROPATH, so a
+    /// workspace copy wins. A built-in answer is sure only when every earlier
+    /// candidate was looked up (see [`TypeLookup::Builtin`]).
     fn search_in_imports(
         &mut self,
         raw: &str,
@@ -2232,6 +2253,9 @@ impl<'a> ResolveWalker<'a> {
         local: bool,
         use_span: VirtualSpan,
     ) -> TypeLookup {
+        let searched = self.ctx.index_loaded && self.ctx.index_searches_paths;
+        let unseen = !raw.contains('.') && imports.has_unseen_imports();
+        let mut unlooked = false;
         for candidate in imports.candidates(raw) {
             let ImportCandidate::Name(name) = candidate else {
                 return TypeLookup::External;
@@ -2243,14 +2267,61 @@ impl<'a> ResolveWalker<'a> {
             {
                 return TypeLookup::Local(sym);
             }
+            let builtin = builtin_class(name.as_atom());
+            if let Some(class) = builtin.filter(|c| is_avm_native(c)) {
+                return self.builtin_lookup(class, !unlooked && !unseen);
+            }
             if let Some(answer) = self.try_indexed_class(&name, use_span) {
                 return answer;
             }
-            if let Some(class) = builtin_class(name.as_atom()) {
-                return TypeLookup::Builtin(class);
+            if let Some(class) = builtin {
+                return self.builtin_lookup(class, !unlooked && !unseen);
             }
+            unlooked |= !searched;
         }
         TypeLookup::NotFound
+    }
+
+    /// The answer for the built-in type `class`, with its symbol when the
+    /// answer is `sure` and the type is not generic.
+    fn builtin_lookup(&mut self, class: &'static BuiltinClass, sure: bool) -> TypeLookup {
+        let sym = (sure && !class.is_generic()).then(|| self.builtin_class_symbol(class));
+        TypeLookup::Builtin(class, sym)
+    }
+
+    /// The symbol of the built-in type `class`, minted on first use with its
+    /// resolved supertypes, and shared by every later use.
+    fn builtin_class_symbol(&mut self, class: &'static BuiltinClass) -> SymbolId {
+        let row = class.row();
+        if let Some(sym) = self
+            .cross_file()
+            .and_then(|cf| cf.builtin_symbols.get(&row))
+            .copied()
+        {
+            return sym;
+        }
+        let sym = self.symbols.insert(Symbol::synthesized(
+            OxablAtom::from(class.key),
+            NamespaceId::Types,
+            match class.kind {
+                ClassKind::Class | ClassKind::Enum => SymbolKind::Class,
+                ClassKind::Interface => SymbolKind::Interface,
+            },
+            VirtualSpan::new(0, 0),
+        ));
+        self.cross_file_mut().builtin_symbols.insert(row, sym);
+        self.symbols.record_builtin_class(sym, class);
+        // The catalog has no cycle, so minting the supertypes terminates.
+        let supers: Vec<SymbolId> = class
+            .supertypes()
+            .filter(|s| !s.is_generic())
+            .map(|s| self.builtin_class_symbol(s))
+            .collect();
+        if !class.header_known() || class.supertypes().any(BuiltinClass::is_generic) {
+            self.symbols.record_incomplete_chain(sym);
+        }
+        self.symbols.record_resolved_supertypes(sym, supers);
+        sym
     }
 
     /// The reason a literal `RUN` target that no configured path supplies gets.
@@ -2406,7 +2477,7 @@ impl<'a> ResolveWalker<'a> {
             }
             TypeLookup::Unknowable => (self.class_miss_key(raw), ClassLookup::Unknowable),
             TypeLookup::Local(_)
-            | TypeLookup::Builtin(_)
+            | TypeLookup::Builtin(..)
             | TypeLookup::External
             | TypeLookup::NotLooked => return,
         };
@@ -2578,6 +2649,7 @@ impl<'a> ResolveWalker<'a> {
         cf.synth_classes.insert(name.clone(), sym);
         cf.indexed_class_of.insert(sym, name.clone());
         cf.indexed_class_file.insert(sym, file);
+        self.symbols.record_indexed_class(sym, name.clone());
         if self.ctx.record_sites {
             self.symbols.record_class_file(sym, file);
         }
@@ -2635,7 +2707,13 @@ impl<'a> ResolveWalker<'a> {
                             resolved.push(parent);
                         }
                     }
-                    TypeLookup::Builtin(_) | TypeLookup::External => {}
+                    TypeLookup::Builtin(_, Some(parent)) => {
+                        if !resolved.contains(&parent) {
+                            resolved.push(parent);
+                        }
+                    }
+                    TypeLookup::Builtin(_, None) => self.symbols.record_incomplete_chain(sym),
+                    TypeLookup::External => {}
                     TypeLookup::NotFound | TypeLookup::Unusable | TypeLookup::Unknowable => {
                         self.symbols.record_incomplete_chain(sym)
                     }
@@ -2643,6 +2721,14 @@ impl<'a> ResolveWalker<'a> {
                     // analysis keeps its answer.
                     TypeLookup::NotLooked => {}
                 }
+            }
+            // An enum widens to `Progress.Lang.Enum`. The index does not say
+            // whether it is a `FLAGS` enum, so the chain past it is not known.
+            if descriptor.kind == ClassKind::Enum {
+                if let Some(base) = builtin_class("Progress.Lang.Enum") {
+                    resolved.push(self.builtin_class_symbol(base));
+                }
+                self.symbols.record_incomplete_chain(sym);
             }
             self.symbols.record_resolved_supertypes(sym, resolved);
         }
@@ -2668,10 +2754,10 @@ impl<'a> ResolveWalker<'a> {
             let (scope, span) = (symbol.declared_in, symbol.name_span);
             let params = crate::signature::call_params(&decls, |name| {
                 match self.resolve_type_name(name.as_written(), scope, span) {
-                    TypeLookup::Local(class) | TypeLookup::Indexed(class) => {
-                        ResolvedType::Class(class)
-                    }
-                    TypeLookup::Builtin(_)
+                    TypeLookup::Local(class)
+                    | TypeLookup::Indexed(class)
+                    | TypeLookup::Builtin(_, Some(class)) => ResolvedType::Class(class),
+                    TypeLookup::Builtin(_, None)
                     | TypeLookup::External
                     | TypeLookup::NotFound
                     | TypeLookup::Unusable
@@ -2695,14 +2781,14 @@ impl<'a> ResolveWalker<'a> {
                 // the valve that kept the type lattice from learning it.
                 ClassTypedDecl::Foreign(sid, name, span) => {
                     match self.resolve_type_in_workspace(name.as_written(), span) {
-                        TypeLookup::Indexed(class) => {
+                        TypeLookup::Indexed(class) | TypeLookup::Builtin(_, Some(class)) => {
                             self.symbols.get_mut(sid).data_type = Some(ResolvedType::Class(class));
                         }
                         // Nothing to link. The declaration keeps `Unknown`,
                         // which is what it has today, and a member access
                         // through it stays unresolved.
                         TypeLookup::Local(_)
-                        | TypeLookup::Builtin(_)
+                        | TypeLookup::Builtin(_, None)
                         | TypeLookup::External
                         | TypeLookup::NotFound
                         | TypeLookup::Unusable
@@ -2749,6 +2835,14 @@ impl<'a> ResolveWalker<'a> {
                 } => return_type.class_name().and_then(|class_name| {
                     self.class_upgrade_in_ns(class_name, scope, NamespaceId::Functions, name)
                 }),
+                // The error variable is declared in the `CATCH` block's scope.
+                StatementKind::Catch {
+                    error_var,
+                    error_type,
+                    ..
+                } => self
+                    .find_child_scope(scope, stmt.id, ScopeKind::Catch)
+                    .and_then(|cs| self.class_upgrade(error_type, cs, error_var)),
                 // Each declaration of an overload set is its own symbol, found
                 // by its declaration node rather than by its name.
                 StatementKind::Method {
@@ -2923,17 +3017,14 @@ impl<'a> ResolveWalker<'a> {
                 ResolvedType::Class(class_sym),
             ));
         }
-        // No such class in this file. With an index attached the workspace may
-        // still have it, and that is worth recording *because* a member access
-        // through this declaration needs to know its class. Without one there is
-        // nothing to ask, so the declaration keeps today's `Unknown`.
-        self.ctx.index_loaded.then(|| {
-            ClassTypedDecl::Foreign(
-                decl_sym,
-                IndexName::new(class_name),
-                identifier_span(decl_name),
-            )
-        })
+        // No such class in this file. The workspace index or the built-in
+        // catalog may still have it, and that is worth recording *because* a
+        // member access through this declaration needs to know its class.
+        Some(ClassTypedDecl::Foreign(
+            decl_sym,
+            IndexName::new(class_name),
+            identifier_span(decl_name),
+        ))
     }
 
     fn walk_block(&mut self, stmts: &[Statement], scope: ScopeId) {
@@ -4292,7 +4383,9 @@ impl<'a> ResolveWalker<'a> {
                     }
                 }
                 match lookup {
-                    TypeLookup::Local(sym) | TypeLookup::Indexed(sym) => {
+                    TypeLookup::Local(sym)
+                    | TypeLookup::Indexed(sym)
+                    | TypeLookup::Builtin(_, Some(sym)) => {
                         self.references.insert(expr.id, Resolution::Resolved(sym));
                         self.bump_count(sym, AccessMode::Read);
                     }
@@ -4334,7 +4427,7 @@ impl<'a> ResolveWalker<'a> {
                             },
                         );
                     }
-                    TypeLookup::Builtin(_) | TypeLookup::External => {
+                    TypeLookup::Builtin(_, None) | TypeLookup::External => {
                         self.references.insert(
                             expr.id,
                             Resolution::Unresolved {
@@ -4662,11 +4755,15 @@ impl<'a> ResolveWalker<'a> {
         // A `USING` name is always fully qualified as written — it is what
         // *defines* an import, so it is not resolved through other imports.
         let name = IndexName::new(type_name);
+        let builtin = builtin_class(type_name).filter(|c| !c.is_generic());
         let resolution = if source == UsingSource::Assembly {
             Resolution::Unresolved {
                 name: name.as_atom().clone(),
                 reason: UnresolvedReason::External,
             }
+        } else if let Some(class) = builtin.filter(|c| is_avm_native(c)) {
+            // The AVM supplies it, whatever the workspace holds.
+            Resolution::Resolved(self.builtin_class_symbol(class))
         } else {
             match self.try_indexed_class(&name, span) {
                 Some(TypeLookup::Indexed(sym)) => Resolution::Resolved(sym),
@@ -4678,6 +4775,10 @@ impl<'a> ResolveWalker<'a> {
                     name: name.as_atom().clone(),
                     reason: UnresolvedReason::PresentButUnusable,
                 },
+                // A qualified built-in name that no workspace file supplies.
+                None if let Some(class) = builtin => {
+                    Resolution::Resolved(self.builtin_class_symbol(class))
+                }
                 // `None` is the index's `NotFound`: an index was attached, it looked
                 // on the configured paths, and no file declares this class. That is
                 // a fact about the workspace, not a missing capability — unless there
@@ -4694,7 +4795,7 @@ impl<'a> ResolveWalker<'a> {
                 // exist so a third would be a compile error rather than a silent
                 // fall-through.
                 Some(TypeLookup::Local(_))
-                | Some(TypeLookup::Builtin(_))
+                | Some(TypeLookup::Builtin(..))
                 | Some(TypeLookup::External)
                 | Some(TypeLookup::NotFound)
                 | Some(TypeLookup::NotLooked) => {
@@ -5431,7 +5532,7 @@ impl<'a> ResolveWalker<'a> {
         }
         let span = VirtualSpan::new(expr.span.start, expr.span.end);
         let lookup = self.resolve_receiver_type(expr.id, &raw, scope, span);
-        if matches!(lookup, TypeLookup::Builtin(_)) || is_system_namespace(&fold_atom(&raw)) {
+        if matches!(lookup, TypeLookup::Builtin(..)) || is_system_namespace(&fold_atom(&raw)) {
             self.soften_package_receiver(expr);
         }
         if lookup == TypeLookup::NotFound
@@ -5524,7 +5625,7 @@ impl<'a> ResolveWalker<'a> {
             return TypeLookup::Local(sym);
         }
         let lookup = self.resolve_type_in_workspace(raw, use_span);
-        if let TypeLookup::Indexed(sym) = lookup {
+        if let TypeLookup::Indexed(sym) | TypeLookup::Builtin(_, Some(sym)) = lookup {
             self.references.insert(expr_id, Resolution::Resolved(sym));
         }
         lookup
@@ -5792,7 +5893,9 @@ impl<'a> ResolveWalker<'a> {
     fn note_type_site(&mut self, raw: &str, lookup: TypeLookup, site: VirtualSpan) {
         let name = fold_atom(raw);
         let resolution = match lookup {
-            TypeLookup::Local(sym) | TypeLookup::Indexed(sym) => Resolution::Resolved(sym),
+            TypeLookup::Local(sym)
+            | TypeLookup::Indexed(sym)
+            | TypeLookup::Builtin(_, Some(sym)) => Resolution::Resolved(sym),
             TypeLookup::NotFound => Resolution::Unresolved {
                 name,
                 reason: UnresolvedReason::AbsentFromWorkspace,
@@ -5805,7 +5908,7 @@ impl<'a> ResolveWalker<'a> {
                 name,
                 reason: UnresolvedReason::Unknowable,
             },
-            TypeLookup::Builtin(_) | TypeLookup::External | TypeLookup::NotLooked => {
+            TypeLookup::Builtin(_, None) | TypeLookup::External | TypeLookup::NotLooked => {
                 Resolution::Unresolved {
                     name,
                     reason: UnresolvedReason::External,
@@ -5867,7 +5970,9 @@ impl<'a> ResolveWalker<'a> {
         self.note_class_site(raw, lookup, span);
         let atom = fold_atom(raw);
         let resolution = match lookup {
-            TypeLookup::Local(sym) | TypeLookup::Indexed(sym) => {
+            TypeLookup::Local(sym)
+            | TypeLookup::Indexed(sym)
+            | TypeLookup::Builtin(_, Some(sym)) => {
                 self.bump_count(sym, AccessMode::Read);
                 Resolution::Resolved(sym)
             }
@@ -5883,7 +5988,7 @@ impl<'a> ResolveWalker<'a> {
                 name: atom,
                 reason: UnresolvedReason::Unknowable,
             },
-            TypeLookup::Builtin(_) | TypeLookup::External | TypeLookup::NotLooked => {
+            TypeLookup::Builtin(_, None) | TypeLookup::External | TypeLookup::NotLooked => {
                 Resolution::Unresolved {
                     name: atom,
                     reason: UnresolvedReason::External,
@@ -6338,7 +6443,7 @@ impl<'a> ResolveWalker<'a> {
                 lookup @ (TypeLookup::Indexed(_) | TypeLookup::Unusable) => {
                     self.note_class_site(name, lookup, site)
                 }
-                TypeLookup::Local(_) | TypeLookup::Builtin(_) | TypeLookup::External => {}
+                TypeLookup::Local(_) | TypeLookup::Builtin(..) | TypeLookup::External => {}
                 TypeLookup::NotFound if self.receiver_is_no_class(name, scope) => {}
                 TypeLookup::NotFound | TypeLookup::Unknowable | TypeLookup::NotLooked => {
                     self.symbols.record_unattributed_unmodelled_use(site)
@@ -6926,8 +7031,10 @@ impl<'a> ResolveWalker<'a> {
             return ResolvedType::Unknown;
         }
         match self.search_in_imports(raw, imports, true, identifier_span(use_site)) {
-            TypeLookup::Local(class) | TypeLookup::Indexed(class) => ResolvedType::Class(class),
-            TypeLookup::Builtin(_)
+            TypeLookup::Local(class)
+            | TypeLookup::Indexed(class)
+            | TypeLookup::Builtin(_, Some(class)) => ResolvedType::Class(class),
+            TypeLookup::Builtin(_, None)
             | TypeLookup::External
             | TypeLookup::NotFound
             | TypeLookup::Unusable
@@ -7927,6 +8034,12 @@ fn wrap_extent(ty: ResolvedType, extent: Option<u32>) -> ResolvedType {
 /// Prefix comparison on the *folded* name, which is what the resolve pass carries
 /// and what ABL's case-insensitivity requires. The dot is part of each prefix so a
 /// user class named `Systems.Cache` is not swept up by `System`.
+/// Whether the AVM supplies the built-in type itself (`Progress.*`), so the
+/// compiler binds it whatever the workspace holds.
+fn is_avm_native(class: &BuiltinClass) -> bool {
+    class.name.starts_with("Progress.")
+}
+
 fn is_system_namespace(name: &OxablAtom) -> bool {
     const SHIPPED: [&str; 4] = ["progress.", "openedge.", "system.", "microsoft."];
     let folded = name.as_ref();
@@ -12342,7 +12455,7 @@ mod class_site_guard_tests {
                 assert!(
                     matches!(
                         walker.resolve_type_name(raw, ScopeId::ROOT, VirtualSpan::new(0, 1)),
-                        TypeLookup::Builtin(_)
+                        TypeLookup::Builtin(..)
                     ),
                     "indexed={indexed}: {raw}"
                 );
@@ -12710,3 +12823,7 @@ mod block_definition_tests {
 #[cfg(test)]
 #[path = "resolve_member_tests.rs"]
 mod member_tests;
+
+#[cfg(test)]
+#[path = "resolve_builtin_tests.rs"]
+mod builtin_tests;

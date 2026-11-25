@@ -36,11 +36,20 @@ END CLASS.";
 fn a_type_operand_is_not_a_value() {
     assert!(lint0001_with_index(SHIPPED_OPERANDS, &[]).is_empty());
     assert!(lint0001_without_index(SHIPPED_OPERANDS).is_empty());
+    // A sure built-in name resolves to the symbol of the built-in type.
     let (_stmts, sem) = with_index(SHIPPED_OPERANDS, &[]);
+    assert!(unresolved_reasons(&sem, "jsonobject").is_empty());
+    let class = sole_symbol(&sem, "progress.json.objectmodel.jsonobject");
     assert_eq!(
-        unresolved_reasons(&sem, "jsonobject"),
-        vec![UnresolvedReason::External; 3]
+        sem.symbols.builtin_class(class).map(|c| c.name),
+        Some("Progress.Json.ObjectModel.JsonObject")
     );
+    let resolutions = sem
+        .references
+        .iter()
+        .filter(|(_, r)| matches!(r, Resolution::Resolved(s) if *s == class))
+        .count();
+    assert_eq!(resolutions, 3, "each operand names the built-in type");
 }
 
 #[test]

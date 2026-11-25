@@ -35,6 +35,7 @@ mod resolve;
 mod scope;
 mod sequence;
 mod signature;
+mod surface;
 mod symbol;
 mod types;
 
@@ -70,9 +71,10 @@ pub use signature::{
     CallParam, CallParamKind, MemberParam, MemberParamShape, Param, ParamMode, ParamShape,
     ProgramSignatures, Signature, call_param_of, member_params,
 };
+pub use surface::ClassOrigin;
 pub use symbol::{
-    ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags,
-    SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
+    BuiltinMemberRef, ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes,
+    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
 };
 pub use types::{AblType, PrimitiveTy, ResolvedType};
 

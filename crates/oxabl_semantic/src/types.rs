@@ -187,9 +187,11 @@ impl fmt::Display for AblType<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.ty {
             ResolvedType::Primitive(p) => f.write_str(p.abl_keyword()),
-            ResolvedType::Class(sym) => {
-                write!(f, "{}", self.symbols.get(*sym).name)
-            }
+            // A built-in type is written with its documented name.
+            ResolvedType::Class(sym) => match self.symbols.builtin_class(*sym) {
+                Some(class) => f.write_str(class.name),
+                None => write!(f, "{}", self.symbols.get(*sym).name),
+            },
             // A buffer's useful name is the table it is over — that is what a
             // reader has to reconcile the message against. Fall back to the
             // buffer's own name when the schema cannot answer (no schema

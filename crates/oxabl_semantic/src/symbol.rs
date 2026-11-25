@@ -16,6 +16,8 @@ use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
+use crate::builtin::{BuiltinClass, BuiltinMember};
+use crate::surface::ClassOrigin;
 use crate::{
     CallParam, IndexName, IndexedFileId, MemberParam, NamespaceId, ResolvedType, ScopeId,
     UnresolvedReason,
@@ -591,6 +593,32 @@ struct SymbolSideMaps {
     /// The navigation record, kept only when the context asks for it
     /// ([`AnalysisContext::record_sites`](crate::AnalysisContext::record_sites)).
     navigation: Navigation,
+    /// Facts about built-in types and their members.
+    builtin: BuiltinFacts,
+    /// The index name of each class symbol synthesized from the workspace index.
+    indexed_classes: FxHashMap<SymbolId, IndexName>,
+}
+
+/// What the resolve pass records about the built-in types a file uses.
+#[derive(Debug, Default)]
+struct BuiltinFacts {
+    /// The catalog row of each built-in type symbol.
+    classes: FxHashMap<SymbolId, &'static BuiltinClass>,
+    /// The symbol of `Progress.Lang.Object`, once minted.
+    object: Option<SymbolId>,
+    /// The catalog member of each symbol minted for a built-in member.
+    members: FxHashMap<SymbolId, BuiltinMemberRef>,
+    /// Method symbols whose parameter modes are not known.
+    modes_unknown: FxHashSet<SymbolId>,
+}
+
+/// The catalog entry of a symbol minted for a built-in member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinMemberRef {
+    /// A method, property or event.
+    Member(&'static BuiltinMember),
+    /// A member of a built-in enum, with its documented name.
+    EnumMember(&'static BuiltinClass, &'static str),
 }
 
 /// Where the file names something, and the files behind synthesized symbols.
@@ -801,6 +829,71 @@ impl SymbolTable {
         symbol.kind == SymbolKind::Function
             && (self.method_signature(sym).is_some()
                 || symbol.flags.contains(SymbolFlags::INHERITED))
+    }
+
+    /// Record that `sym` is the symbol of the built-in type `class`.
+    pub(crate) fn record_builtin_class(&mut self, sym: SymbolId, class: &'static BuiltinClass) {
+        let builtin = &mut self.side_mut().builtin;
+        builtin.classes.insert(sym, class);
+        if class.is_object() {
+            builtin.object = Some(sym);
+        }
+    }
+
+    /// The catalog row of the built-in type symbol `sym`.
+    pub fn builtin_class(&self, sym: SymbolId) -> Option<&'static BuiltinClass> {
+        self.side.as_deref()?.builtin.classes.get(&sym).copied()
+    }
+
+    /// Whether `sym` is the symbol of `Progress.Lang.Object`.
+    pub fn is_builtin_object(&self, sym: SymbolId) -> bool {
+        self.side
+            .as_deref()
+            .is_some_and(|side| side.builtin.object == Some(sym))
+    }
+
+    pub(crate) fn record_builtin_member(&mut self, sym: SymbolId, member: BuiltinMemberRef) {
+        self.side_mut().builtin.members.insert(sym, member);
+    }
+
+    /// The catalog entry of a symbol minted for a built-in member.
+    pub fn builtin_member(&self, sym: SymbolId) -> Option<BuiltinMemberRef> {
+        self.side.as_deref()?.builtin.members.get(&sym).copied()
+    }
+
+    pub(crate) fn mark_modes_unknown(&mut self, sym: SymbolId) {
+        self.side_mut().builtin.modes_unknown.insert(sym);
+    }
+
+    /// Whether the parameter modes of the method `sym` are not known: a
+    /// built-in method, whose catalog has no modes.
+    pub fn modes_unknown(&self, sym: SymbolId) -> bool {
+        self.side
+            .as_deref()
+            .is_some_and(|side| side.builtin.modes_unknown.contains(&sym))
+    }
+
+    pub(crate) fn record_indexed_class(&mut self, sym: SymbolId, name: IndexName) {
+        self.side_mut().indexed_classes.insert(sym, name);
+    }
+
+    /// Where the class or interface `sym` comes from: this file, the
+    /// workspace index or the built-in catalog. `None` for a symbol that is
+    /// not a class.
+    pub fn class_origin(&self, sym: SymbolId) -> Option<ClassOrigin> {
+        let symbol = self.get(sym);
+        if !matches!(symbol.kind, SymbolKind::Class | SymbolKind::Interface) {
+            return None;
+        }
+        if let Some(side) = self.side.as_deref() {
+            if let Some(class) = side.builtin.classes.get(&sym) {
+                return Some(ClassOrigin::Builtin(class));
+            }
+            if let Some(name) = side.indexed_classes.get(&sym) {
+                return Some(ClassOrigin::Workspace(name.clone()));
+            }
+        }
+        (symbol.declaration != NodeId::DUMMY).then_some(ClassOrigin::Local(sym))
     }
 
     /// Record that `sym`'s header names a supertype that did not resolve, so
