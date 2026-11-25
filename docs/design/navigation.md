@@ -95,6 +95,8 @@ name is declared when that helps.
 | A table, a buffer named like its table | Its label, description, number of fields and indexes (`oxabl_pipeline::schema_hover::table_markdown`) |
 | A schema field | Its type, format, label, initial value, description and the indexes it takes part in (`schema_hover::field_markdown`) |
 | A built-in function, statement keyword or system handle | Its title in the Progress documentation and a link to the page |
+| A built-in type (`Progress.Lang.AppError`, `OpenEdge.Core.String`) | The header from the catalog, "Built-in class of OpenEdge 12.8." and a link to its page. It has no definition, no document link and no references (`docs/design/builtin-classes.md`) |
+| A member of a built-in type | Each overload (at most 10, then "N more overloads."), the built-in type that declares it, "Parameter modes are not known." when a signature has a parameter, and a link. No database effects. No definition and no references; highlights mark each use in the document |
 
 The declaration text comes from the parsed declaration, not from the symbol
 table: the expanded unit is lexed and parsed once more on the first request that

@@ -206,6 +206,15 @@ const APP_ERR: &str = r#"CLASS app.AppErr INHERITS Progress.Lang.AppError:
 END CLASS.
 "#;
 
+/// A class whose parent no file supplies.
+const ORPHAN_ERR: &str = r#"CLASS app.OrphanErr INHERITS app.NoSuchBase:
+    DEFINE PUBLIC PROPERTY Code AS INTEGER NO-UNDO GET. SET.
+    METHOD PUBLIC CHARACTER Describe():
+        RETURN "".
+    END METHOD.
+END CLASS.
+"#;
+
 /// A class file that does not parse.
 const BAD: &str = r#"CLASS app.Bad:
     DEFINE PUBLIC PROPERTY X AS INTEGER NO-UNDO GET. SET.
@@ -302,6 +311,7 @@ const FILES: &[(&str, &str)] = &[
     ("app/Top.cls", TOP),
     ("app/Bottom.cls", BOTTOM),
     ("app/AppErr.cls", APP_ERR),
+    ("app/OrphanErr.cls", ORPHAN_ERR),
     ("app/Bad.cls", BAD),
     ("app/OnBad.cls", ON_BAD),
     ("app/Named.cls", NAMED),

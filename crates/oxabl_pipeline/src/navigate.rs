@@ -31,8 +31,9 @@ use oxabl_index::calls::{
 use oxabl_index::search::{self, NameKind};
 use oxabl_schema::{FieldResolution, TableId};
 use oxabl_semantic::{
-    ClassResolution, ImportContext, IndexName, IndexedFileId, Resolution, ScopeKind, Semantic,
-    SiteTarget, SourceContext, SymbolFlags, SymbolId, SymbolKind, UnresolvedReason,
+    BuiltinClass, BuiltinMemberRef, ClassResolution, ImportContext, IndexName, IndexedFileId,
+    Resolution, ScopeKind, Semantic, SiteTarget, SourceContext, SymbolFlags, SymbolId, SymbolKind,
+    UnresolvedReason,
 };
 use oxabl_workspace::is_include_fragment;
 
@@ -122,6 +123,11 @@ enum Identity {
     Declared(SymbolId),
     /// A target from a lookup that found one or several files.
     At(Target),
+    /// A built-in type, by its row in the catalog.
+    BuiltinType(u16),
+    /// A member of a built-in type: the row of the declaring type and the
+    /// lower-case name.
+    BuiltinMember(u16, String),
 }
 
 /// The analysis of one expansion with its navigation sites recorded, apart from
@@ -461,6 +467,19 @@ impl Navigation<'_, '_> {
     fn symbol_identity(&self, sym: SymbolId) -> Option<Identity> {
         let symbols = &self.model.semantic.symbols;
         let symbol = symbols.get(sym);
+        if let Some(class) = symbols.builtin_class(sym) {
+            return Some(Identity::BuiltinType(class.row()));
+        }
+        if let Some(member) = symbols.builtin_member(sym) {
+            let (class, name) = match member {
+                BuiltinMemberRef::Member(m) => (m.class(), m.name()),
+                BuiltinMemberRef::EnumMember(class, name) => (class, name),
+            };
+            return Some(Identity::BuiltinMember(
+                class.row(),
+                name.to_ascii_lowercase(),
+            ));
+        }
         if let Some(file) = symbols
             .program_file(sym)
             .or_else(|| symbols.class_file(sym))
@@ -521,19 +540,37 @@ impl Navigation<'_, '_> {
             let Some(virt) = self.expanded_at(&file, at) else {
                 continue;
             };
+            let symbols = &self.model.semantic.symbols;
+            let references = &self.model.semantic.references;
+            // A sure built-in name resolves to the symbol of the built-in type.
+            let resolved = |sym: &SymbolId| symbols.builtin_class(*sym);
             let site = self.innermost(
                 virt,
                 &|_| None,
                 &|target, span| match target {
-                    SiteTarget::Type(Resolution::Unresolved { .. }) => Some(Some(span)),
+                    SiteTarget::Type(Resolution::Resolved(sym)) => {
+                        resolved(sym).map(|class| Some((span, Some(class))))
+                    }
+                    SiteTarget::Reference(node) | SiteTarget::Using(node) => {
+                        match references.get(*node) {
+                            Some(Resolution::Resolved(sym)) => {
+                                resolved(sym).map(|class| Some((span, Some(class))))
+                            }
+                            _ => None,
+                        }
+                    }
+                    SiteTarget::Type(Resolution::Unresolved { .. }) => Some(Some((span, None))),
                     _ => None,
                 },
-                &|answer: &Option<VirtualSpan>| answer.is_some(),
+                &|answer: &Option<(VirtualSpan, Option<&'static BuiltinClass>)>| answer.is_some(),
                 || None,
             );
-            let Some(span) = site.flatten() else {
+            let Some((span, known)) = site.flatten() else {
                 continue;
             };
+            if let Some(class) = known {
+                return Some((class.name, self.physical(span, &file)?));
+            }
             let written = self.text(span)?;
             let imports = ImportContext::from_statements(&self.parsed().program.statements);
             let resolved = self

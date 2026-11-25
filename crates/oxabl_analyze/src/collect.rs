@@ -486,6 +486,9 @@ pub struct ExpandedFile {
     elided_include_offsets: Vec<u32>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
+    /// `[workspace.preprocessor].proversion`, the OpenEdge version the code
+    /// compiles with, when set.
+    proversion: Option<String>,
 }
 
 impl ExpandedFile {
@@ -1131,6 +1134,7 @@ pub fn expand_source_tracking(
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
             root,
+            proversion: predefined.proversion.clone(),
         });
     }
 
@@ -1283,6 +1287,7 @@ pub fn expand_source_tracking(
                 elided_offsets: pf.elided_offsets(),
                 elided_include_offsets: pf.elided_include_offsets(),
                 root,
+                proversion: predefined.proversion.clone(),
             })
         }
         // A unit that reaches encrypted source is reported as that alone.
@@ -1972,7 +1977,8 @@ fn lint_context<'a>(
         .with_parse_recovered(parse_recovered)
         .with_tokens(tokens)
         .with_elided(expanded.elided_offsets())
-        .with_elided_includes(expanded.elided_include_offsets());
+        .with_elided_includes(expanded.elided_include_offsets())
+        .with_proversion(expanded.proversion.as_deref());
     ctx.schema_loaded = schema_loaded;
     ctx
 }
@@ -2413,6 +2419,7 @@ mod tests {
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
             root: ROOT,
+            proversion: None,
         }
     }
 

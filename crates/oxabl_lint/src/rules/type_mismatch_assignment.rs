@@ -20,6 +20,10 @@
 //! - An assignment with a reference the preprocessor replaced with no text
 //!   inside it: the text around the gap may not be the statement the file
 //!   holds (`c = {&none}` followed by `d = "x".` reads as `c = (d = "x")`).
+//! - An `EXTENT` assigned to a scalar property of a built-in type, when the
+//!   element converts to the property's type: the catalog of built-in types
+//!   can read an `EXTENT` property as a scalar
+//!   (`docs/design/builtin-classes.md`).
 //! - The value side bound to an *unresolved* cross-file reference (`External`,
 //!   `AbsentFromWorkspace`, `PresentButUnusable`, `Unknowable`) — there is no
 //!   symbol behind it, so no verdict is possible. A cross-file reference that
@@ -33,8 +37,8 @@ use oxabl_ast::{
 };
 use oxabl_common::{Diagnostic, FileSpan, Severity};
 use oxabl_semantic::{
-    AnalysisContext, ClassLattice, PrimitiveTy, Resolution, ResolvedType, Semantic,
-    UnresolvedReason, assignable, is_narrowing_warning,
+    AnalysisContext, BuiltinMemberKind, BuiltinMemberRef, ClassLattice, PrimitiveTy, Resolution,
+    ResolvedType, Semantic, UnresolvedReason, assignable, is_narrowing_warning,
 };
 
 use super::LINT0004;
@@ -185,8 +189,37 @@ impl<'a> Visitor<'a> {
         let target_ty = self.target_type(target);
         let value_ty = self.sem.types.get(value.id).cloned();
         if let (Some(to), Some(from)) = (target_ty, value_ty) {
+            if self.may_be_extent_property(target, &from, &to) {
+                return;
+            }
             self.check_pair(&from, &to, value.id, &anchor(target, statement));
         }
+    }
+
+    /// Whether `target` is a property of a built-in type with a scalar type
+    /// and the value an `EXTENT` whose element converts to it. The catalog of
+    /// built-in types can read an `EXTENT` property as a scalar, so the
+    /// assignment may be correct.
+    fn may_be_extent_property(
+        &self,
+        target: &Expression,
+        from: &ResolvedType,
+        to: &ResolvedType,
+    ) -> bool {
+        let ResolvedType::Array { element, .. } = from else {
+            return false;
+        };
+        if matches!(to, ResolvedType::Array { .. }) {
+            return false;
+        }
+        let property = matches!(
+            self.sem.references.get(target.id),
+            Some(Resolution::Resolved(sym)) if matches!(
+                self.sem.symbols.builtin_member(*sym),
+                Some(BuiltinMemberRef::Member(m)) if m.kind() == BuiltinMemberKind::Property
+            )
+        );
+        property && assignable(element, to, ClassLattice::new(&self.sem.symbols))
     }
 
     fn target_type(&self, target: &Expression) -> Option<ResolvedType> {

@@ -79,7 +79,9 @@ impl<'a> ClassLattice<'a> {
     /// meets a class whose header names a supertype that did not resolve
     /// before it finds `to`: then the chain past that class is not known.
     pub fn reaches(self, from: SymbolId, to: SymbolId) -> Reach {
-        if from == to {
+        // `Progress.Lang.Object` is the top: every class, interface and enum
+        // widens to it, whether its chain names it or not.
+        if from == to || self.symbols.is_builtin_object(to) {
             return Reach::Widens;
         }
         let mut incomplete = false;

@@ -99,6 +99,8 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
             ("CL003", "signature-mismatch", "strict.calls", warning),
             ("CL004", "unresolved-call", "strict.calls", warning),
             ("CL005", "shared-state", "strict.calls", warning),
+            ("CL006", "member-call-mismatch", "strict.calls", warning),
+            ("CL007", "unknown-member", "strict.calls", warning),
             ("TX006", "missing-no-undo", "strict.transactions", warning),
             ("HD001", "handle-not-deleted", "strict.handles", warning),
             ("HD002", "delete-not-in-finally", "strict.handles", warning),

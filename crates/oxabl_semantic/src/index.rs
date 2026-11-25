@@ -510,11 +510,44 @@ pub enum ClassResolution {
     Unknowable,
 }
 
+/// What one candidate spelling of a type name is, in the compiler's order
+/// (OpenEdge 12.8): a `Progress.*` built-in type first, whatever the
+/// workspace holds; then a workspace class; then an `OpenEdge.*` or `Ccs.*`
+/// built-in type. Every lookup of a type name uses this one function, so the
+/// analysis and the navigation features cannot disagree.
+pub(crate) enum CandidateAnswer<T> {
+    Builtin(&'static crate::BuiltinClass),
+    Index(T),
+    /// Neither: try the next candidate.
+    Next,
+}
+
+/// [`CandidateAnswer`] for the candidate `name`. `ask_index` asks the
+/// workspace; `Some` is an answer the search stops on.
+pub(crate) fn lookup_candidate<T>(
+    name: &IndexName,
+    ask_index: impl FnOnce() -> Option<T>,
+) -> CandidateAnswer<T> {
+    let builtin = crate::builtin_class(name.as_atom());
+    if let Some(class) = builtin.filter(|c| c.is_avm_native()) {
+        return CandidateAnswer::Builtin(class);
+    }
+    if let Some(answer) = ask_index() {
+        return CandidateAnswer::Index(answer);
+    }
+    match builtin {
+        Some(class) => CandidateAnswer::Builtin(class),
+        None => CandidateAnswer::Next,
+    }
+}
+
 impl ImportContext {
     /// Resolve the type name `raw`, written in the file these imports belong
     /// to, through `index`: the dotted name, the explicit imports, the
     /// wildcard prefixes, the bare name, then the implicit `Progress.Lang`
-    /// import. A workspace class wins over a built-in one of the same name.
+    /// import. Each candidate is read by [`lookup_candidate`]: a `Progress.*`
+    /// built-in type wins over a workspace file of the same name, and a
+    /// workspace class wins over an `OpenEdge.*` or `Ccs.*` one.
     ///
     /// This is the lookup of `search_in_imports` in the resolve pass, without
     /// the scope tree and without minting a symbol, for a consumer that has a
@@ -524,14 +557,16 @@ impl ImportContext {
             let ImportCandidate::Name(name) = candidate else {
                 return ClassResolution::Assembly;
             };
-            match index.class(&name) {
-                IndexAnswer::Found(descriptor) => return ClassResolution::Class(descriptor),
-                IndexAnswer::NotFound => {}
-                IndexAnswer::Unusable => return ClassResolution::Unusable,
-                IndexAnswer::Unknowable => return ClassResolution::Unknowable,
-            }
-            if let Some(class) = crate::builtin_class(name.as_written()) {
-                return ClassResolution::Builtin(class);
+            let found = lookup_candidate(&name, || match index.class(&name) {
+                IndexAnswer::Found(descriptor) => Some(ClassResolution::Class(descriptor)),
+                IndexAnswer::NotFound => None,
+                IndexAnswer::Unusable => Some(ClassResolution::Unusable),
+                IndexAnswer::Unknowable => Some(ClassResolution::Unknowable),
+            });
+            match found {
+                CandidateAnswer::Builtin(class) => return ClassResolution::Builtin(class),
+                CandidateAnswer::Index(answer) => return answer,
+                CandidateAnswer::Next => {}
             }
         }
         ClassResolution::NotFound

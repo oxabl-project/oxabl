@@ -62,7 +62,7 @@ document highlights.
 | `oxabl_lsp` | The capability, the request and resolve handlers, the gate that drops replaced requests, and the rendering of items, ranges and edits in the position encoding. It does no analysis. |
 | `oxabl_daemon` | The bases of each document (`completion` module), the background refresh, the class listing of the include paths, and `compute_completion` and `compute_resolve` on a worker thread. It is the only crate that knows salsa, but completion holds no salsa handle (see "No snapshot"). |
 | `oxabl_pipeline` | The engine (`completion` module): the context finder, the collectors, keyword tables, keyword case, matching, ranking and the limit. It works on a base and the current text, with no salsa. |
-| `oxabl_semantic` | The span of each scope, and the class source with `class_surface`, the members a receiver reaches. |
+| `oxabl_semantic` | The span of each scope, and the surface of a class (`surface`, `local_surface`), the members a receiver reaches. |
 | `oxabl_workspace` | `FileSystem::list_dir`, to list the entries of a directory on the include path. |
 | `oxabl_preprocessor` | The place of each `&GLOBAL-DEFINE`, `&SCOPED-DEFINE` and `&UNDEFINE`, for `{&` completion. |
 | `oxabl_codegen` | The static snippets table of the server, from `clients/vscode/snippets/abl.json`. |
@@ -451,7 +451,7 @@ not resolve, and a name declared in the changed region of a stale base. A
 name whose type is a buffer or table (`FOR EACH Customer:`) is a block colon,
 so the answer is `null` too.
 
-**The surface.** The members come from `class_surface` (below) with the role
+**The surface.** The members come from `local_surface` (below) with the role
 of the receiver. Role, access and static rules are the ones of
 `class-members.md`: `TypeName` reaches only `STATIC` members; `Instance`,
 `ThisObject` and `Super` reach only instance members; outside the class, only
@@ -462,106 +462,72 @@ name gives its members as static properties.
   item; its detail gives the first overload and the number of others.
 - `isIncomplete: true` when the surface is not complete: an ancestor that was
   not read, a level whose member list is not whole (`members_complete =
-  false`), a cycle in the inheritance, and, until #154, every class, because
-  each class inherits the members of `Progress.Lang.Object`.
+  false`), a built-in level that the catalog does not have whole, and a cycle
+  in the inheritance. The members of `Progress.Lang.Object` come from the
+  catalog of built-in types, so they do not make a list incomplete.
 
 ### The class source
 
-Member completion asks one interface for the members of a class. User classes
-use it now. The built-in classes of #154 plug into it.
+Member completion reads the surface of a class through the interface of
+`oxabl_semantic::surface`, which the resolve pass reads too, so the two
+cannot disagree. It serves classes of the analysed file, of the workspace and
+of the catalog of built-in types (#154). The design and every field are in
+`docs/design/builtin-classes.md`, "One interface for classes of every
+origin"; this section says what completion takes from it.
 
 ```rust
-/// Classes and their own members, by qualified name. The workspace index is
-/// one source; the built-in class catalog (#154) is another. A chain asks
-/// the workspace first.
-pub trait ClassSource {
-    /// The class or interface `name`.
-    fn class(&self, name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>>;
-    /// The members `name` declares itself, in declaration order.
-    fn class_members(&self, name: &IndexName) -> IndexAnswer<Arc<[MemberDescriptor]>>;
-    /// The classes, interfaces and enums whose qualified name starts with
-    /// `package` (for example `"app.models."`, or `""` for the root), for type
-    /// completion. `complete` is false when the source cannot list them all.
-    fn classes_in(&self, package: &str) -> ClassList;
+/// Where a class comes from: `SymbolTable::class_origin(sym)` gives it.
+pub enum ClassOrigin {
+    Local(SymbolId),
+    Workspace(IndexName),
+    Builtin(&'static BuiltinClass),
 }
 
-/// The members `reach` gives for `class`, own and inherited, nearest first.
-pub fn class_surface(
-    semantic: &Semantic,
-    source: &dyn ClassSource,
-    class: ClassRef,
-    reach: Reach,
+pub enum SurfaceRole { Instance, TypeName, ThisObject, Super }
+
+/// The members `role` reaches on `origin`, own and inherited, nearest first.
+/// A class of the analysed file needs its `Semantic`.
+pub fn local_surface(
+    sem: &Semantic,
+    origin: &ClassOrigin,
+    index: &dyn WorkspaceIndex,
+    role: SurfaceRole,
 ) -> ClassSurface;
 
-pub enum ClassRef {
-    /// A class declared in the analysed file.
-    Local(SymbolId),
-    /// A class by qualified name, from a class source.
-    Named(IndexName),
-}
+/// The same for a workspace class or a built-in type, with no `Semantic`.
+pub fn surface(
+    origin: &ClassOrigin,
+    index: &dyn WorkspaceIndex,
+    catalog: &BuiltinCatalog,
+    role: SurfaceRole,
+) -> ClassSurface;
 
-pub enum Reach { Instance, TypeName, ThisObject, Super }
-
-pub struct ClassSurface {
-    pub members: Vec<SurfaceMember>,
-    /// False when a member can be missing: see "Members".
-    pub complete: bool,
-}
-
-pub struct SurfaceMember {
-    /// As the declaration or the documentation writes it.
-    pub name: String,
-    pub kind: SymbolKind,
-    pub access: AccessModifier,
-    pub is_static: bool,
-    /// The nearest class that declares it, qualified.
-    pub declared_in: String,
-    /// One entry per overload for a method, one entry for any other member.
-    pub signatures: Vec<MemberSignature>,
-    /// Where the documentation of `completionItem/resolve` comes from.
-    pub origin: MemberOrigin,
-}
-
-pub struct MemberSignature {
-    pub ty: MemberType,
-    pub params: Option<Arc<[MemberParam]>>,
-}
-
-pub enum MemberOrigin {
-    Local(SymbolId),
-    Workspace(IndexedFileId),
-    Builtin(&'static MemberDoc),
-}
+/// The direct supertypes, each a `ClassOrigin` or a name that did not
+/// resolve, and whether the header is known.
+pub fn supertypes(origin: &ClassOrigin, index: &dyn WorkspaceIndex, catalog: &BuiltinCatalog)
+    -> Supertypes;
 ```
 
-`WorkspaceIndex` already answers `class` and `class_members`. The daemon adds
-`classes_in` from the class listing. `class_surface` walks `INHERITS` and
-`IMPLEMENTS` with `lookup_supertype` and the imports of each declaring file,
-with a visited set, as `walk_member_surface` and `inherited.rs` do, and
-applies the access rules of `class-members.md`. It does not change the
-resolve pass.
-
-What #154 must give through `ClassSource` for each built-in class, interface
-and enum:
-
-- `class`: the qualified name as documented, the kind, the parent class and
-  the interfaces as qualified names that `class` answers again,
-  `is_abstract`, `members_complete = true`, and an origin that is not a file
-  (`ClassDescriptor` gets `origin: ClassOrigin { File(IndexedFileId), Builtin }`
-  in place of `file`).
-- `class_members`: each documented method, property and event, with its name
-  as documented, kind, access (`PUBLIC` or `PROTECTED`), `is_static`, the type
-  (`MemberType::Portable` for a primitive, `Named` with the qualified class
-  name, `Untyped` for `VOID`, `Portable(Unknown)` for a generic parameter), the
-  parameters of each overload (name, mode, type, extent), and a documentation
-  record (`MemberDoc { title, url, summary: Option<&str> }`, the summary from
-  #473).
-- `classes_in`: the built-in types of a package, for `NEW Progress.Lang.|`.
-- Two rules of the language: a class with no `INHERITS` inherits
-  `Progress.Lang.Object`, and the package `Progress.Lang` is imported in every
-  file. `class_surface` and the type collector apply them when the source
-  answers for `Progress.Lang.Object`. Then the surface of a user class can be
-  complete.
+- `ClassSurface { members, complete }`: one `SurfaceMember` for each overload.
+  Completion groups the members by name: one item for each name, and the
+  detail gives the first overload and the number of others.
+- `SurfaceMember::name` is as the declaration or the documentation writes it
+  for a member of the analysed file or of the catalog, and folded for a
+  workspace member (the index keeps the folded name). Item case can differ
+  by origin.
+- `SurfaceMember::access` is `None` for a built-in member: the catalog has no
+  access. The roles reach such a member as if it were `PUBLIC`, so the list
+  after `obj:` can hold a `PROTECTED` built-in member
+  (`Progress.Lang.Object:Clone`).
+- `SurfaceMember::params` gives each parameter with `mode: None` for a
+  built-in one, and `origin` is `MemberOrigin::Builtin(BuiltinMemberRef)` for
+  a built-in member, whose `doc()` gives the title and the URL of
+  `completionItem/resolve` (`summary` is `None` until #473).
+- Every class and interface surface ends with the level
+  `Progress.Lang.Object`, so the surface of a user class can be complete.
+- The built-in types of a package, for `NEW Progress.Lang.|` and
+  `USING Progress.Lang.`, come from `BUILTIN_CATALOG.classes_in("Progress.Lang.")`;
+  workspace classes come from the class listing (below).
 
 Signature help (#438) reads the same surface for the parameters.
 
@@ -609,8 +575,8 @@ being made, and when it is incomplete, type lists get `isIncomplete: true`.
 The same qualified name in two entries counts once (the first entry wins, as
 the compiler searches the PROPATH).
 
-Until #154, `Progress.Lang` and the other built-in packages give no items,
-so every type list gets `isIncomplete: true`.
+The built-in packages give their types from `BuiltinCatalog::classes_in`,
+and `Progress.Lang` is imported in every file.
 
 ### The `USING` edit
 
@@ -902,16 +868,12 @@ The first request after a document opens makes its base and can take longer.
 
 ## Out of scope, and the seams left
 
-- **Built-in classes (#154).** Members of `Progress.Lang.*` and the other
-  built-in types, and built-in types in type completion. They plug into
-  `ClassSource` (see "The class source"). Until then, member and type lists
-  have `isIncomplete: true`.
 - **.NET types (#465).** `USING System.* FROM ASSEMBLY` and members of .NET
-  types. A .NET catalog is one more `ClassSource`. Until then, a receiver of a
-  .NET type gives `null`.
+  types. A .NET catalog is one more `ClassOrigin` level source. Until then, a
+  receiver of a .NET type gives `null`.
 - **Signature help and parameter names (#438).** Completion inserts the name
   of a method or function without parentheses or parameters. Signature help
-  reads `SurfaceMember::signatures`.
+  reads `SurfaceMember::params`.
 - **One-line descriptions (#473)** fill `MemberDoc::summary` and the keyword
   documentation of resolve.
 - **Doc comments (#450)** can add the comment of a declaration to resolve.

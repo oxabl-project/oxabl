@@ -19,6 +19,7 @@
 //! This table checks membership only. Built-in references remain external and
 //! create no dependency edges. Member names, arity, and types are not checked.
 
+mod builtin;
 mod builtin_classes;
 mod builtins;
 mod check;
@@ -27,6 +28,7 @@ mod diagnostics;
 mod index;
 mod index_vec;
 mod inherited;
+mod misfit;
 mod namespace;
 mod operators;
 mod overload;
@@ -34,10 +36,14 @@ mod resolve;
 mod scope;
 mod sequence;
 mod signature;
+mod surface;
 mod symbol;
 mod types;
 
-pub use builtin_classes::{BuiltinClass, builtin_class};
+pub use builtin::{
+    BUILTIN_CATALOG, BuiltinCatalog, BuiltinClass, BuiltinMember, BuiltinMemberKind, BuiltinParam,
+    BuiltinShape, BuiltinType, builtin_class,
+};
 pub use builtins::SYSTEM_HANDLES;
 pub use check::check_pass;
 pub use coercion::{
@@ -53,6 +59,7 @@ pub use index_vec::NodeIndexVec;
 pub use inherited::{
     InheritedBinding, InheritedKind, InheritedRecord, InheritedRecords, inherited_records,
 };
+pub use misfit::{CallMisfit, MisfitKind, builtin_call_misfit};
 pub use namespace::{NUM_NAMESPACES, NamespaceId};
 pub use operators::{binary_op_result, unary_negate_result, unary_not_result};
 pub use overload::{CallReach, call_candidates, reachable_overloads};
@@ -66,9 +73,14 @@ pub use signature::{
     CallParam, CallParamKind, MemberParam, MemberParamShape, Param, ParamMode, ParamShape,
     ProgramSignatures, Signature, call_param_of, member_params,
 };
+pub use surface::{
+    ClassOrigin, ClassSurface, MemberDoc, MemberOrigin, SupertypeOrigin,
+    Supertypes as ClassSupertypes, SurfaceMember, SurfaceParam, SurfaceRole, builtin_member_type,
+    local_surface, supertypes, surface,
+};
 pub use symbol::{
-    ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags,
-    SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
+    BuiltinMemberRef, ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes,
+    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnknownMember, UnlinkedRun,
 };
 pub use types::{AblType, PrimitiveTy, ResolvedType};
 
@@ -169,6 +181,11 @@ pub struct AnalysisContext<'a> {
     /// (`oxabl_parser::Program::unclosed_blocks`). Their scopes run to the end
     /// of the text.
     pub unclosed_blocks: &'a [NodeId],
+    /// The catalog of built-in types the resolve pass reads.
+    pub builtins: &'static BuiltinCatalog,
+    /// `[workspace.preprocessor].proversion`: the OpenEdge version the code
+    /// compiles with, when the configuration states it.
+    pub proversion: Option<&'a str>,
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -196,6 +213,8 @@ impl<'a> AnalysisContext<'a> {
             elided_includes: &[],
             record_sites: false,
             unclosed_blocks: &[],
+            builtins: &BUILTIN_CATALOG,
+            proversion: None,
         }
     }
 
@@ -203,6 +222,21 @@ impl<'a> AnalysisContext<'a> {
     pub fn with_unclosed_blocks(mut self, blocks: &'a [NodeId]) -> Self {
         self.unclosed_blocks = blocks;
         self
+    }
+
+    /// State the OpenEdge version the code compiles with (builder-style).
+    pub fn with_proversion(mut self, proversion: Option<&'a str>) -> Self {
+        self.proversion = proversion;
+        self
+    }
+
+    /// Whether the catalog of built-in types may be missing members of the
+    /// version the code compiles with: a stated `proversion` newer than the
+    /// catalog, or one oxabl cannot read. A rule that reports an absence
+    /// (a member, an overload count) stays silent then.
+    pub fn builtins_may_lack_members(&self) -> bool {
+        self.proversion
+            .is_some_and(|version| !self.builtins.covers_version(version))
     }
 
     /// Record navigation sites (builder-style); see

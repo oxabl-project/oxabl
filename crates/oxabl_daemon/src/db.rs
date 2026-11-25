@@ -1881,6 +1881,16 @@ impl ClassSource for HierarchyUnit<'_> {
     fn facts(&self, path: &Path) -> Arc<FileFacts> {
         HierarchyUnit::facts(self, path)
     }
+
+    fn builtins_may_lack_members(&self) -> bool {
+        // The installed environment, as the facts of an open buffer read it.
+        let environment = self.snapshot.config().index.environment(self.snapshot);
+        environment
+            .preprocessor(self.snapshot)
+            .proversion
+            .as_deref()
+            .is_some_and(|version| !oxabl_semantic::BUILTIN_CATALOG.covers_version(version))
+    }
 }
 
 /// Run `answer` over a snapshot with `overlay` over the configured file
