@@ -2203,3 +2203,91 @@ fn one_include_with_two_preprocessor_values_gives_two_lists() {
     );
     assert_eq!(answer.result, json!({"locations": [], "gaps": []}));
 }
+
+// ---------------------------------------------------------------------------
+// `LIKE` parameters
+// ---------------------------------------------------------------------------
+
+/// No mode (`INPUT`), a prefix with no value, and a field of a database table.
+const LIKE_I: &str = "/* the parameters of a form */\n\
+    \x20  {&prefix}pcCode LIKE item.code,\n\
+    \x20  {&prefix}piQty AS INTEGER\n";
+
+const LIKE_BASE: &str = "CLASS app.LikeBase ABSTRACT:\n\
+    \x20   METHOD PUBLIC ABSTRACT VOID Fill(\n\
+    \x20   {like.i}).\n\
+    END CLASS.\n";
+
+const LIKE_DERIVED: &str = "CLASS app.LikeDerived INHERITS app.LikeBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Fill(\n\
+    \x20       {like.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// A temp-table named like the database table: below it, `LIKE item.code`
+/// reads the temp-table.
+const LIKE_MID: &str = "CLASS app.LikeMid INHERITS app.LikeBase ABSTRACT:\n\
+    \x20   DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER.\n\
+    END CLASS.\n";
+
+const LIKE_LEAF: &str = "CLASS app.LikeLeaf INHERITS app.LikeMid:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Fill({like.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn like_parameters_written_alike_name_one_field_unless_a_temp_table_can_hide_it() {
+    let ws = small(&[
+        ("like.i", LIKE_I),
+        ("app/LikeBase.cls", LIKE_BASE),
+        ("app/LikeDerived.cls", LIKE_DERIVED),
+        ("app/LikeMid.cls", LIKE_MID),
+        ("app/LikeLeaf.cls", LIKE_LEAF),
+    ]);
+    let base = ws.path("app/LikeBase.cls");
+    let derived = ws.path("app/LikeDerived.cls");
+    let leaf = ws.path("app/LikeLeaf.cls");
+    let mut session = Session::start(&ws.root);
+    let base_fill = name_in(&base, LIKE_BASE, "VOID Fill(", "Fill");
+
+    session.open(&derived, LIKE_DERIVED);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&derived, LIKE_DERIVED, "Fill(", 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({"locations": [base_fill.clone()], "gaps": []})
+    );
+
+    session.open(&leaf, LIKE_LEAF);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&leaf, LIKE_LEAF, "Fill(", 0),
+    );
+    assert_eq!(answer.result["locations"], json!([base_fill]));
+    let gaps = answer.result["gaps"].as_array().unwrap();
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert!(
+        gaps[0].as_str().unwrap().contains(CANNOT_COMPARE),
+        "{gaps:?}"
+    );
+
+    session.open(&base, LIKE_BASE);
+    let (found, warnings) = implementation(&mut session, &base, LIKE_BASE, "Fill(", 0);
+    assert_eq!(
+        found,
+        sorted(vec![
+            name_in(&derived, LIKE_DERIVED, "VOID Fill(", "Fill"),
+            name_in(&leaf, LIKE_LEAF, "VOID Fill(", "Fill"),
+        ])
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("`app.LikeLeaf` declares `Fill`")
+            && !warnings[0].contains("app.LikeDerived"),
+        "{warnings:?}"
+    );
+}

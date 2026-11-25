@@ -1360,7 +1360,13 @@ END CLASS.
                         extent: Some(2),
                     }))
                 ),
-                (ParamMode::Input, value(portable(ResolvedType::Unknown))),
+                (
+                    ParamMode::Input,
+                    MemberParamShape::Like {
+                        source: IndexName::new("e"),
+                        extent: None
+                    }
+                ),
                 (ParamMode::Input, MemberParamShape::Buffer),
                 (ParamMode::Input, MemberParamShape::Table),
                 (ParamMode::Input, MemberParamShape::DatasetHandle),

@@ -170,7 +170,8 @@ its type. It answers `Yes`, `No` or `Unknown`:
 
 | Parameter | Comparison |
 | --- | --- |
-| Primitive types | Equal types are `Yes`, different types are `No`; a `LIKE` or `&IF` type is `Unknown` |
+| Primitive types | Equal types are `Yes`, different types are `No`; an `&IF` type is `Unknown` |
+| `LIKE` | Two lists that write the same `table.field` (and the same `EXTENT`) are `Yes` when no temp-table or buffer can have the name of the table: none in the two classes, in the classes between them, and in the parent chain of the subclass, and every member list is whole. Then both read the database field. Any other `LIKE` is `Unknown`: a name with no table can be a variable, and a different spelling can name a field of the same type |
 | Class types | Each name is resolved through the imports of the file that declares the method (`ImportContext::resolve_class`). The same class is `Yes`, two classes are `No`. A name that resolves in no file is `Yes` when both lists write it alike under equal imports, else `Unknown`. A .NET type, or a name that two files can supply, is `Unknown` |
 | `TABLE`, `BUFFER`, `DATASET` | `Unknown`: the table is not in the list |
 | A list that an `{include}` or `&IF` hides | `Unknown` |
@@ -366,7 +367,8 @@ taken for the built-in type of the same name; an interface match that does not
 hide an `Object` override; parameter lists that one include writes, compared
 after preprocessing, with two values of a preprocessor name, and with an
 include that does not resolve (also in `reference_lens_lsp.rs`, for the mark of
-calls through a supertype); an enum; a protected method that does not implement
+calls through a supertype); `LIKE` parameters written alike, and a
+temp-table of a class between the two that has the name of the table; an enum; a protected method that does not implement
 an interface method; a list cut at `MAX_LISTED`; and a cancel in the middle of
 the index (`OXABL-TEST-HOLD:daemon.hierarchy-index`, after a request that waits
 for the workspace pass, so that the cancel cannot meet the pass).

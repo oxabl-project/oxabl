@@ -19,9 +19,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use oxabl_index::hierarchy::{
-    ClassNode, Declaring, Relation, SubtypeIndex, SuperKey, Supertype, SupertypeRef, Unresolved,
-    builtin_type, methods_named, overridable, overrides_below, simple_name, super_methods,
-    supertypes_of,
+    ClassNode, Declaring, RecordNames, Relation, SubtypeIndex, SuperKey, Supertype, SupertypeRef,
+    Unresolved, builtin_type, methods_named, overridable, overrides_below, simple_name,
+    super_methods, supertypes_of,
 };
 use oxabl_pipeline::{
     ClassDecl, Gap, MethodAt, MethodsAt, Span, Target, class_decl, class_name_span,
@@ -689,7 +689,8 @@ fn implementations_of_method(
             .ok_or(ReferenceError::Cancelled)?;
         let target = SuperKey::Class(class.descriptor.name.clone(), facts.file);
         let resolver = unit.resolver(&method.class_path);
-        let wanted_in = Declaring::new(&class.descriptor.imports, &*resolver);
+        let records = RecordNames::of(&class.members, class.descriptor.members_complete);
+        let wanted_in = Declaring::new(&class.descriptor.imports, &*resolver, &records);
         let below = overrides_below(
             &index,
             unit,
@@ -824,7 +825,13 @@ fn super_method(
         if wanted.is_empty() {
             return answer;
         }
-        let found = super_methods(unit, &method.class_path, &class.descriptor, &wanted);
+        let found = super_methods(
+            unit,
+            &method.class_path,
+            &class.descriptor,
+            &class.members,
+            &wanted,
+        );
         answer
             .gaps
             .extend(found.gaps.into_iter().map(Gap::of_referent));
