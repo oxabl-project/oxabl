@@ -25,7 +25,7 @@ use std::fmt;
 use std::ops::Range;
 
 use oxabl_ast::{Span, Statement, StatementKind};
-use oxabl_common::{InternalPanic, catch_panic};
+use oxabl_common::{InternalPanic, catch_panic, panic_if_injected, panic_sites};
 use oxabl_parser::Program;
 use oxabl_style::StyleGuide;
 
@@ -89,6 +89,23 @@ impl fmt::Display for RangeFailure {
 
 impl std::error::Error for RangeFailure {}
 
+impl RangeFailure {
+    /// Whether the refusal points to a defect in oxabl (a tripped guard or a
+    /// panic) rather than to the state of the buffer (a parse error while the
+    /// user types, a selection with no statement).
+    pub fn is_defect(&self) -> bool {
+        match self {
+            RangeFailure::Bail(RangeBail::NoStatement)
+            | RangeFailure::Bail(RangeBail::File(
+                FormatBail::ParseErrors | FormatBail::ExpansionDependent,
+            )) => false,
+            RangeFailure::Bail(RangeBail::SemanticGuardTripped)
+            | RangeFailure::Bail(RangeBail::File(FormatBail::SemanticGuardTripped))
+            | RangeFailure::Panic(_) => true,
+        }
+    }
+}
+
 /// Parse `source` (raw, preprocessing off) and [`format_ranges`] it, containing
 /// any internal panic.
 pub fn try_format_ranges(
@@ -97,6 +114,7 @@ pub fn try_format_ranges(
     ranges: &[Range<usize>],
 ) -> Result<Vec<RangeEdit>, RangeFailure> {
     match catch_panic(|| {
+        panic_if_injected(panic_sites::FORMAT, source);
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
         format_ranges(source, &program, style, ranges)
@@ -110,8 +128,9 @@ pub fn try_format_ranges(
 /// The edits that format the statements `ranges` touch (byte ranges of
 /// `source`). An empty list means they already have their layout.
 ///
-/// A range with no extent stands for the source line it is on. A range that
-/// touches nothing is skipped when another touches something.
+/// A range with no extent stands for the source line it is on; on a blank line,
+/// it touches only what runs across that line. A range that touches nothing is
+/// skipped when another touches something.
 pub fn format_ranges(
     source: &str,
     program: &Program,
@@ -123,19 +142,23 @@ pub fn format_ranges(
     let tokens = oxabl_lexer::tokenize(source);
     let code = Code::new(&tokens, source.len());
 
-    let top: Vec<&Statement> = program.statements.iter().collect();
+    // Top-level statements and comments are in source order and do not
+    // overlap, so each range looks only at those near it.
+    let top: Vec<&Statement> = live(program.statements.iter().collect());
     let mut spans: Vec<(usize, usize)> = Vec::new();
-    for range in ranges {
-        let (mut start, mut end) = (range.start.min(source.len()), range.end.min(source.len()));
+    let mut ranges: Vec<(usize, usize)> = ranges.iter().map(|r| (r.start, r.end)).collect();
+    ranges.sort_unstable();
+    ranges.dedup();
+    for (range_start, range_end) in ranges {
+        let (mut start, mut end) = (range_start.min(source.len()), range_end.min(source.len()));
         if start >= end {
             if source.is_empty() {
                 continue;
             }
+            // The line, or on a blank line the point itself: it touches only
+            // a statement or comment that runs across it.
             let line = lines.index_of(start);
             (start, end) = (lines.starts[line], lines.content_end(source, line));
-            if start >= end {
-                continue;
-            }
         }
         // The lines between the first and the last thing touched are the
         // range's own, blank lines included.
@@ -143,13 +166,22 @@ pub fn format_ranges(
         let mut touch = |first: usize, last: usize| {
             hull = Some(hull.map_or((first, last), |(f, l)| (f.min(first), l.max(last))));
         };
-        for stmt in select(top.clone(), start, end, &code) {
+        let from = top.partition_point(|s| (s.span.end as usize) <= start);
+        let to = top.partition_point(|s| (s.span.start as usize) < end);
+        let near = top[from..to.max(from)].to_vec();
+        for stmt in select(near, start, end, &code) {
             touch(
                 lines.index_of(stmt.span.start as usize),
                 lines.index_of((stmt.span.end as usize).saturating_sub(1)),
             );
         }
-        for comment in &program.comments {
+        let first = program
+            .comments
+            .partition_point(|c| (c.span.end as usize) <= start);
+        for comment in program.comments[first..]
+            .iter()
+            .take_while(|c| (c.span.start as usize) < end)
+        {
             let (cs, ce) = (comment.span.start as usize, comment.span.end as usize);
             if cs < end && start < ce && lines.on_own_lines(source, cs, ce) {
                 touch(lines.index_of(cs), lines.index_of(ce.saturating_sub(1)));
@@ -160,6 +192,18 @@ pub fn format_ranges(
     if spans.is_empty() {
         return Err(RangeBail::NoStatement);
     }
+    let merge = |mut spans: Vec<(usize, usize)>| {
+        spans.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        for (first, last) in spans {
+            match merged.last_mut() {
+                Some(prev) if first <= prev.1 + 1 => prev.1 = prev.1.max(last),
+                _ => merged.push((first, last)),
+            }
+        }
+        merged
+    };
+    let mut spans = merge(spans);
     // A line moves with the first line of the statement that covers it, so a
     // statement that starts on a line of the group goes to its end.
     let mut reach = vec![0usize; lines.starts.len() - 1];
@@ -173,13 +217,25 @@ pub fn format_ranges(
             line += 1;
         }
     }
-    spans.sort_unstable();
-    let mut merged: Vec<(usize, usize)> = Vec::new();
-    for (first, last) in spans {
-        match merged.last_mut() {
-            Some(prev) if first <= prev.1 + 1 => prev.1 = prev.1.max(last),
-            _ => merged.push((first, last)),
-        }
+    let merged = merge(spans);
+
+    // A line whose indent is measured against an anchor line (a continuation
+    // line, say) may take its new indent only when its anchor takes its new
+    // indent too. Otherwise the next whole-file format would move it again, so
+    // it keeps its leading white space. Anchors are earlier lines.
+    let mut in_group = vec![false; lines.starts.len() - 1];
+    for &(first, last) in &merged {
+        in_group[first..=last].fill(true);
+    }
+    let mut settled = vec![false; in_group.len()];
+    for line in 0..settled.len() {
+        settled[line] = in_group[line]
+            && formatted
+                .anchors
+                .get(line)
+                .copied()
+                .flatten()
+                .is_none_or(|anchor| settled[anchor]);
     }
 
     let mut edits = Vec::new();
@@ -203,9 +259,13 @@ pub fn format_ranges(
                 }
                 Some((from, to)) => {
                     let old = &source[lines.starts[line]..lines.content_end(source, line)];
-                    if let Some(edit) =
-                        line_edit(lines.starts[line], old, &formatted.text[from..to])
-                    {
+                    let mut new = formatted.text[from..to].to_string();
+                    let content = new.trim_start_matches([' ', '\t']);
+                    if !settled[line] && !content.is_empty() {
+                        let leading = old.len() - old.trim_start_matches([' ', '\t', '\r']).len();
+                        new = format!("{}{content}", &old[..leading]);
+                    }
+                    if let Some(edit) = line_edit(lines.starts[line], old, &new) {
                         edits.push(edit);
                     }
                     line += 1;

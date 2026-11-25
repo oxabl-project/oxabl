@@ -185,8 +185,9 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   statements that the selection touches get the layout that the whole file
   gives them, and no other line changes. A selection that starts or ends inside
   a statement takes the whole statement. When the file does not format, or the
-  selection holds no statement, nothing changes and a warning says why. Format
-  on type is not offered.
+  selection holds no statement, nothing changes and the `oxabl` output channel
+  says why. This also applies to format on paste. Format on type is not
+  offered.
 - **Live diagnostics.** Lint and semantic diagnostics show in the Problems
   panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
   applies at once, with no reload. A finding of the `strict.handles` and

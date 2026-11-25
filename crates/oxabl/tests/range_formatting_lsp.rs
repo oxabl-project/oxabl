@@ -28,7 +28,10 @@ MESSAGE \"top\".
 /// The edits and notifications one request produced.
 struct Answered {
     edits: Vec<Value>,
+    /// Every `window/showMessage`.
     shown: Vec<String>,
+    /// Every `window/logMessage` about a selection that was not formatted.
+    logged: Vec<String>,
 }
 
 #[track_caller]
@@ -36,10 +39,17 @@ fn ask(session: &mut Session, method: &str, params: Value) -> Answered {
     let id = session.next_request_id();
     session.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
     let mut shown = Vec::new();
+    let mut logged = Vec::new();
     loop {
         let message = session.wait_for(|_| true);
+        let text = message["params"]["message"].as_str().unwrap_or_default();
         if message["method"] == json!("window/showMessage") {
-            shown.push(message["params"]["message"].as_str().unwrap().to_string());
+            shown.push(text.to_string());
+        }
+        if message["method"] == json!("window/logMessage")
+            && text.contains("selection was not formatted")
+        {
+            logged.push(text.to_string());
         }
         if message["id"] == json!(id) && message.get("method").is_none() {
             assert!(
@@ -51,7 +61,11 @@ fn ask(session: &mut Session, method: &str, params: Value) -> Answered {
                 Value::Array(edits) => edits.clone(),
                 other => panic!("expected edits, got {other}"),
             };
-            return Answered { edits, shown };
+            return Answered {
+                edits,
+                shown,
+                logged,
+            };
         }
     }
 }
@@ -124,10 +138,15 @@ fn apply(text: &str, edits: &[Value]) -> String {
 }
 
 fn project() -> tempfile::TempDir {
+    project_with("")
+}
+
+/// A project whose `oxabl.toml` ends with `extra`.
+fn project_with(extra: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("oxabl.toml"),
-        "[workspace]\nname = \"range\"\n",
+        format!("[workspace]\nname = \"range\"\n{extra}"),
     )
     .unwrap();
     dir
@@ -234,41 +253,89 @@ fn a_range_in_a_statement_already_formatted_gives_no_edits() {
     assert!(answer.shown.is_empty(), "{:?}", answer.shown);
 }
 
-#[test]
-fn a_file_the_formatter_refuses_gives_no_edits_and_a_message() {
-    // The unterminated block elsewhere makes the whole file unformattable.
-    let text = "MESSAGE \"a\".\nDO:\nMESSAGE \"b\".\n";
-    let (_dir, mut session, path) = open(text);
-    let answer = format_range(&mut session, &path, range((0, 0), (0, 5)));
+/// A refusal that comes from the state of the buffer goes to the log only:
+/// format on paste and format on save send range requests while the user
+/// types, and a popup for each one is noise.
+#[track_caller]
+fn assert_logged_only(answer: &Answered, reason: &str) {
     assert!(answer.edits.is_empty(), "{:?}", answer.edits);
-    assert_eq!(answer.shown.len(), 1, "{:?}", answer.shown);
+    assert!(answer.shown.is_empty(), "no popup: {:?}", answer.shown);
+    assert_eq!(answer.logged.len(), 1, "{:?}", answer.logged);
     assert!(
-        answer.shown[0].contains("parse errors"),
-        "the message names the reason: {:?}",
-        answer.shown
+        answer.logged[0].contains(reason),
+        "the log names the reason {reason:?}: {:?}",
+        answer.logged
     );
 }
 
 #[test]
-fn a_selection_with_no_statement_gives_no_edits_and_a_message() {
+fn a_file_the_formatter_refuses_gives_no_edits_and_a_log_line() {
+    // The unterminated block elsewhere makes the whole file unformattable.
+    let text = "MESSAGE \"a\".\nDO:\nMESSAGE \"b\".\n";
+    let (_dir, mut session, path) = open(text);
+    let answer = format_range(&mut session, &path, range((0, 0), (0, 5)));
+    assert_logged_only(&answer, "parse errors");
+}
+
+#[test]
+fn a_selection_with_no_statement_gives_no_edits_and_a_log_line() {
     let text = "MESSAGE \"a\". /* trailing */\n\n\nMESSAGE \"b\".\n";
     let (_dir, mut session, path) = open(text);
     // Only blank lines.
     let blank = format_range(&mut session, &path, range((1, 0), (2, 0)));
-    assert!(blank.edits.is_empty());
-    assert!(
-        blank.shown.iter().any(|m| m.contains("no statement")),
-        "{:?}",
-        blank.shown
-    );
+    assert_logged_only(&blank, "no statement");
+    // An empty range on a blank line, as format on save sends for a deleted line.
+    let empty = format_range(&mut session, &path, range((2, 0), (2, 0)));
+    assert_logged_only(&empty, "no statement");
     // Only a comment that follows code.
     let trailing = format_range(&mut session, &path, range((0, 15), (0, 25)));
-    assert!(trailing.edits.is_empty());
-    assert!(
-        trailing.shown.iter().any(|m| m.contains("no statement")),
-        "{:?}",
-        trailing.shown
+    assert_logged_only(&trailing, "no statement");
+    // No range at all.
+    let none = ask(
+        &mut session,
+        "textDocument/rangesFormatting",
+        json!({"textDocument": {"uri": file_uri(&path)}, "ranges": [], "options": options()}),
     );
+    assert_logged_only(&none, "no statement");
+}
+
+#[test]
+fn an_internal_failure_gives_no_edits_and_a_popup() {
+    // A test build panics in the formatter on this marker.
+    let text = "/* OXABL-TEST-PANIC:format */\nDO:\nMESSAGE \"a\".\nEND.\n";
+    let (_dir, mut session, path) = open(text);
+    let answer = format_range(&mut session, &path, range((2, 0), (2, 3)));
+    assert!(answer.edits.is_empty(), "{:?}", answer.edits);
+    assert_eq!(answer.shown.len(), 1, "{:?}", answer.shown);
+    assert!(
+        answer.shown[0].contains("injected test panic at format"),
+        "{:?}",
+        answer.shown
+    );
+    assert_eq!(answer.logged.len(), 1, "{:?}", answer.logged);
+}
+
+#[test]
+fn format_off_in_the_project_gives_no_edits() {
+    let dir = project_with("[workspace.features]\nformat = false\n");
+    let mut session = Session::start(dir.path());
+    let path = dir.path().join("greet.p");
+    session.open(&path, FLAT);
+    let one = format_range(&mut session, &path, range((3, 0), (3, 20)));
+    assert!(one.edits.is_empty(), "{:?}", one.edits);
+    let several = ask(
+        &mut session,
+        "textDocument/rangesFormatting",
+        json!({
+            "textDocument": {"uri": file_uri(&path)},
+            "ranges": [range((1, 0), (1, 5)), range((7, 0), (7, 5))],
+            "options": options()
+        }),
+    );
+    assert!(several.edits.is_empty(), "{:?}", several.edits);
+    // The switch is not a refusal: nothing to say.
+    assert!(one.shown.is_empty() && several.shown.is_empty());
+    assert!(one.logged.is_empty() && several.logged.is_empty());
 }
 
 #[test]

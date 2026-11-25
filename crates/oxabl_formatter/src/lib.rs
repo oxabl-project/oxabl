@@ -179,6 +179,9 @@ pub(crate) struct LineFormat {
     /// its output line in `text`, without the line ending, or `None` for a
     /// blank line the formatter dropped.
     pub lines: Vec<Option<(usize, usize)>>,
+    /// Per source line: the earlier line whose leading indent its indent is
+    /// measured against, if any.
+    pub anchors: Vec<Option<usize>>,
 }
 
 /// [`format()`] with the map from source lines to output lines.
@@ -198,7 +201,7 @@ pub(crate) fn format_with_lines(
     // two tokenizations total (this input pass + the guard's candidate pass)
     // rather than three.
     let source_tokens = oxabl_lexer::tokenize(source);
-    let mut buf = printer::print(source, program, &cmap, style, &source_tokens);
+    let (mut buf, anchors) = printer::print(source, program, &cmap, style, &source_tokens);
     blanks::normalize(&mut buf, style);
     let ending = ir::dominant_line_ending(source);
     let (out, lines) = buf.flush_mapped(
@@ -215,7 +218,11 @@ pub(crate) fn format_with_lines(
     if !guard::preserves_with_input_tokens(source, &source_tokens, &out) {
         return Err(FormatBail::SemanticGuardTripped);
     }
-    Ok(LineFormat { text: out, lines })
+    Ok(LineFormat {
+        text: out,
+        lines,
+        anchors,
+    })
 }
 
 /// One-call convenience: tokenize + parse `source` (raw, preprocessing off) and

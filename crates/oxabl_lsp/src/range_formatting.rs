@@ -7,13 +7,15 @@
 //! ignored, as they are for the whole document.
 //!
 //! A selection that cannot be formatted gives no edits and a
-//! `window/showMessage` warning that says why: the file has a parse error, the
-//! selection holds no statement, or the formatter had an internal failure.
-//! Format on type is not offered; the design note says why.
+//! `window/logMessage` warning that says why. A parse error or a selection with
+//! no statement is frequent while the user types, pastes or saves, so it goes
+//! to the log only. A tripped guard or an internal failure is a defect in
+//! oxabl, so it also gets a `window/showMessage` warning. Format on type is not
+//! offered; the design note says why.
 
 use lsp_server::{ErrorCode, Request, Response};
 use lsp_types::{PositionEncodingKind, Range, TextDocumentIdentifier, TextEdit};
-use oxabl_pipeline::FormatPipeline;
+use oxabl_pipeline::{FormatPipeline, RangeFailure};
 use serde::Deserialize;
 
 use crate::Server;
@@ -43,7 +45,7 @@ pub fn compute_range_formatting_edits(
     pipeline: &FormatPipeline,
     encoding: &PositionEncodingKind,
     ranges: &[Range],
-) -> Result<Vec<TextEdit>, String> {
+) -> Result<Vec<TextEdit>, RangeFailure> {
     let bytes: Vec<std::ops::Range<usize>> = ranges
         .iter()
         .map(|range| {
@@ -52,9 +54,7 @@ pub fn compute_range_formatting_edits(
             start.min(end)..start.max(end)
         })
         .collect();
-    let edits = pipeline
-        .format_ranges(&doc.rope.to_string(), &bytes)
-        .map_err(|failure| failure.to_string())?;
+    let edits = pipeline.format_ranges(&doc.rope.to_string(), &bytes)?;
     Ok(edits
         .into_iter()
         .map(|edit| TextEdit {
@@ -107,9 +107,11 @@ impl Server<'_> {
         };
         match edits {
             Ok(edits) => self.respond(Response::new_ok(req.id, edits)),
-            Err(reason) => {
-                let message = format!("oxabl: the selection was not formatted: {reason}");
-                self.show_warning(&message);
+            Err(failure) => {
+                let message = format!("oxabl: the selection was not formatted: {failure}");
+                if failure.is_defect() {
+                    self.show_warning(&message);
+                }
                 self.log_warning(&message);
                 self.respond(Response::new_ok(req.id, Vec::<TextEdit>::new()))
             }

@@ -1,13 +1,16 @@
 //! Range formatting property tests.
 //!
 //! Over every synthetic fixture and a set of awkward sources, each also with its
-//! indentation stripped and with an uneven indentation, many ranges are
-//! formatted. For each range:
+//! indentation stripped, with an uneven indentation and with a constant
+//! indentation added, many ranges are formatted under two styles. For each
+//! range:
 //!
 //! * applying the edits and then formatting the whole file gives the same text
 //!   as formatting the whole file at once;
 //! * the edits stay inside the lines from the first to the last top-level
 //!   statement or comment the range overlaps;
+//! * the first line of each statement the range overlaps, at any depth, is the
+//!   line that the whole-file format gives (so the edits are not short);
 //! * a range that is the whole file gives the whole-file format.
 //!
 //! The ranges are every span of whole lines, every byte as an empty range, a
@@ -19,8 +22,9 @@ use std::fs;
 use std::ops::Range;
 use std::path::PathBuf;
 
+use oxabl_ast::{OnAction, OnKind, Span, Statement, StatementKind};
 use oxabl_formatter::{RangeBail, RangeEdit, format_ranges, try_format_source};
-use oxabl_lexer::tokenize;
+use oxabl_lexer::{Kind, tokenize};
 use oxabl_parser::{Parser, Program};
 use oxabl_style::StyleGuide;
 
@@ -121,11 +125,20 @@ const AWKWARD: &[(&str, &str)] = &[
         "function",
         "FUNCTION f RETURNS INTEGER (INPUT a AS INTEGER,\nINPUT b AS INTEGER):\nRETURN a + b.\nEND FUNCTION.\n\nMESSAGE f(1,\n2).\n",
     ),
+    (
+        "trailing-comment-continuation",
+        "      DO:\n      x = 1. /* a\n            b */\n      y = 2.\n      END.",
+    ),
+    (
+        "trailing-comment-after-end",
+        "  DO:\n  DO:\n  x = 1.\n  END. /* a\n       b */\n  y = 2.\n  END.\n",
+    ),
     ("only-blanks", "\n\n  \n"),
     ("empty", ""),
 ];
 
-/// The source, with its indentation stripped, and with an uneven one.
+/// The source, with its indentation stripped, with an uneven one, and with six
+/// spaces more on every line.
 fn variants(name: &str, src: &str) -> Vec<(String, String)> {
     let flat: String = src
         .split_inclusive('\n')
@@ -142,10 +155,15 @@ fn variants(name: &str, src: &str) -> Vec<(String, String)> {
             )
         })
         .collect();
+    let indented: String = src
+        .split_inclusive('\n')
+        .map(|l| format!("      {l}"))
+        .collect();
     vec![
         (name.to_string(), src.to_string()),
         (format!("{name}/flat"), flat),
         (format!("{name}/uneven"), uneven),
+        (format!("{name}/indented"), indented),
     ]
 }
 
@@ -260,13 +278,150 @@ fn allowed(src: &str, program: &Program, ranges: &[Range<usize>]) -> Vec<Range<u
     out
 }
 
+/// The statements a body holds, as the printer nests them. A function's
+/// parameters belong to its header.
+fn children(kind: &StatementKind) -> Vec<&Statement> {
+    let mut out: Vec<&Statement> = Vec::new();
+    match kind {
+        StatementKind::Block(body)
+        | StatementKind::Do { body, .. }
+        | StatementKind::Repeat { body, .. }
+        | StatementKind::ForEach { body, .. }
+        | StatementKind::Procedure { body, .. }
+        | StatementKind::Class { body, .. }
+        | StatementKind::Interface { body, .. }
+        | StatementKind::Catch { body, .. }
+        | StatementKind::Finally { body }
+        | StatementKind::Destructor { body }
+        | StatementKind::Method { body, .. }
+        | StatementKind::Constructor { body, .. } => out.extend(body),
+        StatementKind::Function { body, .. } => out.extend(
+            body.iter()
+                .skip_while(|s| matches!(s.kind, StatementKind::DefineParameter { .. })),
+        ),
+        StatementKind::Property {
+            get_body, set_body, ..
+        } => out.extend(get_body.iter().chain(set_body.iter()).flatten()),
+        StatementKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            out.push(then_branch);
+            out.extend(else_branch.as_deref());
+        }
+        StatementKind::Case {
+            when_branches,
+            otherwise,
+            ..
+        } => {
+            out.extend(when_branches.iter().flat_map(|w| &w.body));
+            out.extend(otherwise.iter().flatten());
+        }
+        StatementKind::Label { body, .. } => out.push(body),
+        StatementKind::On {
+            kind: OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. },
+        } => {
+            if let OnAction::Block(stmt) = action {
+                out.push(stmt);
+            }
+        }
+        StatementKind::PreprocIf(p) => {
+            out.extend(&p.then_branch);
+            out.extend(p.elseif_branches.iter().flat_map(|(_, b)| b));
+            out.extend(p.else_branch.iter().flatten());
+        }
+        _ => {}
+    }
+    out.retain(|s| s.span != Span::DUMMY);
+    out.sort_by_key(|s| s.span.start);
+    out
+}
+
+/// Every statement, at any depth, in source order.
+fn all_statements(program: &Program) -> Vec<&Statement> {
+    fn walk<'a>(stmt: &'a Statement, out: &mut Vec<&'a Statement>) {
+        out.push(stmt);
+        for child in children(&stmt.kind) {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for stmt in program.statements.iter().filter(|s| s.span != Span::DUMMY) {
+        walk(stmt, &mut out);
+    }
+    out
+}
+
+/// The line of `text` that holds byte `at`, without its line ending.
+fn line_at(text: &str, at: usize) -> &str {
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    text[start..end].trim_end_matches('\r')
+}
+
+/// The indexes (in [`all_statements`] order) of statements a range surely
+/// touches: those inside it, and the innermost ones it overlaps. A block that
+/// the range only reaches into is not one of them, because a range inside a
+/// body touches only the statements of that body. An empty range stands for its
+/// line.
+fn overlapped(
+    src: &str,
+    code: &[(usize, usize)],
+    statements: &[&Statement],
+    ranges: &[Range<usize>],
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    for r in ranges {
+        let (rs, re) = if r.start >= r.end {
+            let at = r.start.min(src.len());
+            let start = src[..at].rfind('\n').map_or(0, |i| i + 1);
+            let end = src[at..].find('\n').map_or(src.len(), |i| at + i);
+            (start, end)
+        } else {
+            (r.start, r.end)
+        };
+        // White space and comments in a body touch no statement of it: keep
+        // the code the range covers.
+        let from = code.partition_point(|t| t.1 <= rs);
+        let to = code.partition_point(|t| t.0 < re);
+        let (Some(first), Some(last)) = (
+            code[from..to.max(from)].first(),
+            code[from..to.max(from)].last(),
+        ) else {
+            continue;
+        };
+        let (rs, re) = (rs.max(first.0), re.min(last.1));
+        let hits = |s: &Statement| (s.span.start as usize) < re && rs < s.span.end as usize;
+        for (i, s) in statements.iter().enumerate() {
+            let inside = rs <= s.span.start as usize && s.span.end as usize <= re;
+            let innermost = !children(&s.kind).into_iter().any(hits);
+            if hits(s) && (inside || innermost) {
+                out.push(i);
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn a_range_then_the_whole_file_is_the_whole_file() {
-    let style = StyleGuide::default_base();
+    check_style("default_base", &StyleGuide::default_base());
+}
+
+#[test]
+fn a_range_then_the_whole_file_is_the_whole_file_under_oestandards() {
+    check_style("oestandards", &StyleGuide::oestandards());
+}
+
+fn check_style(style_name: &str, style: &StyleGuide) {
     let mut checked = 0usize;
     let mut with_edits = 0usize;
+    let mut starts_checked = 0usize;
     for (name, src) in fixtures() {
         for (label, text) in variants(&name, &src) {
+            let label = format!("{style_name}:{label}");
+            let style = style.clone();
             let program = parse(&text);
             let Some(expected) = whole(&text, &style) else {
                 // A refused file refuses every range, with its reason.
@@ -277,10 +432,26 @@ fn a_range_then_the_whole_file_is_the_whole_file() {
                 );
                 continue;
             };
+            let expected_program = parse(&expected);
+            let expected_statements = all_statements(&expected_program);
+            let statements = all_statements(&program);
+            // The code tokens (no comments), as byte spans.
+            let code: Vec<(usize, usize)> = tokenize(&text)
+                .iter()
+                .filter(|t| !matches!(t.kind, Kind::Comment | Kind::Eof))
+                .map(|t| (t.start, t.end))
+                .collect();
             for ranges in ranges_for(&text) {
                 let edits = match format_ranges(&text, &program, &style, &ranges) {
                     Ok(edits) => edits,
-                    Err(RangeBail::NoStatement) => continue,
+                    Err(RangeBail::NoStatement) => {
+                        let missed = overlapped(&text, &code, &statements, &ranges);
+                        assert!(
+                            missed.is_empty(),
+                            "{label} {ranges:?}: no statement, but the range covers code of statements {missed:?}"
+                        );
+                        continue;
+                    }
                     Err(other) => panic!("{label} {ranges:?}: {other}"),
                 };
                 let applied = apply(&text, &edits);
@@ -302,6 +473,25 @@ fn a_range_then_the_whole_file_is_the_whole_file() {
                     );
                 }
 
+                // Completeness: the first line of every statement the range
+                // overlaps is the whole-file line. Such a line takes no indent
+                // from another line, so it never keeps its old one.
+                let wanted = overlapped(&text, &code, &statements, &ranges);
+                if !wanted.is_empty() {
+                    let applied_program = parse(&applied);
+                    let applied_statements = all_statements(&applied_program);
+                    assert_eq!(applied_statements.len(), statements.len(), "{label}");
+                    for i in wanted {
+                        let got = line_at(&applied, applied_statements[i].span.start as usize);
+                        let want = line_at(&expected, expected_statements[i].span.start as usize);
+                        assert_eq!(
+                            got, want,
+                            "{label} {ranges:?}: the first line of a touched statement is not formatted\nedits: {edits:?}"
+                        );
+                        starts_checked += 1;
+                    }
+                }
+
                 checked += 1;
                 with_edits += usize::from(!edits.is_empty());
             }
@@ -317,8 +507,18 @@ fn a_range_then_the_whole_file_is_the_whole_file() {
             }
         }
     }
-    assert!(checked > 5_000, "only {checked} ranges were checked");
-    assert!(with_edits > 1_000, "only {with_edits} ranges had edits");
+    assert!(
+        checked > 5_000,
+        "{style_name}: only {checked} ranges were checked"
+    );
+    assert!(
+        with_edits > 1_000,
+        "{style_name}: only {with_edits} ranges had edits"
+    );
+    assert!(
+        starts_checked > 10_000,
+        "{style_name}: only {starts_checked} statement lines were checked"
+    );
 }
 
 #[test]
@@ -337,8 +537,10 @@ fn the_fuzz_findings_hold_too() {
             continue;
         };
         for ranges in ranges_for(&text) {
-            let Ok(edits) = format_ranges(&text, &program, &style, &ranges) else {
-                continue;
+            let edits = match format_ranges(&text, &program, &style, &ranges) {
+                Ok(edits) => edits,
+                Err(RangeBail::NoStatement) => continue,
+                Err(other) => panic!("{} {ranges:?}: {other}", path.display()),
             };
             let applied = apply(&text, &edits);
             assert_eq!(
