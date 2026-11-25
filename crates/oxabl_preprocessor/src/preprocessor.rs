@@ -957,12 +957,34 @@ impl ProcessContext<'_> {
                                     },
                                 };
 
+                                // Inside an include the arguments of this include
+                                // fill any `{N}` in the reference, as the compiler
+                                // reads it. At top level there are none and the
+                                // reference stays.
+                                let filled_inner = if positional_args.is_empty() {
+                                    Cow::Borrowed(raw_inner)
+                                } else {
+                                    let args = if self.admit(
+                                        positional_expansion_len(raw_inner, positional_args),
+                                        include_site,
+                                    ) {
+                                        positional_args
+                                    } else {
+                                        &[]
+                                    };
+                                    expand_positional_refs(raw_inner, args)
+                                };
+
                                 // Pre-expand any `{&var}` references inside the
                                 // inner content to support dynamic include names.
-                                let expanded_inner =
-                                    self.expand_preproc_vars(raw_inner, source, i, include_site);
+                                let expanded_inner = self.expand_preproc_vars(
+                                    &filled_inner,
+                                    source,
+                                    i,
+                                    include_site,
+                                );
                                 let inner_ref: &str =
-                                    expanded_inner.as_deref().unwrap_or(raw_inner);
+                                    expanded_inner.as_deref().unwrap_or(&filled_inner);
 
                                 // Parse the include name (first token before space or &)
                                 let include_name = parse_include_name(inner_ref);
@@ -2948,8 +2970,9 @@ fn expand_positional_refs<'t>(text: &'t str, positional_args: &[String]) -> Cow<
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        let c = text[i..].chars().next().unwrap_or_default();
+        out.push(c);
+        i += c.len_utf8().max(1);
     }
     Cow::Owned(out)
 }
