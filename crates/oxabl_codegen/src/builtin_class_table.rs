@@ -44,6 +44,7 @@ fn type_expr(t: NType) -> String {
         NType::Class(i) => format!("T::Class({i})"),
         NType::ClassArray(i) => format!("T::ClassArray({i})"),
         NType::Shape(s) => format!("T::Shape(S::{s})"),
+        NType::TypeParam(i) => format!("T::TypeParam({i})"),
         NType::Unknown => "T::Unknown".into(),
     }
 }

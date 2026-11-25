@@ -236,7 +236,7 @@ impl<'a> AnalysisContext<'a> {
     /// (a member, an overload count) stays silent then.
     pub fn builtins_may_lack_members(&self) -> bool {
         self.proversion
-            .is_some_and(|version| !builtin::version_at_most(version, self.builtins.version()))
+            .is_some_and(|version| !self.builtins.covers_version(version))
     }
 
     /// Record navigation sites (builder-style); see

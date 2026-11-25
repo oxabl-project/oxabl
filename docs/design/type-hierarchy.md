@@ -129,7 +129,9 @@ types is in these places:
   a method of that name. It reads the catalog of built-in types
   (`docs/design/builtin-classes.md`): for a complete type, the methods of the
   type, of its supertypes and of `Progress.Lang.Object`; any other type may
-  declare any method. The super method walk and the walk up from an interface
+  declare any method. When `[workspace.preprocessor].proversion` is newer
+  than the catalog (`ClassSource::builtins_may_lack_members`), every built-in
+  type may declare any method: a later version may have added it. The super method walk and the walk up from an interface
   implementation call it, and add the gap "oxabl does not know its methods"
   only when it answers `true`.
 - `ImportContext::resolve_class` reads each candidate spelling through

@@ -96,7 +96,7 @@ The numbers are from a check of the checked-in file by the planner. Step 1 of
 | Quirk | Count | Rule |
 | --- | --- | --- |
 | Generic types: `HashMap<K,V>`, a parameter `T`, a member type `IList<T>` | 18 generic types; 55 member types name a type parameter, 18 a generic instance | The lookup key is the name without `<...>` (as today). A generic type is not modelled in this work: a type `List<X>` is `Unknown`, and a member type that names a type parameter or a generic instance is `Unknown`. |
-| Array markers: `CHARACTER[]`, also `X EXTENT` and `X class EXTENT` | 640 with `[]`, 15 with `EXTENT` | `[]` at the end of a type is an `EXTENT` with no size. The normaliser writes every form as `[]`. A name that ends in `Extent` (`OpenEdge.DataAdmin.IExtent`) is a type, not a marker. |
+| Array markers: `CHARACTER[]`, also `X EXTENT` and `X class EXTENT` | 640 with `[]`, 15 with `EXTENT` | `[]` at the end of a type is an `EXTENT` with no size. The normaliser writes every form as `[]`. A name that ends in `Extent` (`OpenEdge.DataAdmin.IExtent`) is a type, not a marker. The markers are on parameters and on class returns only: the scrape loses `EXTENT` on primitive returns and on every property (next rows). |
 | `CLASS JsonObject` (a `CLASS` keyword before the type) | 47 | The normaliser removes the keyword. |
 | An unqualified type (`IArea`, `List`) | about 300 | The normaliser looks the name up in the package of the type that names it, then as a simple name that exactly one catalog type has. Else the member is damaged. |
 | A kind word after the type (`X enumeration`) | 12 | The normaliser removes it. |
@@ -106,7 +106,8 @@ The numbers are from a check of the checked-in file by the planner. Step 1 of
 | `STATIC` as the return type of a constructor | 32 | A static constructor. It is not a candidate of `NEW`. |
 | An `OpenEdge.*` or `Ccs.*` method with no return type | 3420 | `VOID` (the Javadoc renderer omits it). |
 | A `Progress.*` method with no return type | 1 | Damaged. |
-| A primitive return that is an `EXTENT` read as a scalar (`JsonObject:GetNames`, `OpenEdge.Core.String:Split(LONGCHAR)`, ...): the API reference writes the return type without `EXTENT`, the ABL Reference writes `CHARACTER` for `GetNames` | 26 found | An override (`extent_return`) for each one whose documentation comment says `@return <type>[]` or "an EXTENT" (found with a scan of the pages of the complete classes). `CL006` also fails closed for the rest: a scalar primitive that a built-in member returns never rules out a parameter that is an `EXTENT` of the same primitive (`overload::no_fit`). |
+| A primitive return that is an `EXTENT` read as a scalar (`JsonObject:GetNames`, `OpenEdge.Core.String:Split(LONGCHAR)`, ...): the API reference writes the return type without `EXTENT`, the ABL Reference writes `CHARACTER` for `GetNames` | 26 found | An override (`extent_return`) for each one whose documentation comment says `@return <type>[]` or "an EXTENT" (found with a scan of the pages of the complete classes). `CL006` also fails closed for the rest (see the property row). |
+| A property that is an `EXTENT`: the scrape writes no `EXTENT` on any of the 3,244 properties (`Ccs.Common.Support.ICharacterArrayHolder:Value` reads `CHARACTER`) | 33 with an override; any property may be one | An override (`extent_property`) where a page shows the array: the constructor or setter that fills the property takes `<type>[]` (`DateArrayHolder (date[])`, `ClientLibraryBuilder:SetSslProtocols (character[])`, `RowImpl (..., pKeyValues AS CHARACTER[])`), or an interface that such a class implements (the 13 `Ccs.Common.Support.I*ArrayHolder`, `IObjectArrayHolder`, `IRow`). Every other built-in property, and every primitive return, fails closed: `CL006` never rules out a parameter that is an `EXTENT` of a type a scalar built-in member result may convert to (a primitive, or a class to one of its supertypes; `overload::no_fit`), and `LINT0004` gives no finding for an `EXTENT` assigned to a scalar built-in property when its element converts (`type_mismatch_assignment`). A scalar from a built-in property into a scalar variable is still judged. |
 | A parameter name that is not an ABL name (`) PUBLIC MemoryOutputStream (INPUT size`) | 1 | Damaged. |
 | A member name that is not an ABL name (HTML text, a code sample, `[ return-value = ] class-reference:Invoke`) | 71 in 35 types | Damaged. A name `&ltFile> Files` (7 of the 71: a generic return type that the renderer split) is read as the name `Files` with the generic type, which is `Unknown`. |
 | A typo or a fragment as a type (`Progrss.Reflect.Flags`, `Progress.Lang.Class \|`, `INTEGER )`) | 53 members in 28 types | Damaged. |
@@ -691,7 +692,9 @@ What the implementation decided differently from the sections above:
   `PUBLIC` one, so an outside role can list a `PROTECTED` member
   (`Progress.Lang.Object:Clone`): no finding comes from it.
 - **Hover text.** A type the catalog does not give is written
-  `/* type not documented */`; an `ABSTRACT` property has `ABSTRACT`.
+  `/* type not known */`, and a type parameter by its name (`METHOD T Get
+  (index AS INTEGER)` of `Progress.Collections.List<T>`); an `ABSTRACT`
+  property has `ABSTRACT`.
 - **Data form.** A type row keeps the bundle (a number) and the page name,
   not the URL, and no lowercase key: the lookups fold the name as they
   compare. This saves about 88 KB of URL text and 49 KB of keys. Struct

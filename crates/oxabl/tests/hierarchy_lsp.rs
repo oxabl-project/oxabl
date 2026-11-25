@@ -2054,3 +2054,49 @@ fn the_type_hierarchy_of_a_resolved_built_in_name_is_the_built_in_type() {
     assert_eq!(item["name"], json!("Progress.Lang.Error"));
     assert_eq!(item["kind"], json!(INTERFACE));
 }
+
+const PLAIN_DESCRIBE: &str = "CLASS app.PlainDescribe:\n\
+    \x20   METHOD PUBLIC CHARACTER Describe():\n\
+    \x20       RETURN \"\".\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn a_newer_openedge_version_may_add_a_method_of_progress_lang_object() {
+    // With the catalog's version, `Progress.Lang.Object` has no `Describe`:
+    // the method overrides nothing and the answer is whole.
+    let ws = small(&[("app/PlainDescribe.cls", PLAIN_DESCRIBE)]);
+    let file = ws.path("app/PlainDescribe.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&file, PLAIN_DESCRIBE);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&file, PLAIN_DESCRIBE, "Describe()", 0),
+    );
+    assert_eq!(answer.result["locations"], json!([]));
+    assert_eq!(answer.result["gaps"], json!([]));
+    drop(session);
+
+    // A newer version may have added it: the answer says so.
+    let newer = format!("{CONFIG}[workspace.preprocessor]\nproversion = \"13.0\"\n");
+    let ws = Workspace::new(&[
+        ("oxabl.toml", newer.as_str()),
+        ("app/PlainDescribe.cls", PLAIN_DESCRIBE),
+    ]);
+    let file = ws.path("app/PlainDescribe.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&file, PLAIN_DESCRIBE);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&file, PLAIN_DESCRIBE, "Describe()", 0),
+    );
+    assert_eq!(answer.result["locations"], json!([]));
+    let gaps = answer.result["gaps"].as_array().unwrap();
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert!(
+        gaps[0].as_str().unwrap().contains("`Progress.Lang.Object`"),
+        "{gaps:?}"
+    );
+}

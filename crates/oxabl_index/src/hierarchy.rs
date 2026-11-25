@@ -126,12 +126,14 @@ pub fn builtin_type(name: &str) -> Option<BuiltinType> {
 /// Whether the built-in type `type_name`, or a built-in type above it, may
 /// declare a method named `method`. `false` only when the catalog has the
 /// whole surface of the type (`BuiltinClass::is_complete`) and no level of it
-/// declares the name; `true` for a type the catalog does not have whole.
-pub fn builtin_may_declare(type_name: &str, method: &IndexName) -> bool {
+/// declares the name; `true` for a type the catalog does not have whole, and
+/// when `catalog_may_lack` says that the workspace compiles with a newer
+/// OpenEdge than the catalog (which may have added the method).
+pub fn builtin_may_declare(type_name: &str, method: &IndexName, catalog_may_lack: bool) -> bool {
     let Some(class) = builtin_class(type_name) else {
         return true;
     };
-    if !class.is_complete() {
+    if catalog_may_lack || !class.is_complete() {
         return true;
     }
     let mut stack = vec![class];
@@ -317,6 +319,12 @@ pub trait ClassSource {
     fn resolver(&self, path: &Path) -> Rc<dyn WorkspaceIndex + '_>;
     /// The facts of the class file `path`, an open buffer over the disk.
     fn facts(&self, path: &Path) -> Arc<FileFacts>;
+    /// Whether the workspace compiles with an OpenEdge version newer than the
+    /// catalog of built-in types (`[workspace.preprocessor].proversion`), so a
+    /// built-in type may have methods the catalog does not list.
+    fn builtins_may_lack_members(&self) -> bool {
+        false
+    }
 }
 
 impl SubtypeIndex {
@@ -907,7 +915,7 @@ pub fn overrides_below<'a>(
                     }
                 }
                 Supertype::Builtin { name: builtin, .. } => {
-                    if builtin_may_declare(builtin, &name) {
+                    if builtin_may_declare(builtin, &name, source.builtins_may_lack_members()) {
                         gaps.push(format!(
                             "`{}` extends the built-in type `{builtin}`: oxabl does not know \
                              its methods",
@@ -1040,7 +1048,8 @@ impl SuperWalk<'_> {
                 )
             }
             Supertype::Builtin { name: builtin, .. } => {
-                if builtin_may_declare(builtin, &self.name) {
+                if builtin_may_declare(builtin, &self.name, self.source.builtins_may_lack_members())
+                {
                     self.gaps.push(format!(
                         "`{}` names the built-in type `{builtin}`: oxabl does not know its \
                          methods",
@@ -1141,9 +1150,15 @@ pub fn super_methods(
     }
     // Only the parent chain decides: an interface match does not rule out an
     // override of an `Object` method.
-    if reaches_object && builtin_may_declare("Progress.Lang.Object", &name) {
+    if reaches_object
+        && builtin_may_declare(
+            "Progress.Lang.Object",
+            &name,
+            source.builtins_may_lack_members(),
+        )
+    {
         walk.gaps.push(format!(
-            "`{}` can override a method of `Progress.Lang.Object`, which oxabl does not know",
+            "`{}` can override a method of `Progress.Lang.Object`, which has no source file",
             name.as_written()
         ));
     }

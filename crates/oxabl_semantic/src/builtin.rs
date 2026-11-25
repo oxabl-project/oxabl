@@ -25,7 +25,11 @@ pub enum BuiltinType {
     ClassArray(u16),
     /// A parameter shape.
     Shape(BuiltinShape),
-    /// A type parameter, a generic instance, a .NET type or any type.
+    /// A type parameter of the type that declares the member, by its position
+    /// in [`BuiltinClass::type_params`].
+    TypeParam(u8),
+    /// A generic instance, a .NET type, any type, or a type the
+    /// documentation does not give.
     Unknown,
 }
 
@@ -125,6 +129,13 @@ impl BuiltinCatalog {
     /// arguments.
     pub fn class(&self, name: &str) -> Option<&'static BuiltinClass> {
         builtin_class(name)
+    }
+
+    /// Whether the catalog has every member of the OpenEdge version
+    /// `version` (`12.8.9`, `13.0`): `false` for a newer version, which may
+    /// have added members, and for one oxabl cannot read.
+    pub fn covers_version(&self, version: &str) -> bool {
+        version_at_most(version, self.version)
     }
 
     /// Every type, sorted by folded name.
@@ -558,6 +569,7 @@ mod tests {
             BuiltinType::Class(row) => BuiltinClass::at(row).name.into(),
             BuiltinType::ClassArray(row) => format!("{} EXTENT", BuiltinClass::at(row).name),
             BuiltinType::Shape(s) => format!("{s:?}"),
+            BuiltinType::TypeParam(i) => format!("<{i}>"),
             BuiltinType::Unknown => "?".into(),
         }
     }
@@ -703,6 +715,26 @@ mod tests {
                 "OpenEdge.Core.String",
                 "Value",
                 &["PROPERTY LONGCHAR Value"],
+            ),
+            (
+                "Ccs.Common.Support.ICharacterArrayHolder",
+                "Value",
+                &["PROPERTY CHARACTER EXTENT Value"],
+            ),
+            (
+                "OpenEdge.Core.ObjectArrayHolder",
+                "Value",
+                &["PROPERTY Progress.Lang.Object EXTENT Value"],
+            ),
+            (
+                "OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters",
+                "SslProtocols",
+                &["PROPERTY CHARACTER EXTENT SslProtocols"],
+            ),
+            (
+                "OpenEdge.Messaging.ProducerRecord",
+                "GetOptionNames",
+                &["CHARACTER EXTENT GetOptionNames()"],
             ),
             (
                 "OpenEdge.Core.String",

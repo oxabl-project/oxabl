@@ -63,7 +63,9 @@ pub enum NType {
     ClassArray(usize),
     /// The shape name (`Table`, `DatasetHandle`, ...).
     Shape(&'static str),
-    /// A type parameter, a generic instance, a .NET type, any type.
+    /// A type parameter of the owning type, by its position.
+    TypeParam(u8),
+    /// A generic instance, a .NET type, any type.
     Unknown,
 }
 
@@ -171,6 +173,9 @@ struct Override {
     /// read as a scalar: every overload of the name with a scalar primitive
     /// return gets `[]`.
     extent_return: Option<String>,
+    /// A property whose type is an `EXTENT` that the scrape read as a scalar
+    /// (the scrape writes no `EXTENT` on any property): its type gets `[]`.
+    extent_property: Option<String>,
     add_member: Option<OverrideMember>,
     replace_member: Option<OverrideMember>,
 }
@@ -249,12 +254,13 @@ pub fn apply_overrides(index: &mut BuiltinIndex, text: &str) -> Result<(), Strin
             o.inherits.is_some(),
             o.drop_member.is_some(),
             o.extent_return.is_some(),
+            o.extent_property.is_some(),
             o.add_member.is_some(),
             o.replace_member.is_some(),
         ];
         if what.iter().filter(|b| **b).count() != 1 {
             return Err(format!(
-                "override of `{}` must name exactly one of inherits, drop_member, extent_return, add_member, replace_member",
+                "override of `{}` must name exactly one of inherits, drop_member, extent_return, extent_property, add_member, replace_member",
                 o.type_name
             ));
         }
@@ -305,6 +311,20 @@ pub fn apply_overrides(index: &mut BuiltinIndex, text: &str) -> Result<(), Strin
                     o.type_name
                 ));
             }
+        } else if let Some(name) = &o.extent_property {
+            let Some(rt) = entry
+                .properties
+                .iter_mut()
+                .find(|m| m.name.eq_ignore_ascii_case(name))
+                .and_then(|m| m.return_type.as_mut())
+                .filter(|rt| !rt.trim_end().ends_with("[]"))
+            else {
+                return Err(format!(
+                    "stale override: `{}` has no scalar property `{name}`",
+                    o.type_name
+                ));
+            };
+            rt.push_str("[]");
         } else if let Some(m) = &o.add_member {
             let list = member_list(entry, &m.kind)?;
             if list.iter().any(|x| x.name.eq_ignore_ascii_case(&m.name)) {
@@ -419,6 +439,7 @@ enum Read {
     Primitive(&'static str),
     Shape(&'static str),
     Class(usize),
+    TypeParam(u8),
     Unknown,
     Damaged,
 }
@@ -476,7 +497,8 @@ fn read_type(raw: &str, owner: &Owner, names: &Names) -> NTypeOrDamaged {
     let read = read_base(base, owner, names);
     match (read, array) {
         (Read::Damaged, _) => NTypeOrDamaged::Damaged,
-        (Read::Unknown, _) => NTypeOrDamaged::Type(NType::Unknown),
+        (Read::Unknown, _) | (Read::TypeParam(_), true) => NTypeOrDamaged::Type(NType::Unknown),
+        (Read::TypeParam(i), false) => NTypeOrDamaged::Type(NType::TypeParam(i)),
         (Read::Void, false) => NTypeOrDamaged::Type(NType::Void),
         (Read::Primitive(p), false) => NTypeOrDamaged::Type(NType::Primitive(p)),
         (Read::Primitive(p), true) => NTypeOrDamaged::Type(NType::PrimitiveArray(p)),
@@ -518,8 +540,8 @@ fn read_base(b: &str, owner: &Owner, names: &Names) -> Read {
     if is_handle_placeholder(b) {
         return Read::Primitive("Handle");
     }
-    if owner.type_params.iter().any(|p| p == b) {
-        return Read::Unknown;
+    if let Some(at) = owner.type_params.iter().position(|p| p == b) {
+        return Read::TypeParam(at as u8);
     }
     let (generic_base, args) = split_generic(b);
     let generic = b.contains('<');
@@ -1060,7 +1082,7 @@ mod tests {
     }
 
     #[test]
-    fn generics_and_dotnet_types_are_unknown() {
+    fn generics_and_dotnet_types_are_type_parameters_or_unknown() {
         let index = index_with(&[
             OBJECT,
             (
@@ -1077,7 +1099,10 @@ mod tests {
         ]);
         let c = normalise(&index).unwrap();
         let list = c.get("A.List").unwrap();
-        assert!(list.members.iter().all(|m| m.ty == NType::Unknown));
+        let ty = |name: &str| list.members.iter().find(|m| m.name == name).unwrap().ty;
+        assert_eq!(ty("Get"), NType::TypeParam(0));
+        assert_eq!(ty("Sub"), NType::Unknown);
+        assert_eq!(ty("Net"), NType::Unknown);
         assert!(list.members_trusted);
         assert!(!list.complete);
         let form = c.get("A.Form").unwrap();
@@ -1093,6 +1118,25 @@ mod tests {
         );
         assert!(t.members.is_empty());
         assert!(!t.members_trusted);
+    }
+
+    #[test]
+    fn an_extent_property_override_makes_the_property_an_array() {
+        let mut index = index_with(&[
+            OBJECT,
+            (
+                "A.B",
+                r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
+                    "properties": [{"name": "Value", "return_type": "Progress.Lang.Object"}]}"#,
+            ),
+        ]);
+        apply_overrides(
+            &mut index,
+            "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_property = \"value\"\n",
+        )
+        .unwrap();
+        let c = normalise(&index).unwrap();
+        assert_eq!(c.get("A.B").unwrap().members[0].ty, NType::ClassArray(1));
     }
 
     #[test]
@@ -1167,6 +1211,10 @@ mod tests {
             (
                 "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_return = \"P\"\n",
                 "no method `P` with a scalar primitive return",
+            ),
+            (
+                "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_property = \"Q\"\n",
+                "no scalar property `Q`",
             ),
             (
                 "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nadd_member = { kind = \"property\", name = \"p\", type = \"INTEGER\" }\n",

@@ -53,7 +53,7 @@ pub(super) fn type_hover(class: &BuiltinClass) -> String {
 }
 
 /// The type of a member or parameter as ABL writes it.
-fn type_text(ty: BuiltinType) -> String {
+fn type_text(ty: BuiltinType, class: &BuiltinClass) -> String {
     match ty {
         BuiltinType::Void => "VOID".to_string(),
         BuiltinType::Primitive(p) => p.abl_keyword().to_string(),
@@ -70,9 +70,13 @@ fn type_text(ty: BuiltinType) -> String {
             BuiltinShape::Buffer => "BUFFER",
         }
         .to_string(),
-        // A type parameter, a generic instance, a .NET type, or a type the
+        BuiltinType::TypeParam(at) => class
+            .type_params
+            .get(at as usize)
+            .map_or_else(|| "/* type not known */".to_string(), |p| (*p).to_string()),
+        // A generic instance, a .NET type, any type, or a type the
         // documentation does not give.
-        BuiltinType::Unknown => "/* type not documented */".to_string(),
+        BuiltinType::Unknown => "/* type not known */".to_string(),
     }
 }
 
@@ -82,9 +86,9 @@ fn params_text(member: &BuiltinMember) -> String {
         .iter()
         .map(|p| {
             if p.name.is_empty() {
-                type_text(p.ty)
+                type_text(p.ty, member.class())
             } else {
-                format!("{} AS {}", p.name, type_text(p.ty))
+                format!("{} AS {}", p.name, type_text(p.ty, member.class()))
             }
         })
         .collect();
@@ -104,14 +108,14 @@ fn signature(member: &BuiltinMember) -> String {
     match member.kind() {
         BuiltinMemberKind::Method => format!(
             "METHOD{modifiers} {} {} {}",
-            type_text(member.ty()),
+            type_text(member.ty(), member.class()),
             member.name(),
             params_text(member)
         ),
         BuiltinMemberKind::Property => format!(
             "DEFINE{modifiers} PROPERTY {} AS {}",
             member.name(),
-            type_text(member.ty())
+            type_text(member.ty(), member.class())
         ),
         BuiltinMemberKind::Event => format!(
             "DEFINE{modifiers} EVENT {} SIGNATURE VOID {}",
@@ -197,4 +201,30 @@ pub(super) fn member_hover(
         parts.push(declared_line(class, group_params));
     }
     parts.join("\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signatures(class: &str, name: &str) -> Vec<String> {
+        oxabl_semantic::builtin_class(class)
+            .unwrap()
+            .members_named(name)
+            .iter()
+            .map(signature)
+            .collect()
+    }
+
+    #[test]
+    fn a_type_parameter_is_written_by_its_name() {
+        assert_eq!(
+            signatures("Progress.Collections.List", "Get"),
+            ["METHOD T Get (index AS INTEGER)"]
+        );
+        assert_eq!(
+            signatures("Progress.Collections.List", "Add"),
+            ["METHOD LOGICAL Add (element AS T)"]
+        );
+    }
 }

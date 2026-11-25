@@ -184,9 +184,10 @@ pub fn builtin_member_type(ty: BuiltinType) -> MemberType {
         BuiltinType::PrimitiveArray(p) => portable(array(ResolvedType::Primitive(p))),
         BuiltinType::Class(row) => MemberType::Named(IndexName::new(BuiltinClass::at(row).name)),
         // An array of a class has no portable form.
-        BuiltinType::ClassArray(_) | BuiltinType::Shape(_) | BuiltinType::Unknown => {
-            portable(ResolvedType::Unknown)
-        }
+        BuiltinType::ClassArray(_)
+        | BuiltinType::Shape(_)
+        | BuiltinType::TypeParam(_)
+        | BuiltinType::Unknown => portable(ResolvedType::Unknown),
     }
 }
 

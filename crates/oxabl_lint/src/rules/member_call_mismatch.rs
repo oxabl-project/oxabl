@@ -41,9 +41,9 @@
 //! constructor. A set with static and instance overloads is judged only by
 //! the count. When `[workspace.preprocessor].proversion` is newer than the
 //! catalog (12.8), the count is not judged: a later version may have added an
-//! overload. A scalar primitive that a built-in method returns never rules
-//! out an `EXTENT` parameter of the same type: the catalog can have lost the
-//! `EXTENT` of that return.
+//! overload. A scalar (a primitive or a class) that a built-in method or
+//! property gives never rules out an `EXTENT` parameter of a type it may
+//! convert to: the catalog can have lost the `EXTENT` of that type.
 
 use oxabl_ast::{Expression, ExpressionKind, Statement};
 use oxabl_common::{Diagnostic, Severity};

@@ -7152,7 +7152,9 @@ impl<'a> ResolveWalker<'a> {
             BuiltinType::PrimitiveArray(p) => array(ResolvedType::Primitive(p)),
             BuiltinType::Class(row) => self.builtin_row_type(row),
             BuiltinType::ClassArray(row) => array(self.builtin_row_type(row)),
-            BuiltinType::Shape(_) | BuiltinType::Unknown => ResolvedType::Unknown,
+            BuiltinType::Shape(_) | BuiltinType::TypeParam(_) | BuiltinType::Unknown => {
+                ResolvedType::Unknown
+            }
         })
     }
 

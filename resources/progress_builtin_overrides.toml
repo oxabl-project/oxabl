@@ -4,7 +4,8 @@
 # `cargo run -p oxabl_codegen -- builtin-class-table` applies them before it
 # compiles the catalog. Each entry names a type, the documentation page a
 # person checked the fix against, and exactly one change: `inherits`,
-# `drop_member`, `extent_return`, `add_member` or `replace_member`. An entry that matches
+# `drop_member`, `extent_return`, `extent_property`, `add_member` or
+# `replace_member`. An entry that matches
 # nothing fails the codegen, so a later scrape cannot leave a stale fix.
 
 # The class page lists no supertype. The page says AppError inherits ProError.
@@ -171,3 +172,199 @@ extent_return = "GetSchemas"
 type = "Progress.Json.ObjectModel.JsonObject"
 checked_against = "https://docs-be.progress.com/bundle/abl-reference/page/GetNames-method-JsonObject.html"
 extent_return = "GetNames"
+
+# The scrape writes no EXTENT on any property: the API reference renders the
+# property type without it. Each property below holds an EXTENT. The evidence
+# is on the same page or a page it links: the constructor or setter that fills
+# the property takes the array (`DateArrayHolder (date[])`,
+# `ClientLibraryBuilder:SetSslProtocols (character[])`,
+# `RowImpl (..., pKeyValues AS CHARACTER[])`), or the type is an interface
+# that such a class implements, which must declare the same EXTENT type
+# (`Ccs.Common.Support.I*ArrayHolder`, `IObjectArrayHolder`, `IRow`).
+
+[[override]]
+type = "Ccs.Common.Support.ICharacterArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.ICharacterArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.IDateArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IDateArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.IDateTimeArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IDateTimeArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.IDateTimeTzArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IDateTimeTzArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.IDecimalArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IDecimalArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.IHandleArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IHandleArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.IInt64ArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IInt64ArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.IIntegerArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IIntegerArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.ILogicalArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.ILogicalArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.ILongcharArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.ILongcharArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.IMemptrArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IMemptrArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "Ccs.Common.Support.IRowidArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IRowidArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.DateArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.DateArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.DateTimeArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.DateTimeArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.DateTimeTzArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.DateTimeTzArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.DecimalArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.DecimalArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.HandleArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.HandleArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.IObjectArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.IObjectArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.IntegerArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.IntegerArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.LogicalArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.LogicalArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.LongcharArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.LongcharArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.MemptrArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.MemptrArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.ObjectArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.ObjectArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.RowidArrayHolder"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.RowidArrayHolder.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.StringArray"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.StringArray.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.LogicalArray"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.LogicalArray.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Core.Collections.Array"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Collections.Array.html"
+extent_property = "Value"
+
+[[override]]
+type = "OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters.html"
+extent_property = "SslProtocols"
+
+[[override]]
+type = "OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters.html"
+extent_property = "SslCiphers"
+
+[[override]]
+type = "OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters.html"
+extent_property = "TlsSupportedGroups"
+
+[[override]]
+type = "OpenEdge.DataAdmin.Binding.IRow"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.DataAdmin.Binding.IRow.html"
+extent_property = "KeyValues"
+
+[[override]]
+type = "OpenEdge.DataAdmin.Binding.RowImpl"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.DataAdmin.Binding.RowImpl.html"
+extent_property = "KeyValues"
+
+[[override]]
+type = "OpenEdge.DataAdmin.Binding.RowBuffer"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.DataAdmin.Binding.RowBuffer.html"
+extent_property = "KeyValues"
+
+# These methods return an EXTENT: the documentation comment says "Returns an
+# array of the option names" (or "a character array").
+[[override]]
+type = "OpenEdge.Messaging.IProducerRecord"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Messaging.IProducerRecord.html"
+extent_return = "GetOptionNames"
+
+[[override]]
+type = "OpenEdge.Messaging.ITopicConfiguration"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Messaging.ITopicConfiguration.html"
+extent_return = "GetOptionNames"
+
+[[override]]
+type = "OpenEdge.Messaging.ProducerRecord"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Messaging.ProducerRecord.html"
+extent_return = "GetOptionNames"
+
+[[override]]
+type = "OpenEdge.Messaging.TopicConfiguration"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Messaging.TopicConfiguration.html"
+extent_return = "GetOptionNames"

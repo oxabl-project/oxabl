@@ -172,8 +172,9 @@ fn receiver_builtin(sem: &Semantic, object: &Expression) -> Option<&'static Buil
     }
 }
 
-/// For each argument, whether it is a scalar primitive that a built-in
-/// member returns: the catalog may have lost the `EXTENT` of that return.
+/// For each argument, whether it is a scalar (a primitive or a class) that a
+/// built-in method or property gives: the catalog may have lost the `EXTENT`
+/// of that type.
 fn from_builtin_members(sem: &Semantic, arguments: &[Expression]) -> Vec<bool> {
     arguments
         .iter()
@@ -181,11 +182,13 @@ fn from_builtin_members(sem: &Semantic, arguments: &[Expression]) -> Vec<bool> {
             matches!(
                 a.kind,
                 ExpressionKind::MethodCall { .. } | ExpressionKind::MemberAccess { .. }
-            ) && matches!(sem.types.get(a.id), Some(ResolvedType::Primitive(_)))
-                && matches!(
-                    sem.references.get(a.id),
-                    Some(Resolution::Resolved(sym)) if sem.symbols.builtin_member(*sym).is_some()
-                )
+            ) && matches!(
+                sem.types.get(a.id),
+                Some(ResolvedType::Primitive(_) | ResolvedType::Class(_))
+            ) && matches!(
+                sem.references.get(a.id),
+                Some(Resolution::Resolved(sym)) if sem.symbols.builtin_member(*sym).is_some()
+            )
         })
         .collect()
 }
@@ -228,7 +231,9 @@ fn param_kind(symbols: &SymbolTable, ty: BuiltinType) -> CallParamKind {
                 BuiltinShape::Buffer => CallParamKind::Buffer,
             };
         }
-        BuiltinType::Void | BuiltinType::Unknown => ResolvedType::Unknown,
+        BuiltinType::Void | BuiltinType::TypeParam(_) | BuiltinType::Unknown => {
+            ResolvedType::Unknown
+        }
     })
 }
 

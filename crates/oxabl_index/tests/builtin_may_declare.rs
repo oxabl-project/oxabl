@@ -6,7 +6,7 @@ use oxabl_index::hierarchy::builtin_may_declare;
 use oxabl_semantic::IndexName;
 
 fn may(class: &str, method: &str) -> bool {
-    builtin_may_declare(class, &IndexName::new(method))
+    builtin_may_declare(class, &IndexName::new(method), false)
 }
 
 #[test]
@@ -29,4 +29,13 @@ fn a_type_the_catalog_does_not_have_whole_may_declare_any_method() {
     assert!(may("Progress.Lang.Class", "NoSuchMethod"));
     assert!(may("Progress.Collections.List", "NoSuchMethod"));
     assert!(may("No.Such.Type", "Anything"));
+}
+
+#[test]
+fn a_newer_openedge_version_may_declare_any_method() {
+    assert!(builtin_may_declare(
+        "Progress.Lang.AppError",
+        &IndexName::new("NoSuchMethod"),
+        true
+    ));
 }

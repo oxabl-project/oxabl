@@ -1,7 +1,6 @@
-//! Built-in classes through `oxabl check`, for the cases the review of the
-//! catalog found: a scalar return that the documentation gives as an
-//! `EXTENT`, a `SUPER:` receiver, and a project on an OpenEdge version newer
-//! than the catalog.
+//! Built-in classes through `oxabl check`: a scalar return or property that
+//! may be an `EXTENT`, a `SUPER:` receiver, and a project on an OpenEdge
+//! version newer than the catalog.
 
 #![cfg(unix)]
 
@@ -135,4 +134,90 @@ fn a_newer_openedge_version_silences_the_absence_findings() {
             "{version}"
         );
     }
+}
+
+/// `(trimmed line, code, message)` of each `LINT0004` and `CL006` finding.
+fn typed(source: &str) -> Vec<(String, String, String)> {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("oxabl.toml"), STRICT).unwrap();
+    std::fs::write(dir.path().join("main.p"), source).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxabl"))
+        .args(["check", "--json", "--no-format", "main.p"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let json: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["failures"], serde_json::json!([]), "{json}");
+    let mut found: Vec<(u64, String, String, String)> = json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "LINT0004" || d["code"] == "CL006")
+        .map(|d| {
+            let line = d["start"]["line"].as_u64().unwrap();
+            let text = source.lines().nth(line as usize - 1).unwrap().trim();
+            (
+                line,
+                text.to_string(),
+                d["code"].as_str().unwrap().to_string(),
+                d["message"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, l, c, m)| (l, c, m)).collect()
+}
+
+fn typed_row(line: &str, code: &str, message: &str) -> (String, String, String) {
+    (line.to_string(), code.to_string(), message.to_string())
+}
+
+#[test]
+fn a_built_in_property_may_hold_an_extent() {
+    let source = "DEFINE VARIABLE oH AS Ccs.Common.Support.ICharacterArrayHolder NO-UNDO.\n\
+        DEFINE VARIABLE oD AS OpenEdge.Core.DateArrayHolder NO-UNDO.\n\
+        DEFINE VARIABLE oOH AS OpenEdge.Core.ObjectArrayHolder NO-UNDO.\n\
+        DEFINE VARIABLE oS AS OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters NO-UNDO.\n\
+        DEFINE VARIABLE oB AS OpenEdge.Net.HTTP.Trace.Rule.BodyRule NO-UNDO.\n\
+        DEFINE VARIABLE oKV AS OpenEdge.Core.KeyValuePair NO-UNDO.\n\
+        DEFINE VARIABLE cx AS CHARACTER EXTENT 2 NO-UNDO.\n\
+        DEFINE VARIABLE dx AS DATE EXTENT 2 NO-UNDO.\n\
+        DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n\
+        oH:Value = cx.\n\
+        oD:Value = dx.\n\
+        oS:SslProtocols = cx.\n\
+        oB:MimeTypes = cx.\n\
+        oB:MimeTypes = dx.\n\
+        c = oH:Value.\n\
+        MESSAGE NEW OpenEdge.Core.ObjectArrayHolder(oOH:Value).\n\
+        MESSAGE NEW OpenEdge.Core.Collections.Array(oOH:Value).\n\
+        MESSAGE NEW OpenEdge.Core.Collections.Array(oKV:Value).\n\
+        MESSAGE NEW OpenEdge.Core.Collections.Array(oKV).\n\
+        MESSAGE oH oD oOH oS oB oKV cx[1] dx[1] c.\n";
+    // The holders and `SslProtocols` are EXTENT properties (overrides).
+    // `BodyRule:MimeTypes` and `KeyValuePair:Value` have none: an EXTENT of a
+    // type that converts to the documented scalar may be correct, so it gives
+    // no finding, and neither does a class scalar of a built-in property for an
+    // `Object[]` parameter. An EXTENT of DATE into CHARACTER, a holder value
+    // into a scalar and a plain object into `Object[]` do not convert.
+    assert_eq!(
+        typed(source),
+        [
+            typed_row(
+                "oB:MimeTypes = dx.",
+                "LINT0004",
+                "type mismatch: cannot assign `DATE EXTENT 2` to `CHARACTER`"
+            ),
+            typed_row(
+                "c = oH:Value.",
+                "LINT0004",
+                "type mismatch: cannot assign `CHARACTER EXTENT` to `CHARACTER`"
+            ),
+            typed_row(
+                "MESSAGE NEW OpenEdge.Core.Collections.Array(oKV).",
+                "CL006",
+                "no constructor of `OpenEdge.Core.Collections.Array` takes arguments of these types: `OpenEdge.Core.KeyValuePair`"
+            ),
+        ]
+    );
 }
