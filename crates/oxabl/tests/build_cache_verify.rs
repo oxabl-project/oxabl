@@ -32,28 +32,37 @@ fn holds(cache: &TempDir, artifact: &str) -> bool {
         .any(|entry| entry.join("files").join(artifact).is_file())
 }
 
+/// `Slow` inherits `First`, so the build compiles `First` to its end, hash
+/// check included, before it starts `Slow`, whatever order the cache lookups
+/// answer in.
 #[test]
 fn a_closure_file_edited_while_the_unit_compiles_blocks_the_cache_write() {
     let cache = TempDir::new().unwrap();
     let workspace = Built::new();
     workspace.cache_in(cache.path());
     workspace.write("src/inc/a.i", "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n");
-    workspace.write("src/first.p", "{inc/a.i}\n");
-    workspace.write("src/slow.p", "/* FAKE-SLOW */\n{inc/a.i}\n");
+    workspace.write(
+        "src/pkg/First.cls",
+        "CLASS pkg.First:\n{inc/a.i}\nEND CLASS.\n",
+    );
+    workspace.write(
+        "src/pkg/Slow.cls",
+        "/* FAKE-SLOW */\nCLASS pkg.Slow INHERITS pkg.First:\n{inc/a.i}\nEND CLASS.\n",
+    );
     workspace.write("src/other.p", "MESSAGE \"other\".\n");
 
     let child = workspace.spawn(&[]);
-    wait_for_compile(&workspace, "slow.p");
+    wait_for_compile(&workspace, "pkg/Slow.cls");
     workspace.write("src/inc/a.i", "DEFINE VARIABLE y AS INTEGER NO-UNDO.\n");
     let output = child.wait_with_output().unwrap();
 
     assert_eq!(output.status.code(), Some(0));
     assert!(holds(&cache, "r/other.r"), "the untouched unit is cached");
     assert!(
-        holds(&cache, "r/first.r"),
+        holds(&cache, "r/pkg/First.r"),
         "a unit that finished before the edit is cached, though it shares the include"
     );
-    assert!(!holds(&cache, "r/slow.r"), "the edited unit is not");
+    assert!(!holds(&cache, "r/pkg/Slow.r"), "the edited unit is not");
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("a file changed while they compiled"),
         "{}",
@@ -65,10 +74,10 @@ fn a_closure_file_edited_while_the_unit_compiles_blocks_the_cache_write() {
     compiled.sort();
     assert_eq!(
         compiled,
-        ["first.p", "slow.p"],
+        ["pkg/First.cls", "pkg/Slow.cls"],
         "the next build compiles both includers again"
     );
-    assert!(holds(&cache, "r/slow.r"), "and now caches it");
+    assert!(holds(&cache, "r/pkg/Slow.r"), "and now caches it");
 }
 
 fn dlc_workspace(cache: &TempDir) -> Built {
@@ -857,7 +866,10 @@ fn a_budget_that_the_build_never_reaches_leaves_only_the_final_check_and_it_rele
 #[test]
 fn a_schema_that_changes_during_a_long_build_drops_every_set_held_after_it() {
     let cache = TempDir::new().unwrap();
-    let workspace = long_build(&cache, 4, 40);
+    // A budget of 0 starts a check as soon as a set waits, so checks come
+    // before the change whatever the time the imaging took.
+    let workspace = long_build(&cache, 0, 40);
+    workspace.env("FAKE_AVM_SCHEMA_DELAY_MS", Some("0"));
     workspace.env("FAKE_AVM_SCHEMA_CHANGE_AFTER", Some("20"));
 
     let report = report_of(&workspace);
