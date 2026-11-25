@@ -551,3 +551,88 @@ fn a_nested_named_argument_in_an_include_name_is_never_text() {
     // The marker must not reach the text; whether the name resolves is secondary.
     assert!(result.to_text().ends_with('Z'), "{:?}", result.to_text());
 }
+
+const B_ONE: &str = "MESSAGE \"B[{1}]\".";
+const B_NAMED: &str = "MESSAGE \"B[{&x}]\".";
+const B_NAMED_ONE: &str = "MESSAGE \"B[{&x}|{1}]\".";
+const B_TWO: &str = "MESSAGE \"B[{1}|{2}]\".";
+
+/// The text of `source` with the include files `more`, which must come out
+/// as `expected` without any finding.
+fn assert_passes(source: &str, more: &[(&str, &str)], expected: &str) {
+    let result = preprocess_with(source, more);
+    assert_eq!(&*result.to_text(), expected, "for {source:?}");
+    assert!(result.unresolved_includes.is_empty(), "for {source:?}");
+    assert!(result.diagnostics.is_empty(), "for {source:?}");
+    assert!(result.text_losses.is_empty(), "for {source:?}");
+}
+
+#[test]
+fn an_argument_of_an_include_fills_a_nested_reference() {
+    assert_passes(
+        "{/inc/pass.i hello}",
+        &[("/inc/b.i", B_ONE), ("/inc/pass.i", "{b.i {1}}")],
+        "MESSAGE \"B[hello]\".",
+    );
+}
+
+#[test]
+fn an_argument_read_as_a_name_in_a_nested_reference_is_the_value_of_the_name() {
+    // `{&{1}}` reads `{1}` first, then the name it gives.
+    assert_passes(
+        "&GLOBAL-DEFINE foo FOO\n{/inc/pass2.i foo}",
+        &[("/inc/bx.i", B_NAMED), ("/inc/pass2.i", "{bx.i &x={&{1}}}")],
+        "MESSAGE \"B[FOO]\".",
+    );
+}
+
+#[test]
+fn an_argument_builds_the_name_of_a_nested_include() {
+    assert_passes(
+        "{/inc/pass3.i c}",
+        &[("/inc/c.i", "C{1}"), ("/inc/pass3.i", "{{1}.i x}")],
+        "Cx",
+    );
+}
+
+#[test]
+fn a_passed_on_escaped_reference_is_read_where_the_last_include_uses_it() {
+    // Not where the first include got it: `x` is `MAINX` there and `OWN` in
+    // the last include.
+    assert_passes(
+        "&GLOBAL-DEFINE x MAINX\n{/inc/pass4.i ~{&x~}}",
+        &[
+            ("/inc/b4.i", B_NAMED_ONE),
+            ("/inc/pass4.i", "{b4.i &x=OWN {1}}"),
+        ],
+        "MESSAGE \"B[OWN|OWN]\".",
+    );
+}
+
+#[test]
+fn a_quoted_argument_with_a_space_passes_on_as_two_arguments() {
+    assert_passes(
+        "{/inc/pass5.i \"a b\"}",
+        &[("/inc/b5.i", B_TWO), ("/inc/pass5.i", "{b5.i {1}}")],
+        "MESSAGE \"B[a|b]\".",
+    );
+}
+
+#[test]
+fn an_argument_reference_in_an_include_reference_at_the_top_is_empty() {
+    assert_passes("{/inc/b.i {1}}", &[("/inc/b.i", B_ONE)], "MESSAGE \"B[]\".");
+}
+
+#[test]
+fn a_value_ending_in_a_tilde_leaves_the_nested_reference_unmatched() {
+    // The compiler stops with error 374 (unmatched braces) and writes no text.
+    let result = preprocess_with(
+        "{/inc/pass7.i a~~}",
+        &[("/inc/b.i", B_ONE), ("/inc/pass7.i", "{b.i {1}}")],
+    );
+    let codes: Vec<&str> = result.diagnostics.iter().map(|d| d.code.0).collect();
+    assert_eq!(codes, ["PREPROC012"]);
+    assert_eq!(&*result.to_text(), "");
+    let kinds: Vec<TextLossKind> = result.text_losses.iter().map(|l| l.kind).collect();
+    assert_eq!(kinds, [TextLossKind::UnmatchedArgumentBrace]);
+}

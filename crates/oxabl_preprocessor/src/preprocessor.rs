@@ -957,23 +957,18 @@ impl ProcessContext<'_> {
                                     },
                                 };
 
-                                // Inside an include the arguments of this include
-                                // fill any `{N}` in the reference, as the compiler
-                                // reads it. At top level there are none and the
-                                // reference stays.
-                                let filled_inner = if positional_args.is_empty() {
-                                    Cow::Borrowed(raw_inner)
+                                // The arguments of this include (none at the top
+                                // level of a unit) fill any `{N}` in the reference,
+                                // as the compiler reads it: a missing one is empty.
+                                let args = if self.admit(
+                                    positional_expansion_len(raw_inner, positional_args),
+                                    include_site,
+                                ) {
+                                    positional_args
                                 } else {
-                                    let args = if self.admit(
-                                        positional_expansion_len(raw_inner, positional_args),
-                                        include_site,
-                                    ) {
-                                        positional_args
-                                    } else {
-                                        &[]
-                                    };
-                                    expand_positional_refs(raw_inner, args)
+                                    &[]
                                 };
+                                let filled_inner = expand_positional_refs(raw_inner, args);
 
                                 // Pre-expand any `{&var}` references inside the
                                 // inner content to support dynamic include names.
@@ -996,6 +991,19 @@ impl ProcessContext<'_> {
                                         start: chunk_start,
                                         end: i as u32,
                                     });
+                                }
+
+                                // A value that ends in `~` escapes the `}` that
+                                // closes the reference: the compiler stops with
+                                // error 374.
+                                if ends_in_escape(&filled_inner) {
+                                    self.report_escaped_reference_end(include_site);
+                                    self.knowledge.all_uncertain = true;
+                                    self.missed_expansion = true;
+                                    self.elide(ElidedKind::Include, include_site);
+                                    i = ref_end;
+                                    chunk_start = i as u32;
+                                    continue;
                                 }
 
                                 if depth >= MAX_INCLUDE_DEPTH {
@@ -1634,6 +1642,32 @@ impl ProcessContext<'_> {
                 anchor,
             )
             .with_help("close the nested reference with `~}`".to_string()),
+        );
+        self.text_losses.push(TextLoss {
+            kind: TextLossKind::UnmatchedArgumentBrace,
+            site: anchor,
+        });
+    }
+
+    /// An include reference whose text, after the `{N}` are filled, ends in a
+    /// `~` that escapes the closing `}`. The compiler stops with error 374
+    /// (unmatched braces); oxabl does not expand the include.
+    fn report_escaped_reference_end(&mut self, site: FileSpan) {
+        let anchor = self.site_stack.first().copied().unwrap_or(site);
+        if !self.first_argument_fault(anchor, "PREPROC012") {
+            return;
+        }
+        self.diagnostics.push(
+            Diagnostic::error(
+                "PREPROC012",
+                "an include argument ends with `~`, so it escapes the `}` that closes the \
+                 reference: the compiler stops with unmatched braces (error 374)"
+                    .to_string(),
+                anchor,
+            )
+            .with_help(
+                "do not pass a value that ends with `~` into an include reference".to_string(),
+            ),
         );
         self.text_losses.push(TextLoss {
             kind: TextLossKind::UnmatchedArgumentBrace,
@@ -2946,9 +2980,7 @@ fn skip_after_if_keyword(source: &str, from: usize) -> usize {
 /// when evaluating `&IF`/`&ELSEIF` conditions that contain `"{3}"`-style refs
 /// before the body scanner would see them.
 fn expand_positional_refs<'t>(text: &'t str, positional_args: &[String]) -> Cow<'t, str> {
-    // Without a `{N}` there is nothing to expand. Text that is not ASCII takes
-    // the long way even so, which reads it a byte at a time.
-    if !has_positional_ref(text) && (text.is_ascii() || !text.contains('{')) {
+    if !has_positional_ref(text) {
         return Cow::Borrowed(text);
     }
     let bytes = text.as_bytes();
@@ -2970,9 +3002,9 @@ fn expand_positional_refs<'t>(text: &'t str, positional_args: &[String]) -> Cow<
                 continue;
             }
         }
-        let c = text[i..].chars().next().unwrap_or_default();
+        let c = text[i..].chars().next().expect("i is a char boundary");
         out.push(c);
-        i += c.len_utf8().max(1);
+        i += c.len_utf8();
     }
     Cow::Owned(out)
 }
@@ -3001,6 +3033,11 @@ fn positional_expansion_len(text: &str, args: &[String]) -> usize {
         i += 1;
     }
     total
+}
+
+/// Whether `text` ends in an unescaped `~`: an odd run of them.
+fn ends_in_escape(text: &str) -> bool {
+    text.bytes().rev().take_while(|&b| b == b'~').count() % 2 == 1
 }
 
 /// Whether `text` holds a `{` followed by a digit.
@@ -6248,6 +6285,8 @@ x = &IF FALSE &THEN no &ELSE yes &ENDIF.
         assert_eq!(expand_positional_refs("{1}-{2}", &args), "one-two");
         assert_eq!(expand_positional_refs(r#""{3}""#, &args), r#""""#);
         assert_eq!(expand_positional_refs("plain", &args), "plain");
+        assert_eq!(expand_positional_refs("é{1}ü", &args), "éoneü");
+        assert_eq!(expand_positional_refs("é{x}ü", &args), "é{x}ü");
     }
 
     // --- #65 follow-up: line-oriented directive as inline &IF body -----------

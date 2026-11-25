@@ -70,8 +70,8 @@ fn a_positional_argument_passes_through_as_a_named_argument() {
 }
 
 #[test]
-fn a_named_argument_of_the_includer_does_not_pass_as_a_name() {
-    // `{&x}` in the arguments reads the name the includer got, as before.
+fn a_named_argument_of_the_includer_is_read_by_name_in_a_nested_reference() {
+    // `{&x}` in the arguments is the value of the name the includer got.
     let (body, answer) = expand(&[
         ("b.i", "B[{1}]\n"),
         ("pass.i", "{b.i {&x}}\n"),
@@ -112,8 +112,24 @@ fn text_that_is_not_ascii_stays_whole() {
 }
 
 #[test]
-fn a_reference_outside_an_include_keeps_its_argument_reference() {
-    // The unit has no arguments, so nothing fills the `{1}`.
+fn a_reference_outside_an_include_gets_an_empty_argument_reference() {
+    // The unit has no arguments, so the `{1}` is empty, as in the compiler.
     let (body, answer) = expand(&[("b.i", "B[{1}]\n"), ("main.p", "{b.i {1}}\n")]);
-    assert_eq!(body, "B[{1}]\n\n", "{answer}");
+    assert_eq!(body, "B[]\n\n", "{answer}");
+}
+
+#[test]
+fn an_argument_that_ends_in_a_tilde_leaves_the_reference_unmatched() {
+    // The `~` escapes the `}` of `{b.i {1}}`: the compiler stops with error 374.
+    let (body, answer) = expand(&[
+        ("b.i", "B[{1}]\n"),
+        ("pass.i", "{b.i {1}}\n"),
+        ("main.p", "{pass.i a~~}\n"),
+    ]);
+    assert_eq!(body, "\n\n", "{answer}");
+    assert_ne!(answer["status"], json!("complete"), "{answer}");
+    assert!(
+        answer.to_string().contains("PREPROC012"),
+        "no PREPROC012: {answer}"
+    );
 }

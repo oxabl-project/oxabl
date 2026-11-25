@@ -210,7 +210,8 @@ pub enum TextLossKind {
     /// An `&IF` was decided on a function or shape the evaluator does not model.
     UnmodelledCondition,
     /// A `~{` in an include argument is never closed, met where the include
-    /// uses the argument (`PREPROC012`); the compiler stops with error 374.
+    /// uses the argument, or an argument ends with `~` and escapes the `}` of
+    /// an include reference (`PREPROC012`); the compiler stops with error 374.
     UnmatchedArgumentBrace,
     /// A substituted value ends with `~`, which the compiler reads with the
     /// text that follows the reference (`PREPROC013`).

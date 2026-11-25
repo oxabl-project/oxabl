@@ -85,7 +85,7 @@ These are not lint rules: `[workspace.lint]` does not configure them.
 | PREPROC009 | A predefined name without a value used in a condition (set it in `[workspace.preprocessor]`). |
 | PREPROC010 | A part of an `&IF` condition the evaluator does not model. |
 | PREPROC011 | Preprocessor expansion limit exceeded; nothing more is expanded. |
-| PREPROC012 | A `~{` in an include argument that is never closed: the compiler stops with error 374. |
+| PREPROC012 | A `~{` in an include argument that is never closed, or an argument that ends with `~` and escapes the `}` of an include reference: the compiler stops with error 374. |
 | PREPROC013 | A substituted value that ends with `~`: the compiler joins it with the text after it, which oxabl does not model. |
 | SCHEMA0001 | A `.df` file that does not parse. |
 | SCHEMA0010 | Duplicate table across merged `.df` files (last one wins). |
