@@ -445,11 +445,18 @@ fn a_workspace_file_with_a_progress_name_does_not_replace_the_built_in_class() {
     assert_findings(
         &report,
         "CL007",
-        vec![finding(
-            "MESSAGE oErr:Extra.",
-            ws::no_member("Progress.Lang.AppError", "Extra"),
-            "Extra",
-        )],
+        vec![
+            finding(
+                "l = oErr:Extra.",
+                ws::no_member("Progress.Lang.AppError", "Extra"),
+                "Extra",
+            ),
+            finding(
+                "MESSAGE oErr:Extra.",
+                ws::no_member("Progress.Lang.AppError", "Extra"),
+                "Extra",
+            ),
+        ],
     );
 }
 
