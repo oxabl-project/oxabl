@@ -1456,6 +1456,7 @@ impl<'c> Server<'c> {
                     self.hovers.cancel(&id);
                     self.cancel_completion(&id);
                     self.references.cancel(&id);
+                    self.outlines.requests.cancel(&id);
                 }
             }
             DidOpenTextDocument::METHOD => {
@@ -1530,6 +1531,7 @@ impl<'c> Server<'c> {
                 {
                     // Recompute on save so on-disk include changes are picked up.
                     self.schedule_lens_refresh();
+                    self.outlines.invalidate_includes();
                     self.debouncer
                         .schedule(params.text_document.uri, std::time::Instant::now());
                 }

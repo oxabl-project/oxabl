@@ -107,26 +107,23 @@ fn selecting_a_declaration_goes_to_the_include_file() {
     let defs = dir.path().join("defs.i");
     let main = dir.path().join("main.p");
 
-    // A client that takes only a flat list gets a location in the include.
+    // A client that takes only a flat list gets the reference of the include
+    // as the place of each declaration, in the document it asked about.
     let mut flat = Session::start(dir.path());
     flat.open(&main, "MESSAGE \"x\".\n{defs.i}\n");
     let list = outline(&mut flat, &main);
-    let helper = list
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|symbol| symbol["name"] == "helper")
-        .unwrap_or_else(|| panic!("no helper in {list}"));
-    assert_eq!(helper["location"]["uri"], json!(file_uri(&defs)));
+    let find = |name: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|symbol| symbol["name"] == name)
+            .unwrap_or_else(|| panic!("no {name} in {list}"))
+    };
+    let helper = find("helper");
+    assert_eq!(helper["location"]["uri"], json!(file_uri(&main)));
+    assert_eq!(find("defs.i")["location"]["uri"], json!(file_uri(&main)));
     assert_eq!(helper["location"]["range"]["start"]["line"], json!(1));
     assert_eq!(helper["containerName"], json!("defs.i"));
-    let include = list
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|symbol| symbol["name"] == "defs.i")
-        .unwrap();
-    assert_eq!(include["location"]["uri"], json!(file_uri(&main)));
 
     // A hierarchical client has only ranges of the buffer: the symbol selects
     // the reference, and go to definition there opens the include.
@@ -324,7 +321,9 @@ fn an_include_read_many_times_costs_a_bounded_outline() {
         .count();
     let marked = symbols
         .iter()
-        .filter(|symbol| symbol["detail"] == json!("too large") && symbol["children"].is_null())
+        .filter(|symbol| {
+            symbol["detail"] == json!("outline limit reached") && symbol["children"].is_null()
+        })
         .count();
     assert_eq!((shown, marked), (500, 100));
 }
@@ -376,5 +375,150 @@ fn a_panic_in_one_include_marks_it_and_keeps_the_rest() {
     assert_eq!(
         tree(&outline(&mut session, &main)),
         "bad.i [not expanded]\ngood.i [good.i]\n  shown [INTEGER]\n"
+    );
+}
+
+#[test]
+fn an_include_written_through_a_value_shows_at_its_reference() {
+    let dir = project(&[("c.i", "DEFINE VARIABLE inc AS INTEGER NO-UNDO.\n")]);
+    let main = dir.path().join("main.p");
+    let mut session = Session::start_with(dir.path(), hierarchical());
+    session.open(
+        &main,
+        "&SCOPED-DEFINE inc {c.i}\n&SCOPED-DEFINE bad {nothere.i}\n{&inc}\n{&bad}\n",
+    );
+    assert_eq!(
+        tree(&outline(&mut session, &main)),
+        "inc [SCOPED]\nbad [SCOPED]\n{&inc} [c.i]\n  inc [INTEGER]\n{&bad} [not found]\n"
+    );
+}
+
+#[test]
+fn a_branch_that_was_only_guessed_is_not_called_not_compiled() {
+    let dir = project(&[("b.i", "DEFINE VARIABLE fromb AS INTEGER NO-UNDO.\n")]);
+    // An include opened by itself does not know what its includer defines.
+    let frag = dir.path().join("frag.i");
+    let mut session = Session::start_with(dir.path(), hierarchical());
+    session.open(
+        &frag,
+        "&IF DEFINED(x) &THEN\n{b.i}\nDEFINE VARIABLE fragv AS INTEGER NO-UNDO.\n&ENDIF\n\
+         &IF FALSE &THEN\n{b.i}\nDEFINE VARIABLE never AS INTEGER NO-UNDO.\n&ENDIF\n",
+    );
+    assert_eq!(
+        tree(&outline(&mut session, &frag)),
+        "b.i [may not be compiled]\nfragv [INTEGER]\nb.i [not compiled]\nnever [INTEGER]\n"
+    );
+}
+
+#[test]
+fn an_include_that_a_shim_splits_shows_partial() {
+    let dir = project(&[(
+        "shim.i",
+        "&IF DEFINED(OLDAPI) &THEN\nPROCEDURE oldp:\n&ELSE\nPROCEDURE newp:\n&ENDIF\n\
+         \x20 DEFINE VARIABLE inner AS INTEGER NO-UNDO.\nEND PROCEDURE.\n",
+    )]);
+    let main = dir.path().join("main.p");
+    let mut session = Session::start_with(dir.path(), hierarchical());
+    session.open(&main, "{shim.i}\n");
+    let answer = outline(&mut session, &main);
+    assert_eq!(answer[0]["detail"], json!("shim.i (partial)"));
+}
+
+#[test]
+fn an_include_that_alone_passes_the_limit_is_too_large_and_the_rest_is_not() {
+    let mut big = String::new();
+    for n in 0..5_001 {
+        big.push_str(&format!("DEFINE VARIABLE v{n} AS INTEGER NO-UNDO.\n"));
+    }
+    let dir = project(&[
+        ("big.i", &big),
+        ("small.i", "DEFINE VARIABLE one AS INTEGER NO-UNDO.\n"),
+    ]);
+    let main = dir.path().join("main.p");
+    let mut session = Session::start_with(dir.path(), hierarchical());
+    session.open(&main, "{big.i}\n{small.i}\n");
+    assert_eq!(
+        tree(&outline(&mut session, &main)),
+        "big.i [too large]\nsmall.i [small.i]\n  one [INTEGER]\n"
+    );
+}
+
+#[test]
+fn a_save_shows_the_change_of_an_include_on_disk() {
+    let dir = project(&[("defs.i", "DEFINE VARIABLE before AS INTEGER NO-UNDO.\n")]);
+    let main = dir.path().join("main.p");
+    let mut session = Session::start_with(dir.path(), hierarchical());
+    session.open(&main, "{defs.i}\n");
+    assert_eq!(
+        tree(&outline(&mut session, &main)),
+        "defs.i [defs.i]\n  before [INTEGER]\n"
+    );
+    std::fs::write(
+        dir.path().join("defs.i"),
+        "DEFINE VARIABLE after AS INTEGER NO-UNDO.\n",
+    )
+    .unwrap();
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didSave",
+        "params": {"textDocument": {"uri": file_uri(&main)}}
+    }));
+    assert_eq!(
+        tree(&outline(&mut session, &main)),
+        "defs.i [defs.i]\n  after [INTEGER]\n"
+    );
+}
+
+/// An outline request that waits in the test hold of the server, and its id.
+fn held_request(session: &mut Session, path: &Path) -> u64 {
+    let id = session.next_request_id();
+    session.send(json!({
+        "jsonrpc": "2.0", "id": id, "method": "textDocument/documentSymbol",
+        "params": {"textDocument": {"uri": file_uri(path)}}
+    }));
+    id
+}
+
+const HOLD: &str = "/* OXABL-TEST-HOLD:lsp.outline-includes@1500 */\n";
+
+#[test]
+fn an_edit_stops_the_outline_of_the_text_it_replaced() {
+    let dir = project(&[("defs.i", "DEFINE VARIABLE one AS INTEGER NO-UNDO.\n")]);
+    let main = dir.path().join("main.p");
+    let mut session = Session::start_with(dir.path(), hierarchical());
+    session.open(&main, &format!("{HOLD}{{defs.i}}\n"));
+    let id = held_request(&mut session, &main);
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": file_uri(&main), "version": 2},
+            "contentChanges": [{"text": "{defs.i}\n"}]
+        }
+    }));
+    let answer = session.wait_for(|m| m["id"] == json!(id));
+    // -32801: ContentModified.
+    assert_eq!(answer["error"]["code"], json!(-32801), "{answer}");
+    assert_eq!(
+        tree(&outline(&mut session, &main)),
+        "defs.i [defs.i]\n  one [INTEGER]\n"
+    );
+}
+
+#[test]
+fn a_cancelled_request_stops_and_the_next_one_still_gets_its_outline() {
+    let dir = project(&[("defs.i", "DEFINE VARIABLE one AS INTEGER NO-UNDO.\n")]);
+    let main = dir.path().join("main.p");
+    let mut session = Session::start_with(dir.path(), hierarchical());
+    session.open(&main, &format!("{HOLD}{{defs.i}}\n"));
+    let id = held_request(&mut session, &main);
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}
+    }));
+    let answer = session.wait_for(|m| m["id"] == json!(id));
+    // -32800: RequestCancelled.
+    assert_eq!(answer["error"]["code"], json!(-32800), "{answer}");
+    // The same version again: the cancelled run stored nothing wrong.
+    assert_eq!(
+        tree(&outline(&mut session, &main)),
+        "defs.i [defs.i]\n  one [INTEGER]\n"
     );
 }

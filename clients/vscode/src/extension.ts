@@ -347,7 +347,17 @@ async function stopClient(): Promise<void> {
  * client's crash-cap state as a side effect. No-ops gracefully when the server
  * was never running or `oxabl.enable` is false.
  */
-async function restartServer(): Promise<void> {
+function restartServer(): Promise<void> {
+  // One restart at a time: a second request waits for the first, so two
+  // quick changes of a setting cannot start two clients.
+  const run = restarting.then(doRestartServer, doRestartServer);
+  restarting = run.catch(() => undefined);
+  return run;
+}
+
+let restarting: Promise<void> = Promise.resolve();
+
+async function doRestartServer(): Promise<void> {
   await stopClient();
 
   const config = vscode.workspace.getConfiguration("oxabl");

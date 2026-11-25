@@ -106,31 +106,52 @@ The raw outline of an include file names declarations as written. A name that
 an argument writes (`{&prefix}count`, `DEFINE {1} SHARED VARIABLE`) shows with
 its `{...}` as written, as in the raw outline of any file.
 
-The symbols of an include file are left out when an `&IF` did not compile their
-text in that expansion. The expansion that the preprocessor made decides, so
-the same include file can show different symbols under two references. The
-buffer itself still shows both branches (see [Source](#source)). An `Include`
-symbol in text that is not compiled stays, with the marker `not compiled`.
+The symbols of an include file are left out only when the preprocessor
+**decided** that an `&IF` branch is not compiled in that expansion. The
+expansion decides, so the same include file can show different symbols under
+two references. The buffer itself still shows both branches (see
+[Source](#source)). The preprocessor sometimes chooses a branch without the
+facts to choose it: a name read after an include that did not arrive, or any
+`&IF DEFINED(name)` in an include that is open by itself, because its includer
+can define the name. The compiler may compile such a branch. Its symbols stay,
+and an `Include` symbol in it has the marker `may not be compiled`, not
+`not compiled`. An `Include` symbol in text that is decided not compiled stays,
+with the marker `not compiled`.
 
-An include that sits where no `Include` symbol is (for example, in the middle of
-a statement) gets a symbol of its own when it holds a declaration. An include
-that a `{&name}` value writes has no site in a file, so it has no symbol and its
-declarations do not show.
+The raw outline of an include file reads both branches of its `&IF` and does not
+expand its macros. When the parser has to recover from a syntax error in the
+include file (for example, a version shim that gives a `PROCEDURE` head in each
+branch of an `&IF` and one `END PROCEDURE`), the symbol shows the path and
+`(partial)`, because the symbols can be fewer than the file declares. Oxabl
+does not outline the compiled text of the include.
+
+A reference that has no `Include` symbol in the raw outline gets one. This is a
+reference in the middle of a statement, and a reference written through a
+`{&name}` value (`&SCOPED-DEFINE inc {defs.i}` then `{&inc}`). The symbol of a
+`{&name}` reference is named as written (`{&inc}`) and stands at that
+reference. A reference that does not resolve gets the same marker as any other.
+An include that a `{&name}` value writes inside another include has no
+reference in a file that oxabl can place. It shows last under its includer,
+named by its file.
 
 ### Markers
 
 An `Include` symbol that shows no declarations has one of these markers as its
 detail. The marker is never absent: a reference that the preprocessor did not
-expand and did not report is `not expanded`.
+expand and did not report is `not expanded`. Every reference that the
+preprocessor reports as not found, unreadable or skipped has a symbol, also
+when the raw outline has none.
 
 | Marker | Meaning |
 | --- | --- |
 | `not found` | No file on the include path has the name of the reference. Without an include path in `oxabl.toml`, no include is found. |
 | `cannot be read` | The file exists and could not be read. |
 | `encrypted` | The file is encrypted source. Oxabl does not read it. |
-| `not compiled` | The reference is in an `&IF` branch that the preprocessor did not take. |
+| `not compiled` | The reference is in an `&IF` branch that the preprocessor decided is not compiled. |
+| `may not be compiled` | The reference is in an `&IF` branch that the preprocessor skipped without the facts to decide. The compiler may expand it. |
 | `not expanded` | The preprocessor did not expand the reference: it closes a cycle, it is past the depth limit, or the expansion has no text for it. |
-| `too large` | The include would add more symbols than the limit below. |
+| `too large` | The declarations of this include alone are more than the limit below. |
+| `outline limit reached` | The includes before this one used the symbols that the limit allows. This include can be small. |
 
 ### Limits
 
@@ -138,14 +159,23 @@ The cost of the outline stays bounded:
 
 - The include files add at most `MAX_INCLUDED_SYMBOLS` (5,000) symbols to one
   outline, and each `Include` symbol of an include file counts as one. An
-  include that does not fit has the marker `too large` and no children. The
-  limit counts an include once for each reference, so a program that includes
-  one file 600 times gets the first references filled and the rest marked. No
-  include is shown in part.
+  include that does not fit has no children and one of two markers: `too large`
+  when its declarations alone are more than the limit, and
+  `outline limit reached` when the includes before it used the room. The limit
+  counts an include once for each reference, so a program that includes one
+  file 600 times gets the first references filled and the rest marked. No
+  include is shown in part. After the limit is reached, no more include files
+  are parsed.
 - The raw outline of each include file is made once for each request, for all
-  its expansions.
-- The expansion is the one the preprocessor makes for the diagnostics. It has
-  the depth limit (64 includes) and the size limit of the preprocessor.
+  its expansions that read the same text.
+- The expansion has the same mode and settings as the one for the diagnostics,
+  but it is a separate run: the outline does not use the memoized expansion of
+  the diagnostics. A buffer is preprocessed once more for each outline request
+  that is not answered from the saved answer. The depth limit (64 includes) and
+  the size limit of the preprocessor apply.
+- The texts that the outline reads are the texts that the preprocessor read.
+  Oxabl does not read an include file a second time, so a file that changes
+  during the request cannot make spans and text disagree.
 - The tree has at most 32 symbols above any symbol, as for a single file (see
   [Hierarchy](#hierarchy)). An `Include` symbol with that many above it
   gives no symbol of its own, and what it holds goes to the symbol above. This
@@ -237,9 +267,16 @@ With the include files on, the server also preprocesses the buffer and reads
 and parses each include file that the buffer expands. This work is linear in
 the text of the include files, up to the limits in [Limits](#limits). It runs on
 a worker thread, so a slow include does not delay an edit. Requests for one
-buffer version wait for one run. Any edit, open or close of a document, a
-change of a watched file and a change of the configuration drop the saved
+buffer version wait for one run. Any edit, open or close of a document, a save,
+a change of a watched file and a change of the configuration drop the saved
 answer, because an include file can change without an edit of the buffer.
+
+A run stops when nobody needs its answer. An edit of the document replaces its
+buffer version: the request for the old version gets `ContentModified` (the
+run stops before the expansion and again before the outlines). A
+`$/cancelRequest` gives `RequestCancelled` the same way. A stopped run stores
+nothing, so the next request for the same version computes the answer. A
+stopped run that is inside the expansion ends when the expansion ends.
 
 A release build took about 9 ms for a buffer of 315 symbols that includes 15
 files of 600 lines each: 1 ms for the expansion and 8 ms for the outlines, with
@@ -259,14 +296,25 @@ same time.
   buffer. A client that takes a tree gets, for such a symbol, the range of the
   name in the `{file.i}` reference above it (`range` and `selectionRange`).
   Choosing it puts the cursor on that name, and Go to Definition there opens the
-  include file. A client that takes a flat list gets the real location: the
-  URI of the include file, and the range in its text. An include that has no
-  `file:` URI keeps its symbols at the reference.
+  include file. A client that takes a flat list gets the same range, in the
+  URI of the document that it asked about: a flat list is the list of symbols
+  of one document, and clients of that kind often use only the range. A flat
+  list does not give the location of a declaration in the include file. A symbol
+  that has no reference above it (the include is in no symbol of the buffer) is
+  at the start of the document.
+- All the symbols of one include share the range of its reference. In VS Code,
+  a cursor on the file name of the reference is inside every one of them, so the
+  breadcrumbs show the last nested declaration of the include.
 - The server reads the include files through the open buffers, so an unsaved
   edit of an include file shows in the outline of a file that includes it. The
-  editor does not ask again for the outline of the including file when the include
-  changes. The new outline shows at the next edit of the including file, or when it
-  opens again.
+  editor does not ask again for the outline of the including file when the
+  include changes. The new outline shows at the next edit of the including file,
+  or when it opens again. The server drops its saved answer when it is told that
+  a file changed: a save, an open or a close of a document, and a change of a
+  `.i` file or of the configuration that the client watches. The VS Code
+  extension watches `**/*.i` in the workspace. An include with another
+  extension, or outside the workspace folders, changes the outline at the next
+  edit of the including file.
 - The outline needs no setup: it works without an `oxabl.toml` and does not
   follow `[workspace.features]`. Without an `oxabl.toml`, the server turns
   diagnostics and formatting off, so the outline is all that an editor gets.
@@ -288,7 +336,9 @@ same time.
   the same: the temp-table and the procedure of an include, nesting, where a
   symbol goes in a tree and in a flat list, a marker, the setting, an `&IF`, a
   cycle, an unsaved include, a deep chain of includes, one include read 600
-  times and an include over the limit.
+  times, an include over the limit, an `&IF` that the preprocessor only guessed,
+  an include written through `{&name}`, a shim that splits a statement, a save,
+  an edit that stops a request and a cancelled request.
 - The VS Code scenario `outline` (`clients/vscode/test/e2e`) checks the include
   symbols in the Outline view, a marker, the cursor on the reference, Go to
   Definition on it, and the setting.

@@ -1,11 +1,12 @@
 //! `textDocument/documentSymbol`: the pipeline's outline rendered as LSP
 //! symbols, and the per-document cache of the last outline.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use lsp_server::RequestId;
 use lsp_types::{
     DocumentSymbol, DocumentSymbolResponse, Location, PositionEncodingKind, Range,
     SymbolInformation, SymbolKind, Uri,
@@ -14,9 +15,6 @@ use oxabl_common::InternalPanic;
 use oxabl_pipeline::{IncludeOutline, OutlineKind, OutlineNode, OutlineSymbol, Span};
 use ropey::Rope;
 
-use oxabl_daemon::canonical_path;
-
-use crate::path_to_uri;
 use crate::position::byte_to_position;
 
 fn symbol_kind(kind: OutlineKind) -> SymbolKind {
@@ -50,16 +48,14 @@ fn symbol_kind(kind: OutlineKind) -> SymbolKind {
 /// A symbol that an include holds has no place in the buffer, and a
 /// hierarchical symbol has only a range of the buffer. So the range of such a
 /// symbol is the name of the nearest symbol of the buffer above it, which is
-/// the include reference. A flat symbol has a location of its own, in the
-/// include file.
+/// the include reference. A flat list gets the same range: its symbols are the
+/// symbols of this document.
 struct Render<'a> {
     rope: &'a Rope,
     encoding: &'a PositionEncodingKind,
     outline: &'a IncludeOutline,
     /// The directory that the path of an include shows relative to.
     base: Option<&'a Path>,
-    /// The text of each include file as a rope, made when a flat symbol needs it.
-    ropes: RefCell<HashMap<usize, Rope>>,
 }
 
 impl Render<'_> {
@@ -70,19 +66,8 @@ impl Render<'_> {
         }
     }
 
-    /// The range of `span` in include file `file`.
-    fn file_range(&self, file: usize, span: Span) -> Range {
-        let mut ropes = self.ropes.borrow_mut();
-        let rope = ropes
-            .entry(file)
-            .or_insert_with(|| Rope::from_str(&self.outline.files[file].text));
-        Range {
-            start: byte_to_position(rope, span.start as usize, self.encoding),
-            end: byte_to_position(rope, span.end as usize, self.encoding),
-        }
-    }
-
-    /// What follows the name: the path of the file that an include shows,
+    /// What follows the name: the path of the file that an include shows
+    /// (with `partial` when the symbols can be fewer than the file declares),
     /// else the symbol's own detail.
     fn detail(&self, node: &OutlineNode) -> Option<String> {
         match node.opens {
@@ -92,31 +77,38 @@ impl Render<'_> {
                     .base
                     .and_then(|base| path.strip_prefix(base).ok())
                     .unwrap_or(path);
-                Some(shown.display().to_string())
+                Some(match &node.detail {
+                    Some(note) => format!("{} ({note})", shown.display()),
+                    None => shown.display().to_string(),
+                })
             }
             None => node.detail.clone(),
         }
     }
 
-    /// `anchor` is the selection of the nearest symbol of the buffer above.
+    /// The range and the selection range of `node`, and the span that its
+    /// children anchor to. `anchor` is the selection of the nearest symbol of
+    /// the buffer above. A symbol with no place in the buffer, and no symbol
+    /// above it, is at the start of the document.
+    fn place(&self, node: &OutlineNode, anchor: Option<Span>) -> (Range, Range, Option<Span>) {
+        if node.file.is_none() && node.span.end > 0 {
+            return (
+                self.range(node.span),
+                self.range(node.selection_span),
+                Some(node.selection_span),
+            );
+        }
+        let at = self.range(anchor.unwrap_or(Span { start: 0, end: 0 }));
+        (at, at, anchor)
+    }
+
     fn nested(&self, nodes: &[OutlineNode], anchor: Option<Span>) -> Vec<DocumentSymbol> {
         nodes
             .iter()
-            .filter_map(|node| {
-                let (range, selection) = match node.file {
-                    None => (self.range(node.span), self.range(node.selection_span)),
-                    Some(_) => {
-                        let anchor = self.range(anchor?);
-                        (anchor, anchor)
-                    }
-                };
-                let anchor = if node.file.is_none() {
-                    Some(node.selection_span)
-                } else {
-                    anchor
-                };
+            .map(|node| {
+                let (range, selection, anchor) = self.place(node, anchor);
                 #[allow(deprecated)] // lsp-types makes the field mandatory
-                Some(DocumentSymbol {
+                DocumentSymbol {
                     name: node.name.clone(),
                     detail: self.detail(node),
                     kind: symbol_kind(node.kind),
@@ -126,7 +118,7 @@ impl Render<'_> {
                     selection_range: selection,
                     children: (!node.children.is_empty())
                         .then(|| self.nested(&node.children, anchor)),
-                })
+                }
             })
             .collect()
     }
@@ -140,43 +132,19 @@ impl Render<'_> {
         out: &mut Vec<SymbolInformation>,
     ) {
         for node in nodes {
-            let location = match node.file {
-                None => Some(Location {
+            let (range, _, anchor) = self.place(node, anchor);
+            #[allow(deprecated)] // lsp-types makes the field mandatory
+            out.push(SymbolInformation {
+                name: node.name.clone(),
+                kind: symbol_kind(node.kind),
+                tags: None,
+                deprecated: None,
+                location: Location {
                     uri: uri.clone(),
-                    range: self.range(node.span),
-                }),
-                Some(file) => {
-                    path_to_uri(&canonical_path(&self.outline.files[file].path)).map(|uri| {
-                        Location {
-                            uri,
-                            range: self.file_range(file, node.span),
-                        }
-                    })
-                }
-            };
-            // A file that has no URI keeps its symbols at the reference.
-            let location = location.or_else(|| {
-                anchor.map(|anchor| Location {
-                    uri: uri.clone(),
-                    range: self.range(anchor),
-                })
+                    range,
+                },
+                container_name: container.map(str::to_owned),
             });
-            let anchor = if node.file.is_none() {
-                Some(node.selection_span)
-            } else {
-                anchor
-            };
-            if let Some(location) = location {
-                #[allow(deprecated)] // lsp-types makes the field mandatory
-                out.push(SymbolInformation {
-                    name: node.name.clone(),
-                    kind: symbol_kind(node.kind),
-                    tags: None,
-                    deprecated: None,
-                    location,
-                    container_name: container.map(str::to_owned),
-                });
-            }
             self.flat(uri, &node.children, anchor, Some(&node.name), out);
         }
     }
@@ -217,7 +185,6 @@ pub(crate) fn to_response_with_includes(
         encoding,
         outline,
         base,
-        ropes: RefCell::default(),
     };
     if hierarchical {
         DocumentSymbolResponse::Nested(render.nested(&outline.symbols, None))
@@ -233,18 +200,78 @@ pub(crate) fn to_response_with_includes(
 #[derive(Default)]
 pub(crate) struct IncludeSlot {
     result: Mutex<Option<Result<Arc<IncludeOutline>, String>>>,
+    /// A newer version of the buffer replaced this one.
+    stale: AtomicBool,
+}
+
+/// What a request for an outline with includes got.
+pub(crate) enum Computed {
+    Done(Result<Arc<IncludeOutline>, String>),
+    /// The work stopped because the request was cancelled or its buffer
+    /// version was replaced. Nothing is stored.
+    Stopped,
 }
 
 impl IncludeSlot {
-    /// The stored answer, or the result of `compute`, which is stored.
+    /// The stored answer, or the result of `compute`, which is stored. `stop`
+    /// says that the request no longer needs an answer, and `compute` returns
+    /// `None` when it saw that.
     pub(crate) fn get_or_compute(
         &self,
-        compute: impl FnOnce() -> Result<IncludeOutline, String>,
-    ) -> Result<Arc<IncludeOutline>, String> {
+        cancelled: &AtomicBool,
+        compute: impl FnOnce(&dyn Fn() -> bool) -> Option<Result<IncludeOutline, String>>,
+    ) -> Computed {
         let mut result = self.result.lock().unwrap_or_else(PoisonError::into_inner);
-        result
-            .get_or_insert_with(|| compute().map(Arc::new))
-            .clone()
+        if let Some(stored) = result.as_ref() {
+            return Computed::Done(stored.clone());
+        }
+        let stop = || cancelled.load(Ordering::SeqCst) || self.stale.load(Ordering::SeqCst);
+        if stop() {
+            return Computed::Stopped;
+        }
+        match compute(&stop) {
+            Some(computed) => {
+                let stored = result.insert(computed.map(Arc::new));
+                Computed::Done(stored.clone())
+            }
+            None => Computed::Stopped,
+        }
+    }
+}
+
+/// The requests for an outline with includes that are still running, so that
+/// `$/cancelRequest` can reach them.
+#[derive(Default, Clone)]
+pub(crate) struct Requests {
+    running: Arc<Mutex<HashMap<RequestId, Arc<AtomicBool>>>>,
+}
+
+impl Requests {
+    pub(crate) fn register(&self, id: &RequestId) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.clone(), Arc::clone(&flag));
+        flag
+    }
+
+    pub(crate) fn finish(&self, id: &RequestId) {
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+    }
+
+    pub(crate) fn cancel(&self, id: &RequestId) {
+        if let Some(flag) = self
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+        {
+            flag.store(true, Ordering::SeqCst);
+        }
     }
 }
 
@@ -255,6 +282,8 @@ pub(crate) struct OutlineCache {
     /// The outlines with includes. An include is read from other files, so
     /// any change that [`Self::invalidate`] sees drops all of them.
     includes: Mutex<HashMap<Uri, (i32, Arc<IncludeSlot>)>>,
+    /// The running requests for those outlines.
+    pub(crate) requests: Requests,
 }
 
 impl OutlineCache {
@@ -277,9 +306,15 @@ impl OutlineCache {
         Ok(&self.entries[uri].1)
     }
 
+    /// The text of `uri` changed or it closed: its outline with includes is
+    /// stale, and a request still computing it stops.
     pub(crate) fn invalidate(&mut self, uri: &Uri) {
         self.entries.remove(uri);
-        self.invalidate_includes();
+        let mut slots = self.includes.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, slot)) = slots.get(uri) {
+            slot.stale.store(true, Ordering::SeqCst);
+        }
+        slots.clear();
     }
 
     /// Drop every outline that holds include symbols: a file that a buffer
@@ -296,7 +331,10 @@ impl OutlineCache {
         let mut slots = self.includes.lock().unwrap_or_else(PoisonError::into_inner);
         match slots.get(uri) {
             Some((cached, slot)) if *cached == version => Arc::clone(slot),
-            _ => {
+            replaced => {
+                if let Some((_, old)) = replaced {
+                    old.stale.store(true, Ordering::SeqCst);
+                }
                 let slot = Arc::new(IncludeSlot::default());
                 slots.insert(uri.clone(), (version, Arc::clone(&slot)));
                 slot

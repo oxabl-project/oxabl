@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::Uri;
@@ -19,7 +20,8 @@ use oxabl_pipeline::{IncludeOutline, LintPipeline, outline_with_includes};
 use oxabl_workspace::FileSystem;
 use serde_json::Value;
 
-use crate::{Server, document_symbol, uri_to_path};
+use crate::document_symbol::{self, Computed};
+use crate::{Server, uri_to_path};
 
 /// The `outline` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,30 +77,37 @@ impl FileSystem for OverlayFs {
 }
 
 /// The outline of `text`, the content of the file at `path`, with its includes.
+/// `None` when `stop` said that nobody needs the answer.
 fn compute(
     text: &str,
     path: &Path,
     config: &AnalysisConfig,
     overlay: HashMap<PathBuf, Arc<str>>,
-) -> Result<IncludeOutline, String> {
+    stop: &dyn Fn() -> bool,
+) -> Option<Result<IncludeOutline, String>> {
+    oxabl_common::hold_if_injected(oxabl_common::panic_sites::OUTLINE_INCLUDES, text);
     let fs = OverlayFs {
         overlay,
         inner: Arc::clone(&config.fs),
     };
-    oxabl_common::catch_panic(|| {
+    let computed = oxabl_common::catch_panic(|| {
+        if stop() {
+            return None;
+        }
         let run = LintPipeline::new(&config.pipeline, &fs)
             .with_preprocess(config.preprocess)
             .with_branch_tracking(true);
         let expansion = run.with_file(path).expand(text);
-        let sources: HashMap<PathBuf, Arc<str>> = expansion
-            .dependency_paths()
-            .iter()
-            .filter_map(|include| Some((include.clone(), fs.read(include).ok()?)))
-            .collect();
-        outline_with_includes(text, &expansion, &sources)
-    })
-    .and_then(|outline| outline)
-    .map_err(|panic| panic.to_string())
+        if stop() {
+            return None;
+        }
+        Some(outline_with_includes(text, &expansion))
+    });
+    match computed {
+        Ok(None) => None,
+        Ok(Some(outline)) => Some(outline.map_err(|panic| panic.to_string())),
+        Err(panic) => Some(Err(panic.to_string())),
+    }
 }
 
 impl Server<'_> {
@@ -139,6 +148,8 @@ impl Server<'_> {
             return false;
         };
         let slot = self.outlines.include_slot(&uri, doc.version);
+        let requests = self.outlines.requests.clone();
+        let cancelled = requests.register(id);
         let text = doc.text();
         let rope = doc.rope.clone();
         let encoding = self.encoding.clone();
@@ -153,31 +164,49 @@ impl Server<'_> {
             .spawn({
                 let id = id.clone();
                 move || {
-                    let outline = slot.get_or_compute(|| compute(&text, &path, &config, overlay));
-                    let response = match outline.and_then(|outline| {
-                        oxabl_common::catch_panic(|| {
-                            document_symbol::to_response_with_includes(
-                                &outline,
-                                &uri,
-                                &rope,
-                                &encoding,
-                                hierarchical,
-                                base.as_deref(),
-                            )
-                        })
-                        .map_err(|panic| panic.to_string())
-                    }) {
-                        Ok(answer) => Response::new_ok(id, answer),
-                        Err(panic) => Response::new_err(
-                            id,
-                            ErrorCode::RequestFailed as i32,
-                            format!("oxabl-lsp: the outline failed: {panic}"),
+                    let computed = slot.get_or_compute(&cancelled, |stop| {
+                        compute(&text, &path, &config, overlay, stop)
+                    });
+                    let response = match computed {
+                        Computed::Stopped if cancelled.load(Ordering::SeqCst) => Response::new_err(
+                            id.clone(),
+                            ErrorCode::RequestCanceled as i32,
+                            "oxabl-lsp: the outline request was cancelled".to_string(),
                         ),
+                        Computed::Stopped => Response::new_err(
+                            id.clone(),
+                            ErrorCode::ContentModified as i32,
+                            "oxabl-lsp: an edit replaced this outline".to_string(),
+                        ),
+                        Computed::Done(outline) => {
+                            match outline.and_then(|outline| {
+                                oxabl_common::catch_panic(|| {
+                                    document_symbol::to_response_with_includes(
+                                        &outline,
+                                        &uri,
+                                        &rope,
+                                        &encoding,
+                                        hierarchical,
+                                        base.as_deref(),
+                                    )
+                                })
+                                .map_err(|panic| panic.to_string())
+                            }) {
+                                Ok(answer) => Response::new_ok(id.clone(), answer),
+                                Err(panic) => Response::new_err(
+                                    id.clone(),
+                                    ErrorCode::RequestFailed as i32,
+                                    format!("oxabl-lsp: the outline failed: {panic}"),
+                                ),
+                            }
+                        }
                     };
+                    requests.finish(&id);
                     let _ = sender.send(Message::Response(response));
                 }
             });
         if let Err(error) = spawned {
+            self.outlines.requests.finish(id);
             let _ = self.respond(Response::new_err(
                 id.clone(),
                 ErrorCode::InternalError as i32,

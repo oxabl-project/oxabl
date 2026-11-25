@@ -15,7 +15,7 @@ use oxabl_ast::Span;
 use oxabl_common::{FileId, FileSpan, InternalPanic};
 
 use crate::Expansion;
-use crate::outline::{MAX_DEPTH, OutlineKind, OutlineSymbol, outline};
+use crate::outline::{MAX_DEPTH, OutlineKind, OutlineSymbol, outline, outline_recovered};
 
 /// The most symbols that the includes of one buffer add. An include that
 /// would pass it is a marked symbol with no children.
@@ -29,13 +29,23 @@ pub mod marker {
     pub const UNREADABLE: &str = "cannot be read";
     /// The file is encrypted source.
     pub const ENCRYPTED: &str = "encrypted";
-    /// The reference is in an `&IF` branch that is not compiled.
+    /// The reference is in an `&IF` branch that the preprocessor decided is not
+    /// compiled.
     pub const NOT_COMPILED: &str = "not compiled";
+    /// The reference is in an `&IF` branch that the preprocessor skipped
+    /// without the facts to decide it, so the compiler may expand it.
+    pub const MAY_NOT_BE_COMPILED: &str = "may not be compiled";
     /// The preprocessor did not expand the reference (a cycle, the depth limit,
     /// a failed expansion), or the expansion has no text to read.
     pub const NOT_EXPANDED: &str = "not expanded";
-    /// The declarations of the include would pass [`super::MAX_INCLUDED_SYMBOLS`].
+    /// The declarations of this include alone would pass
+    /// [`super::MAX_INCLUDED_SYMBOLS`].
     pub const TOO_LARGE: &str = "too large";
+    /// The includes before this one used the symbols that the outline allows.
+    pub const LIMIT_REACHED: &str = "outline limit reached";
+    /// Shown after the path of an include that the parser could not read to the
+    /// end, so the symbols can be fewer than the file declares.
+    pub const PARTIAL: &str = "partial";
 }
 
 /// A file whose text some symbols of an [`IncludeOutline`] are in.
@@ -105,25 +115,24 @@ impl IncludeOutline {
 }
 
 /// The outline of `source` with the declarations of the includes that
-/// `expansion` expanded. `sources` holds the text of every include the
-/// expansion read.
+/// `expansion` expanded. Every text it outlines is the text that the
+/// preprocessor read, so a file that changes meanwhile cannot mismatch.
 ///
 /// - A `{file.i}` statement that the expansion did expand holds the symbols of
 ///   the file, as a raw outline of that file, and its `opens` names the file.
 ///   A nested include holds its own symbols the same way. The root's own
 ///   symbols are as [`outline`] gives them.
 /// - A reference that did not arrive keeps its symbol with a `marker` as its
-///   detail and no children.
-/// - A symbol of an include in text that an `&IF` did not compile is left out.
-/// - An include that the expansion read at a place with no `Include` symbol
-///   (a reference in the middle of a statement) gets a symbol of its own when
-///   it holds a declaration.
+///   detail and no children. A reference with no symbol in the raw outline (in
+///   the middle of a statement, or written through a `{&name}` value) gets one.
+/// - A symbol of an include in text that the preprocessor decided an `&IF` did
+///   not compile is left out. Text of a branch it only guessed stays.
+/// - An include whose raw outline needed error recovery shows `partial`.
 ///
 /// `Err` means that the outline of `source` is unknown, as for [`outline`].
 pub fn outline_with_includes(
     source: &str,
     expansion: &Expansion,
-    sources: &HashMap<PathBuf, Arc<str>>,
 ) -> Result<IncludeOutline, InternalPanic> {
     let mut symbols: Vec<OutlineNode> = outline(source)?
         .into_iter()
@@ -145,13 +154,11 @@ pub fn outline_with_includes(
         expanded,
         exps,
         by_parent,
-        sources,
         source,
         files: Vec::new(),
-        file_of: HashMap::new(),
+        exp_file: HashMap::new(),
         raw: HashMap::new(),
-        skipped: skipped_by_file(expanded),
-        skipped_ids: skipped_ids(expanded),
+        not_taken: HashMap::new(),
         budget: MAX_INCLUDED_SYMBOLS,
     };
     builder.resolve(&mut symbols, Owner::Root);
@@ -167,24 +174,25 @@ enum Owner {
     Expansion(usize),
 }
 
+/// A raw outline of one text of an include file, with whether the parser had
+/// to recover. `None`: it could not be made.
+type RawOutline = Option<(Vec<OutlineNode>, bool)>;
+
 struct Builder<'a> {
     expanded: &'a ExpandedFile,
     exps: Vec<IncludeExpansion<'a>>,
     /// The expansions each expansion (`None`: the root) wrote itself.
     by_parent: HashMap<Option<usize>, Vec<usize>>,
-    sources: &'a HashMap<PathBuf, Arc<str>>,
     source: &'a str,
     files: Vec<IncludeFile>,
-    file_of: HashMap<PathBuf, usize>,
-    /// The raw outline of each include file, made once for all its expansions.
-    /// `None`: it could not be made.
-    raw: HashMap<PathBuf, Option<Vec<OutlineNode>>>,
-    /// Sorted, non-overlapping text that an `&IF` did not compile, by the
+    /// The index in `files` of each expansion that was read.
+    exp_file: HashMap<usize, usize>,
+    /// The raw outline of each entry of `files`, made once for all the
+    /// expansions that read that text.
+    raw: HashMap<usize, RawOutline>,
+    /// Sorted, non-overlapping text that the preprocessor did not take, by the
     /// preprocessor's id of the expansion.
-    skipped: HashMap<FileId, Vec<Span>>,
-    /// The id of an expansion that kept no text of its own, so has none in
-    /// `exps`, by the include sites above it. Known only when it has skipped text.
-    skipped_ids: HashMap<Vec<(u32, u32)>, FileId>,
+    not_taken: HashMap<FileId, Vec<Span>>,
     budget: usize,
 }
 
@@ -193,22 +201,33 @@ impl Builder<'_> {
     fn owner_file_index(&self, owner: Owner) -> Option<usize> {
         match owner {
             Owner::Root => None,
-            Owner::Expansion(index) => self.file_of.get(self.exps[index].path).copied(),
+            Owner::Expansion(index) => self.exp_file.get(&index).copied(),
         }
     }
 
-    fn owner_text(&self, owner: Owner) -> Option<&str> {
+    /// The id of expansion `index`, also when it kept no text of its own.
+    fn id_of(&self, index: usize) -> Option<FileId> {
+        self.exps[index]
+            .file
+            .or_else(|| self.expanded.expansion_ids().get(index).copied().flatten())
+    }
+
+    /// The text that the preprocessor read for expansion `index`.
+    fn text_of(&self, index: usize) -> Option<Arc<str>> {
+        let id = self.id_of(index)?;
+        self.expanded.source_text(id).map(Arc::clone)
+    }
+
+    fn owner_text(&self, owner: Owner) -> Option<Arc<str>> {
         match owner {
-            Owner::Root => Some(self.source),
-            Owner::Expansion(index) => self
-                .sources
-                .get(self.exps[index].path)
-                .map(|text| text.as_ref()),
+            Owner::Root => Some(Arc::from(self.source)),
+            Owner::Expansion(index) => self.text_of(index),
         }
     }
 
     /// Fill each `Include` symbol of `nodes`, the symbols of the owner, and
-    /// give a symbol to each expansion of the owner that has none.
+    /// give a symbol to each expansion and each report of the owner that has
+    /// none.
     fn resolve(&mut self, nodes: &mut Vec<OutlineNode>, owner: Owner) {
         let key = match owner {
             Owner::Root => None,
@@ -217,30 +236,53 @@ impl Builder<'_> {
         let candidates = self.by_parent.get(&key).cloned().unwrap_or_default();
         let mut used = vec![false; candidates.len()];
         self.fill(nodes, owner, &candidates, &mut used);
+        let text = self.owner_text(owner);
+        let file = self.owner_file_index(owner);
         for (position, &index) in candidates.iter().enumerate() {
             if used[position] {
                 continue;
             }
-            let Some(site) = self.exps[index].site else {
-                continue;
-            };
-            let Some(text) = self.owner_text(owner) else {
-                continue;
-            };
-            let Some(mut node) = include_symbol(text, site) else {
-                continue;
-            };
+            let site = self.exps[index].site.or_else(|| match owner {
+                // An include that a `{&name}` value writes: the reference
+                // that the root wrote is its site.
+                Owner::Root => self
+                    .expanded
+                    .resolve_include_site(self.exps[index].expanded),
+                Owner::Expansion(_) => None,
+            });
+            let mut node = match (site, &text) {
+                (Some(site), Some(text)) => include_symbol(text, site),
+                _ => None,
+            }
+            .unwrap_or_else(|| substituted_symbol(self.exps[index].path));
             match self.expansion_nodes(index) {
-                Ok((file, children)) if !children.is_empty() => {
-                    node.opens = Some(file);
+                Ok((opened, children)) if !children.is_empty() || node.span.end == 0 => {
+                    node.opens = Some(opened);
+                    if self.partial(opened) {
+                        node.detail = Some(marker::PARTIAL.to_string());
+                    }
                     node.children = children;
                 }
                 Ok(_) => continue,
                 Err(reason) => node.detail = Some(reason.to_string()),
             }
-            node.file = self.owner_file_index(owner);
+            node.file = file;
+            self.place(nodes, node);
+        }
+        self.mark_unclaimed(nodes, owner, text.as_deref(), file);
+    }
+
+    /// Put `node` where its span says. A node with no site of its own goes last.
+    fn place(&self, nodes: &mut Vec<OutlineNode>, node: OutlineNode) {
+        if node.span.end == 0 {
+            nodes.push(node);
+        } else {
             insert_by_span(nodes, node);
         }
+    }
+
+    fn partial(&self, file: usize) -> bool {
+        matches!(self.raw.get(&file), Some(Some((_, true))))
     }
 
     fn fill(
@@ -265,8 +307,11 @@ impl Builder<'_> {
                 Some((position, &index)) => {
                     used[position] = true;
                     match self.expansion_nodes(index) {
-                        Ok((file, children)) => {
-                            node.opens = Some(file);
+                        Ok((opened, children)) => {
+                            node.opens = Some(opened);
+                            if self.partial(opened) {
+                                node.detail = Some(marker::PARTIAL.to_string());
+                            }
                             node.children = children;
                         }
                         Err(reason) => node.detail = Some(reason.to_string()),
@@ -277,57 +322,115 @@ impl Builder<'_> {
         }
     }
 
+    /// Give a symbol with a marker to each reference that the preprocessor
+    /// reported for `owner` and that no `Include` symbol of the owner covers:
+    /// a reference in the middle of a statement, or written through a
+    /// `{&name}` value.
+    fn mark_unclaimed(
+        &self,
+        nodes: &mut Vec<OutlineNode>,
+        owner: Owner,
+        text: Option<&str>,
+        file: Option<usize>,
+    ) {
+        let expanded = self.expanded;
+        let reports = expanded
+            .unresolved_includes()
+            .iter()
+            .chain(expanded.nested_unresolved_includes())
+            .map(|found| (&found.site, found.via.as_slice()))
+            .chain(
+                expanded
+                    .unreadable_includes()
+                    .iter()
+                    .map(|found| (&found.site, found.via.as_slice())),
+            )
+            .chain(
+                expanded
+                    .skipped_includes()
+                    .iter()
+                    .map(|found| (&found.site, found.via.as_slice())),
+            );
+        let mut covered: Vec<Span> = Vec::new();
+        collect_include_spans(nodes, file, &mut covered);
+        for (site, via) in reports {
+            if !self.belongs(owner, site, via) || covered.iter().any(|c| overlaps(*c, site.span)) {
+                continue;
+            }
+            covered.push(site.span);
+            let mut node = text
+                .and_then(|text| include_symbol(text, site.span))
+                .unwrap_or_else(|| substituted_symbol(Path::new("{...}")));
+            node.detail = Some(self.why_missing(owner, site.span).to_string());
+            node.file = file;
+            self.place(nodes, node);
+        }
+    }
+
     /// The symbols of expansion `index` and the index of its file in `files`,
     /// or the marker that says why it shows none.
     fn expansion_nodes(&mut self, index: usize) -> Result<(usize, Vec<OutlineNode>), &'static str> {
+        let text = self.text_of(index).ok_or(marker::NOT_EXPANDED)?;
+        if self.budget == 0 {
+            return Err(marker::LIMIT_REACHED);
+        }
         let path = self.exps[index].path.to_path_buf();
-        let text = self
-            .sources
-            .get(&path)
-            .cloned()
-            .ok_or(marker::NOT_EXPANDED)?;
         let file = self.file_index(&path, &text);
-        let mut nodes = self.raw_nodes(&path, &text, file)?;
-        if let Some(spans) = self.skipped_in(index) {
-            nodes = without_skipped(nodes, spans);
+        self.exp_file.insert(index, file);
+        let mut nodes = self.raw_nodes(file)?;
+        if let Some(id) = self.id_of(index) {
+            let expanded = self.expanded;
+            let spans = self
+                .not_taken
+                .entry(id)
+                .or_insert_with(|| expanded.not_taken_regions(id));
+            if !spans.is_empty() {
+                nodes = without_skipped(nodes, spans);
+            }
         }
         let cost = count(&nodes);
-        if cost > self.budget {
+        if cost > MAX_INCLUDED_SYMBOLS {
             return Err(marker::TOO_LARGE);
+        }
+        if cost > self.budget {
+            return Err(marker::LIMIT_REACHED);
         }
         self.budget -= cost;
         self.resolve(&mut nodes, Owner::Expansion(index));
         Ok((file, nodes))
     }
 
+    /// The index in `files` of this text of `path`.
     fn file_index(&mut self, path: &Path, text: &Arc<str>) -> usize {
-        if let Some(&index) = self.file_of.get(path) {
+        if let Some(index) = self
+            .files
+            .iter()
+            .position(|file| file.path == path && file.text == *text)
+        {
             return index;
         }
         self.files.push(IncludeFile {
             path: path.to_path_buf(),
             text: Arc::clone(text),
         });
-        let index = self.files.len() - 1;
-        self.file_of.insert(path.to_path_buf(), index);
-        index
+        self.files.len() - 1
     }
 
-    fn raw_nodes(
-        &mut self,
-        path: &Path,
-        text: &str,
-        file: usize,
-    ) -> Result<Vec<OutlineNode>, &'static str> {
-        let cached = self.raw.entry(path.to_path_buf()).or_insert_with(|| {
-            outline(text).ok().map(|symbols| {
-                symbols
+    fn raw_nodes(&mut self, file: usize) -> Result<Vec<OutlineNode>, &'static str> {
+        let text = Arc::clone(&self.files[file].text);
+        let cached = self.raw.entry(file).or_insert_with(|| {
+            outline_recovered(&text).ok().map(|(symbols, recovered)| {
+                let nodes = symbols
                     .into_iter()
                     .map(|symbol| OutlineNode::from_symbol(symbol, Some(file)))
-                    .collect()
+                    .collect();
+                (nodes, recovered)
             })
         });
-        cached.clone().ok_or(marker::NOT_EXPANDED)
+        match cached {
+            Some((nodes, _)) => Ok(nodes.clone()),
+            None => Err(marker::NOT_EXPANDED),
+        }
     }
 
     /// The `{...}` sites that lead from the root to expansion `index`,
@@ -343,24 +446,11 @@ impl Builder<'_> {
         Some(sites)
     }
 
-    /// The text of expansion `index` that an `&IF` did not compile.
-    fn skipped_in(&self, index: usize) -> Option<&Vec<Span>> {
-        let id = self.exps[index].file.or_else(|| {
-            let chain = self.chain(index)?;
-            let key: Vec<(u32, u32)> = chain.iter().map(|span| (span.start, span.end)).collect();
-            self.skipped_ids.get(&key).copied()
-        })?;
-        self.skipped.get(&id)
-    }
-
     /// Whether a report of the preprocessor, at `site` in the text of the file
-    /// that wrote it and below the include sites `via`, is about the
-    /// reference at `span` in the text of `owner`. An expansion that has no
-    /// file id of its own is found by the include sites above it.
-    fn is_here(&self, owner: Owner, span: Span, site: &FileSpan, via: &[FileSpan]) -> bool {
-        if !overlaps(site.span, span) {
-            return false;
-        }
+    /// that wrote it and below the include sites `via`, is about the text of
+    /// `owner`. An expansion that has no file id of its own is found by the
+    /// include sites above it.
+    fn belongs(&self, owner: Owner, site: &FileSpan, via: &[FileSpan]) -> bool {
         match owner {
             Owner::Root => via.is_empty() && site.file == self.expanded.root_file(),
             Owner::Expansion(index) => match self.chain(index) {
@@ -371,7 +461,7 @@ impl Builder<'_> {
                             .zip(&chain)
                             .all(|(site, span)| site.span == *span)
                 }
-                None => self.exps[index].file == Some(site.file),
+                None => self.id_of(index) == Some(site.file),
             },
         }
     }
@@ -384,71 +474,43 @@ impl Builder<'_> {
             .unresolved_includes()
             .iter()
             .chain(expanded.nested_unresolved_includes())
-            .any(|found| self.is_here(owner, span, &found.site, &found.via))
+            .any(|found| {
+                overlaps(found.site.span, span) && self.belongs(owner, &found.site, &found.via)
+            })
         {
             return marker::NOT_FOUND;
         }
-        if let Some(unreadable) = expanded
-            .unreadable_includes()
-            .iter()
-            .find(|found| self.is_here(owner, span, &found.site, &found.via))
-        {
+        if let Some(unreadable) = expanded.unreadable_includes().iter().find(|found| {
+            overlaps(found.site.span, span) && self.belongs(owner, &found.site, &found.via)
+        }) {
             return if unreadable.encrypted {
                 marker::ENCRYPTED
             } else {
                 marker::UNREADABLE
             };
         }
-        if expanded
-            .skipped_includes()
-            .iter()
-            .any(|found| self.is_here(owner, span, &found.site, &found.via))
-        {
-            return marker::NOT_COMPILED;
+        if let Some(found) = expanded.skipped_includes().iter().find(|found| {
+            overlaps(found.site.span, span) && self.belongs(owner, &found.site, &found.via)
+        }) {
+            let spans = expanded.not_taken_regions(found.site.file);
+            return if inside(&spans, found.site.span.start) {
+                marker::NOT_COMPILED
+            } else {
+                marker::MAY_NOT_BE_COMPILED
+            };
         }
         marker::NOT_EXPANDED
     }
 }
 
-/// The id of each expansion that has skipped text, by the include sites above
-/// it, outermost first.
-fn skipped_ids(expanded: &ExpandedFile) -> HashMap<Vec<(u32, u32)>, FileId> {
-    expanded
-        .skipped_text()
-        .iter()
-        .filter(|skipped| !skipped.via.is_empty())
-        .map(|skipped| {
-            let key = skipped
-                .via
-                .iter()
-                .map(|site| (site.span.start, site.span.end))
-                .collect();
-            (key, skipped.site.file)
-        })
-        .collect()
-}
-
-/// The text of each expansion that an `&IF` did not compile, sorted, with
-/// overlaps merged.
-fn skipped_by_file(expanded: &ExpandedFile) -> HashMap<FileId, Vec<Span>> {
-    let mut map: HashMap<FileId, Vec<Span>> = HashMap::new();
-    for skipped in expanded.skipped_text() {
-        map.entry(skipped.site.file)
-            .or_default()
-            .push(skipped.site.span);
-    }
-    for spans in map.values_mut() {
-        spans.sort_by_key(|span| span.start);
-        let mut merged: Vec<Span> = Vec::with_capacity(spans.len());
-        for span in spans.iter() {
-            match merged.last_mut() {
-                Some(last) if span.start <= last.end => last.end = last.end.max(span.end),
-                _ => merged.push(*span),
-            }
+/// The spans of the `Include` symbols in `nodes` that are in text `file`.
+fn collect_include_spans(nodes: &[OutlineNode], file: Option<usize>, out: &mut Vec<Span>) {
+    for node in nodes {
+        if node.kind == OutlineKind::Include && node.file == file {
+            out.push(node.span);
         }
-        *spans = merged;
+        collect_include_spans(&node.children, file, out);
     }
-    map
 }
 
 fn inside(spans: &[Span], offset: u32) -> bool {
@@ -489,20 +551,26 @@ fn mark_includes(nodes: &mut [OutlineNode], detail: &str) {
 }
 
 /// An `Include` symbol for the reference at `site` in `text`, named as the
-/// raw outline names one: the file as written.
+/// raw outline names one: the file as written. A reference through a `{&name}`
+/// value is named as written, with its braces.
 fn include_symbol(text: &str, site: Span) -> Option<OutlineNode> {
     let written = text.get(site.start as usize..site.end as usize)?;
     let inner = written.strip_prefix('{')?.strip_suffix('}')?;
-    let file = inner.split_whitespace().next()?;
-    let selection = written.find(file).map_or(site, |at| {
-        let start = site.start + at as u32;
-        Span {
-            start,
-            end: start + file.len() as u32,
-        }
-    });
+    let (name, selection) = if inner.starts_with('&') {
+        (written.to_string(), site)
+    } else {
+        let file = inner.split_whitespace().next()?;
+        let selection = written.find(file).map_or(site, |at| {
+            let start = site.start + at as u32;
+            Span {
+                start,
+                end: start + file.len() as u32,
+            }
+        });
+        (file.to_string(), selection)
+    };
     Some(OutlineNode {
-        name: file.to_string(),
+        name,
         detail: None,
         kind: OutlineKind::Include,
         span: site,
@@ -511,6 +579,25 @@ fn include_symbol(text: &str, site: Span) -> Option<OutlineNode> {
         opens: None,
         children: Vec::new(),
     })
+}
+
+/// An `Include` symbol for an include that has no reference in the text of its
+/// owner: it is named by its file, and its span is empty.
+fn substituted_symbol(path: &Path) -> OutlineNode {
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    OutlineNode {
+        name,
+        detail: None,
+        kind: OutlineKind::Include,
+        span: Span { start: 0, end: 0 },
+        selection_span: Span { start: 0, end: 0 },
+        file: None,
+        opens: None,
+        children: Vec::new(),
+    }
 }
 
 /// Put `node` in the innermost symbol of its file whose span holds it, before
