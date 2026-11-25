@@ -304,6 +304,12 @@ impl BuiltinClass {
         self.parent().into_iter().chain(self.interfaces())
     }
 
+    /// Whether the AVM supplies the type itself (`Progress.*`): the compiler
+    /// binds it whatever the workspace holds.
+    pub fn is_avm_native(&self) -> bool {
+        self.name.starts_with("Progress.")
+    }
+
     /// Whether the type is `Progress.Lang.Object`.
     pub fn is_object(&self) -> bool {
         self.key == "progress.lang.object"

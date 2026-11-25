@@ -2021,3 +2021,36 @@ fn a_request_that_is_cancelled_stops_the_index_between_two_files() {
         "{elapsed:?}"
     );
 }
+
+const NEW_ERR: &str = "DEFINE VARIABLE e AS Progress.Lang.Error NO-UNDO.\n\
+    e = NEW Progress.Lang.AppError().\n\
+    MESSAGE e.\n";
+
+/// A workspace file named like a `Progress.*` type does not replace it: the
+/// compiler binds the built-in type, and so do the analysis and the hierarchy.
+const SHADOW_ERR: &str = "CLASS Progress.Lang.AppError:\nEND CLASS.\n";
+
+#[test]
+fn the_type_hierarchy_of_a_resolved_built_in_name_is_the_built_in_type() {
+    let ws = small(&[
+        ("use.p", NEW_ERR),
+        ("Progress/Lang/AppError.cls", SHADOW_ERR),
+    ]);
+    let user = ws.path("use.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&user, NEW_ERR);
+
+    // A name after `NEW`, which the analysis resolves to the built-in type.
+    let item = prepared(&mut session, &user, NEW_ERR, "Progress.Lang.AppError", 0);
+    assert_eq!(item["name"], json!("Progress.Lang.AppError"));
+    assert_eq!(item["uri"], json!(file_uri(&user)));
+    let answer = supertypes(&mut session, &item);
+    let (_, found) = without_marker(&answer.result);
+    let names: Vec<&str> = found.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, ["Progress.Lang.ProError"], "{found:?}");
+
+    // A built-in interface in a declared type.
+    let item = prepared(&mut session, &user, NEW_ERR, "Progress.Lang.Error", 0);
+    assert_eq!(item["name"], json!("Progress.Lang.Error"));
+    assert_eq!(item["kind"], json!(INTERFACE));
+}

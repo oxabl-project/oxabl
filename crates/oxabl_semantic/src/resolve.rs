@@ -42,7 +42,7 @@ use smallvec::SmallVec;
 use crate::builtin::{
     BuiltinClass, BuiltinMember, BuiltinShape, BuiltinType, builtin_class, enum_class, object_class,
 };
-use crate::index::ImportCandidate;
+use crate::index::{CandidateAnswer, ImportCandidate, lookup_candidate};
 use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_records};
 use crate::signature::{CallParam, CallParamKind, MemberParamShape, ParamMode};
 use crate::surface::{builtin_level_members_named, member_namespace};
@@ -2363,17 +2363,13 @@ impl<'a> ResolveWalker<'a> {
             {
                 return TypeLookup::Local(sym);
             }
-            let builtin = builtin_class(name.as_atom());
-            if let Some(class) = builtin.filter(|c| is_avm_native(c)) {
-                return self.builtin_lookup(class, !unlooked && !unseen);
+            match lookup_candidate(&name, || self.try_indexed_class(&name, use_span)) {
+                CandidateAnswer::Builtin(class) => {
+                    return self.builtin_lookup(class, !unlooked && !unseen);
+                }
+                CandidateAnswer::Index(answer) => return answer,
+                CandidateAnswer::Next => unlooked |= !searched,
             }
-            if let Some(answer) = self.try_indexed_class(&name, use_span) {
-                return answer;
-            }
-            if let Some(class) = builtin {
-                return self.builtin_lookup(class, !unlooked && !unseen);
-            }
-            unlooked |= !searched;
         }
         TypeLookup::NotFound
     }
@@ -4859,7 +4855,7 @@ impl<'a> ResolveWalker<'a> {
                 name: name.as_atom().clone(),
                 reason: UnresolvedReason::External,
             }
-        } else if let Some(class) = builtin.filter(|c| is_avm_native(c)) {
+        } else if let Some(class) = builtin.filter(|c| c.is_avm_native()) {
             // The AVM supplies it, whatever the workspace holds.
             Resolution::Resolved(self.builtin_class_symbol(class))
         } else {
@@ -7317,20 +7313,16 @@ impl<'a> ResolveWalker<'a> {
             {
                 return None;
             }
-            let builtin = builtin_class(name.as_atom());
-            if let Some(class) = builtin.filter(|c| is_avm_native(c)) {
-                return Some(class);
-            }
-            if self.ctx.index_loaded
-                && !matches!(self.ctx.index.class(&name), IndexAnswer::NotFound)
-            {
-                return None;
-            }
-            if builtin.is_some() {
-                return builtin;
-            }
-            if !searched {
-                return None;
+            let found = lookup_candidate(&name, || {
+                (self.ctx.index_loaded
+                    && !matches!(self.ctx.index.class(&name), IndexAnswer::NotFound))
+                .then_some(())
+            });
+            match found {
+                CandidateAnswer::Builtin(class) => return Some(class),
+                CandidateAnswer::Index(()) => return None,
+                CandidateAnswer::Next if !searched => return None,
+                CandidateAnswer::Next => {}
             }
         }
         None
@@ -8415,12 +8407,6 @@ fn wrap_extent(ty: ResolvedType, extent: Option<u32>) -> ResolvedType {
 /// Prefix comparison on the *folded* name, which is what the resolve pass carries
 /// and what ABL's case-insensitivity requires. The dot is part of each prefix so a
 /// user class named `Systems.Cache` is not swept up by `System`.
-/// Whether the AVM supplies the built-in type itself (`Progress.*`), so the
-/// compiler binds it whatever the workspace holds.
-fn is_avm_native(class: &BuiltinClass) -> bool {
-    class.name.starts_with("Progress.")
-}
-
 fn is_system_namespace(name: &OxablAtom) -> bool {
     const SHIPPED: [&str; 4] = ["progress.", "openedge.", "system.", "microsoft."];
     let folded = name.as_ref();

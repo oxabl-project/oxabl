@@ -19,8 +19,8 @@
 //! [`builtin_may_declare`] says whether it knows their methods. Other code
 //! reads built-in types too: `ImportContext::resolve_class`, the built-in
 //! type at the cursor (`Navigation::builtin_type_at`), the implicit parent
-//! `Progress.Lang.Object` of the daemon, and `OBJECT_METHODS` here. A catalog
-//! of built-in classes with members changes all of them; see
+//! `Progress.Lang.Object` of the daemon, and the members of the catalog of
+//! built-in types (`docs/design/builtin-classes.md`) here. See
 //! `docs/design/type-hierarchy.md`.
 
 use std::cell::RefCell;
@@ -30,9 +30,9 @@ use std::sync::Arc;
 
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_semantic::{
-    ClassDescriptor, ClassKind, ClassResolution, ImportContext, IndexAnswer, IndexName,
-    IndexRevision, IndexedFileId, LocateKind, Located, MemberDescriptor, MemberParam,
-    MemberParamShape, MemberType, Signature, SymbolKind, WorkspaceIndex,
+    BuiltinMemberKind, ClassDescriptor, ClassKind, ClassResolution, ImportContext, IndexAnswer,
+    IndexName, IndexRevision, IndexedFileId, LocateKind, Located, MemberDescriptor, MemberParam,
+    MemberParamShape, MemberType, Signature, SymbolKind, WorkspaceIndex, builtin_class,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -124,23 +124,39 @@ pub fn builtin_type(name: &str) -> Option<BuiltinType> {
 }
 
 /// Whether the built-in type `type_name`, or a built-in type above it, may
-/// declare a method named `method`. `false` only when oxabl knows the methods
-/// and the name is not among them.
-///
-/// This is the seam for the members of built-in classes: today oxabl knows
-/// only the methods of `Progress.Lang.Object`, and every other built-in type
-/// may declare any method.
+/// declare a method named `method`. `false` only when the catalog has the
+/// whole surface of the type (`BuiltinClass::is_complete`) and no level of it
+/// declares the name; `true` for a type the catalog does not have whole.
 pub fn builtin_may_declare(type_name: &str, method: &IndexName) -> bool {
-    if type_name.eq_ignore_ascii_case("Progress.Lang.Object") {
-        return OBJECT_METHODS
-            .iter()
-            .any(|known| method.as_str().eq_ignore_ascii_case(known));
+    let Some(class) = builtin_class(type_name) else {
+        return true;
+    };
+    if !class.is_complete() {
+        return true;
     }
-    true
+    let mut stack = vec![class];
+    let mut seen: FxHashSet<&str> = FxHashSet::default();
+    while let Some(level) = stack.pop() {
+        if !seen.insert(level.name) {
+            continue;
+        }
+        if level
+            .members_named(method.as_str())
+            .iter()
+            .any(|m| m.kind() == BuiltinMemberKind::Method)
+        {
+            return true;
+        }
+        stack.extend(level.supertypes());
+    }
+    // Every class and interface inherits `Progress.Lang.Object`.
+    builtin_class("Progress.Lang.Object").is_some_and(|object| {
+        object
+            .members_named(method.as_str())
+            .iter()
+            .any(|m| m.kind() == BuiltinMemberKind::Method)
+    })
 }
-
-/// The methods every class inherits from `Progress.Lang.Object`.
-const OBJECT_METHODS: &[&str] = &["clone", "equals", "getclass", "tostring"];
 
 /// A supertype name of a class header, resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]

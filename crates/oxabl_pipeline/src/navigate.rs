@@ -31,8 +31,8 @@ use oxabl_index::calls::{
 use oxabl_index::search::{self, NameKind};
 use oxabl_schema::{FieldResolution, TableId};
 use oxabl_semantic::{
-    BuiltinMemberRef, ClassResolution, ImportContext, IndexName, IndexedFileId, Resolution,
-    ScopeKind, Semantic, SiteTarget, SourceContext, SymbolFlags, SymbolId, SymbolKind,
+    BuiltinClass, BuiltinMemberRef, ClassResolution, ImportContext, IndexName, IndexedFileId,
+    Resolution, ScopeKind, Semantic, SiteTarget, SourceContext, SymbolFlags, SymbolId, SymbolKind,
     UnresolvedReason,
 };
 use oxabl_workspace::is_include_fragment;
@@ -540,19 +540,37 @@ impl Navigation<'_, '_> {
             let Some(virt) = self.expanded_at(&file, at) else {
                 continue;
             };
+            let symbols = &self.model.semantic.symbols;
+            let references = &self.model.semantic.references;
+            // A sure built-in name resolves to the symbol of the built-in type.
+            let resolved = |sym: &SymbolId| symbols.builtin_class(*sym);
             let site = self.innermost(
                 virt,
                 &|_| None,
                 &|target, span| match target {
-                    SiteTarget::Type(Resolution::Unresolved { .. }) => Some(Some(span)),
+                    SiteTarget::Type(Resolution::Resolved(sym)) => {
+                        resolved(sym).map(|class| Some((span, Some(class))))
+                    }
+                    SiteTarget::Reference(node) | SiteTarget::Using(node) => {
+                        match references.get(*node) {
+                            Some(Resolution::Resolved(sym)) => {
+                                resolved(sym).map(|class| Some((span, Some(class))))
+                            }
+                            _ => None,
+                        }
+                    }
+                    SiteTarget::Type(Resolution::Unresolved { .. }) => Some(Some((span, None))),
                     _ => None,
                 },
-                &|answer: &Option<VirtualSpan>| answer.is_some(),
+                &|answer: &Option<(VirtualSpan, Option<&'static BuiltinClass>)>| answer.is_some(),
                 || None,
             );
-            let Some(span) = site.flatten() else {
+            let Some((span, known)) = site.flatten() else {
                 continue;
             };
+            if let Some(class) = known {
+                return Some((class.name, self.physical(span, &file)?));
+            }
             let written = self.text(span)?;
             let imports = ImportContext::from_statements(&self.parsed().program.statements);
             let resolved = self

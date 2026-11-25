@@ -126,29 +126,29 @@ types is in these places:
   built-in type. Today it reads the table of documented types in
   `oxabl_semantic`.
 - `builtin_may_declare(type, method)` says whether a built-in type may declare
-  a method of that name. Today oxabl knows only the four methods of
-  `Progress.Lang.Object`; every other built-in type may declare any method.
-  The super method walk and the walk up from an interface implementation call
-  it, and add the gap "oxabl does not know its methods" only when it answers
-  `true`.
-- `ImportContext::resolve_class` asks `builtin_class`, as the resolve pass
-  does, for each name of a header and for the name at the cursor.
-- `Navigation::builtin_type_at` keys on a type that the resolve pass leaves
-  `Unresolved`, and then asks `resolve_class` for a built-in answer.
+  a method of that name. It reads the catalog of built-in types
+  (`docs/design/builtin-classes.md`): for a complete type, the methods of the
+  type, of its supertypes and of `Progress.Lang.Object`; any other type may
+  declare any method. The super method walk and the walk up from an interface
+  implementation call it, and add the gap "oxabl does not know its methods"
+  only when it answers `true`.
+- `ImportContext::resolve_class` reads each candidate spelling through
+  `lookup_candidate` of `oxabl_semantic`, the one function the resolve pass
+  uses too: a `Progress.*` built-in type first, then a workspace class, then
+  an `OpenEdge.*` or `Ccs.*` built-in type. So a workspace file
+  `Progress/Lang/AppError.cls` does not replace the built-in type in the
+  hierarchy, as it does not in the analysis.
+- `Navigation::builtin_type_at` takes a type, `NEW`, `CAST` or `USING` site
+  that the resolve pass resolved to the symbol of a built-in type
+  (`SymbolTable::builtin_class`), and a site it left `Unresolved` (a built-in
+  name that is not sure), which it then asks `resolve_class` about.
 - `implicit_object`, `OBJECT` and `is_object` in `oxabl_daemon::hierarchy`
   give a class with no parent the parent `Progress.Lang.Object`, and list the
   classes with no parent as its subtypes.
-- `OBJECT_METHODS` in `oxabl_index::hierarchy` holds the four methods of
-  `Progress.Lang.Object`. It is a copy of what the resolve pass knows as a
-  name rule.
 
-A catalog of built-in classes that has members (the design of #154 offers one
-surface for classes of every origin) changes all of these places. In that
-design a sure built-in type resolves to a symbol and not to `Unresolved`, so
-`builtin_type_at` changes with the resolve pass. The items, the reverse index
-and the gaps stay the same. `builtin_may_declare` answers by name only: it
-cannot say that a method overrides a given built-in method. A super method
-that lists built-in methods is a later change of `super_methods`.
+`builtin_may_declare` answers by name only: it cannot say that a method
+overrides a given built-in method. A super method that lists built-in
+methods is a later change of `super_methods`.
 
 ## Subtypes
 
@@ -205,7 +205,7 @@ match is listed and says that it may be an overload.
   so.
 
 `Progress.Lang.Object` has four methods (`Clone`, `Equals`, `GetClass`,
-`ToString`) that oxabl does not model. A super method search for one of these
+`ToString`) that have no source file. A super method search for one of these
 names, in a class whose parent chain ends there without a match, says so, as
 the member lookup does (`docs/design/class-members.md`). An interface match
 does not remove this gap: the same method can also override the `Object`

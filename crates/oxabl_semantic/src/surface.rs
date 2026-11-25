@@ -16,7 +16,10 @@ use rustc_hash::FxHashSet;
 use crate::builtin::{
     BuiltinCatalog, BuiltinClass, BuiltinMember, BuiltinMemberKind, BuiltinShape, BuiltinType,
 };
-use crate::index::{ImportCandidate, ImportContext, IndexAnswer, MemberDescriptor, PortableType};
+use crate::index::{
+    CandidateAnswer, ImportCandidate, ImportContext, IndexAnswer, MemberDescriptor, PortableType,
+    lookup_candidate,
+};
 use crate::resolve::{SupertypeLookup, lookup_supertype};
 use crate::signature::{MemberParam, MemberParamShape, ParamMode};
 use crate::symbol::BuiltinMemberRef;
@@ -255,18 +258,14 @@ fn builtin_supertype(
         let ImportCandidate::Name(name) = candidate else {
             return None;
         };
-        let builtin = crate::builtin_class(name.as_atom());
-        if let Some(class) = builtin.filter(|c| c.name.starts_with("Progress.")) {
-            return Some(class);
-        }
-        if !matches!(index.class(&name), IndexAnswer::NotFound) {
-            return None;
-        }
-        if builtin.is_some() {
-            return builtin;
-        }
-        if !searched {
-            return None;
+        let found = lookup_candidate(&name, || {
+            (!matches!(index.class(&name), IndexAnswer::NotFound)).then_some(())
+        });
+        match found {
+            CandidateAnswer::Builtin(class) => return Some(class),
+            CandidateAnswer::Index(()) => return None,
+            CandidateAnswer::Next if !searched => return None,
+            CandidateAnswer::Next => {}
         }
     }
     None
