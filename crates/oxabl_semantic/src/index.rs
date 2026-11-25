@@ -57,7 +57,7 @@ use oxabl_ast::{AccessModifier, Statement, StatementKind, UsingSource};
 use oxabl_lexer::oxabl_atom::OxablAtom;
 
 use crate::resolve::fold_atom;
-use crate::{ResolvedType, Signature, SymbolKind};
+use crate::{MemberParam, ResolvedType, Signature, SymbolKind};
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -516,9 +516,14 @@ pub struct ClassDescriptor {
     pub inherits: Option<IndexName>,
     /// The `IMPLEMENTS` names as written, in declaration order.
     pub implements: Vec<IndexName>,
-    /// The `USING` imports of the declaring file, which `inherits` and
-    /// `implements` are written under. Empty when the class names no supertype.
+    /// The `USING` imports of the declaring file, which `inherits`,
+    /// `implements` and class-typed members and parameters are written under.
+    /// Empty when the class names no supertype and no class-typed member.
     pub imports: Arc<ImportContext>,
+    /// Whether the member list is whole. `false` when the class body holds an
+    /// `{include}` the index could not read, or an `&IF` around a member
+    /// declaration: another compile may declare more members.
+    pub members_complete: bool,
 }
 
 /// A [`ResolvedType`] proven safe to carry across a file boundary.
@@ -610,6 +615,9 @@ pub struct MemberDescriptor {
     pub is_static: bool,
     /// The table a buffer member is `FOR`; `None` for every other member.
     pub record: Option<MemberRecord>,
+    /// The parameter list of a method. `None` for every other member, and
+    /// for a method whose list an `&IF` or an `{include}` hides.
+    pub params: Option<Arc<[MemberParam]>>,
 }
 
 /// The table a buffer member reads, as the declaring file wrote it.
@@ -927,6 +935,7 @@ mod tests {
     fn private_and_package_private_members_are_not_inherited() {
         let member = |access| MemberDescriptor {
             name: IndexName::new("calculate-total"),
+            params: None,
             kind: SymbolKind::Function,
             ty: MemberType::Untyped,
             access,

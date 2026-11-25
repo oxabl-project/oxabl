@@ -60,7 +60,10 @@ pub use resolve::{
 };
 pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use sequence::{SequenceOperand, sequence_operand};
-pub use signature::{Param, ParamMode, ParamShape, ProgramSignatures, Signature};
+pub use signature::{
+    MemberParam, MemberParamShape, Param, ParamMode, ParamShape, ProgramSignatures, Signature,
+    member_params,
+};
 pub use symbol::{
     ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags,
     SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
@@ -396,6 +399,7 @@ mod tests {
             if name == &IndexName::new("app.thing") {
                 IndexAnswer::Found(Arc::new(ClassDescriptor {
                     name: name.clone(),
+                    members_complete: true,
                     file: IndexedFileId::new(3),
                     kind: ClassKind::Class,
                     inherits: None,

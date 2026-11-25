@@ -13,7 +13,7 @@ use oxabl_ast::{
     TypeSource,
 };
 
-use crate::index::IndexName;
+use crate::index::{IndexName, MemberType};
 use crate::types::{PrimitiveTy, ResolvedType};
 
 /// How a parameter passes its value.
@@ -421,4 +421,86 @@ mod tests {
         let sigs = signatures("CLASS a.b:\nEND CLASS.\n");
         assert_eq!(sigs.main, None);
     }
+}
+
+/// One parameter of a class method, in a form that survives a file boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberParam {
+    pub mode: ParamMode,
+    pub shape: MemberParamShape,
+}
+
+/// What a method parameter is. A class type keeps its name as written, for
+/// the consumer to resolve through the declaring file's imports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemberParamShape {
+    /// A variable. `LIKE` gives `Portable(Unknown)`; `EXTENT` gives an array.
+    Value(MemberType),
+    /// `BUFFER b FOR table`.
+    Buffer,
+    /// `TABLE FOR tt`.
+    Table,
+    /// `TABLE-HANDLE h`.
+    TableHandle,
+    /// `DATASET FOR ds`.
+    Dataset,
+    /// `DATASET-HANDLE h`.
+    DatasetHandle,
+}
+
+/// The parameter list of a method, from the statements between its
+/// parentheses. `None` when a statement is not a plain parameter definition
+/// (an `&IF`, an include reference, a `RETURN` parameter): then the list is
+/// not known.
+pub fn member_params(parameters: &[Statement]) -> Option<Vec<MemberParam>> {
+    parameters
+        .iter()
+        .map(|s| match &s.kind {
+            StatementKind::DefineParameter {
+                direction,
+                param_type,
+            } => member_param(direction, param_type),
+            _ => None,
+        })
+        .collect()
+}
+
+fn member_param(direction: &ParameterDirection, param_type: &ParameterType) -> Option<MemberParam> {
+    let mode = match direction {
+        ParameterDirection::Input => ParamMode::Input,
+        ParameterDirection::Output => ParamMode::Output,
+        ParameterDirection::InputOutput => ParamMode::InputOutput,
+        ParameterDirection::Return => return None,
+    };
+    let shape = match param_type {
+        ParameterType::Variable {
+            type_source: TypeSource::Explicit(t),
+            extent: None,
+            ..
+        } if t.class_name().is_some() => {
+            MemberParamShape::Value(MemberType::Named(IndexName::new(t.class_name()?)))
+        }
+        ParameterType::Variable {
+            type_source: TypeSource::Explicit(t),
+            extent,
+            ..
+        } => MemberParamShape::Value(
+            MemberType::portable(ResolvedType::from_declared(t, *extent))
+                .unwrap_or(MemberType::Untyped),
+        ),
+        ParameterType::Variable {
+            type_source: TypeSource::Like { .. },
+            ..
+        } => MemberParamShape::Value(
+            MemberType::portable(ResolvedType::Unknown).unwrap_or(MemberType::Untyped),
+        ),
+        ParameterType::Handle { kind, .. } => match kind {
+            HandleParamKind::Table => MemberParamShape::Table,
+            HandleParamKind::TableHandle => MemberParamShape::TableHandle,
+            HandleParamKind::Dataset => MemberParamShape::Dataset,
+            HandleParamKind::DatasetHandle => MemberParamShape::DatasetHandle,
+        },
+        ParameterType::Buffer { .. } => MemberParamShape::Buffer,
+    };
+    Some(MemberParam { mode, shape })
 }

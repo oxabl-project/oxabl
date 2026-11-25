@@ -11577,6 +11577,7 @@ mod tests {
             }
             IndexAnswer::Found(std::sync::Arc::new(ClassDescriptor {
                 name: name.clone(),
+                members_complete: true,
                 file: IndexedFileId::new(1),
                 kind: ClassKind::Class,
                 inherits: None,

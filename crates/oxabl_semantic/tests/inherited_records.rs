@@ -18,6 +18,7 @@ impl WorkspaceIndex for Classes {
             None => IndexAnswer::NotFound,
             Some((parent, _)) => IndexAnswer::Found(Arc::new(ClassDescriptor {
                 name: name.clone(),
+                members_complete: true,
                 file: IndexedFileId::new(1),
                 kind: ClassKind::Class,
                 inherits: parent.map(IndexName::new),
@@ -55,6 +56,7 @@ fn member(
 ) -> MemberDescriptor {
     MemberDescriptor {
         name: IndexName::new(name),
+        params: None,
         kind,
         ty: MemberType::Untyped,
         access,
