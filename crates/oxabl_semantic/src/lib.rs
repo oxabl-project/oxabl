@@ -19,6 +19,7 @@
 //! This table checks membership only. Built-in references remain external and
 //! create no dependency edges. Member names, arity, and types are not checked.
 
+mod builtin;
 mod builtin_classes;
 mod builtins;
 mod check;
@@ -37,7 +38,10 @@ mod signature;
 mod symbol;
 mod types;
 
-pub use builtin_classes::{BuiltinClass, builtin_class};
+pub use builtin::{
+    BUILTIN_CATALOG, BuiltinCatalog, BuiltinClass, BuiltinMember, BuiltinMemberKind, BuiltinParam,
+    BuiltinShape, BuiltinType, builtin_class,
+};
 pub use builtins::SYSTEM_HANDLES;
 pub use check::check_pass;
 pub use coercion::{
@@ -169,6 +173,8 @@ pub struct AnalysisContext<'a> {
     /// (`oxabl_parser::Program::unclosed_blocks`). Their scopes run to the end
     /// of the text.
     pub unclosed_blocks: &'a [NodeId],
+    /// The catalog of built-in types the resolve pass reads.
+    pub builtins: &'static BuiltinCatalog,
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -196,6 +202,7 @@ impl<'a> AnalysisContext<'a> {
             elided_includes: &[],
             record_sites: false,
             unclosed_blocks: &[],
+            builtins: &BUILTIN_CATALOG,
         }
     }
 

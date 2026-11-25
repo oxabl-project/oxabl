@@ -1,0 +1,36 @@
+# Checked fixes to the scraped built-in class catalog
+# (resources/progress_builtin_classes.json).
+#
+# `cargo run -p oxabl_codegen -- builtin-class-table` applies them before it
+# compiles the catalog. Each entry names a type, the documentation page a
+# person checked the fix against, and exactly one change: `inherits`,
+# `drop_member`, `add_member` or `replace_member`. An entry that matches
+# nothing fails the codegen, so a later scrape cannot leave a stale fix.
+
+# The class page lists no supertype. The page says AppError inherits ProError.
+[[override]]
+type = "Progress.Lang.AppError"
+checked_against = "https://docs-be.progress.com/bundle/abl-reference/page/Progress.Lang.AppError-class.html"
+inherits = "Progress.Lang.ProError"
+
+# The scrape read the CallStack property as `file-name at line line-number`
+# (the text of its value format).
+[[override]]
+type = "Progress.Lang.ProError"
+checked_against = "https://docs-be.progress.com/bundle/abl-reference/page/CallStack-property.html"
+drop_member = "file-name at line line-number"
+
+[[override]]
+type = "Progress.Lang.ProError"
+checked_against = "https://docs-be.progress.com/bundle/abl-reference/page/CallStack-property.html"
+add_member = { kind = "property", name = "CallStack", type = "CHARACTER" }
+
+[[override]]
+type = "Progress.Lang.Error"
+checked_against = "https://docs-be.progress.com/bundle/abl-reference/page/CallStack-property.html"
+drop_member = "file-name at line line-number"
+
+[[override]]
+type = "Progress.Lang.Error"
+checked_against = "https://docs-be.progress.com/bundle/abl-reference/page/CallStack-property.html"
+add_member = { kind = "property", name = "CallStack", type = "CHARACTER" }

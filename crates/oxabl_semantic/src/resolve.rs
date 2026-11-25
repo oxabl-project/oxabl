@@ -39,7 +39,7 @@ use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::builtin_classes::{BuiltinClass, builtin_class};
+use crate::builtin::{BuiltinClass, builtin_class};
 use crate::index::ImportCandidate;
 use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_records};
 use crate::symbol::RecordSource;

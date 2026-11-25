@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 mod builtin_class_table;
+mod builtin_normalise;
 mod grammar;
 mod progress_docs;
 
@@ -1318,12 +1319,10 @@ pub fn generate_formatter_spelling_rs(keywords: &[Keyword]) -> String {
 /// Compile the checked-in built-in class index into the semantic crate's table.
 fn write_builtin_class_table() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let content = builtin_class_table::read_index(&root.join(builtin_class_table::JSON_PATH))
-        .and_then(|index| builtin_class_table::generate(&index))
-        .unwrap_or_else(|e| {
-            eprintln!("builtin-class-table: {e}");
-            std::process::exit(1);
-        });
+    let content = builtin_class_table::generate_from(&root).unwrap_or_else(|e| {
+        eprintln!("builtin-class-table: {e}");
+        std::process::exit(1);
+    });
     write_generated_file(builtin_class_table::TABLE_RS_PATH, &content)
         .expect("Failed to write builtin_classes.rs");
 }
