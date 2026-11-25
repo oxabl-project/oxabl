@@ -157,6 +157,14 @@ fn a_getter_offers_its_own_locals() {
     let list = answer.list();
     list.contains(VARIABLE, &["xGet"]);
     list.lacks(&["xSet", "arg"]);
+    // The same with each accessor closed by a bare `END.`.
+    let answer = ws.complete(
+        "Bare.cls",
+        "CLASS Bare:\n    DEFINE PUBLIC PROPERTY Size AS INTEGER NO-UNDO\n        GET():\n            DEFINE VARIABLE xGet AS INTEGER NO-UNDO.\n            xGet = x|\n        END.\n        SET(INPUT arg AS INTEGER):\n            DEFINE VARIABLE xSet AS INTEGER NO-UNDO.\n        END.\nEND CLASS.\n",
+    );
+    let list = answer.list();
+    list.contains(VARIABLE, &["xGet"]);
+    list.lacks(&["xSet", "arg"]);
 }
 
 #[test]
@@ -296,4 +304,52 @@ fn a_static_method_offers_no_instance_member() {
     list.contains(PROPERTY, &["iShared"]);
     list.contains(VARIABLE, &["o"]);
     list.lacks(&["iInst"]);
+}
+
+/// A `.` typed at the end of a statement answers `null` with no analysis:
+/// the first request on a large document that never had one is a trigger
+/// at a statement end, and it answers far below the cost of an analysis.
+/// Diagnostics are off: the server computes those of a newly opened file on
+/// its main loop, and the request would wait for them, whatever completion
+/// does.
+#[test]
+fn a_period_at_a_statement_end_answers_without_an_analysis() {
+    let mut ws = Files::config_n(Case::Upper)
+        .file(
+            "oxabl.toml",
+            "[workspace]\nname = \"bare\"\n[workspace.features]\ndiagnostics = false\n",
+        )
+        .start();
+    let mut text = String::new();
+    for k in 0..10_000 {
+        text.push_str(&format!(
+            "PROCEDURE p{k}:\n    DEFINE VARIABLE i{k} AS INTEGER NO-UNDO.\n    i{k} = i{k} + 1.\nEND PROCEDURE.\n"
+        ));
+    }
+    text.push_str("DEFINE VARIABLE x AS INTEGER NO-UNDO.\nx = 1.|");
+    let cursor = ws.open_marked("large.p", &text);
+    let started = Instant::now();
+    let answer = ws.complete_at("large.p", cursor, Some("."));
+    let took = started.elapsed();
+    answer.assert_null();
+    assert!(
+        took < Duration::from_millis(500),
+        "a `.` at a statement end took {took:?}: it waited for an analysis"
+    );
+    // The control: a request that needs the analysis takes much longer.
+    let started = Instant::now();
+    ws.complete_at(
+        "large.p",
+        completion::Cursor {
+            line: cursor.line,
+            character: 0,
+        },
+        None,
+    )
+    .list();
+    let analysed = started.elapsed();
+    assert!(
+        analysed > took * 3,
+        "the control took {analysed:?}, not far above {took:?}"
+    );
 }

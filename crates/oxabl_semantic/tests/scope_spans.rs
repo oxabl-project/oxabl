@@ -55,4 +55,11 @@ fn each_property_accessor_holds_its_own_body() {
     // An auto getter before a computed setter.
     let auto = "CLASS Box:\n    DEFINE PUBLIC PROPERTY Size AS INTEGER NO-UNDO\n        GET.\n        SET(INPUT arg AS INTEGER):\n            x = |1.\n        END SET.\nEND CLASS.\n";
     assert_eq!(kind_at(auto), ScopeKind::PropertySet);
+    // A getter closed by a bare `END.`, with a block that ends with `END.` in it.
+    let bare = "CLASS Box:\n    DEFINE PUBLIC PROPERTY Size AS INTEGER NO-UNDO\n        GET():\n            DO WHILE FALSE:\n            END.\n            x = |1.\n        END.\n        SET(INPUT arg AS INTEGER):\n            y = 1.\n        END.\nEND CLASS.\n";
+    assert_eq!(kind_at(bare), ScopeKind::PropertyGet);
+    let bare_set = bare
+        .replace("x = |1.", "x = 1.")
+        .replace("y = 1.", "y = |1.");
+    assert_eq!(kind_at(&bare_set), ScopeKind::PropertySet);
 }

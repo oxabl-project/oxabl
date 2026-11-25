@@ -7309,6 +7309,8 @@ fn parse_property_auto_get_set() {
             get_body,
             set_body,
             set_parameters,
+            get_span: _,
+            set_span: _,
         } => {
             assert_eq!(access, AccessModifier::Public);
             assert!(!is_static);
@@ -15573,5 +15575,40 @@ fn nested_unclosed_blocks_are_each_unclosed() {
     assert_eq!(
         unclosed_kinds("FUNCTION f RETURNS INTEGER ():\n    RETURN 1.\n"),
         vec!["FUNCTION"]
+    );
+}
+
+#[test]
+fn a_property_records_the_text_of_each_accessor() {
+    let spans = |source: &str| {
+        let program = parse_with_errors(source);
+        let StatementKind::Property {
+            get_span, set_span, ..
+        } = &program.statements[0].kind
+        else {
+            panic!("a property: {:?}", program.statements[0].kind);
+        };
+        let text = |span: &Option<Span>| {
+            span.map(|span| source[span.start as usize..span.end as usize].to_string())
+        };
+        (text(get_span), text(set_span))
+    };
+    let head = "DEFINE PUBLIC PROPERTY P AS INTEGER NO-UNDO\n";
+    assert_eq!(
+        spans(&format!("{head}GET. SET.")),
+        (Some("GET.".into()), Some("SET.".into()))
+    );
+    assert_eq!(
+        spans(&format!(
+            "{head}GET():\nDO:\nEND.\nRETURN 1.\nEND.\nSET(INPUT v AS INTEGER):\nEND SET."
+        )),
+        (
+            Some("GET():\nDO:\nEND.\nRETURN 1.\nEND.".into()),
+            Some("SET(INPUT v AS INTEGER):\nEND SET.".into())
+        )
+    );
+    assert_eq!(
+        spans(&format!("{head}PROTECTED GET():\nRETURN 1.\nEND GET.")),
+        (Some("GET():\nRETURN 1.\nEND GET.".into()), None)
     );
 }

@@ -6826,6 +6826,7 @@ impl Parser<'_> {
         {
             self.advance(); // consume access modifier
         }
+        let get_start = self.current_span().start;
         let get_body = if self.check(Kind::Get) {
             self.advance(); // consume GET
             // Optional parameter list: GET() or GET(INPUT p AS TYPE)
@@ -6878,6 +6879,10 @@ impl Parser<'_> {
         } else {
             None
         };
+        let get_span = get_body.as_ref().map(|_| Span {
+            start: get_start,
+            end: self.prev_end(),
+        });
 
         // Parse SET accessor (with optional leading access modifier, e.g. "private set.")
         if matches!(
@@ -6892,6 +6897,7 @@ impl Parser<'_> {
             self.advance(); // consume access modifier
         }
         let mut set_parameters = Vec::new();
+        let set_start = self.current_span().start;
         let set_body = if self.check(Kind::Set) {
             self.advance(); // consume SET
             // Optional parameter list: SET (INPUT p AS TYPE)
@@ -6933,6 +6939,10 @@ impl Parser<'_> {
             None
         };
 
+        let set_span = set_body.as_ref().map(|_| Span {
+            start: set_start,
+            end: self.prev_end(),
+        });
         Ok(self.stmt(StatementKind::Property {
             access,
             is_static,
@@ -6943,6 +6953,8 @@ impl Parser<'_> {
             get_body,
             set_body,
             set_parameters,
+            get_span,
+            set_span,
         }))
     }
 

@@ -117,6 +117,18 @@ hints do. A base is therefore not the salsa memo of `navigation_model`: each
 open document keeps its own model, and its includes are read from disk, as
 diagnostics read them.
 
+This costs memory. Each open document keeps two bases, the newest and the one
+before it, which a resolve of an older list reads; each is a model and an
+expansion of the whole unit. A review measured about 45 MB of resident memory
+for each 40,000-line procedure file (debug build, both bases, on top of the
+salsa memo that semantic tokens keep). An include in a root context keeps two
+analyses of its whole root. The bases go when the document closes or the
+configuration or the schema changes.
+
+A refresh claims its slot with a token, the id of the base it makes. Only the
+refresh that holds the slot's token ends the claim, so a refresh that ends
+after its document closed and opened again leaves the new claim running.
+
 ### Map the cursor into a stale base
 
 The daemon compares the base text with the current text: the length of the

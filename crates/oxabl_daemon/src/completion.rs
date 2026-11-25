@@ -67,7 +67,8 @@ struct Slot {
     newest: Option<Arc<Base>>,
     /// The base before the newest, which a resolve of an older list reads.
     previous: Option<Arc<Base>>,
-    refreshing: bool,
+    /// The id of the base that the running refresh makes, its claim token.
+    refreshing: Option<u64>,
 }
 
 /// The completion bases of one session.
@@ -132,16 +133,26 @@ impl Bases {
         }
     }
 
-    /// Claim the refresh of `key`; false when one runs or the slot is gone.
-    fn claim_refresh(&self, key: &BaseKey) -> bool {
-        self.slots()
-            .get_mut(key)
-            .is_some_and(|slot| !std::mem::replace(&mut slot.refreshing, true))
+    /// Claim the refresh of `key`, and the id of the base it makes, which is
+    /// the claim's token. `None` when one runs or the slot is gone.
+    fn claim_refresh(&self, key: &BaseKey) -> Option<u64> {
+        let mut slots = self.slots();
+        let slot = slots.get_mut(key)?;
+        if slot.refreshing.is_some() {
+            return None;
+        }
+        let token = self.next_id();
+        slot.refreshing = Some(token);
+        Some(token)
     }
 
-    fn end_refresh(&self, key: &BaseKey) {
-        if let Some(slot) = self.slots().get_mut(key) {
-            slot.refreshing = false;
+    /// End the refresh that holds `token`. The slot of a document that closed
+    /// and opened again belongs to a newer claim, which this leaves running.
+    fn end_refresh(&self, key: &BaseKey, token: u64) {
+        if let Some(slot) = self.slots().get_mut(key)
+            && slot.refreshing == Some(token)
+        {
+            slot.refreshing = None;
         }
     }
 
@@ -249,14 +260,20 @@ pub fn compute_completion(
 /// preprocessing of the document failed.
 fn own_base(bases: &Arc<Bases>, query: &CompletionQuery) -> Option<(Arc<Base>, bool)> {
     if let Some(base) = bases.newest(&query.key, query.generation) {
-        if base.text != query.text && bases.claim_refresh(&query.key) {
+        if base.text != query.text
+            && let Some(token) = bases.claim_refresh(&query.key)
+        {
             let config = query.config.clone();
             let path = query.path.clone();
             let text = Arc::clone(&query.text);
             let generation = query.generation;
-            refresh(bases, &query.key, Arc::clone(&query.text), move |id| {
-                make_own_base(&config, &path, text, id, generation)
-            });
+            refresh(
+                bases,
+                &query.key,
+                token,
+                Arc::clone(&query.text),
+                move |id| make_own_base(&config, &path, text, id, generation),
+            );
         }
         return Some((base, false));
     }
@@ -297,14 +314,15 @@ fn make_own_base(
     })
 }
 
-/// Make a fresh base in the background with `make` and keep it.
+/// Make a fresh base, numbered `token`, in the background with `make` and
+/// keep it.
 fn refresh(
     bases: &Arc<Bases>,
     key: &BaseKey,
+    token: u64,
     text: Arc<str>,
     make: impl FnOnce(u64) -> Option<Base> + Send + 'static,
 ) {
-    let id = bases.next_id();
     let spawned = oxabl_common::stack::builder()
         .name("oxabl-completion-refresh".to_string())
         .spawn({
@@ -312,14 +330,14 @@ fn refresh(
             let key = key.clone();
             move || {
                 oxabl_common::hold_if_injected(REFRESH_SITE, &text);
-                if let Ok(Some(base)) = oxabl_common::catch_panic(|| make(id)) {
+                if let Ok(Some(base)) = oxabl_common::catch_panic(|| make(token)) {
                     bases.store_refreshed(&key, Arc::new(base));
                 }
-                bases.end_refresh(&key);
+                bases.end_refresh(&key, token);
             }
         });
     if spawned.is_err() {
-        bases.end_refresh(key);
+        bases.end_refresh(key, token);
     }
 }
 
@@ -349,14 +367,20 @@ fn context_base(
         if others_changed && !still_reads(&query.config, &fs, root, &root_text, &query.path) {
             return Ok(None);
         }
-        if (others_changed || base.text != query.text) && bases.claim_refresh(&query.key) {
+        if (others_changed || base.text != query.text)
+            && let Some(token) = bases.claim_refresh(&query.key)
+        {
             let config = query.config.clone();
             let path = query.path.clone();
             let root = root.to_path_buf();
             let generation = query.generation;
-            refresh(bases, &query.key, Arc::clone(&query.text), move |id| {
-                make_context_base(&config, &path, &root, fs, id, generation)
-            });
+            refresh(
+                bases,
+                &query.key,
+                token,
+                Arc::clone(&query.text),
+                move |id| make_context_base(&config, &path, &root, fs, id, generation),
+            );
         }
         return Ok(Some((base, others_changed)));
     }
@@ -478,5 +502,43 @@ pub fn compute_resolve(bases: &Bases, query: ResolveQuery) -> Option<String> {
             let base = bases.by_id(base)?;
             with_base(&base, |navigation| symbol_documentation(navigation, symbol)).flatten()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key() -> BaseKey {
+        BaseKey {
+            document: "file:///a.p".to_string(),
+            root: None,
+        }
+    }
+
+    fn open(bases: &Bases) {
+        bases.slots().insert(key(), Slot::default());
+    }
+
+    #[test]
+    fn a_refresh_of_a_closed_document_leaves_the_new_claim_running() {
+        let bases = Bases::default();
+        open(&bases);
+        let old = bases.claim_refresh(&key()).expect("the first claim");
+        assert_eq!(bases.claim_refresh(&key()), None, "one refresh at a time");
+        bases.forget(&key().document);
+        assert_eq!(bases.claim_refresh(&key()), None, "no slot after a close");
+        open(&bases);
+        let new = bases
+            .claim_refresh(&key())
+            .expect("a claim of the new slot");
+        bases.end_refresh(&key(), old);
+        assert_eq!(
+            bases.claim_refresh(&key()),
+            None,
+            "the old refresh ended the new one's claim"
+        );
+        bases.end_refresh(&key(), new);
+        assert!(bases.claim_refresh(&key()).is_some());
     }
 }
