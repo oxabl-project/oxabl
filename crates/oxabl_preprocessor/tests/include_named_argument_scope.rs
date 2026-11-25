@@ -119,3 +119,54 @@ fn without_its_includer_a_global_define_below_the_argument_leaves_the_name_unkno
     let result = run("{p.i &x=zzz}", &files, true);
     assert_eq!(states(&result), [BranchState::Undecided]);
 }
+
+const SCOPED_COND: &str = "&IF \"{&x}\" = \"yes\" &THEN\nA\n&ELSE\nZ\n&ENDIF\n";
+const MAYBE_SCOPED: &str = "&IF SEARCH(\"nofile\") <> ? &THEN\n&SCOPED-DEFINE x yes\n&ENDIF\n";
+
+#[test]
+fn a_scoped_define_in_an_undecided_region_below_the_argument_keeps_the_name_unknown() {
+    let b = format!("{MAYBE_SCOPED}{{c.i}}");
+    let files = [
+        ("/inc/p.i", "{b.i}"),
+        ("/inc/b.i", b.as_str()),
+        ("/inc/c.i", SCOPED_COND),
+    ];
+    let result = run("{p.i &x=zzz}", &files, false);
+    assert_eq!(
+        states(&result),
+        [
+            BranchState::Undecided,
+            BranchState::Undecided,
+            BranchState::Undecided
+        ],
+        "the scoped define may have happened"
+    );
+}
+
+#[test]
+fn a_scoped_define_in_an_undecided_region_of_the_include_with_the_argument_keeps_the_name_unknown()
+{
+    let p = format!("{MAYBE_SCOPED}{{b.i}}");
+    let files = [("/inc/p.i", p.as_str()), ("/inc/b.i", SCOPED_COND)];
+    let result = run("{p.i &x=zzz}", &files, false);
+    assert_eq!(
+        states(&result),
+        [
+            BranchState::Undecided,
+            BranchState::Undecided,
+            BranchState::Undecided
+        ],
+        "the scoped define may have happened"
+    );
+}
+
+#[test]
+fn a_decided_scoped_define_below_the_argument_still_decides() {
+    let files = [
+        ("/inc/p.i", "{b.i}"),
+        ("/inc/b.i", "&SCOPED-DEFINE x yes\n{c.i}"),
+        ("/inc/c.i", SCOPED_COND),
+    ];
+    let result = run("{p.i &x=zzz}", &files, false);
+    assert_eq!(&*result.to_text(), "A\n");
+}

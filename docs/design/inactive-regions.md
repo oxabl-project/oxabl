@@ -165,9 +165,9 @@ database under `database-types` to dim on its type.
   A named argument (`&x=value`) is known only in the text of the include it is
   passed to. An include that file references does not see it, as in the
   compiler, so a condition there that reads the name is undecided too.
-  A `&GLOBAL-DEFINE` or an `&UNDEFINE` of the name in an undecided region
-  below the argument is a guess, so the name stays unknown in the includes
-  deeper still. A global define or undefine of the name below the argument,
+  A `&GLOBAL-DEFINE`, a `&SCOPED-DEFINE` or an `&UNDEFINE` of the name in an
+  undecided region, in the include that has the argument or below it, is a
+  guess, so the name stays unknown in the includes deeper still. A global define or undefine of the name below the argument,
   in a decided region or not, also makes the name undecided in the rest of
   the include that has the argument: the run does not track what the define
   did to the argument's own entry.
