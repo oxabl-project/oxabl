@@ -2,7 +2,9 @@
 //! and the strict database rules read, at the code they are about. The lock
 //! a read takes with no lock phrase, the index oxabl expects a search to use,
 //! and where a raised buffer scope or an implicit transaction starts and
-//! ends. See `docs/design/inlay-hints.md`.
+//! ends. The parameter-name hints before the arguments of a call are in the
+//! same answer. See `docs/design/inlay-hints.md` and
+//! `docs/design/signature-help.md`.
 //!
 //! A file shows hints when `diagnostics` is on in `[workspace.features]`. The
 //! index kind needs no rule; each other kind shows only where its rule (from
@@ -29,14 +31,16 @@ use std::sync::{Arc, Mutex};
 
 use lsp_server::{ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
-    InlayHint, InlayHintLabel, InlayHintParams, InlayHintTooltip, PositionEncodingKind, Uri,
+    InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, InlayHintTooltip,
+    PositionEncodingKind, Uri,
 };
-use oxabl_daemon::db::HintSource;
+use oxabl_daemon::db::{HintSource, compute_parameter_hints};
 use oxabl_pipeline::HintKinds;
 use serde_json::Value;
 
 use crate::Server;
 use crate::position::{byte_to_position, position_to_byte};
+use oxabl_daemon::SessionHost;
 
 /// What the client said about inlay hints.
 pub(crate) struct Options {
@@ -46,6 +50,8 @@ pub(crate) struct Options {
     pub refresh: bool,
     /// The kinds the client wants.
     pub kinds: HintKinds,
+    /// The client wants the parameter-name hints.
+    pub parameters: bool,
     /// Refresh requests sent, for their ids.
     refreshes: u64,
     shared: Arc<Shared>,
@@ -75,6 +81,9 @@ impl Options {
             kinds: initialization
                 .and_then(|o| o.get("inlayHints"))
                 .map_or(HintKinds::ALL, |v| kinds_from(v, HintKinds::ALL)),
+            parameters: initialization
+                .and_then(|o| o.get("inlayHints"))
+                .is_none_or(|v| parameters_from(v, true)),
             refreshes: 0,
             shared: Arc::default(),
             canonical: HashMap::new(),
@@ -95,6 +104,15 @@ pub(crate) fn kinds_from(value: &Value, current: HintKinds) -> HintKinds {
     }
 }
 
+/// Whether an `inlayHints` settings object turns the parameter-name hints on.
+/// A key that is absent or not a boolean keeps `current`.
+pub(crate) fn parameters_from(value: &Value, current: bool) -> bool {
+    value
+        .get("parameters")
+        .and_then(Value::as_bool)
+        .unwrap_or(current)
+}
+
 impl Server<'_> {
     /// Apply `workspace/didChangeConfiguration`. Settings without an
     /// `inlayHints` object change nothing.
@@ -108,8 +126,10 @@ impl Server<'_> {
             return;
         };
         let kinds = kinds_from(value, self.inlay.kinds);
-        if kinds != self.inlay.kinds {
+        let parameters = parameters_from(value, self.inlay.parameters);
+        if kinds != self.inlay.kinds || parameters != self.inlay.parameters {
             self.inlay.kinds = kinds;
+            self.inlay.parameters = parameters;
             self.refresh_inlay_hints();
         }
     }
@@ -146,19 +166,54 @@ impl Server<'_> {
             oxabl_workspace::is_root_file(path) || oxabl_workspace::is_include_fragment(path)
         });
         let none = || Response::new_ok(req.id.clone(), Vec::<InlayHint>::new());
-        let (Some(path), true, false) = (path, self.inlay.supported, kinds.none()) else {
+        let parameters = self.inlay.parameters;
+        let (Some(path), true, false) = (path, self.inlay.supported, kinds.none() && !parameters)
+        else {
             return self.respond(none());
         };
         let Some(doc) = self.documents.get(&uri) else {
             return self.respond(none());
         };
         let root = self.contexts.selected(&uri).cloned();
-        let Some((config, generations, overlay)) = self.host.with(|sessions| {
+        let root_version = root.as_ref().and_then(|r| self.inlay.shared.version_of(r));
+        let shared = Arc::clone(&self.inlay.shared);
+        let version = doc.version;
+        let Some((config, generations, overlay, parameter_work)) = self.host.with(|sessions| {
             let session = sessions.get(&self.session_root)?;
+            let generations = (session.config_generation(), session.schema_revision());
+            let parameter_work = parameters.then(|| {
+                let key = ParameterKey {
+                    version,
+                    root: root.clone(),
+                    root_version,
+                    config: generations.0,
+                    schema: generations.1,
+                    buffers: session.buffer_generation(),
+                    disk: shared.disk.load(Ordering::SeqCst),
+                };
+                let kept = lock(&shared.parameters)
+                    .get(&uri)
+                    .filter(|(kept, _)| *kept == key)
+                    .map(|(_, hints)| Arc::clone(hints));
+                match kept {
+                    Some(hints) => ParameterWork::Ready(hints),
+                    None => ParameterWork::Compute(Box::new(ParameterSource {
+                        key,
+                        host: self.host.clone(),
+                        session_root: self.session_root.clone(),
+                        root: root
+                            .clone()
+                            .unwrap_or_else(|| oxabl_daemon::canonical_path(&path)),
+                        file: oxabl_daemon::canonical_path(&path),
+                        overlay: session.buffer_overlay(),
+                    })),
+                }
+            });
             Some((
                 session.database().config().clone(),
-                (session.config_generation(), session.schema_revision()),
+                generations,
                 root.as_ref().map(|_| session.buffer_overlay()),
+                parameter_work,
             ))
         }) else {
             return self.respond(none());
@@ -167,7 +222,6 @@ impl Server<'_> {
         let encoding = self.encoding.clone();
         let from = position_to_byte(&rope, params.range.start, &encoding) as u32;
         let to = position_to_byte(&rope, params.range.end, &encoding) as u32;
-        let root_version = root.as_ref().and_then(|r| self.inlay.shared.version_of(r));
         let key = Key {
             text: 0,
             context: root.clone(),
@@ -188,6 +242,7 @@ impl Server<'_> {
                 context: root.zip(overlay),
             },
             key,
+            parameters: parameter_work,
             range: from..=to,
             rope,
             encoding,
@@ -249,6 +304,7 @@ impl Server<'_> {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(uri);
+                lock(&self.inlay.shared.parameters).remove(uri);
             }
         }
     }
@@ -312,6 +368,45 @@ struct Key {
 /// The hints of a whole file.
 type Hints = Arc<Vec<oxabl_pipeline::InlayHint>>;
 
+/// What a file's parameter-name hints were computed from. They read the
+/// signatures in other files, so any change of an open buffer or of a file on
+/// disk makes them stale.
+#[derive(Clone, PartialEq, Eq)]
+struct ParameterKey {
+    version: i32,
+    root: Option<PathBuf>,
+    root_version: Option<i32>,
+    config: u64,
+    schema: u32,
+    buffers: u64,
+    disk: u64,
+}
+
+/// The parameter-name hints of one request: kept from an earlier one, or
+/// computed over a snapshot of the session.
+enum ParameterWork {
+    Ready(Hints),
+    Compute(Box<ParameterSource>),
+}
+
+struct ParameterSource {
+    key: ParameterKey,
+    /// The session's snapshot is taken when the worker reaches the request,
+    /// not before: a snapshot that waits in the queue would make a write wait
+    /// for it.
+    host: SessionHost,
+    session_root: PathBuf,
+    /// The file that is analysed: the selected context, or the file itself.
+    root: PathBuf,
+    /// The file the hints are for.
+    file: PathBuf,
+    overlay: HashMap<PathBuf, Arc<str>>,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// One file's cached hints.
 struct Cached {
     key: Key,
@@ -341,6 +436,8 @@ struct Job {
     root_version: Option<i32>,
     source: HintSource,
     key: Key,
+    /// The parameter-name hints, when the client wants them.
+    parameters: Option<ParameterWork>,
     range: RangeInclusive<u32>,
     rope: ropey::Rope,
     encoding: PositionEncodingKind,
@@ -355,6 +452,8 @@ pub(crate) struct Shared {
     paths: Mutex<HashMap<PathBuf, i32>>,
     /// The last hints of each open file, for the whole file.
     cache: Mutex<HashMap<Uri, Cached>>,
+    /// The last parameter-name hints of each open file, for the whole file.
+    parameters: Mutex<HashMap<Uri, (ParameterKey, Hints)>>,
     /// Bumped on each watched-file change.
     disk: AtomicU64,
 }
@@ -408,50 +507,38 @@ fn answer(shared: &Shared, job: Job) -> Response {
             "oxabl-lsp: an edit replaced this text".to_string(),
         );
     }
+    let cancelled = std::cell::Cell::new(false);
     let computed = oxabl_common::catch_panic(|| {
         if !job.source.enabled() {
             return Vec::new();
         }
-        let key = Key {
-            text: hash(&job.source.text),
-            ..job.key.clone()
-        };
-        let cached = shared
-            .cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&job.uri)
-            .filter(|c| c.key == key && c.overlay == job.source.overlay_fingerprint(&c.read))
-            .map(|c| Arc::clone(&c.hints));
-        let hints = cached.unwrap_or_else(|| {
-            let (hints, read) = job.source.hints(key.kinds);
-            let read: Vec<PathBuf> = read
+        let mut hints: Vec<oxabl_pipeline::InlayHint> = if job.key.kinds.none() {
+            Vec::new()
+        } else {
+            database_hints(shared, &job)
                 .iter()
-                .map(|p| oxabl_daemon::canonical_path(p))
-                .collect();
-            let hints = Arc::new(hints);
-            let overlay = job.source.overlay_fingerprint(&read);
-            shared
-                .cache
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(
-                    job.uri.clone(),
-                    Cached {
-                        key,
-                        read,
-                        overlay,
-                        hints: Arc::clone(&hints),
-                    },
-                );
-            hints
-        });
+                .filter(|h| job.range.contains(&h.at))
+                .cloned()
+                .collect()
+        };
+        if let Some(work) = &job.parameters {
+            match parameter_hints(shared, &job.uri, work) {
+                Some(kept) => {
+                    hints.extend(kept.iter().filter(|h| job.range.contains(&h.at)).cloned());
+                    hints.sort_by_key(|h| h.at);
+                }
+                None => cancelled.set(true),
+            }
+        }
         hints
-            .iter()
-            .filter(|h| job.range.contains(&h.at))
-            .cloned()
-            .collect()
     });
+    if cancelled.get() {
+        return Response::new_err(
+            job.id,
+            ErrorCode::ContentModified as i32,
+            "oxabl-lsp: an edit replaced this analysis".to_string(),
+        );
+    }
     match computed {
         Ok(hints) => Response::new_ok(job.id, render(&hints, &job.rope, &job.encoding)),
         Err(panic) => Response::new_err(
@@ -460,6 +547,62 @@ fn answer(shared: &Shared, job: Job) -> Response {
             format!("oxabl-lsp: the inlay hints failed: {panic}"),
         ),
     }
+}
+
+/// The database hints of the whole file, from the cache when its text,
+/// context and settings are those of the last request.
+fn database_hints(shared: &Shared, job: &Job) -> Hints {
+    let key = Key {
+        text: hash(&job.source.text),
+        ..job.key.clone()
+    };
+    let cached = lock(&shared.cache)
+        .get(&job.uri)
+        .filter(|c| c.key == key && c.overlay == job.source.overlay_fingerprint(&c.read))
+        .map(|c| Arc::clone(&c.hints));
+    cached.unwrap_or_else(|| {
+        let (hints, read) = job.source.hints(key.kinds);
+        let read: Vec<PathBuf> = read
+            .iter()
+            .map(|p| oxabl_daemon::canonical_path(p))
+            .collect();
+        let hints = Arc::new(hints);
+        let overlay = job.source.overlay_fingerprint(&read);
+        lock(&shared.cache).insert(
+            job.uri.clone(),
+            Cached {
+                key,
+                read,
+                overlay,
+                hints: Arc::clone(&hints),
+            },
+        );
+        hints
+    })
+}
+
+/// The parameter-name hints of the whole file. `None` when an edit cancelled
+/// the analysis. A file whose analysis fails has no hints, which is only a
+/// missing decoration.
+fn parameter_hints(shared: &Shared, uri: &Uri, work: &ParameterWork) -> Option<Hints> {
+    let source = match work {
+        ParameterWork::Ready(hints) => return Some(Arc::clone(hints)),
+        ParameterWork::Compute(source) => source,
+    };
+    let (snapshot, schema) = source.host.with(|sessions| {
+        let session = sessions.get(&source.session_root)?;
+        Some((session.database().clone(), session.schema_handle()))
+    })?;
+    let hints = compute_parameter_hints(
+        &snapshot,
+        schema,
+        &source.root,
+        &source.file,
+        source.overlay.clone(),
+    )?;
+    let hints = Arc::new(hints.unwrap_or_default());
+    lock(&shared.parameters).insert(uri.clone(), (source.key.clone(), Arc::clone(&hints)));
+    Some(hints)
 }
 
 fn hash(text: &str) -> u64 {
@@ -479,7 +622,8 @@ fn render(
         .map(|h| InlayHint {
             position: byte_to_position(rope, h.at as usize, encoding),
             label: InlayHintLabel::String(h.label.clone()),
-            kind: None,
+            kind: (h.kind == oxabl_pipeline::InlayKind::Parameter)
+                .then_some(InlayHintKind::PARAMETER),
             text_edits: None,
             tooltip: Some(InlayHintTooltip::String(h.tooltip.clone())),
             padding_left: Some(h.after),

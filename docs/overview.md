@@ -30,6 +30,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - inactive `&IF` branches (`textDocument/inactiveRegions`, the shape clangd uses): the branches the preprocessor does not compile under `[workspace.preprocessor]` or the selected include context, sent with the diagnostics of the same analysis. A branch decided on a guess is never in the list (`docs/design/inactive-regions.md`)
   - semantic highlighting (`textDocument/semanticTokens/full`, `full/delta` and `range`): a token for each name that oxabl resolves to one thing (variable, parameter, property, function, method, class, interface, event, table, temp-table, buffer, dataset, database field, temp-table field), with `declaration` and `static`. A name that does not resolve has no token, so the grammar of the editor colours it. A stale request answers `ContentModified` (`docs/design/semantic-tokens.md`)
   - go to implementation, go to super method and the type hierarchy (`textDocument/implementation`, `oxabl/superMethod`, `textDocument/prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`): the classes that extend or implement a class, interface or method and the supertypes of a class, across the files of the workspace from one reverse inheritance index. A supertype that oxabl cannot resolve is an item that says so, and an answer that can be short says so (`docs/design/type-hierarchy.md`)
+  - signature help (`textDocument/signatureHelp`) and parameter-name inlay hints: the parameters of the function, method, constructor, `RUN` target or common built-in function that a call reaches, every overload with the one the arguments pick first, and the name of the parameter before each argument. A call that oxabl cannot resolve has no signature (`docs/design/signature-help.md`)
   - folding and expand selection (`textDocument/foldingRange`, `textDocument/selectionRange`): syntax ranges from `oxabl_pipeline::document_syntax` on the raw buffer (`docs/design/folding-selection.md`)
   - Status: Experimental; usable in-editor via the sideloadable VS Code extension (`clients/vscode/`)
 - Formatter
@@ -354,7 +355,7 @@ The `[workspace.features]` table in `oxabl.toml` turns oxabl features on or off 
 
 | Key | Covers in the editor | Covers in the CLI |
 |---|---|---|
-| `diagnostics` | Every diagnostic oxabl reports for a source file (parse, preprocessor, semantic and lint findings), the code lenses of the effect rules and the database inlay hints. | `oxabl check` does not run or report the diagnostics channel. |
+| `diagnostics` | Every diagnostic oxabl reports for a source file (parse, preprocessor, semantic and lint findings), the code lenses of the effect rules and the inlay hints (the database hints and the parameter-name hints). | `oxabl check` does not run or report the diagnostics channel. |
 | `format` | Formatting, and so format on save. | `oxabl check` does not run or report the format-drift channel. `oxabl format` refuses to run. |
 
 With `diagnostics = false`, the language server publishes an empty list for each open document. This clears what it published before. With `format = false`, `textDocument/formatting` returns no edits. The server keeps the formatting capability, because the file can change while the server runs. A change to `oxabl.toml` applies at once, with no reload.

@@ -5,7 +5,8 @@
 references and the call hierarchy use the same resolution; see
 `docs/design/references.md`. Go to implementation, go to super method and the
 type hierarchy read the cursor the same way; see `docs/design/type-hierarchy.md`. Semantic tokens read the same analysis; see
-`docs/design/semantic-tokens.md`.
+`docs/design/semantic-tokens.md`. Signature help and the parameter-name hints
+read the same sites; see `docs/design/signature-help.md`.
 Each analyses one compilation unit per request and gives answers in the bytes of
 physical files: a declaration written in an include is placed in the include,
 never in the expanded text.

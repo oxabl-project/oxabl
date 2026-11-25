@@ -456,7 +456,7 @@ impl Navigation<'_, '_> {
     /// call `node`: the unit is an include analysed alone, it misses the text
     /// of an include, or the call is in a class with an ancestor that was not
     /// read.
-    fn may_hide_routines(&self, node: oxabl_ast::NodeId) -> bool {
+    pub(super) fn may_hide_routines(&self, node: oxabl_ast::NodeId) -> bool {
         self.run.file().is_some_and(is_include_fragment)
             || self.expanded.lost_include_text()
             || self.model.semantic.symbols.may_be_member_call(node)
@@ -617,7 +617,7 @@ impl Navigation<'_, '_> {
 /// A declaration found in a parsed text: the statement, the procedure,
 /// function or method that holds it, and the temp-table field it names.
 pub(super) struct Declaration<'a> {
-    statement: &'a Statement,
+    pub(super) statement: &'a Statement,
     routine: Option<&'a Statement>,
     field: Option<&'a TempTableField>,
 }
@@ -653,7 +653,10 @@ impl Declaration<'_> {
 
 /// The statement that declares the name at `name`, found by the span of the
 /// declared name.
-fn find_declaration(statements: &[Statement], name: VirtualSpan) -> Option<Declaration<'_>> {
+pub(super) fn find_declaration(
+    statements: &[Statement],
+    name: VirtualSpan,
+) -> Option<Declaration<'_>> {
     let span = Span {
         start: name.start,
         end: name.end,
@@ -918,7 +921,7 @@ fn word_matches(token: &Token, text: &str, word: &str) -> bool {
 
 /// The full name of a built-in function written as `name`, which may be an
 /// abbreviation.
-fn full_function_name(name: &str) -> &str {
+pub(super) fn full_function_name(name: &str) -> &str {
     let lower = name.to_ascii_lowercase();
     match FUNCTION_ABBREVIATIONS.binary_search_by(|(abbrev, _)| (*abbrev).cmp(lower.as_str())) {
         Ok(at) => FUNCTION_ABBREVIATIONS[at].1,
@@ -926,7 +929,7 @@ fn full_function_name(name: &str) -> &str {
     }
 }
 
-fn find_doc(kind: DocKind, name: &str) -> Option<&'static KeywordDoc> {
+pub(super) fn find_doc(kind: DocKind, name: &str) -> Option<&'static KeywordDoc> {
     KEYWORD_DOCS.iter().find(|doc| {
         doc.kind == kind && doc.words.len() == 1 && doc.words[0].eq_ignore_ascii_case(name)
     })
@@ -946,13 +949,13 @@ pub(crate) fn doc_markdown(doc: &KeywordDoc) -> String {
 }
 
 /// A parsed text, for rendering the declarations in it.
-struct Source<'t> {
+pub(super) struct Source<'t> {
     text: &'t str,
     tokens: &'t [Token],
 }
 
 impl<'t> Source<'t> {
-    fn new(text: &'t str, tokens: &'t [Token]) -> Self {
+    pub(super) fn new(text: &'t str, tokens: &'t [Token]) -> Self {
         Source { text, tokens }
     }
 
@@ -1401,7 +1404,7 @@ impl<'t> Source<'t> {
     }
 
     /// A parameter as a signature writes it: `INPUT a AS CHARACTER`.
-    fn parameter(&self, statement: &Statement) -> Option<String> {
+    pub(super) fn parameter(&self, statement: &Statement) -> Option<String> {
         let StatementKind::DefineParameter {
             direction,
             param_type,
@@ -1495,7 +1498,7 @@ fn initial_value_text(source: &Source, kind: &StatementKind) -> Option<String> {
 }
 
 /// The parameter definitions that lead a routine's statement list.
-fn parameters_of(list: &[Statement]) -> Vec<&Statement> {
+pub(super) fn parameters_of(list: &[Statement]) -> Vec<&Statement> {
     list.iter()
         .filter(|s| matches!(s.kind, StatementKind::DefineParameter { .. }))
         .collect()
@@ -1526,6 +1529,6 @@ fn push_access(line: &mut String, access: Option<AccessModifier>, is_static: boo
 }
 
 /// The type as ABL writes it; `None` for a type an `&IF` chooses.
-fn type_name(data_type: &DataType) -> Option<String> {
+pub(super) fn type_name(data_type: &DataType) -> Option<String> {
     data_type_name(data_type)
 }

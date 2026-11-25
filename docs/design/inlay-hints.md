@@ -12,6 +12,11 @@ in the editor, at the code they are about.
 - `oxabl lsp` sends them as the answer to `textDocument/inlayHint`.
 - The VS Code extension sends the settings that turn each kind off.
 
+The parameter-name hints (the name of the parameter before each argument of a
+call) are in the same answer and share the range and cost rules below. They
+are not database facts, and they need no strict rule. See
+`docs/design/signature-help.md`.
+
 ## Kinds
 
 | Kind | Label and place | Shown for | Selected by |
@@ -134,16 +139,17 @@ hints. A file that does not show hints gets an empty list, so a change of
 ## Settings
 
 The client turns each kind off on its own. The server reads an `inlayHints`
-object with the boolean keys `locks`, `index`, `scope` and `transactions`. A
-key that is absent keeps its value; at the start every kind is on.
+object with the boolean keys `locks`, `index`, `scope`, `transactions` and
+`parameters`. A key that is absent keeps its value; at the start every kind is
+on.
 
 - At the start: `initializationOptions.inlayHints`.
 - After a change: `workspace/didChangeConfiguration` with
   `settings.oxabl.inlayHints` (or `settings.inlayHints`). The server then sends
   `workspace/inlayHint/refresh` when the client supports it.
 
-The VS Code settings are `oxabl.inlayHints.locks`, `.index`, `.scope` and
-`.transactions`. VS Code's own `editor.inlayHints.enabled` turns all hints off.
+The VS Code settings are `oxabl.inlayHints.locks`, `.index`, `.scope`,
+`.transactions` and `.parameters`. VS Code's own `editor.inlayHints.enabled` turns all hints off.
 
 ## Cost
 
@@ -176,7 +182,9 @@ request returns only the hints in its range.
   offset.
 - A kind that is off, or whose rule is off, is not computed. When no kind
   is wanted (the index setting is off and no strict rule is on), the file is
-  not analysed.
+  not analysed. The parameter-name hints are computed apart from the database
+  hints, once for each version of the text, and they are kept only while no
+  open buffer or file on disk changes, because they read other files.
 - Only the index needs the effects analysis. It needs the scope analysis, the
   flow analysis and the call facts too, so a project with no strict rule pays
   for these when the editor asks for hints. The analysis is for the requested
