@@ -1786,12 +1786,31 @@ pub enum OnAction {
     Block(Box<Statement>),
     /// REVERT -- removes the trigger.
     Revert,
-    /// PERSISTENT RUN procedure [IN handle] [(args)].
+    /// PERSISTENT RUN procedure | VALUE(expr) [IN handle] [(args)].
     PersistentRun {
-        procedure: Identifier,
+        procedure: PersistentRunTarget,
         in_handle: Option<Expression>,
         arguments: Vec<Expression>,
     },
+}
+
+/// The procedure a trigger's `PERSISTENT RUN` starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistentRunTarget {
+    /// A name or path as written, e.g. `myProc` or `lib/util.w`.
+    Name(Identifier),
+    /// `VALUE(expr)`: the expression inside the parentheses.
+    Value(Expression),
+}
+
+impl PersistentRunTarget {
+    /// The expression of a `VALUE(expr)` target, `None` for a name.
+    pub fn expression(&self) -> Option<&Expression> {
+        match self {
+            Self::Name(_) => None,
+            Self::Value(expression) => Some(expression),
+        }
+    }
 }
 
 /// Database trigger event types.

@@ -12,11 +12,11 @@ use oxabl_ast::{
     DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DeleteObjectKind, DisplayItem, Expression,
     ExpressionKind, FileName, FindType, FrameField, HandleParamKind, HandlePassingOptions,
     Identifier, IndexField, Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection,
-    ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SkippedTail, SortDirection,
-    Span, Statement, StatementKind, StreamDirection, StreamOperation, StreamTarget, StringLiteral,
-    SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing,
-    TypeSource, UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef,
-    WidgetTrigger, XmlSerializeOptions,
+    ParameterType, ParentIdRelation, PersistentRunTarget, PreprocIf, RunArgument, RunTarget,
+    SkippedTail, SortDirection, Span, Statement, StatementKind, StreamDirection, StreamOperation,
+    StreamTarget, StringLiteral, SubscribeTarget, TempTableField, TempTableIndex,
+    TriggerAssignParam, TriggerReferencing, TypeSource, UnknownLiteral, UseIndex, UsingSource,
+    WhenBranch, WidgetQualifier, WidgetRef, WidgetTrigger, XmlSerializeOptions,
 };
 use oxabl_lexer::TokenValue;
 use oxabl_lexer::{Kind, is_callable_kind};
@@ -7177,8 +7177,12 @@ impl Parser<'_> {
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
         }
-        if self.check(Kind::Alias) {
+        let database_form = self.check(Kind::Database)
+            && (Self::can_be_identifier(self.peek_at(1).kind)
+                || matches!(self.peek_at(1).kind, Kind::StringLiteral | Kind::Value));
+        if self.check(Kind::Alias) || database_form {
             // CREATE ALIAS name FOR DATABASE value(expr). — database alias creation.
+            // CREATE DATABASE new-name FROM old-name ... — database creation.
             let (_, hi) = self.skip_to_statement_end_triggers_aware();
             return Ok(self.skipped_stmt(hi));
         }
@@ -7212,8 +7216,18 @@ impl Parser<'_> {
     fn recover_create_as_skipped(
         &mut self,
         (resume, error_count, anchor, import_count): (usize, usize, usize, usize),
-        error: ParseError,
+        mut error: ParseError,
     ) -> Statement {
+        // A tail that runs to the end of the text fails there, far from its
+        // cause: the error is placed at the `CREATE` keyword.
+        let eof = self.tokens.last().map_or(0, |token| token.start);
+        if error.span.start as usize >= eof {
+            let create = self.token_at(resume.saturating_sub(1));
+            error.span = Span {
+                start: create.start as u32,
+                end: create.end as u32,
+            };
+        }
         self.errors.truncate(error_count);
         self.imported_classes.truncate(import_count);
         self.failed_creates.insert(resume, error.clone());
@@ -8574,12 +8588,20 @@ impl Parser<'_> {
             return Ok(OnAction::Revert);
         }
 
-        // PERSISTENT RUN procedure [(args)]
+        // PERSISTENT RUN procedure | VALUE(expr) [IN handle] [(args)]
         if self.check(Kind::Persistent) {
             self.advance();
             self.expect_kind(Kind::Run, "Expected RUN after PERSISTENT")?;
-            let (name, span) = self.parse_procedure_name()?;
-            let procedure = Identifier { span, name };
+            let procedure = if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
+                self.advance(); // consume VALUE
+                self.advance(); // consume '('
+                let expression = self.parse_expression()?;
+                self.expect_kind(Kind::RightParen, "Expected ')' after VALUE expression")?;
+                PersistentRunTarget::Value(expression)
+            } else {
+                let (name, span) = self.parse_procedure_name()?;
+                PersistentRunTarget::Name(Identifier { span, name })
+            };
             let in_handle = if self.check(Kind::KwIn) {
                 self.advance();
                 Some(self.parse_run_in_handle()?)

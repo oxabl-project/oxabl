@@ -883,23 +883,28 @@ impl ExpandedFile {
         })
     }
 
-    /// The empty span at the end of the root buffer, or `None` when the
-    /// expansion ends in an include.
-    fn resolve_end(&self) -> Option<FileSpan> {
-        let Some(last) = self.text.len().checked_sub(1) else {
-            return Some(FileSpan {
-                file: self.root,
-                span: Span { start: 0, end: 0 },
-            });
+    /// The empty span at the end of the root buffer. When the expansion ends
+    /// in an include, the end of the root's last bytes: the later of its last
+    /// chunk and its last include site.
+    fn resolve_end(&self) -> FileSpan {
+        let end = if self.chunks.is_empty() {
+            self.text.len() as u32
+        } else {
+            let chunk_end = self
+                .chunks
+                .iter()
+                .rev()
+                .find(|chunk| {
+                    chunk.origin == ChunkOrigin::Root && FileId::new(chunk.file) == self.root
+                })
+                .map_or(0, |chunk| chunk.real_start + chunk.len);
+            let site_end = self.include_regions.iter().map(|r| r.site.end).max();
+            chunk_end.max(site_end.unwrap_or(0))
         };
-        let (file, real) = self.resolve(last as u32)?;
-        (file == self.root).then_some(FileSpan {
-            file,
-            span: Span {
-                start: real + 1,
-                end: real + 1,
-            },
-        })
+        FileSpan {
+            file: self.root,
+            span: Span { start: end, end },
+        }
     }
 
     /// `span` in the bytes of the file that holds its start, which maps to
@@ -1745,13 +1750,13 @@ pub fn collect_from_expanded_with_summaries(
         let virt = err.into_diagnostic(root);
         let resolved = resolve_diagnostic(virt, expanded).or_else(|mut d| {
             // An error at the end of the text (a block that is not closed) has
-            // no byte to map: it is reported at the end of the root buffer.
-            match expanded.resolve_end().filter(|_| at_end) {
-                Some(end) => {
-                    d.span = end;
-                    Ok(d)
-                }
-                None => Err(d),
+            // no byte to map: it is reported at the end of the root buffer. An
+            // include fragment is partial by nature and is exempt.
+            if at_end && !source_context.is_include_fragment() {
+                d.span = expanded.resolve_end();
+                Ok(d)
+            } else {
+                Err(d)
             }
         });
         if let Ok(resolved) = resolved {

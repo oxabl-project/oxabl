@@ -278,10 +278,15 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   WIDGET-POOL`, `RELEASE OBJECT` and `APPLY` have their own variants.
   **Invariant:** a `CREATE` whose tail does not parse falls back to `Skipped` from the first
   token after `CREATE`, so it never swallows the next statement. The parse error stays in the
-  file, so the file has a `PARSE001` and the formatter leaves it alone. A `CREATE` form that oxabl does not try to
-  model (`CREATE ALIAS`, a type keyword it does not know) is valid ABL and is skipped with no
-  error. A widget `TRIGGERS` body is a
-  deferred trigger: semantic walks it in a `Trigger` scope, `oxabl_flow` does not inline it.
+  file, so the file has a `PARSE001` and the formatter leaves it alone. When the tail runs to
+  the end of the text, the error is placed at the `CREATE` keyword. A `CREATE` form that
+  oxabl does not try to model (`CREATE ALIAS`, `CREATE DATABASE`, a type keyword it does not
+  know) is valid ABL and is skipped with no error. The parser keeps at most 50 errors
+  (`MAX_ERRORS`) and then stops. A file with 50 failed `CREATE` statements loses the rest
+  of its tree. A widget `TRIGGERS`
+  body is a deferred trigger: semantic walks it in a `Trigger` scope, `oxabl_flow` does not
+  inline it. The trigger `PERSISTENT RUN` takes a name or `VALUE(expr)` as its target
+  (`PersistentRunTarget`); the readers walk the expression of `VALUE`.
   `APPLY` operands are read without a miss diagnostic, because a bare name there is usually a
   static widget or frame, not a symbol.
 
@@ -382,6 +387,12 @@ A `TempTableField` has a `span` too: from `FIELD` to its last option.
   lint report for the recognized statements.
 - Consumers that need the "clean" check use `Program::is_ok()` (returns `errors.is_empty()`)
   — for example, a CI pre-commit hook. Downstream analysis passes do not.
+- An error at the end of the text (a block with no `END.`) has no byte to point at. The
+  collector reports it at the end of the root file; when the expansion ends in an include,
+  that is the end of the include site. An include fragment analysed on its own is exempt: a
+  fragment that opens a block is valid, because the file that includes it closes the block
+  (the same exemption as `handle_support::not_judged`). A parse error inside an include file
+  has no position in the root file and is not reported.
 
 ## 11. Ancillary invariants
 

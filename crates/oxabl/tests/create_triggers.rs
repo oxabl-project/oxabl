@@ -204,8 +204,10 @@ fn a_failed_create_read_again_keeps_its_parse_error() {
 fn a_valid_create_that_oxabl_does_not_model_is_no_parse_error() {
     let sources = [
         "CREATE ALIAS dbalias FOR DATABASE mydb.\n",
-        "CREATE SERVER hServer.\n",
-        "CREATE WIDGET-POOL.\n",
+        // A type keyword that oxabl does not know.
+        "CREATE DATABASE newdb FROM olddb.\n",
+        "CREATE DATABASE \"new\" FROM \"old\".\n",
+        "CREATE DATABASE VALUE(cNew) FROM VALUE(cOld) NEW-INSTANCE.\n",
     ];
     for source in sources {
         let text = check_source("valid.p", source);
@@ -214,4 +216,44 @@ fn a_valid_create_that_oxabl_does_not_model_is_no_parse_error() {
             "{source:?} is valid ABL:\n{text}"
         );
     }
+}
+
+/// `PERSISTENT RUN VALUE(expr)` in a trigger takes arguments and `IN handle`.
+#[test]
+fn a_trigger_that_runs_a_value_target_is_no_parse_error() {
+    let sources = [
+        "CREATE BUTTON h TRIGGERS: ON CHOOSE PERSISTENT RUN VALUE(cProg) (INPUT 1). END TRIGGERS.\n",
+        "CREATE BUTTON h TRIGGERS: ON CHOOSE PERSISTENT RUN VALUE(cProg) IN h2. END TRIGGERS.\n",
+        "CREATE BUTTON h TRIGGERS: ON CHOOSE PERSISTENT RUN VALUE(cProg) IN THIS-PROCEDURE (INPUT 1). END TRIGGERS.\n",
+        "ON CHOOSE OF btn PERSISTENT RUN VALUE(cProg) (INPUT 1).\n",
+    ];
+    for source in sources {
+        let text = check_source("value.p", source);
+        assert!(
+            !text.contains("PARSE001") && !text.contains("parse errors"),
+            "{source:?} is valid ABL:\n{text}"
+        );
+    }
+}
+
+/// The names in a `VALUE(expr)` target are read: a variable used only there is
+/// not unused, and a name that is not declared is reported.
+#[test]
+fn the_expression_of_a_trigger_value_target_is_read() {
+    let declared = "DEFINE VARIABLE h AS HANDLE NO-UNDO.\n\
+        DEFINE VARIABLE cProg AS CHARACTER NO-UNDO.\n\
+        CREATE BUTTON h TRIGGERS: ON CHOOSE PERSISTENT RUN VALUE(cProg). END TRIGGERS.\n";
+    let text = check_source("declared.p", declared);
+    assert!(
+        !text.contains("LINT0001") && !text.contains("LINT0002"),
+        "cProg is read in the VALUE target:\n{text}"
+    );
+
+    let undeclared = "DEFINE VARIABLE h AS HANDLE NO-UNDO.\n\
+        CREATE BUTTON h TRIGGERS: ON CHOOSE PERSISTENT RUN VALUE(cMissing). END TRIGGERS.\n";
+    let text = check_source("undeclared.p", undeclared);
+    assert!(
+        text.contains("LINT0001") && text.contains("cMissing"),
+        "cMissing is not declared:\n{text}"
+    );
 }

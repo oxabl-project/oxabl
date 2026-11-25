@@ -3201,11 +3201,16 @@ impl<'a> ResolveWalker<'a> {
                             self.walk_statement(body, ts);
                         }
                         OnAction::PersistentRun {
+                            procedure,
                             in_handle,
                             arguments,
-                            ..
                         } => {
-                            for arg in in_handle.iter().chain(arguments) {
+                            for arg in procedure
+                                .expression()
+                                .into_iter()
+                                .chain(in_handle.iter())
+                                .chain(arguments)
+                            {
                                 self.walk_expression(arg, scope, AccessMode::Read);
                             }
                         }
@@ -3708,11 +3713,16 @@ impl<'a> ResolveWalker<'a> {
                             match &trigger.action {
                                 OnAction::Block(body) => self.walk_statement(body, ts),
                                 OnAction::PersistentRun {
+                                    procedure,
                                     in_handle,
                                     arguments,
-                                    ..
                                 } => {
-                                    for arg in in_handle.iter().chain(arguments) {
+                                    for arg in procedure
+                                        .expression()
+                                        .into_iter()
+                                        .chain(in_handle.iter())
+                                        .chain(arguments)
+                                    {
                                         self.walk_expression(arg, scope, AccessMode::Read);
                                     }
                                 }

@@ -726,11 +726,16 @@ mod paths {
                         match &t.action {
                             OnAction::Block(b) => self.stmt(b),
                             OnAction::PersistentRun {
+                                procedure,
                                 in_handle,
                                 arguments,
-                                ..
                             } => {
-                                for e in in_handle.iter().chain(arguments) {
+                                for e in procedure
+                                    .expression()
+                                    .into_iter()
+                                    .chain(in_handle.iter())
+                                    .chain(arguments)
+                                {
                                     read(self, e);
                                 }
                             }
@@ -743,11 +748,16 @@ mod paths {
                     {
                         OnAction::Block(b) => self.stmt(b),
                         OnAction::PersistentRun {
+                            procedure,
                             in_handle,
                             arguments,
-                            ..
                         } => {
-                            for e in in_handle.iter().chain(arguments) {
+                            for e in procedure
+                                .expression()
+                                .into_iter()
+                                .chain(in_handle.iter())
+                                .chain(arguments)
+                            {
                                 read(self, e);
                             }
                         }
