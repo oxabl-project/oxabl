@@ -16,6 +16,7 @@ import { installRecordPath, isManaged } from "./install";
 import { SchemaBrowser } from "./schemaView";
 import { registerSnippets } from "./snippetCompletion";
 import { installSkill } from "./skill";
+import { goToSuperMethod } from "./superMethod";
 import { registerUpdates } from "./updates";
 
 let client: LanguageClient | undefined;
@@ -68,6 +69,7 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     includerContexts,
     vscode.commands.registerCommand("oxabl.showExpandedUnit", () => expandedUnits.show()),
     vscode.commands.registerCommand("oxabl.selectIncluderContext", () => includerContexts.select()),
+    vscode.commands.registerCommand("oxabl.goToSuperMethod", () => goToSuperMethod(() => client)),
     vscode.commands.registerCommand("oxabl.restartServer", restartServer),
     vscode.commands.registerCommand("oxabl.installCli", () => cli.installOrUpdate()),
     vscode.commands.registerCommand("oxabl.installSkill", installSkillCommand),
