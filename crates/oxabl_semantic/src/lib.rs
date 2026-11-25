@@ -29,6 +29,7 @@ mod index_vec;
 mod inherited;
 mod namespace;
 mod operators;
+mod overload;
 mod resolve;
 mod scope;
 mod sequence;
