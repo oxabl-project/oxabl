@@ -53,6 +53,8 @@ use oxabl_semantic::{
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig, is_include_fragment};
 
+mod fixes;
+
 /// Which pipeline stage produced a diagnostic. Lets the CLI route preprocessor
 /// diagnostics to its own JSON channel while parse/semantic/lint feed the
 /// versioned `diagnostics` envelope section.
@@ -484,6 +486,10 @@ pub struct ExpandedFile {
     /// The offsets of `elided_offsets` that are includes that did not
     /// arrive, sorted.
     elided_include_offsets: Vec<u32>,
+    /// Whether the expansion recorded the `&IF` branches and what it missed
+    /// ([`PreprocessMode::TrackBranches`]). Without it, `branches` and
+    /// `missed_expansion` say nothing.
+    branches_tracked: bool,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -1130,6 +1136,7 @@ pub fn expand_source_tracking(
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
+            branches_tracked: false,
             root,
         });
     }
@@ -1282,6 +1289,7 @@ pub fn expand_source_tracking(
                 text_losses: pf.text_losses.clone(),
                 elided_offsets: pf.elided_offsets(),
                 elided_include_offsets: pf.elided_include_offsets(),
+                branches_tracked: mode == PreprocessMode::TrackBranches,
                 root,
             })
         }
@@ -1788,34 +1796,29 @@ pub fn collect_from_expanded_with_summaries(
     let mut include_rows = IncludeRows::default();
     for err in program.errors.into_iter().filter(|_| everything) {
         let at_end = err.span.start as usize >= expanded.text.len();
-        let virt = err.into_diagnostic(root);
-        let resolved = resolve_diagnostic(virt, expanded).or_else(|mut d| {
+        let mut d = err.into_diagnostic(root);
+        let resolved = resolve_diagnostic(&mut d, expanded)
             // An error at the end of the text (a block that is not closed) has
             // no byte to map: it is reported at the end of the root buffer. An
             // include fragment is partial by nature and is exempt.
-            if at_end && !source_context.is_include_fragment() {
+            || (at_end && !source_context.is_include_fragment() && {
                 d.span = expanded.resolve_end();
-                Ok(d)
-            } else {
-                Err(d)
-            }
-        });
-        match resolved {
-            Ok(resolved) => out.diagnostics.push(CollectedDiagnostic {
-                diagnostic: resolved,
+                true
+            });
+        if resolved {
+            out.diagnostics.push(CollectedDiagnostic {
+                diagnostic: d,
                 source: DiagnosticSource::Parse,
-            }),
+            });
+        } else if !at_end {
             // The error is inside an include, so it has no root position of
             // its own. It is never dropped: it is reported at the include's
             // site in the root and in the include file.
-            Err(d) if !at_end => {
-                out.diagnostics.push(CollectedDiagnostic {
-                    diagnostic: include_parse_error_at_site(&d, expanded),
-                    source: DiagnosticSource::Parse,
-                });
-                include_rows.add(d, DiagnosticSource::Parse, expanded, &mut out);
-            }
-            Err(_) => {}
+            out.diagnostics.push(CollectedDiagnostic {
+                diagnostic: include_parse_error_at_site(&d, expanded),
+                source: DiagnosticSource::Parse,
+            });
+            include_rows.add(d, DiagnosticSource::Parse, expanded, &mut out);
         }
     }
 
@@ -1839,14 +1842,23 @@ pub fn collect_from_expanded_with_summaries(
     .with_lint_severities(lint_severities.clone())
     .with_index(index);
     let sem = analyze_file(&program.statements, &ctx);
+    let fixes = fixes::FixMapper::new(
+        expanded,
+        &tokens,
+        source_context.is_include_fragment(),
+        out.parse_recovered,
+    );
 
     for d in sem.diagnostics.iter().filter(|_| everything) {
-        match resolve_diagnostic(d.clone(), expanded) {
-            Ok(resolved) => out.diagnostics.push(CollectedDiagnostic {
-                diagnostic: resolved,
+        let mut d = d.clone();
+        if resolve_diagnostic(&mut d, expanded) {
+            d.fixes = fixes.map(std::mem::take(&mut d.fixes));
+            out.diagnostics.push(CollectedDiagnostic {
+                diagnostic: d,
                 source: DiagnosticSource::Semantic,
-            }),
-            Err(d) => include_rows.add(d, DiagnosticSource::Semantic, expanded, &mut out),
+            });
+        } else {
+            include_rows.add(d, DiagnosticSource::Semantic, expanded, &mut out);
         }
     }
 
@@ -1863,7 +1875,7 @@ pub fn collect_from_expanded_with_summaries(
         &shared,
     );
     let registry = oxabl_lint::Registry::builtin_shared();
-    for d in linted {
+    for mut d in linted {
         if everything
             && registry
                 .rules()
@@ -1873,15 +1885,14 @@ pub fn collect_from_expanded_with_summaries(
             out.include_findings.push(found);
             continue;
         }
-        match resolve_diagnostic(d, expanded) {
-            Ok(resolved) => out.diagnostics.push(CollectedDiagnostic {
-                diagnostic: resolved,
+        if resolve_diagnostic(&mut d, expanded) {
+            d.fixes = fixes.map(std::mem::take(&mut d.fixes));
+            out.diagnostics.push(CollectedDiagnostic {
+                diagnostic: d,
                 source: DiagnosticSource::Lint,
-            }),
-            Err(d) if everything => {
-                include_rows.add(d, DiagnosticSource::Lint, expanded, &mut out);
-            }
-            Err(_) => {}
+            });
+        } else if everything {
+            include_rows.add(d, DiagnosticSource::Lint, expanded, &mut out);
         }
     }
     out.label_files = label_files(&out, expanded);
@@ -2054,6 +2065,8 @@ impl IncludeRows {
         }
         d.span = FileSpan { file, span };
         d.labels.retain_mut(|label| resolve_label(label, expanded));
+        // A fix never edits an include file.
+        d.fixes.clear();
         self.seen.insert(key, out.include_origin.len());
         out.include_origin.push(IncludeOriginDiagnostic {
             diagnostic: d,
@@ -2179,6 +2192,7 @@ fn include_parse_error_at_site(d: &Diagnostic, expanded: &ExpandedFile) -> Diagn
         })
         .unwrap_or_else(|| "the value of a preprocessor name or an include argument".to_string());
     let mut at_site = d.clone();
+    at_site.fixes.clear();
     at_site.message = format!("{} (in {place})", d.message);
     at_site.span = match expanded.resolve_include_site(d.span.span) {
         Some(site) => FileSpan {
@@ -2196,6 +2210,7 @@ fn include_parse_error_at_site(d: &Diagnostic, expanded: &ExpandedFile) -> Diagn
 fn include_finding(d: &Diagnostic, expanded: &ExpandedFile) -> Option<IncludeFinding> {
     let (path, span, site) = expanded.resolve_include_span(d.span.span)?;
     let mut diagnostic = d.clone();
+    diagnostic.fixes.clear();
     diagnostic.span = FileSpan {
         file: expanded.root,
         span: site,
@@ -2253,18 +2268,15 @@ fn label_files(out: &CollectedDiagnostics, expanded: &ExpandedFile) -> Vec<Label
     files
 }
 
-/// Resolve a diagnostic's expanded span (and label spans) to root coordinates,
-/// or hand it back unchanged if its origin is not the root buffer (R8).
-fn resolve_diagnostic(
-    mut d: Diagnostic,
-    expanded: &ExpandedFile,
-) -> Result<Diagnostic, Diagnostic> {
+/// Resolve a diagnostic's expanded span (and label spans) to root coordinates.
+/// `false`, with `d` unchanged, when its origin is not the root buffer (R8).
+fn resolve_diagnostic(d: &mut Diagnostic, expanded: &ExpandedFile) -> bool {
     let Some(span) = expanded.resolve_span(d.span.span) else {
-        return Err(d);
+        return false;
     };
     d.span = span;
     d.labels.retain_mut(|label| resolve_label(label, expanded));
-    Ok(d)
+    true
 }
 
 /// Run the full pipeline for `source` and return every diagnostic, resolved to
@@ -2412,6 +2424,7 @@ mod tests {
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
+            branches_tracked: false,
             root: ROOT,
         }
     }

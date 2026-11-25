@@ -126,9 +126,16 @@ pub struct Expansion {
     /// The directory the root-relative paths were resolved against; see
     /// [`PipelineConfig::search_base`].
     search_base: Option<PathBuf>,
+    /// The root's own text, which the fixes of its findings edit.
+    source: Arc<str>,
 }
 
 impl Expansion {
+    /// The root's own text, as [`LintPipeline::expand`] read it.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
     /// The directory the root-relative paths were resolved against: the
     /// file's own directory, or for a class its package root. `None` with no
     /// file or no root-relative path.
@@ -212,6 +219,7 @@ impl Expansion {
         Expansion {
             inner: Err(diagnostics),
             search_base: None,
+            source: Arc::from(""),
         }
     }
 }
@@ -253,6 +261,8 @@ enum Outcome {
         diagnostics: CollectedDiagnostics,
         semantic: Option<Box<Semantic>>,
         dependency_paths: Vec<PathBuf>,
+        /// The names of the include references the run did not read.
+        unread_includes: Vec<String>,
     },
     /// The run never produced a result: a contained panic (R3, R20).
     Failed(InternalPanic),
@@ -298,7 +308,50 @@ impl LintResult {
                 diagnostics,
                 semantic,
                 dependency_paths,
+                unread_includes: Vec::new(),
             },
+        }
+    }
+
+    /// The result with the include names of `expanded` that the run did not
+    /// read: unresolved, unreadable, or in a branch that was not taken.
+    fn with_unread_includes(mut self, expanded: &ExpandedFile) -> Self {
+        if let Outcome::Computed {
+            unread_includes, ..
+        } = &mut self.outcome
+        {
+            unread_includes.extend(
+                expanded
+                    .unresolved_includes()
+                    .iter()
+                    .chain(expanded.nested_unresolved_includes())
+                    .map(|include| include.name.clone())
+                    .chain(
+                        expanded
+                            .unreadable_includes()
+                            .iter()
+                            .map(|include| include.name.clone()),
+                    )
+                    .chain(
+                        expanded
+                            .skipped_includes()
+                            .iter()
+                            .map(|include| include.name.clone()),
+                    ),
+            );
+        }
+        self
+    }
+
+    /// The names, as written, of the include references the run did not read:
+    /// those that did not resolve or could not be read, and those in an `&IF`
+    /// branch that was not taken. Empty on a failed run.
+    pub fn unread_includes(&self) -> &[String] {
+        match &self.outcome {
+            Outcome::Computed {
+                unread_includes, ..
+            } => unread_includes,
+            Outcome::Failed(_) => &[],
         }
     }
 
@@ -474,11 +527,13 @@ impl std::fmt::Debug for LintResult {
                 diagnostics,
                 semantic,
                 dependency_paths,
+                unread_includes,
             } => f
                 .debug_struct("LintResult::Computed")
                 .field("diagnostics", diagnostics)
                 .field("semantic", &semantic.as_ref().map(|_| "<Semantic>"))
                 .field("dependency_paths", dependency_paths)
+                .field("unread_includes", unread_includes)
                 .finish(),
         }
     }
@@ -1582,6 +1637,7 @@ impl<'a> LintPipeline<'a> {
             return Expansion {
                 inner: Err(vec![encrypted_diagnostic()]),
                 search_base: None,
+                source: Arc::from(""),
             };
         }
         let search_base = self.config.search_base(self.file(), source);
@@ -1600,6 +1656,7 @@ impl<'a> LintPipeline<'a> {
                 },
             ),
             search_base,
+            source: Arc::from(source),
         }
     }
 
@@ -1712,7 +1769,7 @@ impl<'a> LintPipeline<'a> {
                     .as_ref()
                     .and_then(|s| s.file(self.file().unwrap_or(Path::new(""))))
                     .map(|f| f as &dyn oxabl_lint::CalleeSummaries);
-                let (semantic, diagnostics) = self.with_run_index(|index| {
+                let (semantic, mut diagnostics) = self.with_run_index(|index| {
                     collect_from_expanded_with_summaries(
                         expanded,
                         &self.config.schema,
@@ -1724,7 +1781,16 @@ impl<'a> LintPipeline<'a> {
                         provider,
                     )
                 });
+                crate::fix::place_fixes(
+                    diagnostics
+                        .diagnostics
+                        .iter_mut()
+                        .map(|c| &mut c.diagnostic),
+                    expansion.source(),
+                    self.config.style.keyword_case,
+                );
                 LintResult::computed(semantic.map(Box::new), diagnostics, dependency_paths)
+                    .with_unread_includes(expanded)
             }
             // Fatal preprocessing failure: no model, and the preprocessor's own
             // loud errors are the whole diagnostic set.

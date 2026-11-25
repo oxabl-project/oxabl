@@ -82,6 +82,7 @@ pub mod fixtures;
 
 mod effects;
 mod explain;
+pub mod fix;
 pub use effects::{EffectFile, Elsewhere, Routine, WorkspaceEffects};
 pub mod completion;
 mod config;

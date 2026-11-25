@@ -542,3 +542,21 @@ pub(super) fn leading_tokens(source: &str, span: Span, n: usize) -> Vec<(Token, 
         })
         .collect()
 }
+
+/// The tokens of the statement at `span`, comments left out, with offsets in
+/// `source`. Empty when the span does not map into `source`.
+pub(super) fn statement_tokens(source: &str, span: Span) -> Vec<Token> {
+    let Some(text) = source_of(source, span) else {
+        return Vec::new();
+    };
+    let base = span.start as usize;
+    Lexer::new(text)
+        .take_while(|t| t.kind != Kind::Eof)
+        .filter(|t| t.kind != Kind::Comment)
+        .map(|mut t| {
+            t.start += base;
+            t.end += base;
+            t
+        })
+        .collect()
+}

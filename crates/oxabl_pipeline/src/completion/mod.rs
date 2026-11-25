@@ -11,7 +11,7 @@
 //! [`CompletionList::incomplete`].
 
 mod base;
-mod case;
+pub(crate) mod case;
 mod context;
 mod keywords;
 mod names;

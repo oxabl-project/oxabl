@@ -224,3 +224,81 @@ DEFINE TEMP-TABLE ttPlain FIELD x AS INTEGER.
         ]
     );
 }
+
+/// Each finding's source text with its one fix applied, or the bare text when
+/// it has no fix.
+fn fixed(src: &str) -> Vec<String> {
+    check(run, src)
+        .iter()
+        .map(|d| match d.fixes.as_slice() {
+            [] => "no fix".to_string(),
+            [fix] => {
+                assert_eq!((fix.title.as_str(), fix.preferred), ("Add NO-UNDO", true));
+                let [edit] = fix.edits.as_slice() else {
+                    panic!("one edit: {fix:?}");
+                };
+                let (start, end) = (edit.span.span.start as usize, edit.span.span.end as usize);
+                let statement = edit.statement.span;
+                let mut text = src.to_string();
+                text.replace_range(start..end, &edit.new_text);
+                let grown = edit.new_text.len() - (end - start);
+                text[statement.start as usize..statement.end as usize + grown].to_string()
+            }
+            more => panic!("one fix: {more:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn the_fix_adds_no_undo_after_the_type_phrase() {
+    let src = "\
+DEFINE VARIABLE a AS INTEGER INITIAL 5.
+DEF VAR b AS CHAR EXTENT 2.
+DEFINE VARIABLE c LIKE Customer.Name FORMAT \"x(8)\".
+DEFINE TEMP-TABLE ttA FIELD x AS INTEGER.
+PROCEDURE p:
+    DEFINE INPUT PARAMETER d AS DECIMAL.
+END PROCEDURE.
+";
+    assert_eq!(
+        fixed(src),
+        [
+            "DEFINE VARIABLE a AS INTEGER NO-UNDO INITIAL 5.",
+            "DEF VAR b AS CHAR NO-UNDO EXTENT 2.",
+            "DEFINE VARIABLE c LIKE Customer.Name NO-UNDO FORMAT \"x(8)\".",
+            "DEFINE TEMP-TABLE ttA NO-UNDO FIELD x AS INTEGER.",
+            "DEFINE INPUT PARAMETER d AS DECIMAL NO-UNDO.",
+        ]
+    );
+}
+
+#[test]
+fn the_fix_of_a_property_goes_after_its_type() {
+    let src = "CLASS A:\n    DEFINE PUBLIC PROPERTY P AS INTEGER GET. SET.\nEND CLASS.\n";
+    let fixes = fixed(src);
+    assert_eq!(fixes.len(), 1);
+    assert!(
+        fixes[0].starts_with("DEFINE PUBLIC PROPERTY P AS INTEGER NO-UNDO GET."),
+        "{fixes:?}"
+    );
+}
+
+#[test]
+fn no_fix_for_a_shared_definition_or_a_temp_table_that_writes_undo() {
+    let src = "\
+DEFINE NEW SHARED VARIABLE a AS INTEGER.
+DEFINE SHARED VARIABLE b AS INTEGER.
+DEFINE NEW GLOBAL SHARED VARIABLE c AS INTEGER.
+DEFINE SHARED TEMP-TABLE ttS FIELD x AS INTEGER.
+DEFINE TEMP-TABLE ttU UNDO FIELD x AS INTEGER.
+";
+    let fixes = fixed(src);
+    assert!(fixes.len() >= 4, "{fixes:?}");
+    assert!(fixes.iter().all(|f| f == "no fix"), "{fixes:?}");
+}
+
+#[test]
+fn no_fix_when_the_type_does_not_follow_the_name() {
+    let src = "DEFINE VARIABLE a INITIAL 5 AS INTEGER.\n";
+    assert_eq!(fixed(src), ["no fix"]);
+}

@@ -140,18 +140,34 @@ An edit maps when all of these are true:
    (`docs/design/include-context.md`) gets no fixes.
 2. Each byte that the edit replaces is own text of the root, in one chunk of
    the expansion (`ChunkOrigin::Root`). For an insertion, the anchor is own text
-   of the root, in the same chunk as the insertion point.
+   of the root, in the same chunk as the insertion point. The anchor is the
+   token of the expanded text that ends at the insertion point, else the token
+   that starts there; with neither, the edit does not map.
 3. The parse did not recover (`CollectedDiagnostics::parse_recovered` is
    false). A file with a `PARSE001` anywhere in its expansion gets no fixes.
 4. The edit does not lie in an `&IF` branch whose state is `Undecided`.
 5. No elided reference (`ExpandedFile::elided_offsets`) lies in
    `Edit::statement`. Such a reference can put text there, for example a
-   `{&NOUNDO}` that a caller defines.
+   `{&NOUNDO}` that a caller defines. Each byte of `Edit::statement` is own
+   text of the root: an include or a `{&name}` value in the statement stops
+   the fix, also when it arrives.
 6. Each `FixCondition` of the fix holds.
 7. The fix alone passes the token guard (below) on the root's own text.
 
 Then the edit span is a span of the root file's own bytes, with the root's
 `FileId`, and the keywords are in the project's case.
+
+Rule 4 and the conditions `OutsideConditionalBranch` and `WholeExpansion` read
+what the preprocessor knows of each `&IF` branch. The expansion records it only
+with branch tracking (`LintPipeline::with_branch_tracking`). Without it they do
+not hold, so the file gets no fixes. The language server always tracks the
+branches. `oxabl check` tracks them with `--json` (and later with `--fix`),
+because only those show fixes.
+
+Rule 7 lexes the lines that the edits and their statements touch, not the
+whole file, so a file with many findings does not lex its text once per fix. A
+window that starts inside a comment or a string cannot pass: the tokens of the
+new text are then not in the text after the edits.
 
 A finding in an include (`include_origin`, `include_findings`) keeps its fixes
 out: the collector drops them. A fix of v1 never edits an include file.
@@ -164,7 +180,10 @@ oxabl checks this where it knows the includers:
 
 - `oxabl check --fix` and `oxabl check --json` drop the fixes of a file that
   another root of the same run includes (the run reads the include list of
-  every root it checks).
+  every root it checks). They also drop the fixes of a file whose name is the
+  file name of an include that a root of the run names and does not read: an
+  include that does not resolve or cannot be read, or one in an `&IF` branch
+  that is not taken.
 - `oxabl lsp` drops them when the newest workspace pass of the daemon
   (`ReverseGraph::dependents`) shows an include edge to the file. When there is
   no workspace pass yet, the server does not wait for one.
