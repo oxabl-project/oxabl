@@ -1,0 +1,5 @@
+unit main
+  @2 read Customer find no-lock once index CustNum whole-index (primary)
+unit procedure gone
+  @5 read ?:Nosuch for no-lock once index unknown(unknown-table)
+  unknown unknown-table @5

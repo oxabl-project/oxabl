@@ -820,7 +820,7 @@ fn partial_text(partial: summary::Partial) -> &'static str {
         summary::Partial::Unit(reason) => match reason {
             EffectUnknown::Dynamic => "a dynamic query or buffer",
             EffectUnknown::SkippedStatement => "a statement oxabl does not read names a table",
-            EffectUnknown::UnknownTable => "a write to a table the schema does not have",
+            EffectUnknown::UnknownTable => "a read or write of a table the schema does not have",
             EffectUnknown::NoSchema => "no schema is loaded",
             EffectUnknown::UnexpandedInclude => "an include was not expanded",
             EffectUnknown::RecoveredParse => "the parse recovered from an error",

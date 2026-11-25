@@ -48,7 +48,7 @@ Each line is `<direct|transitive>: <operation> <table> <lock> <shape> [@line] [i
 |---|---|
 | unit kind | `main`, `procedure`, `function`, `method`, `constructor`, `destructor`, `property-get`, `property-set`, `trigger`, `db-trigger` |
 | operation | `read`, `create`, `update`, `delete` |
-| table | a database table; `tt:NAME` a temp-table (direct only); `?:NAME` (direct) or `?NAME` (transitive) a table the schema does not have, or any table with no schema |
+| table | a database table; `tt:NAME` a temp-table (direct only); `?:NAME` (direct) or `?NAME` (transitive) a table the schema does not have, or any table with no schema. With a schema loaded, a read or write of such a table makes the summary partial (`unit:unknown-table`) |
 | lock | `no-lock`, `share-lock`, `exclusive-lock`, `share-lock(default)` (no lock phrase), `n/a` (writes, temp-tables), `unknown` / `unknown(...)` |
 | shape | `once`, `per-row` (inside one record loop), `nested(N)` (N loops deep). A `FOR EACH`'s own read is `once`; a `FIND` inside it is `per-row`. |
 | index reason | `use-index`, `contains`, `key-value`, `unique-equality`, `equality`, `range`, `sort`, `primary`, then `tie=`, `whole=`, `equality=`, `range=`; or `rowid`, `table-scan`, `unknown:<why>` |

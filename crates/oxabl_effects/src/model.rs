@@ -235,7 +235,7 @@ pub enum EffectUnknown {
     Dynamic,
     /// A statement the parser skips names a database buffer.
     SkippedStatement,
-    /// A write to a table the schema does not have.
+    /// A read or a write of a table the loaded schema does not have.
     UnknownTable,
     /// No schema is loaded: a name may be a field.
     NoSchema,
