@@ -1,5 +1,35 @@
 # Changelog
 
+## [4.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v4.0.0...oxabl_pipeline-v4.1.0) (2026-11-25)
+
+
+### Features
+
+* **lsp:** semantic tokens for the names oxabl resolves ([0e04b4c](https://github.com/oxabl-project/oxabl/commit/0e04b4c154c2811773002c1c2dffe56c86a3151a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.9 to 0.3.10
+    * oxabl_lexer bumped from 2.0.4 to 2.0.5
+    * oxabl_parser bumped from 5.0.0 to 5.0.1
+    * oxabl_handles bumped from 0.3.0 to 0.3.1
+    * oxabl_flow bumped from 0.5.0 to 0.5.1
+    * oxabl_scope bumped from 0.3.0 to 0.3.1
+    * oxabl_analyze bumped from 4.4.0 to 4.5.0
+    * oxabl_common bumped from 1.4.0 to 1.5.0
+    * oxabl_formatter bumped from 2.1.2 to 2.1.3
+    * oxabl_index bumped from 6.0.0 to 6.0.1
+    * oxabl_lint bumped from 6.0.0 to 6.0.1
+    * oxabl_schema bumped from 0.6.0 to 0.6.1
+    * oxabl_semantic bumped from 6.0.0 to 6.0.1
+    * oxabl_workspace bumped from 3.7.0 to 3.7.1
+  * dev-dependencies
+    * oxabl_common bumped from 1.4.0 to 1.5.0
+    * oxabl_schema bumped from 0.6.0 to 0.6.1
+
 ## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.8.0...oxabl_pipeline-v4.0.0) (2026-11-24)
 
 

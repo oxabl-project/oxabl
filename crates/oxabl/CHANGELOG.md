@@ -1,5 +1,59 @@
 # Changelog
 
+## [6.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v6.0.0...oxabl-v6.1.0) (2026-11-25)
+
+
+### Features
+
+* **cli:** oxabl skill show and install, and refresh the skill on self-update ([13fcc0c](https://github.com/oxabl-project/oxabl/commit/13fcc0c905c1c4d2736c9f61e17511c22b7d5351))
+* **cli:** oxabl skill, an agent skill that ships with the binary ([7d29bc9](https://github.com/oxabl-project/oxabl/commit/7d29bc97074c5a065cee0c11f72dd163b47092c3))
+* **cli:** ship the real skill files and drop the placeholder reference ([b0d1ad4](https://github.com/oxabl-project/oxabl/commit/b0d1ad4fb8353f1ea1d9abc0d721297be9c316cb))
+* **cli:** skill install keeps one user store and links it from the agent folders ([b290347](https://github.com/oxabl-project/oxabl/commit/b290347859f2fda5d0058b14dbf19e1eecdc7a56))
+* **cli:** the skill's edit loop fixes only new findings, and its oxabl.toml samples name the workspace ([0f50bea](https://github.com/oxabl-project/oxabl/commit/0f50bea189c12f0823f6303d6609334f8f188626))
+* **install:** print how to install the agent skill ([16aade5](https://github.com/oxabl-project/oxabl/commit/16aade546ed3a2943a358d6f1cdd8253e0e28268))
+* **lsp:** semantic tokens for the names oxabl resolves ([0e04b4c](https://github.com/oxabl-project/oxabl/commit/0e04b4c154c2811773002c1c2dffe56c86a3151a))
+* **vscode:** ABL snippets in the project's keyword case ([18102bd](https://github.com/oxabl-project/oxabl/commit/18102bdec3375d3e2b26c3f26336143578b9f169))
+
+
+### Bug Fixes
+
+* **cli:** skill install --force moves a foreign entry out of the skills folders ([e055b5f](https://github.com/oxabl-project/oxabl/commit/e055b5f0d5204d4e8e37e3aea836de8b2e8ec048))
+* **cli:** skill install owns only the files it wrote, writes through symlinks and checks every target first ([0e36c9b](https://github.com/oxabl-project/oxabl/commit/0e36c9b1fa02c7377b47268319d9a7e81c33fd89))
+* **cli:** skill install refuses a symlink inside a target and treats a current copy without a manifest as current ([35392e4](https://github.com/oxabl-project/oxabl/commit/35392e4a559305f7583320e1fa63cf7a6472ddd6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 5.0.0 to 5.0.1
+    * oxabl_lexer bumped from 2.0.4 to 2.0.5
+    * oxabl_common bumped from 1.4.0 to 1.5.0
+    * oxabl_workspace bumped from 3.7.0 to 3.7.1
+    * oxabl_preprocessor bumped from 0.9.0 to 0.9.1
+    * oxabl_semantic bumped from 6.0.0 to 6.0.1
+    * oxabl_schema bumped from 0.6.0 to 0.6.1
+    * oxabl_analyze bumped from 4.4.0 to 4.5.0
+    * oxabl_pipeline bumped from 4.0.0 to 4.1.0
+    * oxabl_lint bumped from 6.0.0 to 6.0.1
+    * oxabl_lsp bumped from 3.4.0 to 3.5.0
+    * oxabl_daemon bumped from 0.8.0 to 0.9.0
+    * oxabl_build bumped from 0.9.0 to 0.9.1
+    * oxabl_build_remote bumped from 0.2.13 to 0.2.14
+    * oxabl_formatter bumped from 2.1.2 to 2.1.3
+  * dev-dependencies
+    * oxabl_analyze bumped from 4.4.0 to 4.5.0
+    * oxabl_common bumped from 1.4.0 to 1.5.0
+    * oxabl_schema bumped from 0.6.0 to 0.6.1
+    * oxabl_workspace bumped from 3.7.0 to 3.7.1
+    * oxabl_pipeline bumped from 4.0.0 to 4.1.0
+    * oxabl_flow bumped from 0.5.0 to 0.5.1
+    * oxabl_handles bumped from 0.3.0 to 0.3.1
+    * oxabl_scope bumped from 0.3.0 to 0.3.1
+    * oxabl_effects bumped from 0.3.9 to 0.3.10
+    * oxabl_nulls bumped from 0.3.0 to 0.3.1
+    * oxabl_index bumped from 6.0.0 to 6.0.1
+
 ## [6.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.9.0...oxabl-v6.0.0) (2026-11-24)
 
 

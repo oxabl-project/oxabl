@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.4.0...oxabl_common-v1.5.0) (2026-11-25)
+
+
+### Features
+
+* **lsp:** semantic tokens for the names oxabl resolves ([0e04b4c](https://github.com/oxabl-project/oxabl/commit/0e04b4c154c2811773002c1c2dffe56c86a3151a))
+
 ## [1.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.3.1...oxabl_common-v1.4.0) (2026-11-24)
 
 

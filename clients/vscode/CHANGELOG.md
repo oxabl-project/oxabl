@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.13.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.12.0...oxabl_vscode-v0.13.0) (2026-11-25)
+
+
+### Features
+
+* **cli:** oxabl skill, an agent skill that ships with the binary ([7d29bc9](https://github.com/oxabl-project/oxabl/commit/7d29bc97074c5a065cee0c11f72dd163b47092c3))
+* **lsp:** semantic tokens for the names oxabl resolves ([0e04b4c](https://github.com/oxabl-project/oxabl/commit/0e04b4c154c2811773002c1c2dffe56c86a3151a))
+* **vscode:** ABL snippets in the project's keyword case ([18102bd](https://github.com/oxabl-project/oxabl/commit/18102bdec3375d3e2b26c3f26336143578b9f169))
+* **vscode:** command to install the agent skill in the workspace ([269d948](https://github.com/oxabl-project/oxabl/commit/269d948d3b341fac9a5d50bd484bce4a67e3a97d))
+* **vscode:** the install agent skill command installs for the user ([1cc8585](https://github.com/oxabl-project/oxabl/commit/1cc8585d12a18f0d92c12fbf19bcaaae5f3b7502))
+
+
+### Bug Fixes
+
+* **cli:** skill install --force moves a foreign entry out of the skills folders ([e055b5f](https://github.com/oxabl-project/oxabl/commit/e055b5f0d5204d4e8e37e3aea836de8b2e8ec048))
+
 ## [0.12.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.11.0...oxabl_vscode-v0.12.0) (2026-11-24)
 
 
