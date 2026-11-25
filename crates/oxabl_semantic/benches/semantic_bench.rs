@@ -99,6 +99,40 @@ MESSAGE Progress.Lang.Class:GetClass("OpenEdge.Core.String").
 MESSAGE OpenEdge.Net.URI:Decode("example").
 "#;
 
+/// Members of built-in types read from the static catalog: a `CATCH`
+/// variable, `JsonObject` calls with overloads, a static call, an enum
+/// member, and a class of the file that inherits `Progress.Lang.AppError`.
+/// No index.
+const BUILTIN_MEMBERS: &str = r#"
+CLASS bench.OrderError INHERITS Progress.Lang.AppError:
+    METHOD PUBLIC CHARACTER Describe():
+        RETURN GetMessage(1) + STRING(NumMessages).
+    END METHOD.
+END CLASS.
+DEFINE VARIABLE oJson AS Progress.Json.ObjectModel.JsonObject NO-UNDO.
+DEFINE VARIABLE oErr AS bench.OrderError NO-UNDO.
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+DEFINE VARIABLE lc AS LONGCHAR NO-UNDO.
+DEFINE VARIABLE l AS LOGICAL NO-UNDO.
+oJson = NEW Progress.Json.ObjectModel.JsonObject().
+oJson:Add("a", "b").
+oJson:Add("n", 1).
+c = oJson:GetCharacter("a").
+lc = oJson:GetLongchar("a", "UTF-8").
+l = oJson:Has("a").
+l = OpenEdge.Core.String:IsQuoted(lc).
+MESSAGE Progress.ApplicationServer.AdapterTypes:SOAP:GetValue().
+c = oErr:Describe() + oErr:ToString().
+DO ON ERROR UNDO, LEAVE:
+    c = "x".
+    CATCH e AS Progress.Lang.Error:
+        c = e:GetMessage(1).
+        MESSAGE e:GetMessageNum(1) e:NumMessages.
+    END CATCH.
+END.
+MESSAGE c lc l.
+"#;
+
 /// A class of the analysed file: properties, overload sets, and a method body
 /// of `THIS-OBJECT` chains, static members and calls. No index.
 const CLASS_MEMBERS: &str = r#"
@@ -377,6 +411,7 @@ fn semantic_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "skipped", SKIPPED);
     bench_fixture(&mut group, "builtin_classes", BUILTIN_CLASSES);
     bench_fixture(&mut group, "class_members", CLASS_MEMBERS);
+    bench_fixture(&mut group, "builtin_members", BUILTIN_MEMBERS);
     bench_fixture_with(
         &mut group,
         "class_members_indexed",
