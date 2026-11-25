@@ -75,9 +75,11 @@ result for the file is dropped.
 
 ## Known limits
 
-- Only semantic and lint findings in the include are shown in a root context.
-  A parse or preprocessor error inside the include is not shown there; fragment
-  mode shows it.
+- Only semantic, lint and parse findings in the include are shown in a root
+  context. A preprocessor error inside the include is not shown there; fragment
+  mode shows it. A parse error that the root's arguments cause in text that no
+  file wrote (a `{&name}` value) is reported at the `{...}` site in the root
+  only.
 - The callee effect summaries that some strict database rules read are not
   built for a root context.
 - The selection is kept per open document. It ends when the document closes or

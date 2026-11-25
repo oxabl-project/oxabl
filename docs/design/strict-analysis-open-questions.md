@@ -143,10 +143,10 @@ own root. Since M1, a directory walk does that for the context-free strict rules
   for any span whose first byte is not in the root file, and `ExpandedFile::resolve_span`
   (`collect.rs`) is where that origin check happens. A semantic or lint finding inside an
   include is therefore dropped. So is a label that points into an include. A parse error inside
-  an include is dropped at the same place (the parse-error loop of
-  `collect_from_expanded_selecting`), although `parse_recovered` is set first. The edge set still
-  learns that the parse recovered, and the CLI suppresses format drift for the file, but no
-  diagnostic is shown.
+  an include is not dropped: the parse-error loop of `collect_from_expanded_with_summaries` reports
+  it at the include's site in the root and in the include's own bytes. `parse_recovered` is set
+  too, so the edge set learns that the parse recovered and the CLI suppresses format drift for the
+  file.
 - **Preprocessor diagnostics follow the same rule.** Only loud diagnostics (`is_loud`) whose own span is in
   the root file are kept, on the success path and on the error path of `expand_source_with`.
 - **One exception, shown at the use site.** An unresolvable include found below the root is

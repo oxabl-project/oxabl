@@ -37,7 +37,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use oxabl_ast::Span;
-use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity, VirtualSpan};
+use oxabl_common::{
+    Diagnostic, FileId, FileSpan, LintSeverityMap, Severity, SourceMap, VirtualSpan,
+};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{
@@ -101,13 +103,15 @@ pub struct CollectedDiagnostics {
     /// Whether the parser recovered from at least one error, wherever in the
     /// expansion it occurred.
     ///
-    /// Not derivable from `diagnostics`: a parse error that originates inside an
-    /// include has no root-buffer span and is dropped from that list, while the
-    /// statements it skipped are gone from the model all the same.
+    /// Not derivable from `diagnostics` alone: a parse error that originates
+    /// inside an include is reported there at the include's site, so a count of
+    /// the parse entries would also include it, but it has no span of its own
+    /// in the root's bytes.
     pub parse_recovered: bool,
-    /// Semantic and lint findings that sit in an include, with the include chain
-    /// that produced each. They are not in `diagnostics`, which keeps only the
-    /// findings in the root's own bytes. Each is a finding about this one root
+    /// Semantic, lint and parse findings that sit in an include, with the include
+    /// chain that produced each. They are not in `diagnostics`, which keeps only
+    /// the findings in the root's own bytes. A parse error here is also in
+    /// `diagnostics`, as a diagnostic at the include's site in the root. Each is a finding about this one root
     /// after expansion; see [`IncludeOriginDiagnostic`].
     pub include_origin: Vec<IncludeOriginDiagnostic>,
     /// Findings of a use-site rule ([`RuleMeta::use_site_in_includer`]) that sit
@@ -336,7 +340,7 @@ pub struct IncludeOccurrence {
     pub occurrences: u32,
 }
 
-/// A semantic or lint finding that sits in an include file, kept with the
+/// A semantic, lint or parse finding that sits in an include file, kept with the
 /// compilation unit that produced it.
 ///
 /// The finding is a fact about *one root after expansion*: an unused variable
@@ -357,7 +361,9 @@ pub struct IncludeOccurrence {
 /// a row of its own, so nothing distinct merges and nothing repeats.
 ///
 /// Rows are never also in [`CollectedDiagnostics::diagnostics`], and no finding
-/// is in two rows.
+/// is in two rows. The one exception is a parse error: its row is in the
+/// include's own bytes, and `diagnostics` also holds a copy of it at the
+/// include's site in the root, so that the gate cannot lose it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncludeOriginDiagnostic {
     pub diagnostic: Diagnostic,
@@ -1745,6 +1751,7 @@ pub fn collect_from_expanded_with_summaries(
     let program = parser.parse_program();
     out.parse_recovered = !program.errors.is_empty();
 
+    let mut include_rows = IncludeRows::default();
     for err in program.errors.into_iter().filter(|_| everything) {
         let at_end = err.span.start as usize >= expanded.text.len();
         let virt = err.into_diagnostic(root);
@@ -1759,11 +1766,24 @@ pub fn collect_from_expanded_with_summaries(
                 Err(d)
             }
         });
-        if let Ok(resolved) = resolved {
-            out.diagnostics.push(CollectedDiagnostic {
+        match resolved {
+            Ok(resolved) => out.diagnostics.push(CollectedDiagnostic {
                 diagnostic: resolved,
                 source: DiagnosticSource::Parse,
-            });
+            }),
+            // The error is inside an include, so it has no root position of
+            // its own. It is never dropped: it is reported at the include's
+            // site in the root and in the include file.
+            Err(d) if !at_end => {
+                if let Some(site) = include_parse_error_at_site(&d, expanded) {
+                    out.diagnostics.push(CollectedDiagnostic {
+                        diagnostic: site,
+                        source: DiagnosticSource::Parse,
+                    });
+                }
+                include_rows.add(d, DiagnosticSource::Parse, expanded, &mut out);
+            }
+            Err(_) => {}
         }
     }
 
@@ -1788,7 +1808,6 @@ pub fn collect_from_expanded_with_summaries(
     .with_index(index);
     let sem = analyze_file(&program.statements, &ctx);
 
-    let mut include_rows = IncludeRows::default();
     for d in sem.diagnostics.iter().filter(|_| everything) {
         match resolve_diagnostic(d.clone(), expanded) {
             Ok(resolved) => out.diagnostics.push(CollectedDiagnostic {
@@ -2102,6 +2121,38 @@ fn analyze_expanded(
         );
     }
     (sem, recovered)
+}
+
+/// The parse error `d`, whose span is in an include, as a diagnostic at the
+/// `{...}` site in the root that brought the include in. Its message says
+/// where in the include the error is. `None` when no site in the root
+/// leads to the text.
+fn include_parse_error_at_site(d: &Diagnostic, expanded: &ExpandedFile) -> Option<Diagnostic> {
+    let site = expanded.resolve_include_site(d.span.span)?;
+    let place = expanded
+        .resolve_include_span(d.span.span)
+        .map(|(path, span, _)| {
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            let line_col = expanded
+                .resolve_include_origin(d.span.span)
+                .and_then(|(_, file, _)| expanded.file_text(file))
+                .map(|text| SourceMap::new(text).lookup(span.start as usize))
+                .map(|(line, column)| format!(":{line}:{column}"))
+                .unwrap_or_default();
+            format!("{name}{line_col}")
+        })
+        .unwrap_or_else(|| "an include".to_string());
+    let mut at_site = d.clone();
+    at_site.message = format!("{} (in {place})", d.message);
+    at_site.span = FileSpan {
+        file: expanded.root,
+        span: site,
+    };
+    at_site.labels.clear();
+    Some(at_site)
 }
 
 /// `d` as a finding at the `{...}` site of the include that holds its anchor,
