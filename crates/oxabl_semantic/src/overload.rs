@@ -65,17 +65,18 @@ pub(crate) fn call_type(
     pick(&candidates, args, ClassLattice::new(symbols))
 }
 
-/// Rules 1 to 6 of the design.
-pub(crate) fn pick(
-    candidates: &[Candidate<'_>],
+/// The candidates that `args` leave possible, each with its worst fit: rules
+/// 1 and 2 of the design. `Candidate::params` of `None` fits `Maybe`.
+fn fitted<'a>(
+    candidates: &[Candidate<'a>],
     args: &[ResolvedType],
     lattice: ClassLattice<'_>,
-) -> ResolvedType {
+) -> SmallVec<[(usize, Candidate<'a>, Fit); 8]> {
     // Rule 1: the parameter count must match.
     let counted = |c: &&Candidate<'_>| c.params.is_none_or(|p| p.len() == args.len());
     let mixed = mixed_modes(candidates.iter().filter(counted), args.len());
-    let mut kept: SmallVec<[(Candidate<'_>, Fit); 8]> = SmallVec::new();
-    for candidate in candidates.iter().filter(counted) {
+    let mut kept: SmallVec<[(usize, Candidate<'_>, Fit); 8]> = SmallVec::new();
+    for (at, candidate) in candidates.iter().enumerate().filter(|(_, c)| counted(c)) {
         let fit = match candidate.params {
             Some(params) => params
                 .iter()
@@ -94,27 +95,44 @@ pub(crate) fn pick(
         };
         // Rule 2: a candidate with a `No` cannot take the arguments.
         if fit != Fit::No {
-            kept.push((*candidate, fit));
+            kept.push((at, *candidate, fit));
         }
     }
-    let count = |f: Fit| kept.iter().filter(|(_, fit)| *fit == f).count();
-    let only = |f: Fit| kept.iter().find(|(_, fit)| *fit == f).map(|(c, _)| c.ret);
-    let (exact, widen, maybe) = (count(Fit::Exact), count(Fit::Widen), count(Fit::Maybe));
-    let picked = if exact == 1 && maybe == 0 {
+    kept
+}
+
+/// The index of the one candidate rule 3 or rule 4 picks.
+fn picked_index(kept: &[(usize, Candidate<'_>, Fit)]) -> Option<usize> {
+    let of = |f: Fit| kept.iter().filter(move |(_, _, fit)| *fit == f);
+    let (exact, widen, maybe) = (
+        of(Fit::Exact).count(),
+        of(Fit::Widen).count(),
+        of(Fit::Maybe).count(),
+    );
+    if exact == 1 && maybe == 0 {
         // Rule 3.
-        only(Fit::Exact)
+        of(Fit::Exact).next().map(|(at, _, _)| *at)
     } else if exact == 0 && widen == 1 && maybe == 0 {
         // Rule 4.
-        only(Fit::Widen)
+        of(Fit::Widen).next().map(|(at, _, _)| *at)
     } else {
         None
-    };
-    if let Some(ret) = picked {
-        return ret.cloned().unwrap_or(ResolvedType::Unknown);
+    }
+}
+
+/// Rules 1 to 6 of the design.
+pub(crate) fn pick(
+    candidates: &[Candidate<'_>],
+    args: &[ResolvedType],
+    lattice: ClassLattice<'_>,
+) -> ResolvedType {
+    let kept = fitted(candidates, args, lattice);
+    if let Some(at) = picked_index(&kept) {
+        return candidates[at].ret.cloned().unwrap_or(ResolvedType::Unknown);
     }
     // Rule 5: every candidate left returns the same type.
     let mut agreed: Option<&ResolvedType> = None;
-    for (candidate, _) in &kept {
+    for (_, candidate, _) in &kept {
         let Some(ret) = candidate.ret else {
             return ResolvedType::Unknown;
         };
@@ -126,6 +144,48 @@ pub(crate) fn pick(
     }
     // Rule 6.
     agreed.cloned().unwrap_or(ResolvedType::Unknown)
+}
+
+/// The declarations of a call that its arguments leave possible, as indices
+/// into the parameter lists given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallReach {
+    /// Every declaration the arguments do not rule out, in order.
+    pub possible: Vec<usize>,
+    /// The declaration the call reaches, when it is sure: the only one left,
+    /// or the one rule 3 or 4 of the overload pick chooses.
+    pub picked: Option<usize>,
+}
+
+/// Which of `params` (one list per declaration; `None` when a list is not
+/// known, and whether the list states the modes of its parameters) a call
+/// with arguments of type `args` can reach. Fails closed: a declaration is
+/// dropped only when no argument could ever fit it, and one is picked only
+/// when the compiler must pick it.
+pub fn reachable_overloads(
+    params: &[(Option<&[CallParam]>, bool)],
+    args: &[ResolvedType],
+    lattice: ClassLattice<'_>,
+) -> CallReach {
+    let candidates: Vec<Candidate<'_>> = params
+        .iter()
+        .map(|&(params, _modes_known)| Candidate { ret: None, params })
+        .collect();
+    let kept = fitted(&candidates, args, lattice);
+    let picked = match kept.as_slice() {
+        [(at, _, _)] => Some(*at),
+        _ => picked_index(&kept),
+    };
+    CallReach {
+        possible: kept.iter().map(|(at, _, _)| *at).collect(),
+        picked,
+    }
+}
+
+/// The declarations of the overload set that `anchor` resolves to, as
+/// [`candidates_of`] finds them.
+pub fn call_candidates(symbols: &SymbolTable, anchor: SymbolId) -> Vec<SymbolId> {
+    candidates_of(symbols, anchor).into_vec()
 }
 
 /// For each argument position, whether the candidates do not all declare the

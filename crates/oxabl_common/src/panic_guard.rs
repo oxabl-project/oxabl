@@ -163,6 +163,9 @@ pub mod panic_sites {
     pub const HOVER: &str = "hover";
     /// The language server's inlay hint analysis, for [`hold_if_injected`](super::hold_if_injected).
     pub const LSP_INLAY_HINTS: &str = "lsp.inlay-hints";
+    /// The language server's parameter-name hint analysis while it holds its
+    /// snapshot, for [`hold_if_injected`](super::hold_if_injected).
+    pub const LSP_PARAMETER_HINTS: &str = "lsp.parameter-hints";
     /// The language server's semantic tokens, for both
     /// [`hold_if_injected`](super::hold_if_injected) and
     /// [`panic_if_injected`](super::panic_if_injected).
@@ -196,6 +199,13 @@ pub const HOLD_TIME: std::time::Duration = std::time::Duration::from_secs(3);
 /// no-op unless the test-only `test-panics` feature is enabled.
 #[inline]
 pub fn hold_if_injected(site: &str, source: &str) {
+    hold_if_injected_with(site, source, || {});
+}
+
+/// As [`hold_if_injected`], and runs `started` just before the wait begins, so
+/// that a test can act when the hold is sure to be on.
+#[inline]
+pub fn hold_if_injected_with(site: &str, source: &str, started: impl FnOnce()) {
     #[cfg(feature = "test-panics")]
     if let Some(at) = source.find(&format!("{TEST_HOLD_MARKER}:{site}")) {
         let rest = &source[at + TEST_HOLD_MARKER.len() + 1 + site.len()..];
@@ -203,11 +213,12 @@ pub fn hold_if_injected(site: &str, source: &str) {
             let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
             rest[..digits].parse::<u64>().ok()
         });
+        started();
         std::thread::sleep(millis.map_or(HOLD_TIME, std::time::Duration::from_millis));
     }
 
     #[cfg(not(feature = "test-panics"))]
-    let _ = (site, source);
+    let _ = (site, source, started);
 }
 
 /// Panic when `source` carries this `site`'s injection marker.

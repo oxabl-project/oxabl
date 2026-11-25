@@ -65,12 +65,13 @@ describe("restart-server command manifest", () => {
 });
 
 describe("inlayHintSettings", () => {
-  it("turns every kind on when nothing is set", () => {
+  it("turns every kind on, and the parameter-name hints off, when nothing is set", () => {
     expect(inlayHintSettings(() => undefined)).toEqual({
       locks: true,
       index: true,
       scope: true,
       transactions: true,
+      parameters: false,
     });
   });
 
@@ -80,6 +81,17 @@ describe("inlayHintSettings", () => {
       index: false,
       scope: true,
       transactions: true,
+      parameters: false,
+    });
+  });
+
+  it("turns the parameter-name hints on on their own", () => {
+    expect(inlayHintSettings((kind) => (kind === "parameters" ? true : undefined))).toEqual({
+      locks: true,
+      index: true,
+      scope: true,
+      transactions: true,
+      parameters: true,
     });
   });
 
@@ -87,15 +99,20 @@ describe("inlayHintSettings", () => {
     expect(shouldRestartForConfigChange((s) => s.startsWith("oxabl.inlayHints"))).toBe(false);
   });
 
-  it("has a boolean setting for each kind, on by default", () => {
+  it("has a boolean setting for each kind, with the default the server gets", () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
     const props = manifest.contributes.configuration.properties as Record<
       string,
       { type: string; default: unknown }
     >;
+    const unset = inlayHintSettings(() => undefined);
     for (const kind of INLAY_HINT_KINDS) {
-      expect(props[`oxabl.inlayHints.${kind}`]).toMatchObject({ type: "boolean", default: true });
+      expect(props[`oxabl.inlayHints.${kind}`]).toMatchObject({
+        type: "boolean",
+        default: unset[kind],
+      });
     }
+    expect(props["oxabl.inlayHints.parameters"]).toMatchObject({ default: false });
   });
 });
 

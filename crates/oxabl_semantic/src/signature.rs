@@ -453,16 +453,28 @@ pub enum MemberParamShape {
 /// (an `&IF`, an include reference, a `RETURN` parameter): then the list is
 /// not known.
 pub fn member_params(parameters: &[Statement]) -> Option<Vec<MemberParam>> {
-    parameters
-        .iter()
-        .map(|s| match &s.kind {
-            StatementKind::DefineParameter {
-                direction,
-                param_type,
-            } => member_param(direction, param_type),
-            _ => None,
-        })
-        .collect()
+    parameters.iter().map(member_param_of).collect()
+}
+
+fn member_param_of(statement: &Statement) -> Option<MemberParam> {
+    match &statement.kind {
+        StatementKind::DefineParameter {
+            direction,
+            param_type,
+        } => member_param(direction, param_type),
+        _ => None,
+    }
+}
+
+/// The parameter a `DEFINE PARAMETER` statement declares, as a call sees it.
+/// A class name, `LIKE` and an unknown type give `Unknown`: the statement
+/// alone cannot resolve them. `None` for a statement that is not a plain
+/// parameter definition.
+pub fn call_param_of(statement: &Statement) -> Option<CallParam> {
+    let declared = [member_param_of(statement)?];
+    call_params(&declared, |_| ResolvedType::Unknown)
+        .into_iter()
+        .next()
 }
 
 fn member_param(direction: &ParameterDirection, param_type: &ParameterType) -> Option<MemberParam> {

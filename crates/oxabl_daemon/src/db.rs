@@ -1468,6 +1468,9 @@ pub enum NavigationQuery {
     },
     /// The uses, in `file`, of the name at byte `offset` of `file`.
     Highlights { file: PathBuf, offset: u32 },
+    /// The signatures of the call around byte `offset` of `file`, which is the
+    /// root or an include its expansion reads.
+    SignatureHelp { file: PathBuf, offset: u32 },
     /// The links written in the root itself.
     Links,
     /// The semantic tokens of `file`, which is the root or an include its
@@ -1489,6 +1492,8 @@ pub struct NavigationAnswer {
     /// The uses of a [`NavigationQuery::Highlights`] name; the text of the
     /// file is the only entry of `texts`.
     pub highlights: Vec<oxabl_pipeline::Highlight>,
+    /// The signatures of a [`NavigationQuery::SignatureHelp`] call.
+    pub signature_help: Option<oxabl_pipeline::SignatureHelp>,
     /// The tokens of a [`NavigationQuery::SemanticTokens`] file; the text of
     /// the file is the only entry of `texts`.
     pub tokens: Vec<oxabl_pipeline::SemanticToken>,
@@ -1502,7 +1507,44 @@ pub struct NavigationAnswer {
 /// `query`. Not memoized: it runs per request, on a worker snapshot.
 /// `Ok(Err(reason))` when the root cannot be read or its preprocessing failed.
 /// `None` when a concurrent write cancelled the read.
+///
+/// A signature help query for a call that is still being typed has no answer
+/// when the statement lacks its period, because the next statement merges into
+/// it. It is asked again over the root's text with the call closed
+/// ([`oxabl_pipeline::close_open_call`]); the second answer is kept only when
+/// it holds a signature.
 pub fn compute_navigation(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+    query: &NavigationQuery,
+) -> Option<Result<NavigationAnswer, String>> {
+    let first = navigate(snapshot, schema, root, overlay.clone(), query)?;
+    let (NavigationQuery::SignatureHelp { file, offset }, Ok(answer)) = (query, &first) else {
+        return Some(first);
+    };
+    if answer.signature_help.is_some()
+        || crate::session::canonical_path(file) != crate::session::canonical_path(root)
+    {
+        return Some(first);
+    }
+    let text = overlay
+        .get(root)
+        .cloned()
+        .or_else(|| snapshot.config().fs.read(root).ok());
+    let Some(closed) = text.and_then(|text| oxabl_pipeline::close_open_call(&text, *offset)) else {
+        return Some(first);
+    };
+    let mut patched = overlay;
+    patched.insert(root.to_path_buf(), Arc::from(closed));
+    match navigate(snapshot, schema, root, patched, query) {
+        Some(Ok(second)) if second.signature_help.is_some() => Some(Ok(second)),
+        _ => Some(first),
+    }
+}
+
+fn navigate(
     snapshot: &AnalysisDatabase,
     schema: SchemaHandle,
     root: &Path,
@@ -1564,6 +1606,10 @@ pub fn compute_navigation(
                     .texts
                     .insert(search::normalize_lexically(&file), text);
             }
+            NavigationQuery::SignatureHelp { file, offset } => {
+                let file = unit.spelled(file);
+                answer.signature_help = unit.navigation.signature_help(&file, *offset);
+            }
             NavigationQuery::SemanticTokens { file, range } => {
                 let file = unit.spelled(file);
                 answer.tokens = unit.navigation.semantic_tokens(&file, to_span(*range));
@@ -1594,6 +1640,22 @@ pub fn compute_navigation(
         Ok(answer)
     })
     .map(|result| result.and_then(|answer| answer))
+}
+
+/// The parameter-name hints of `file`, which is `root` or an include its
+/// expansion reads, in the bytes of `file`. `Ok(Err(reason))` when the root
+/// cannot be read or its preprocessing failed. `None` when a concurrent write
+/// cancelled the read.
+pub fn compute_parameter_hints(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    file: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+) -> Option<Result<Vec<oxabl_pipeline::InlayHint>, String>> {
+    with_navigation(snapshot, schema, root, overlay, |unit| {
+        unit.navigation.parameter_hints(&unit.spelled(file))
+    })
 }
 
 /// One compilation unit analysed for navigation, as [`with_navigation`] hands
