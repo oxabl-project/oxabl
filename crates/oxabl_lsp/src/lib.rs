@@ -1242,11 +1242,8 @@ impl<'c> Server<'c> {
             };
             let version = doc.version;
             // Another open file reads this one: its tokens change with it.
-            include_due |= uri_to_path(&uri).is_some_and(|path| {
-                self.buffers_depending_on(&path)
-                    .iter()
-                    .any(|reader| *reader != uri)
-            });
+            include_due = include_due
+                || uri_to_path(&uri).is_some_and(|path| self.include_read_by_another(&path, &uri));
             if !self.features.diagnostics {
                 self.publish_inactive_regions(&uri, version, []);
                 self.publish(uri, Vec::new(), Some(version));

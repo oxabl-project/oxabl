@@ -414,7 +414,17 @@ pub(crate) fn reads_unsaved_include(
     root: &Path,
     overlay: &HashMap<PathBuf, Arc<str>>,
 ) -> bool {
-    let Some(dependencies) = buffer_dependencies(snapshot, buffer) else {
+    unsaved_among(buffer_dependencies(snapshot, buffer), root, overlay)
+}
+
+/// [`reads_unsaved_include`] for the dependencies of the expansion, or `None`
+/// when they could not be read.
+pub(crate) fn unsaved_among(
+    dependencies: Option<Vec<PathBuf>>,
+    root: &Path,
+    overlay: &HashMap<PathBuf, Arc<str>>,
+) -> bool {
+    let Some(dependencies) = dependencies else {
         return true;
     };
     let open: HashMap<PathBuf, &Arc<str>> = overlay

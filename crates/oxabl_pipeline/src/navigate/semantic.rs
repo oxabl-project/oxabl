@@ -121,15 +121,23 @@ impl SemanticModifiers {
 
 /// Tokens placed in one file, sorted. An include read twice gives one name
 /// twice: the same token is kept once. Tokens that overlap and differ in span,
-/// kind or modifiers are two meanings of the same bytes, so none is kept.
-fn one_meaning_each(tokens: Vec<SemanticToken>) -> Vec<SemanticToken> {
+/// kind or modifiers are two meanings of the same bytes, so none is kept. A
+/// token also needs one agreeing token from each of the `readings(token)`
+/// expansions that kept its bytes: a reading with no token for the name does
+/// not agree.
+fn one_meaning_each(
+    tokens: Vec<SemanticToken>,
+    readings: impl Fn(&SemanticToken) -> usize,
+) -> Vec<SemanticToken> {
     let mut kept: Vec<SemanticToken> = Vec::with_capacity(tokens.len());
     let mut group_start = 0;
     let mut group_end = 0;
     let mut group_agrees = true;
-    // Close the open group: its token when all its tokens are the same one.
-    let close = |kept: &mut Vec<SemanticToken>, from: usize, agrees: bool| {
-        if !agrees {
+    let mut group_count = 0;
+    // Close the open group: its token when all its tokens are the same one and
+    // every reading gave it.
+    let close = |kept: &mut Vec<SemanticToken>, from: usize, agrees: bool, count: usize| {
+        if from < kept.len() && !(agrees && count == readings(&kept[from])) {
             kept.truncate(from);
         }
     };
@@ -137,15 +145,17 @@ fn one_meaning_each(tokens: Vec<SemanticToken>) -> Vec<SemanticToken> {
         if kept.len() > group_start && token.span.start < group_end {
             group_agrees &= kept[group_start] == token;
             group_end = group_end.max(token.span.end);
+            group_count += 1;
             continue;
         }
-        close(&mut kept, group_start, group_agrees);
+        close(&mut kept, group_start, group_agrees, group_count);
         group_start = kept.len();
         group_end = token.span.end;
         group_agrees = true;
+        group_count = 1;
         kept.push(token);
     }
-    close(&mut kept, group_start, group_agrees);
+    close(&mut kept, group_start, group_agrees, group_count);
     kept
 }
 
@@ -232,7 +242,19 @@ impl Navigation<'_, '_> {
             })
             .collect();
         tokens.sort_by_key(|token| (token.span.start, token.span.end));
-        one_meaning_each(tokens)
+        // The expansions of an include that kept each byte; the analysed file
+        // is read once.
+        let kept = (!placer.is_root).then(|| {
+            self.expanded
+                .include_kept_spans(|path| search::normalize_lexically(path) == file)
+        });
+        one_meaning_each(tokens, |token| match &kept {
+            None => 1,
+            Some(kept) => kept
+                .iter()
+                .filter(|span| span.start <= token.span.start && token.span.start < span.end)
+                .count(),
+        })
     }
 
     /// Whether the expanded text at `span` is written as `name`, up to case.

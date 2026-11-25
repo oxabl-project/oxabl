@@ -758,6 +758,30 @@ impl ExpandedFile {
         ))
     }
 
+    /// The spans in an include file's own bytes that each expansion of it
+    /// kept, one entry per kept chunk, for the files whose path `is_file`
+    /// accepts. A byte that `n` expansions kept lies in `n` of them.
+    pub fn include_kept_spans(&self, is_file: impl Fn(&Path) -> bool) -> Vec<Span> {
+        let ids: std::collections::HashSet<u32> = self
+            .file_paths
+            .iter()
+            .filter(|(_, path)| is_file(path))
+            .map(|(id, _)| *id)
+            .collect();
+        self.chunks
+            .iter()
+            .filter(|chunk| {
+                chunk.origin != ChunkOrigin::Substitution
+                    && chunk.file != self.root.raw()
+                    && ids.contains(&chunk.file)
+            })
+            .map(|chunk| Span {
+                start: chunk.real_start,
+                end: chunk.real_start + chunk.len,
+            })
+            .collect()
+    }
+
     /// The parts of the expanded text that include files wrote, in order.
     pub fn include_spans(&self) -> Vec<Span> {
         self.include_regions

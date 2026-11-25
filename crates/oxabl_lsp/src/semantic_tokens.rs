@@ -15,7 +15,7 @@
 //! colours to the grammar of the client.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -27,13 +27,15 @@ use lsp_types::{
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensRangeParams,
     SemanticTokensRangeResult, SemanticTokensServerCapabilities, Uri,
 };
-use oxabl_daemon::db::{NavigationQuery, compute_navigation, compute_semantic_tokens};
+use oxabl_daemon::db::{
+    NavigationQuery, buffer_dependencies, compute_navigation, compute_semantic_tokens,
+};
 use oxabl_daemon::{SessionHost, canonical_path};
 use oxabl_pipeline::{SemanticKind, SemanticModifiers};
 use ropey::Rope;
 use serde_json::Value;
 
-use crate::navigation::reads_unsaved_include;
+use crate::navigation::unsaved_among;
 use crate::position::position_to_byte;
 use crate::{Server, uri_to_path};
 
@@ -113,6 +115,9 @@ struct Shared {
     versions: Mutex<HashMap<Uri, i32>>,
     /// The tokens last sent for the whole of each open file, with their id.
     previous: Mutex<HashMap<Uri, Previous>>,
+    /// The include files, by canonical path, that the last analysis of each
+    /// open file read. The diagnostics may be off, so the tokens keep their own.
+    readers: Mutex<HashMap<Uri, Vec<PathBuf>>>,
     /// The number of the next result id.
     next_result: AtomicU64,
     /// Whether the user wants the tokens.
@@ -124,6 +129,7 @@ impl Default for Shared {
         Shared {
             versions: Mutex::default(),
             previous: Mutex::default(),
+            readers: Mutex::default(),
             next_result: AtomicU64::new(1),
             enabled: AtomicBool::new(true),
         }
@@ -169,6 +175,8 @@ struct Job {
     encoding: PositionEncodingKind,
     host: SessionHost,
     session_root: PathBuf,
+    /// How often the analysis of this job was cancelled.
+    attempts: u32,
 }
 
 impl Server<'_> {
@@ -228,6 +236,7 @@ impl Server<'_> {
             encoding: self.encoding.clone(),
             host: self.host.clone(),
             session_root: self.session_root.clone(),
+            attempts: 0,
         };
         match self.semantic.worker(&self.connection.sender) {
             Ok(worker) => {
@@ -259,6 +268,7 @@ impl Server<'_> {
             None => {
                 versions.remove(uri);
                 lock(&self.semantic.shared.previous).remove(uri);
+                lock(&self.semantic.shared.readers).remove(uri);
             }
         }
     }
@@ -278,6 +288,22 @@ impl Server<'_> {
         if self.semantic.shared.enabled.swap(enabled, Ordering::SeqCst) != enabled {
             self.refresh_semantic_tokens();
         }
+    }
+
+    /// Whether the tokens of an open file other than `uri` came from an
+    /// analysis that read the include `include`. False when the client cannot
+    /// be asked again or the tokens are off.
+    pub(crate) fn include_read_by_another(&self, include: &Path, uri: &Uri) -> bool {
+        if !(self.semantic.supported
+            && self.semantic.refresh
+            && self.semantic.shared.enabled.load(Ordering::SeqCst))
+        {
+            return false;
+        }
+        let include = canonical_path(include);
+        lock(&self.semantic.shared.readers)
+            .iter()
+            .any(|(reader, files)| reader != uri && files.contains(&include))
     }
 
     /// Ask the client to ask again: the tokens of a file may change without an
@@ -310,9 +336,32 @@ impl Options {
         oxabl_common::stack::builder()
             .name("oxabl-semantic-tokens".to_string())
             .spawn(move || {
-                for job in queue {
-                    let response = answer(&shared, job);
-                    let _ = sender.send(Message::Response(response));
+                let mut pending = std::collections::VecDeque::new();
+                loop {
+                    // A job to run again waits for the writes to settle, and
+                    // runs behind the jobs that came after it.
+                    let waiting = pending.is_empty().then(|| queue.recv().ok());
+                    match waiting {
+                        Some(Some(job)) => pending.push_back(job),
+                        Some(None) => break,
+                        None => {
+                            if let Ok(job) = queue.recv_timeout(RETRY_DELAY) {
+                                pending.push_back(job);
+                            }
+                        }
+                    }
+                    while let Ok(job) = queue.try_recv() {
+                        pending.push_back(job);
+                    }
+                    let Some(job) = pending.pop_front() else {
+                        continue;
+                    };
+                    match answer(&shared, job) {
+                        Outcome::Answer(response) => {
+                            let _ = sender.send(Message::Response(response));
+                        }
+                        Outcome::Again(job) => pending.push_back(job),
+                    }
                 }
             })?;
         self.jobs = Some(jobs.clone());
@@ -337,9 +386,19 @@ fn modified(id: RequestId) -> Response {
 }
 
 /// How often a cancelled analysis of an unchanged text runs again.
-const MAX_RETRIES: u32 = 8;
+const MAX_ATTEMPTS: u32 = 16;
 
-fn answer(shared: &Shared, job: Job) -> Response {
+/// How long a job to run again waits for a newer job first.
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// What the worker does with a job.
+enum Outcome {
+    Answer(Response),
+    /// The analysis was cancelled and the text is the same: queue the job again.
+    Again(Job),
+}
+
+fn answer(shared: &Shared, mut job: Job) -> Outcome {
     // The text is read only to look for a test marker.
     let marked = if oxabl_common::INJECTION_ENABLED {
         job.rope.to_string()
@@ -350,42 +409,41 @@ fn answer(shared: &Shared, job: Job) -> Response {
     // The document changed after the request: the client asks again for the
     // new text, so no analysis is spent on the old one.
     if shared.version_of(&job.uri) != Some(job.version) {
-        return modified(job.id);
+        return Outcome::Answer(modified(job.id));
     }
-    let mut retries = 0;
-    let data = loop {
-        let computed = oxabl_common::catch_panic(|| {
-            oxabl_common::panic_if_injected(oxabl_common::panic_sites::SEMANTIC_TOKENS, &marked);
-            if !shared.enabled.load(Ordering::SeqCst) {
-                return Computed::Tokens(Vec::new());
-            }
-            tokens_of(&job, &marked)
-        });
-        match computed {
-            Ok(Computed::Tokens(data)) => break data,
-            // A write to another file cancels every snapshot. The text of this
-            // file is the same, and the client does not ask again for it, so
-            // the analysis runs again on a new snapshot.
-            Ok(Computed::Cancelled)
-                if retries < MAX_RETRIES && shared.version_of(&job.uri) == Some(job.version) =>
-            {
-                retries += 1;
-            }
-            Ok(Computed::Cancelled | Computed::Gone) => return modified(job.id),
-            Err(panic) => {
-                return Response::new_err(
-                    job.id,
-                    ErrorCode::InternalError as i32,
-                    format!("oxabl-lsp: the semantic tokens failed: {panic}"),
-                );
-            }
+    let computed = oxabl_common::catch_panic(|| {
+        oxabl_common::panic_if_injected(oxabl_common::panic_sites::SEMANTIC_TOKENS, &marked);
+        if !shared.enabled.load(Ordering::SeqCst) {
+            return Computed::Tokens(Vec::new());
+        }
+        tokens_of(shared, &job, &marked)
+    });
+    let data = match computed {
+        Ok(Computed::Tokens(data)) => data,
+        // A write to another file cancels every snapshot. The text of this
+        // file is the same, and the client does not ask again for it, so
+        // the job runs again on a new snapshot.
+        Ok(Computed::Cancelled)
+            if job.attempts + 1 < MAX_ATTEMPTS
+                && shared.version_of(&job.uri) == Some(job.version) =>
+        {
+            job.attempts += 1;
+            return Outcome::Again(job);
+        }
+        Ok(Computed::Cancelled | Computed::Gone) => return Outcome::Answer(modified(job.id)),
+        Err(panic) => {
+            return Outcome::Answer(Response::new_err(
+                job.id,
+                ErrorCode::InternalError as i32,
+                format!("oxabl-lsp: the semantic tokens failed: {panic}"),
+            ));
         }
     };
     oxabl_common::hold_if_injected(oxabl_common::panic_sites::SEMANTIC_ANSWER, &marked);
     // An edit that came while the analysis ran, before the cancellation
     // reached it, leaves tokens of the old text.
     if shared.version_of(&job.uri) != Some(job.version) {
-        return modified(job.id);
+        return Outcome::Answer(modified(job.id));
     }
     let value = match job.ask {
         Ask::Range(_) => serde_json::to_value(SemanticTokensRangeResult::Tokens(SemanticTokens {
@@ -421,14 +479,14 @@ fn answer(shared: &Shared, job: Job) -> Response {
             }
         }
     };
-    match value {
+    Outcome::Answer(match value {
         Ok(value) => Response::new_ok(job.id, value),
         Err(error) => Response::new_err(
             job.id,
             ErrorCode::InternalError as i32,
             format!("oxabl-lsp: cannot render the semantic tokens: {error}"),
         ),
-    }
+    })
 }
 
 /// How the analysis of one job ended.
@@ -441,7 +499,7 @@ enum Computed {
     Gone,
 }
 
-fn tokens_of(job: &Job, marked: &str) -> Computed {
+fn tokens_of(shared: &Shared, job: &Job, marked: &str) -> Computed {
     let rope = &job.rope;
     let range = match &job.ask {
         Ask::Range(range) => Some((
@@ -464,8 +522,18 @@ fn tokens_of(job: &Job, marked: &str) -> Computed {
         return Computed::Gone;
     };
     oxabl_common::hold_if_injected(oxabl_common::panic_sites::SEMANTIC_SNAPSHOT, marked);
+    let dependencies = buffer.and_then(|buffer| buffer_dependencies(&snapshot, buffer));
+    if let Some(dependencies) = &dependencies {
+        lock(&shared.readers).insert(
+            job.uri.clone(),
+            dependencies
+                .iter()
+                .map(|path| canonical_path(path))
+                .collect(),
+        );
+    }
     let computed = match buffer {
-        Some(buffer) if !reads_unsaved_include(&snapshot, buffer, &job.root, &overlay) => {
+        Some(buffer) if !unsaved_among(dependencies, &job.root, &overlay) => {
             compute_semantic_tokens(&snapshot, buffer, schema, range)
         }
         _ => compute_navigation(
