@@ -6633,15 +6633,12 @@ impl Parser<'_> {
             self.advance();
             None
         } else {
-            let dt = self.parse_data_type()?;
-            // Consume optional EXTENT [n] on the return type (e.g. "CHARACTER EXTENT 5")
-            if self.check(Kind::Extent) {
-                self.advance();
-                if self.check(Kind::IntegerLiteral) {
-                    self.advance();
-                }
-            }
-            Some(dt)
+            Some(self.parse_data_type()?)
+        };
+        let extent = if return_type.is_some() {
+            self.parse_extent_clause()
+        } else {
+            None
         };
 
         // Parse method name
@@ -6659,6 +6656,7 @@ impl Parser<'_> {
                 is_abstract,
                 is_override,
                 return_type,
+                extent,
                 name,
                 parameters,
                 body: Vec::new(),
@@ -6681,6 +6679,7 @@ impl Parser<'_> {
                 is_abstract,
                 is_override,
                 return_type,
+                extent,
                 name,
                 parameters,
                 body: Vec::new(),
@@ -6696,6 +6695,7 @@ impl Parser<'_> {
                 is_abstract,
                 is_override,
                 return_type,
+                extent,
                 name,
                 parameters,
                 body: Vec::new(),
@@ -6733,6 +6733,7 @@ impl Parser<'_> {
             is_abstract,
             is_override,
             return_type,
+            extent,
             name,
             parameters,
             body,
@@ -6761,14 +6762,7 @@ impl Parser<'_> {
         let name = self.parse_identifier()?;
         self.expect_kind(Kind::KwAs, "Expected AS after property name")?;
         let data_type = self.parse_data_type()?;
-
-        // Consume optional EXTENT [n] on the property type (e.g. "AS LONGCHAR EXTENT 2")
-        if self.check(Kind::Extent) {
-            self.advance();
-            if self.check(Kind::IntegerLiteral) {
-                self.advance();
-            }
-        }
+        let extent = self.parse_extent_clause();
 
         // Consume NO-UNDO and INITIAL [n] in any order (properties can have both)
         let mut no_undo = false;
@@ -6912,6 +6906,7 @@ impl Parser<'_> {
             is_static,
             name,
             data_type,
+            extent,
             no_undo,
             get_body,
             set_body,

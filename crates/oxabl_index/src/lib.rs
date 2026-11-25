@@ -85,7 +85,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use oxabl_ast::{AccessModifier, BufferTarget, DataType, Statement, StatementKind, TypeSource};
+use oxabl_ast::{
+    AccessModifier, BufferTarget, DataType, ParameterExtent, Statement, StatementKind, TypeSource,
+};
 use oxabl_common::FileId;
 use oxabl_lexer::{Kind, Token};
 use oxabl_parser::Parser;
@@ -706,6 +708,7 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                 access,
                 is_static,
                 return_type,
+                extent,
                 name,
                 ..
             } => members.push(MemberDescriptor {
@@ -718,7 +721,7 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                 // is a different fact from naming one the index cannot carry.
                 ty: return_type
                     .as_ref()
-                    .map_or(MemberType::Untyped, member_type),
+                    .map_or(MemberType::Untyped, |dt| member_type(dt, *extent)),
                 access: *access,
                 is_static: *is_static,
                 record: None,
@@ -728,11 +731,12 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                 is_static,
                 name,
                 data_type,
+                extent,
                 ..
             } => members.push(MemberDescriptor {
                 name: IndexName::new(&name.name),
                 kind: SymbolKind::Property,
-                ty: member_type(data_type),
+                ty: member_type(data_type, *extent),
                 access: *access,
                 is_static: *is_static,
                 record: None,
@@ -746,14 +750,9 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                 ..
             } => {
                 let ty = match type_source {
-                    TypeSource::Explicit(declared) => match (declared.class_name(), extent) {
-                        (Some(_), _) | (None, None) => member_type(declared),
-                        (None, Some(n)) => MemberType::portable(ResolvedType::Array {
-                            element: Box::new(ResolvedType::from_data_type(declared)),
-                            extent: if *n == 0 { None } else { Some(*n) },
-                        })
-                        .unwrap_or(MemberType::Untyped),
-                    },
+                    TypeSource::Explicit(declared) => {
+                        member_type(declared, extent.map(ParameterExtent::Fixed))
+                    }
                     TypeSource::Like { .. } => MemberType::Untyped,
                 };
                 members.push(data(name, SymbolKind::Variable, ty, *access, *is_static));
@@ -847,7 +846,15 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
 /// [`ResolvedType::from_data_type`], so an indexed member's type and a local
 /// declaration's type are computed by one conversion rather than two that could
 /// disagree.
-fn member_type(declared: &DataType) -> MemberType {
+///
+/// With an `EXTENT` clause the type is an array, through
+/// [`ResolvedType::from_declared`]: a class-typed array carries `Unknown`, as
+/// it does for a local declaration.
+fn member_type(declared: &DataType, extent: Option<ParameterExtent>) -> MemberType {
+    if extent.is_some() {
+        return MemberType::portable(ResolvedType::from_declared(declared, extent))
+            .unwrap_or(MemberType::Untyped);
+    }
     if let Some(name) = declared.class_name() {
         return MemberType::Named(IndexName::new(name));
     }
@@ -1092,6 +1099,35 @@ mod tests {
             class.members[0].ty,
             MemberType::Named(IndexName::new("orders.calc-base")),
         );
+    }
+
+    #[test]
+    fn an_extent_on_a_property_or_a_return_type_gives_an_array_member() {
+        let facts = index_file(
+            FILE,
+            r#"CLASS orders.tags:
+                   DEFINE PUBLIC PROPERTY fixed AS CHARACTER EXTENT 3 NO-UNDO GET. SET.
+                   DEFINE PUBLIC PROPERTY open AS INTEGER EXTENT NO-UNDO GET. SET.
+                   DEFINE PUBLIC PROPERTY owners AS orders.owner EXTENT 2 NO-UNDO GET. SET.
+                   METHOD PUBLIC DECIMAL EXTENT 4 totals():
+                   END METHOD.
+               END CLASS."#,
+        );
+        let class = facts.class(&IndexName::new("orders.tags")).unwrap();
+        let array = |element: PrimitiveTy, extent| {
+            portable(ResolvedType::Array {
+                element: Box::new(ResolvedType::Primitive(element)),
+                extent,
+            })
+        };
+        assert_eq!(class.members[0].ty, array(PrimitiveTy::Character, Some(3)));
+        assert_eq!(class.members[1].ty, array(PrimitiveTy::Integer, None));
+        assert_eq!(
+            class.members[2].ty,
+            portable(ResolvedType::Unknown),
+            "a class-typed array is not modelled"
+        );
+        assert_eq!(class.members[3].ty, array(PrimitiveTy::Decimal, Some(4)));
     }
 
     #[test]

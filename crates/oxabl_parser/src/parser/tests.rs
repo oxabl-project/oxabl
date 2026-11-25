@@ -6943,6 +6943,7 @@ fn parse_method_public_void_no_params() {
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
         StatementKind::Method {
+            extent: _,
             access,
             is_static,
             is_abstract,
@@ -7299,6 +7300,7 @@ fn parse_property_auto_get_set() {
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
         StatementKind::Property {
+            extent: _,
             access,
             is_static,
             name,
@@ -15359,4 +15361,42 @@ fn the_query_lob_bench_fixture_holds_no_skipped_statement() {
         .filter(|text| !text.starts_with("define query") && !text.starts_with("open query"))
         .collect();
     assert!(skipped.is_empty(), "{skipped:#?}");
+}
+
+#[test]
+fn property_and_method_keep_their_extent_clause() {
+    let cases = [
+        (
+            "DEFINE PUBLIC PROPERTY Tags AS CHARACTER EXTENT 3 NO-UNDO GET. SET.",
+            Some(ParameterExtent::Fixed(3)),
+        ),
+        (
+            "DEFINE PUBLIC PROPERTY Tags AS CHARACTER EXTENT NO-UNDO GET. SET.",
+            Some(ParameterExtent::Indeterminate),
+        ),
+        (
+            "DEFINE PUBLIC PROPERTY Tags AS CHARACTER NO-UNDO GET. SET.",
+            None,
+        ),
+        (
+            "METHOD PUBLIC CHARACTER EXTENT 3 Names(): END METHOD.",
+            Some(ParameterExtent::Fixed(3)),
+        ),
+        (
+            "METHOD PUBLIC CHARACTER EXTENT Names(): END METHOD.",
+            Some(ParameterExtent::Indeterminate),
+        ),
+        ("METHOD PUBLIC CHARACTER Names(): END METHOD.", None),
+        ("METHOD PUBLIC VOID Names(): END METHOD.", None),
+    ];
+    for (source, want) in cases {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().unwrap();
+        let extent = match stmt.kind {
+            StatementKind::Property { extent, .. } | StatementKind::Method { extent, .. } => extent,
+            other => panic!("{source}: unexpected {other:?}"),
+        };
+        assert_eq!(extent, want, "{source}");
+    }
 }

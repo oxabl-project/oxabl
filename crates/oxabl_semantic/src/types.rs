@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use oxabl_ast::DataType;
+use oxabl_ast::{DataType, ParameterExtent};
 use oxabl_schema::{Field, Schema, SchemaRevision, SchemaType, TableId};
 
 use crate::{SymbolId, symbol::SymbolTable};
@@ -89,6 +89,25 @@ impl ResolvedType {
             // Preprocessor `&IF` in a type position yields `Unknown` until
             // the resolve pass picks an active branch.
             DataType::PreprocIf(_) => ResolvedType::Unknown,
+        }
+    }
+
+    /// The type of a declaration with an optional `EXTENT` clause: a property,
+    /// a method return type or a parameter. `EXTENT` with no size, or `0`, is
+    /// a dynamic extent. A class-typed or unknown element with an extent, and
+    /// a size the parser cannot read, give `Unknown`.
+    pub fn from_declared(dt: &DataType, extent: Option<ParameterExtent>) -> Self {
+        let element = Self::from_data_type(dt);
+        let extent = match extent {
+            None => return element,
+            Some(_) if element.is_unknown() => return ResolvedType::Unknown,
+            Some(ParameterExtent::Unresolved(_)) => return ResolvedType::Unknown,
+            Some(ParameterExtent::Indeterminate | ParameterExtent::Fixed(0)) => None,
+            Some(ParameterExtent::Fixed(n)) => Some(n),
+        };
+        ResolvedType::Array {
+            element: Box::new(element),
+            extent,
         }
     }
 

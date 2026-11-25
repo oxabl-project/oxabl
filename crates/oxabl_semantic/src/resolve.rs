@@ -438,6 +438,7 @@ impl<'a> Walker<'a> {
                 is_static,
                 name,
                 data_type,
+                extent,
                 no_undo,
                 get_body,
                 set_body,
@@ -452,7 +453,7 @@ impl<'a> Walker<'a> {
                     name,
                     NamespaceId::Values,
                     SymbolKind::Property,
-                    Some(ResolvedType::from_data_type(data_type)),
+                    Some(ResolvedType::from_declared(data_type, *extent)),
                     flags,
                     None,
                 );
@@ -667,6 +668,7 @@ impl<'a> Walker<'a> {
                 is_abstract,
                 is_override,
                 return_type,
+                extent,
                 name,
                 parameters,
                 body,
@@ -675,7 +677,9 @@ impl<'a> Walker<'a> {
                     | flag_if(*is_static, SymbolFlags::STATIC)
                     | flag_if(*is_abstract, SymbolFlags::ABSTRACT)
                     | flag_if(*is_override, SymbolFlags::OVERRIDE);
-                let ret = return_type.as_ref().map(ResolvedType::from_data_type);
+                let ret = return_type
+                    .as_ref()
+                    .map(|dt| ResolvedType::from_declared(dt, *extent));
                 self.declare_method(stmt, scope, name, parameters, ret, flags);
                 let method_scope = self.tree.push(ScopeKind::Method, scope, stmt.id);
                 self.walk_block(parameters, method_scope);
@@ -2568,7 +2572,10 @@ impl<'a> ResolveWalker<'a> {
                     ..
                 }
                 | StatementKind::Property {
-                    name, data_type, ..
+                    name,
+                    data_type,
+                    extent: None,
+                    ..
                 } => data_type
                     .class_name()
                     .and_then(|class_name| self.class_upgrade(class_name, scope, name)),
@@ -8029,6 +8036,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: false,
@@ -8077,6 +8085,7 @@ mod tests {
     #[test]
     fn property_declares_symbol_and_accessor_scopes() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::Property {
+            extent: None,
             access: AccessModifier::Public,
             is_static: false,
             name: id("Name"),
@@ -8095,6 +8104,7 @@ mod tests {
     #[test]
     fn property_auto_getter_only_still_opens_get_scope() {
         let (tree, _symbols, _) = run(vec![stmt(StatementKind::Property {
+            extent: None,
             access: AccessModifier::Public,
             is_static: false,
             name: id("X"),
@@ -8585,6 +8595,7 @@ mod tests {
             use_widget_pool: false,
             body: vec![
                 stmt(StatementKind::Method {
+                    extent: None,
                     access: AccessModifier::Private,
                     is_static: true,
                     is_abstract: false,
@@ -8595,6 +8606,7 @@ mod tests {
                     body: vec![],
                 }),
                 stmt(StatementKind::Method {
+                    extent: None,
                     access: AccessModifier::Public,
                     is_static: false,
                     is_abstract: false,
@@ -8623,6 +8635,7 @@ mod tests {
             use_widget_pool: false,
             body: vec![
                 stmt(StatementKind::Method {
+                    extent: None,
                     access: AccessModifier::Public,
                     is_static: false,
                     is_abstract: false,
@@ -8637,6 +8650,7 @@ mod tests {
                     body: vec![],
                 }),
                 stmt(StatementKind::Method {
+                    extent: None,
                     access: AccessModifier::Private,
                     is_static: true,
                     is_abstract: false,
@@ -8985,6 +8999,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: false,
@@ -9027,6 +9042,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: true,
@@ -9058,6 +9074,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: false,
@@ -9089,6 +9106,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Property {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: true,
                 name: id("Count"),
@@ -10906,6 +10924,7 @@ mod tests {
     #[test]
     fn resolve_types_side_table_contains_property_type() {
         let pdecl = stmt_n(StatementKind::Property {
+            extent: None,
             access: AccessModifier::Public,
             is_static: false,
             name: id("Name"),
@@ -11112,6 +11131,7 @@ mod tests {
         let body_use = id_expr("arg");
         let use_id = body_use.id;
         let method = stmt_n(StatementKind::Method {
+            extent: None,
             access: AccessModifier::Public,
             is_static: false,
             is_abstract: false,
