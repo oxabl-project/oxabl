@@ -967,6 +967,35 @@ fn an_editor_starts_another_daemon_when_its_first_loses_the_start_lock() {
     );
 }
 
+/// A daemon another client started holds the start lock for longer than the old fixed
+/// wait of two seconds before it registers. The editor keeps waiting while the lock is
+/// held, starts its own daemon once it is free, and is served.
+#[test]
+fn an_editor_waits_while_another_daemon_holds_the_start_lock() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let registration_path = registration_path_in(root.path(), cache.path());
+    let lock_path = registration_path.with_extension("lock");
+    let directory = lock_path.parent().expect("a registration directory");
+    std::fs::create_dir_all(directory).expect("the registration directory");
+    for level in [directory.parent().expect("the oxabl directory"), directory] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(level, std::fs::Permissions::from_mode(0o700))
+            .expect("a private directory");
+    }
+    let mut holder = StandIn::start(&lock_path, StandInMode::HoldLockLong);
+
+    let editor = Editor::start(root.path(), cache.path());
+    let response = editor.initialize_response(&registration_path, 0);
+    assert_eq!(response["id"], 10);
+    let registration = wait_for_registration(&registration_path);
+    let _daemon = PidGuard(registration.pid);
+    assert!(
+        exits_within(&mut holder.0.0, Duration::from_secs(1)).is_some(),
+        "the lock was held until the editor's daemon started"
+    );
+}
+
 /// A daemon that fails to start for a reason that repeats is started once, and the
 /// editor is told at once rather than after five starts.
 #[test]
@@ -1055,6 +1084,9 @@ enum StandInMode {
     /// Takes the start lock at the path given in place of the socket, holds it for half
     /// a second and exits, as a daemon that is still exiting.
     HoldLock,
+    /// The same for four seconds, as a daemon another client started that is slow to
+    /// register.
+    HoldLockLong,
 }
 
 /// Stands in for a daemon in another process, on `OXABL_STAND_IN_SOCKET`, in the
@@ -1075,7 +1107,7 @@ fn stand_in_daemon() {
         fn signal(signum: i32, handler: usize) -> usize;
         fn listen(fd: i32, backlog: i32) -> i32;
     }
-    if mode == "hold-lock" {
+    if mode == "hold-lock" || mode == "hold-lock-long" {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::OpenOptionsExt;
         unsafe extern "C" {
@@ -1091,7 +1123,11 @@ fn stand_in_daemon() {
         // SAFETY: a valid descriptor this function owns; LOCK_EX is 2.
         assert_eq!(unsafe { flock(file.as_raw_fd(), 2) }, 0, "take the lock");
         println!("stand-in ready");
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(if mode == "hold-lock" {
+            500
+        } else {
+            4000
+        }));
         std::process::exit(0);
     }
     if mode == "ignore-term" {
@@ -1150,11 +1186,14 @@ impl StandIn {
                     StandInMode::RefuseAndExit => "refuse-and-exit",
                     StandInMode::Refuse => "refuse",
                     StandInMode::HoldLock => "hold-lock",
+                    StandInMode::HoldLockLong => "hold-lock-long",
                 },
             )
             .stdin(Stdio::null())
             .stdout(match mode {
-                StandInMode::Busy | StandInMode::HoldLock => Stdio::piped(),
+                StandInMode::Busy | StandInMode::HoldLock | StandInMode::HoldLockLong => {
+                    Stdio::piped()
+                }
                 _ => Stdio::null(),
             })
             .stderr(Stdio::null());
@@ -1375,11 +1414,10 @@ impl Editor {
 
     /// The answer to `initialize`, for an editor that stays.
     fn answer(&self) -> serde_json::Value {
-        let response = self
-            .answer
-            .recv_timeout(Duration::from_secs(15))
-            .unwrap_or_else(|_| panic!("the editor shim did not answer initialize"));
-        serde_json::from_str(&response).expect("LSP initialize response")
+        // A slow start sends a log message first.
+        self.frames(Duration::from_secs(15))
+            .1
+            .unwrap_or_else(|| panic!("the editor shim did not answer initialize"))
     }
 
     /// Close the editor's side, as a closed window does, and wait for the shim to end.

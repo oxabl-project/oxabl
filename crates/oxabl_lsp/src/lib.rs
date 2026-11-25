@@ -140,8 +140,10 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
     const ATTEMPTS: u32 = 3;
     let mut attempt = 1;
     let mut notices = Vec::new();
+    let mut progress = StartProgress::new(connection, &init);
     let (daemon, daemon_threads, answer) = loop {
-        let registration = match find_or_start_daemon(&workspace_root, &mut notices) {
+        let registration = match find_or_start_daemon(&workspace_root, &mut notices, &mut progress)
+        {
             Ok(registration) => registration,
             Err(error) => {
                 // The editor shows a server that fails to start only as a crash, so a
@@ -190,6 +192,7 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
             Err(refusal) => anyhow::bail!("{refusal} (attempt {attempt} of {ATTEMPTS})"),
         }
     };
+    drop(progress);
     let outcome =
         editor_send(connection, answer).and_then(|()| proxy_messages(connection, &daemon));
     drop(daemon);
@@ -316,8 +319,9 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 ///
 /// * `Absent` — nothing is registered. Start a daemon and keep polling. Start another
 ///   only when the one started lost the start lock
-///   ([`oxabl_daemon::listener::EXIT_START_LOCK_HELD`]), which a daemon that is still
-///   exiting idle can hold. Any other exit repeats on every start, so it is reported.
+///   ([`oxabl_daemon::listener::EXIT_START_LOCK_HELD`]): another process, such as a
+///   daemon that another client started or one that is still exiting, holds it. Any
+///   other exit repeats on every start, so it is reported at once.
 /// * `Undecided` — the registration could not be read, or the socket could not be
 ///   probed. Neither starting a daemon nor connecting is defensible on that answer, so
 ///   the loop waits. The reason is kept, because a client that runs out of attempts
@@ -329,23 +333,30 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 ///   in use stop each other's daemon on every restart of their editors. So is a
 ///   second daemon of another build, which means another build keeps starting them.
 /// * `Live` — decided; return it.
+///
+/// How long it waits: a start on a loaded machine can take many seconds, so no fixed
+/// time is right for it. The loop waits while there is a sign that a daemon is
+/// starting: the daemon this client started still runs, or the last one it started
+/// found the start lock held. It stops [`START_QUIET`] after the last sign, and at
+/// [`START_LIMIT`] in all.
 #[cfg(unix)]
 fn find_or_start_daemon(
     root: &Path,
     notices: &mut Vec<String>,
+    progress: &mut StartProgress<'_>,
 ) -> Result<oxabl_daemon_protocol::Registration> {
     use std::time::{Duration, Instant};
 
-    // Polled every 20ms for two seconds. A cold start is far quicker; the budget is
-    // for a machine under load.
-    const BUDGET: Duration = Duration::from_secs(2);
     const INTERVAL: Duration = Duration::from_millis(20);
+    // A daemon that lost the start lock is started again after this interval, which
+    // doubles after each such start up to `RESTART_MAX`. `RESTART_MAX` stays below
+    // `START_QUIET`, so each restart is a sign before the quiet time ends.
+    const RESTART_FIRST: Duration = Duration::from_millis(250);
+    const RESTART_MAX: Duration = Duration::from_secs(1);
 
-    let mut deadline = Instant::now() + BUDGET;
-    // A daemon that lost the start lock is started again at most this often, and this
-    // many times.
-    const RESTART_INTERVAL: Duration = Duration::from_millis(250);
-    const STARTS: u32 = 5;
+    let limit = Instant::now() + START_LIMIT;
+    let mut quiet_until = Instant::now() + START_QUIET;
+    let mut restart_interval = RESTART_FIRST;
 
     let mut started = false;
     let mut starts = 0;
@@ -399,7 +410,7 @@ fn find_or_start_daemon(
                             });
                             // The old daemon's exit is not this client's start: both get
                             // time.
-                            deadline = Instant::now() + STOP_GRACE + BUDGET;
+                            quiet_until = Instant::now() + STOP_GRACE + START_QUIET;
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             busy = Some(not_stopped(&registration, root, &error));
@@ -425,13 +436,13 @@ fn find_or_start_daemon(
                             root.display()
                         );
                     }
+                    // A live process holds the start lock: the kernel releases it when
+                    // the holder exits.
                     child_exit = Some(status);
                     child = None;
+                    quiet_until = Instant::now() + START_QUIET;
                 }
-                if child.is_none()
-                    && starts < STARTS
-                    && last_start.is_none_or(|at| at.elapsed() >= RESTART_INTERVAL)
-                {
+                if child.is_none() && last_start.is_none_or(|at| at.elapsed() >= restart_interval) {
                     let executable =
                         std::env::current_exe().context("locating the oxabl executable")?;
                     child = Some(
@@ -444,15 +455,26 @@ fn find_or_start_daemon(
                             .spawn()
                             .context("starting the oxabl daemon")?,
                     );
+                    if started {
+                        restart_interval = (restart_interval * 2).min(RESTART_MAX);
+                    }
                     started = true;
                     starts += 1;
                     last_start = Some(Instant::now());
                 }
             }
         }
+        let running = child
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+        if running {
+            quiet_until = Instant::now() + START_QUIET;
+        }
+        progress.waiting(root);
         // Nothing changes between the last poll and the give-up, so it is not waited
         // for.
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if now >= quiet_until || now >= limit {
             break;
         }
         std::thread::sleep(INTERVAL);
@@ -471,8 +493,20 @@ fn find_or_start_daemon(
     if let Some(busy) = busy {
         return Err(mismatch(busy));
     }
-    if let Some(status) = child.as_mut().and_then(|child| child.try_wait().ok()?) {
-        child_exit = Some(status);
+    if let Some(child) = child.as_mut() {
+        match child.try_wait() {
+            Ok(Some(status)) => child_exit = Some(status),
+            Ok(None) => anyhow::bail!(
+                "the oxabl daemon did not become ready in time: the daemon this client \
+                 started for {} (pid {}) still runs after {} s and does not serve the root. \
+                 Its stderr is above; stop it with `kill {}`",
+                root.display(),
+                child.id(),
+                START_LIMIT.as_secs(),
+                child.id()
+            ),
+            Err(_) => {}
+        }
     }
     match (refusal, child_exit) {
         (Some(reason), _) => {
@@ -483,6 +517,101 @@ fn find_or_start_daemon(
              client started found the start lock held (starts: {starts}, last: {status})"
         ),
         (None, None) => anyhow::bail!("the oxabl daemon did not become ready in time"),
+    }
+}
+
+/// The longest wait for a daemon to serve the root, from the first look for it.
+#[cfg(unix)]
+const START_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long the wait goes on after the last sign that a daemon is starting.
+#[cfg(unix)]
+const START_QUIET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A start that takes longer than this is shown to the editor.
+#[cfg(unix)]
+const SLOW_START: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What the editor sees of a slow daemon start: a log message and, when the editor
+/// sent a `workDoneToken` with `initialize`, a progress report on it. Both are among
+/// the few messages a server may send before it answers `initialize`.
+#[cfg(unix)]
+struct StartProgress<'a> {
+    connection: &'a Connection,
+    token: Option<lsp_types::ProgressToken>,
+    since: std::time::Instant,
+    shown: bool,
+}
+
+#[cfg(unix)]
+impl<'a> StartProgress<'a> {
+    fn new(connection: &'a Connection, init: &InitializeParams) -> Self {
+        StartProgress {
+            connection,
+            token: init.work_done_progress_params.work_done_token.clone(),
+            since: std::time::Instant::now(),
+            shown: false,
+        }
+    }
+
+    /// Called on each poll: shows the start once it has taken [`SLOW_START`].
+    fn waiting(&mut self, root: &Path) {
+        if self.shown || self.since.elapsed() < SLOW_START {
+            return;
+        }
+        self.shown = true;
+        let message = format!(
+            "the oxabl daemon for {} is still starting; waiting for it while it runs, for {} s \
+             at most",
+            root.display(),
+            START_LIMIT.as_secs()
+        );
+        eprintln!("oxabl lsp: {message}");
+        let _ = self
+            .connection
+            .sender
+            .send(Message::Notification(Notification::new(
+                "window/logMessage".to_string(),
+                lsp_types::LogMessageParams {
+                    typ: lsp_types::MessageType::INFO,
+                    message: format!("oxabl lsp: {message}"),
+                },
+            )));
+        self.report(lsp_types::WorkDoneProgress::Begin(
+            lsp_types::WorkDoneProgressBegin {
+                title: "oxabl".to_string(),
+                cancellable: Some(false),
+                message: Some("Starting the oxabl daemon".to_string()),
+                percentage: None,
+            },
+        ));
+    }
+
+    fn report(&self, value: lsp_types::WorkDoneProgress) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let _ = self
+            .connection
+            .sender
+            .send(Message::Notification(Notification::new(
+                "$/progress".to_string(),
+                lsp_types::ProgressParams {
+                    token,
+                    value: lsp_types::ProgressParamsValue::WorkDone(value),
+                },
+            )));
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StartProgress<'_> {
+    fn drop(&mut self) {
+        if self.shown {
+            self.report(lsp_types::WorkDoneProgress::End(
+                lsp_types::WorkDoneProgressEnd { message: None },
+            ));
+        }
     }
 }
 
@@ -2671,7 +2800,9 @@ mod tests {
             }
         }
 
-        let outcome = find_or_start_daemon(workspace.path(), &mut Vec::new());
+        let (editor, _client) = Connection::memory();
+        let mut progress = StartProgress::new(&editor, &InitializeParams::default());
+        let outcome = find_or_start_daemon(workspace.path(), &mut Vec::new(), &mut progress);
 
         unsafe {
             for (name, value) in previous {

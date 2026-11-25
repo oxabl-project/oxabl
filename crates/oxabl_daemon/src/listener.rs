@@ -40,6 +40,9 @@ use crate::registry;
 use crate::server;
 use crate::session::SessionHost;
 
+/// The test-hold and test-panic site just before a starting daemon registers.
+pub const READY_SITE: &str = "daemon.ready";
+
 /// One routed client service behind the shared listener.
 pub type ConnectionService = dyn Fn(&Connection, &SessionHost) + Send + Sync;
 
@@ -217,6 +220,11 @@ impl Listener {
             listener.socket_path(),
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
         );
+        // Test builds only: a root whose path names the site makes the start slow, or
+        // ends it, at the moment before the daemon becomes ready.
+        let root_text = listener.workspace_root().to_string_lossy();
+        oxabl_common::hold_if_injected(READY_SITE, &root_text);
+        oxabl_common::panic_if_injected(READY_SITE, &root_text);
         registry::register(
             listener.workspace_root(),
             listener.socket_path(),

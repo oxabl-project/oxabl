@@ -86,9 +86,15 @@ fn lsp_stdio_initialize_handshake_returns_capabilities() {
                 Ok(0) => break, // EOF
                 Ok(n) => {
                     buf.extend_from_slice(&chunk[..n]);
-                    if let Some(body) = try_parse_one_message(&buf) {
-                        let _ = tx.send(Some(body));
-                        return;
+                    // A slow daemon start sends a log message before the response.
+                    while let Some((body, used)) = try_parse_one_message(&buf) {
+                        buf.drain(..used);
+                        let response = serde_json::from_str::<serde_json::Value>(&body)
+                            .is_ok_and(|message| message.get("method").is_none());
+                        if response {
+                            let _ = tx.send(Some(body));
+                            return;
+                        }
                     }
                 }
                 Err(_) => break,
@@ -153,8 +159,9 @@ fn lsp_rejects_stray_stdio_flag() {
 }
 
 /// Try to parse one complete LSP message out of `buf`. Returns the JSON body
-/// as a string once a full `Content-Length`-framed message is present.
-fn try_parse_one_message(buf: &[u8]) -> Option<String> {
+/// as a string and the bytes it used once a full `Content-Length`-framed message
+/// is present.
+fn try_parse_one_message(buf: &[u8]) -> Option<(String, usize)> {
     // Find the header/body separator.
     let sep = b"\r\n\r\n";
     let header_end = buf.windows(sep.len()).position(|w| w == sep)?;
@@ -175,5 +182,6 @@ fn try_parse_one_message(buf: &[u8]) -> Option<String> {
     if buf.len() < body_end {
         return None; // body not fully arrived yet
     }
-    String::from_utf8(buf[body_start..body_end].to_vec()).ok()
+    let body = String::from_utf8(buf[body_start..body_end].to_vec()).ok()?;
+    Some((body, body_end))
 }

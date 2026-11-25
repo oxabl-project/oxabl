@@ -47,6 +47,32 @@ impl Session {
     /// Start with the given client capabilities and initialization options
     /// (none when `null`).
     pub fn start_with_options(root: &Path, capabilities: Value, options: Value) -> Session {
+        let mut params = json!({"capabilities": capabilities});
+        if !options.is_null() {
+            params["initializationOptions"] = options;
+        }
+        Session::start_with_params(root, params).0
+    }
+
+    /// Start with `params` added to the `initialize` parameters, and return the
+    /// messages the server sent before its answer as well.
+    pub fn start_with_params(root: &Path, params: Value) -> (Session, Vec<Value>) {
+        let mut session = Session::launch(root, params);
+        let mut early = Vec::new();
+        session.initialized = session.wait_for(|m| {
+            let answer = m["id"] == json!(0) && m.get("method").is_none();
+            if !answer {
+                early.push(m.clone());
+            }
+            answer
+        });
+        session.send(json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}));
+        (session, early)
+    }
+
+    /// Start `oxabl lsp` and send `initialize` with `params` added, without waiting
+    /// for the answer.
+    pub fn launch(root: &Path, params: Value) -> Session {
         let base = tempfile::tempdir().unwrap();
         let registration = registration_path_in(
             &base.path().join("oxabl").join("daemon"),
@@ -97,20 +123,35 @@ impl Session {
             initialized: Value::Null,
             _base: base,
         };
-        let mut params = json!({
+        let mut all = json!({
             "processId": null,
             "rootUri": file_uri(root),
-            "capabilities": capabilities
+            "capabilities": {}
         });
-        if !options.is_null() {
-            params["initializationOptions"] = options;
+        if let (Some(all), Some(params)) = (all.as_object_mut(), params.as_object()) {
+            all.extend(params.clone());
         }
         session.send(json!({
-            "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": params
+            "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": all
         }));
-        session.initialized = session.wait_for(|m| m["id"] == json!(0));
-        session.send(json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}));
         session
+    }
+
+    /// The exit status of `oxabl lsp` once it exits within `limit`.
+    pub fn wait_exit(&mut self, limit: Duration) -> Option<std::process::ExitStatus> {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return Some(status);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    /// What `oxabl lsp` and its daemon wrote to stderr so far.
+    pub fn stderr(&self) -> String {
+        std::fs::read_to_string(&self.stderr).unwrap_or_default()
     }
 
     pub fn send(&mut self, message: Value) {
@@ -129,7 +170,7 @@ impl Session {
         }));
     }
 
-    pub fn wait_for(&self, wanted: impl Fn(&Value) -> bool) -> Value {
+    pub fn wait_for(&self, mut wanted: impl FnMut(&Value) -> bool) -> Value {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
