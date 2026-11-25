@@ -170,12 +170,19 @@ pub mod panic_sites {
     /// The language server's semantic tokens after the analysis, before the
     /// answer, for [`hold_if_injected`](super::hold_if_injected).
     pub const SEMANTIC_ANSWER: &str = "lsp.semantic-answer";
+    /// The language server's semantic tokens while the analysis holds its
+    /// snapshot, for [`hold_if_injected`](super::hold_if_injected).
+    pub const SEMANTIC_SNAPSHOT: &str = "lsp.semantic-snapshot";
 }
 
 /// The marker that holds a site for [`HOLD_TIME`], for a test that needs a
 /// request to be still running when the next one arrives:
 /// `OXABL-TEST-HOLD:<site>` in the source, as with [`TEST_PANIC_MARKER`].
 pub const TEST_HOLD_MARKER: &str = "OXABL-TEST-HOLD";
+
+/// Whether the markers act: only with the test-only `test-panics` feature. A
+/// caller that must build a string to look for a marker checks this first.
+pub const INJECTION_ENABLED: bool = cfg!(feature = "test-panics");
 
 /// How long [`hold_if_injected`] waits.
 pub const HOLD_TIME: std::time::Duration = std::time::Duration::from_secs(3);

@@ -336,32 +336,49 @@ fn modified(id: RequestId) -> Response {
     )
 }
 
+/// How often a cancelled analysis of an unchanged text runs again.
+const MAX_RETRIES: u32 = 8;
+
 fn answer(shared: &Shared, job: Job) -> Response {
     // The text is read only to look for a test marker.
-    let marked = job.rope.to_string();
+    let marked = if oxabl_common::INJECTION_ENABLED {
+        job.rope.to_string()
+    } else {
+        String::new()
+    };
     oxabl_common::hold_if_injected(oxabl_common::panic_sites::SEMANTIC_TOKENS, &marked);
     // The document changed after the request: the client asks again for the
     // new text, so no analysis is spent on the old one.
     if shared.version_of(&job.uri) != Some(job.version) {
         return modified(job.id);
     }
-    let computed = oxabl_common::catch_panic(|| {
-        oxabl_common::panic_if_injected(oxabl_common::panic_sites::SEMANTIC_TOKENS, &marked);
-        if !shared.enabled.load(Ordering::SeqCst) {
-            return Some(Vec::new());
-        }
-        tokens_of(&job)
-    });
-    let data = match computed {
-        Ok(Some(data)) => data,
-        // An edit cancelled the analysis.
-        Ok(None) => return modified(job.id),
-        Err(panic) => {
-            return Response::new_err(
-                job.id,
-                ErrorCode::InternalError as i32,
-                format!("oxabl-lsp: the semantic tokens failed: {panic}"),
-            );
+    let mut retries = 0;
+    let data = loop {
+        let computed = oxabl_common::catch_panic(|| {
+            oxabl_common::panic_if_injected(oxabl_common::panic_sites::SEMANTIC_TOKENS, &marked);
+            if !shared.enabled.load(Ordering::SeqCst) {
+                return Computed::Tokens(Vec::new());
+            }
+            tokens_of(&job, &marked)
+        });
+        match computed {
+            Ok(Computed::Tokens(data)) => break data,
+            // A write to another file cancels every snapshot. The text of this
+            // file is the same, and the client does not ask again for it, so
+            // the analysis runs again on a new snapshot.
+            Ok(Computed::Cancelled)
+                if retries < MAX_RETRIES && shared.version_of(&job.uri) == Some(job.version) =>
+            {
+                retries += 1;
+            }
+            Ok(Computed::Cancelled | Computed::Gone) => return modified(job.id),
+            Err(panic) => {
+                return Response::new_err(
+                    job.id,
+                    ErrorCode::InternalError as i32,
+                    format!("oxabl-lsp: the semantic tokens failed: {panic}"),
+                );
+            }
         }
     };
     oxabl_common::hold_if_injected(oxabl_common::panic_sites::SEMANTIC_ANSWER, &marked);
@@ -414,9 +431,17 @@ fn answer(shared: &Shared, job: Job) -> Response {
     }
 }
 
-/// The tokens of the job's file, delta-encoded. `None` when an edit cancelled
-/// the analysis. No token when the analysis cannot run.
-fn tokens_of(job: &Job) -> Option<Vec<SemanticToken>> {
+/// How the analysis of one job ended.
+enum Computed {
+    /// The tokens, delta-encoded. None when the analysis cannot run.
+    Tokens(Vec<SemanticToken>),
+    /// The database cancelled the analysis: a write came while it ran.
+    Cancelled,
+    /// The session of the job no longer exists.
+    Gone,
+}
+
+fn tokens_of(job: &Job, marked: &str) -> Computed {
     let rope = &job.rope;
     let range = match &job.ask {
         Ask::Range(range) => Some((
@@ -425,7 +450,7 @@ fn tokens_of(job: &Job) -> Option<Vec<SemanticToken>> {
         )),
         _ => None,
     };
-    let (snapshot, schema, overlay, buffer) = job.host.with(|sessions| {
+    let Some((snapshot, schema, overlay, buffer)) = job.host.with(|sessions| {
         let session = sessions.get(&job.session_root)?;
         Some((
             session.database().clone(),
@@ -435,10 +460,13 @@ fn tokens_of(job: &Job) -> Option<Vec<SemanticToken>> {
                 .as_deref()
                 .and_then(|key| session.buffer(key)),
         ))
-    })?;
-    let answer = match buffer {
+    }) else {
+        return Computed::Gone;
+    };
+    oxabl_common::hold_if_injected(oxabl_common::panic_sites::SEMANTIC_SNAPSHOT, marked);
+    let computed = match buffer {
         Some(buffer) if !reads_unsaved_include(&snapshot, buffer, &job.root, &overlay) => {
-            compute_semantic_tokens(&snapshot, buffer, schema, range)?
+            compute_semantic_tokens(&snapshot, buffer, schema, range)
         }
         _ => compute_navigation(
             &snapshot,
@@ -449,14 +477,19 @@ fn tokens_of(job: &Job) -> Option<Vec<SemanticToken>> {
                 file: job.path.clone(),
                 range,
             },
-        )?,
+        ),
+    };
+    let Some(answer) = computed else {
+        return Computed::Cancelled;
     };
     let Ok(answer) = answer else {
-        return Some(Vec::new());
+        return Computed::Tokens(Vec::new());
     };
-    let text = answer.texts.into_values().next()?;
+    let Some(text) = answer.texts.into_values().next() else {
+        return Computed::Tokens(Vec::new());
+    };
     let rope = Rope::from_str(&text);
-    Some(encode(&answer.tokens, &rope, &text, &job.encoding))
+    Computed::Tokens(encode(&answer.tokens, &rope, &text, &job.encoding))
 }
 
 /// The tokens as the protocol sends them: each relative to the one before.

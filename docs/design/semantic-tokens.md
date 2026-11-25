@@ -28,14 +28,27 @@ This rule holds for the whole feature:
   analysis spans some arguments with their keyword (`BUFFER b` in
   `RUN p (BUFFER b)`). A token must be one name: it holds no space, bracket,
   quote or operator, it is on one line, and it is at most 255 bytes long.
-- A span that two sites name as two different kinds has no token.
+- A span that two sites name as two different kinds has no token. This holds
+  for an include that the root reads more than once: when two expansions give
+  the same bytes of the include two different meanings (a variable in one, a
+  parameter in the other), the bytes have no token. When the meaning is the
+  same, the token is given once.
 - A name that a macro or an include argument writes has no token in the file
   that uses it, because its bytes are not in that file.
 
 The tokens come from the same facts as go to definition and document
 highlights: the navigation sites and the declarations of the cached analysis
-(`NavigationModel`, see `navigation.md`). A request after the first costs a
-pass over those sites. It makes no new analysis of the unit.
+(`NavigationModel`, see `navigation.md`). For a file that is its own root, and
+that reads no include with unsaved changes, the model is cached. A request
+after the first costs a pass over those sites and makes no new analysis of the
+unit.
+
+Two cases do not use the cached model. They pay a new expansion and analysis of
+the whole root on each full, delta and range request:
+
+- an open include with a selected include context (see `include-context.md`);
+- a file that reads an open include whose text is not the text on disk. The
+  server compares each open include with its file on each request.
 
 ## Token types
 
@@ -129,8 +142,13 @@ runs. `crates/oxabl_lsp/src/semantic_tokens.rs` does what rust-analyzer does:
   document. Only then does it take a snapshot. It checks again before it
   answers. A request that fails a check answers `ContentModified` (-32801), and
   the client asks again.
-- An edit also cancels an analysis that has started. The database then gives no
-  result, and the request answers `ContentModified`.
+- The database cancels an analysis at its next query boundary when any file
+  changes. An analysis that runs inside a single query is not interrupted: it
+  ends, and the answer is checked against the version as before.
+- A cancelled analysis of a document that has the same version as the request
+  runs again on a new snapshot (at most eight times). The change was to another
+  file, and the client does not ask again for this one. The request answers
+  `ContentModified` only when the version of its document changed.
 - The server never sends the tokens of one version of a document as the answer
   to a request for another version.
 - A request for an old version that waited in the queue costs no analysis.
@@ -138,10 +156,12 @@ runs. `crates/oxabl_lsp/src/semantic_tokens.rs` does what rust-analyzer does:
 `oxabl_common::panic_sites::SEMANTIC_TOKENS` is the hold and panic site for
 tests (`OXABL-TEST-HOLD:lsp.semantic-tokens` and
 `OXABL-TEST-PANIC:lsp.semantic-tokens` in the source). The hold waits three
-seconds before the analysis. `SEMANTIC_ANSWER`
+seconds before the analysis. `SEMANTIC_SNAPSHOT`
+(`OXABL-TEST-HOLD:lsp.semantic-snapshot`) waits while the analysis holds its
+snapshot, so that a write to another file cancels it. `SEMANTIC_ANSWER`
 (`OXABL-TEST-HOLD:lsp.semantic-answer`) waits after the analysis and before the
-answer. So a test can send an edit at each of the two places. Both are active in
-test builds only.
+answer. So a test can send an edit at each of the three places. The text of a
+request is read for these markers in test builds only.
 
 A panic in the analysis fails that one request with `InternalError`
 (`catch_panic`, as for every navigation request). It does not stop the server.
@@ -159,7 +179,9 @@ answers an empty token list, and the grammar of the client colours all the text.
 A change of the setting asks the client to ask again
 (`workspace/semanticTokens/refresh`). The tokens also refresh with the inlay
 hints: when a watched file changes on disk, and when the include context of a
-file changes.
+file changes. They refresh too when an edit to an open file settles (after the
+debounce) and another open file reads that file as an include: the tokens of
+the reader change with the include, and the reader has no edit of its own.
 
 The VS Code extension has the setting `oxabl.semanticTokens.enable` (default
 `true`) and sends it this way. The VS Code setting
@@ -206,7 +228,11 @@ answer.
   - the setting, and a client that does not support the tokens;
   - a file of 10,000 lines, and a panic;
   - the three ways a request can be stale: an edit before the analysis, an edit
-    after it, and requests that wait in the queue.
+    after it, and requests that wait in the queue;
+  - a write to another file while the analysis runs: the request gives its
+    tokens and not `ContentModified`;
+  - an include that the root reads twice with two meanings of a name;
+  - the refresh request after an edit to an open include.
 - `crates/oxabl/tests/navigation_sweep_lsp.rs` asks for the tokens of the files
   full of awkward names that the navigation sweep uses. Each token must be
   inside its file, on one line, one name and in order. The ranges of the lines,

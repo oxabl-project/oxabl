@@ -1235,11 +1235,18 @@ impl<'c> Server<'c> {
     fn fire_due_debounces(&mut self, result_tx: &crossbeam_channel::Sender<ComputeResult>) {
         let now = std::time::Instant::now();
         let mut context_due = false;
+        let mut include_due = false;
         for uri in self.debouncer.take_due(now) {
             let Some(doc) = self.documents.get(&uri) else {
                 continue;
             };
             let version = doc.version;
+            // Another open file reads this one: its tokens change with it.
+            include_due |= uri_to_path(&uri).is_some_and(|path| {
+                self.buffers_depending_on(&path)
+                    .iter()
+                    .any(|reader| *reader != uri)
+            });
             if !self.features.diagnostics {
                 self.publish_inactive_regions(&uri, version, []);
                 self.publish(uri, Vec::new(), Some(version));
@@ -1286,6 +1293,11 @@ impl<'c> Server<'c> {
         // the client again once the edits settle, not on every keystroke.
         if context_due {
             self.refresh_inlay_hints();
+        }
+        // The same for the tokens of a file that reads an include with edits
+        // that are not saved.
+        if include_due && !context_due {
+            self.refresh_semantic_tokens();
         }
     }
 

@@ -119,6 +119,36 @@ impl SemanticModifiers {
     }
 }
 
+/// Tokens placed in one file, sorted. An include read twice gives one name
+/// twice: the same token is kept once. Tokens that overlap and differ in span,
+/// kind or modifiers are two meanings of the same bytes, so none is kept.
+fn one_meaning_each(tokens: Vec<SemanticToken>) -> Vec<SemanticToken> {
+    let mut kept: Vec<SemanticToken> = Vec::with_capacity(tokens.len());
+    let mut group_start = 0;
+    let mut group_end = 0;
+    let mut group_agrees = true;
+    // Close the open group: its token when all its tokens are the same one.
+    let close = |kept: &mut Vec<SemanticToken>, from: usize, agrees: bool| {
+        if !agrees {
+            kept.truncate(from);
+        }
+    };
+    for token in tokens {
+        if kept.len() > group_start && token.span.start < group_end {
+            group_agrees &= kept[group_start] == token;
+            group_end = group_end.max(token.span.end);
+            continue;
+        }
+        close(&mut kept, group_start, group_agrees);
+        group_start = kept.len();
+        group_end = token.span.end;
+        group_agrees = true;
+        kept.push(token);
+    }
+    close(&mut kept, group_start, group_agrees);
+    kept
+}
+
 /// One name with its meaning, in the bytes of the analysed file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SemanticToken {
@@ -202,9 +232,7 @@ impl Navigation<'_, '_> {
             })
             .collect();
         tokens.sort_by_key(|token| (token.span.start, token.span.end));
-        // An include read twice gives one name twice.
-        tokens.dedup_by(|later, earlier| later.span.start < earlier.span.end);
-        tokens
+        one_meaning_each(tokens)
     }
 
     /// Whether the expanded text at `span` is written as `name`, up to case.

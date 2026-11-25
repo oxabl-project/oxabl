@@ -8,7 +8,9 @@
 //! A source with the marker `OXABL-TEST-HOLD:lsp.semantic-tokens` makes a
 //! request wait three seconds before it computes, in test builds only
 //! (`oxabl_common::hold_if_injected`), so the order of events does not depend
-//! on the speed of the machine.
+//! on the speed of the machine. The marker `OXABL-TEST-HOLD:lsp.semantic-snapshot`
+//! makes it wait while it holds its database snapshot, so that a write to
+//! another file cancels it.
 
 #![cfg(unix)]
 
@@ -106,6 +108,12 @@ const LOC: &str = "DEFINE VARIABLE iLocal AS INTEGER NO-UNDO.\n";
 const USES: &str = "iFromHost = iFromHost + 1.\n";
 const HOST: &str = "DEFINE VARIABLE iFromHost AS INTEGER NO-UNDO.\n{uses.i}\n";
 
+/// An include that two places read with two meanings of the same name: a
+/// variable in the program, a parameter in the procedure.
+const X_INC: &str = "x = x.\n";
+const X_TWICE: &str = "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n{x.i}\n\
+    PROCEDURE p:\n  DEFINE INPUT PARAMETER x AS INTEGER NO-UNDO.\n  {x.i}\nEND PROCEDURE.\n";
+
 struct Workspace {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -129,6 +137,8 @@ impl Workspace {
             ("host.p", HOST),
             ("twice_host.p", TWICE_HOST),
             ("loc.i", LOC),
+            ("x.i", X_INC),
+            ("x_twice.p", X_TWICE),
         ];
         for (name, text) in files {
             let path = root.join(name);
@@ -523,6 +533,26 @@ fn an_include_that_is_expanded_twice_gives_each_name_once() {
 }
 
 #[test]
+fn an_include_expanded_twice_with_two_meanings_has_no_token() {
+    let ws = Workspace::new();
+    let include = ws.path("x.i");
+    let mut session = Session::start_with(&ws.root, capabilities());
+    session.open(&include, X_INC);
+    let answer = session.request(
+        "oxabl/selectIncluderContext",
+        json!({"textDocument": {"uri": file_uri(&include)}, "root": ws.path("x_twice.p")}),
+    );
+    assert!(answer.get("error").is_none(), "{answer}");
+
+    // The first expansion reads the variable, the second the parameter.
+    assert_eq!(
+        summary(&full(&mut session, &include, X_INC)),
+        Vec::new(),
+        "a name with two meanings in one include has no token"
+    );
+}
+
+#[test]
 fn an_include_read_in_a_context_uses_the_names_of_its_includer() {
     let ws = Workspace::new();
     let include = ws.path("uses.i");
@@ -838,6 +868,80 @@ fn an_edit_after_the_analysis_gives_no_stale_tokens() {
     assert!(
         old.get("result").is_none(),
         "no tokens of the old text: {old}"
+    );
+}
+
+/// The analysis holds its snapshot while a write to another file comes.
+const HELD_SNAPSHOT: &str = "/* OXABL-TEST-HOLD:lsp.semantic-snapshot */\n\
+    DEFINE VARIABLE iOld AS INTEGER NO-UNDO.\n\
+    iOld = 1.\n";
+
+#[test]
+fn a_write_to_another_file_does_not_fail_the_request() {
+    let ws = Workspace::new();
+    let file = ws.path("held_snapshot.p");
+    let other = ws.path("wide.p");
+    std::fs::write(&file, HELD_SNAPSHOT).unwrap();
+    let mut session = Session::start_with(&ws.root, capabilities());
+    session.open(&other, WIDE);
+    session.open(&file, HELD_SNAPSHOT);
+
+    let slow = session.next_request_id();
+    session.send(json!({
+        "jsonrpc": "2.0", "id": slow, "method": "textDocument/semanticTokens/full",
+        "params": {"textDocument": {"uri": file_uri(&file)}}
+    }));
+    // The worker holds its snapshot; the text of its file does not change.
+    sleep(Duration::from_millis(500));
+    change(&mut session, &other, 2, 1, "/* edit */\n");
+
+    let answer = session.wait_for(|m| m["id"] == json!(slow));
+    assert!(
+        answer.get("error").is_none(),
+        "a write to another file gives the tokens, not an error: {answer}"
+    );
+    let tokens = decode(&session, HELD_SNAPSHOT, &answer["result"]["data"]);
+    assert_eq!(
+        tokens.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
+        ["iOld", "iOld"],
+        "the tokens of the unchanged text"
+    );
+}
+
+#[test]
+fn an_edit_to_an_open_include_asks_the_client_for_the_tokens_again() {
+    let ws = Workspace::new();
+    let include = ws.path("defs.i");
+    let program = ws.path("with_include.p");
+    let mut session = Session::start_with(&ws.root, capabilities());
+    session.open(&include, DEFS);
+    session.open(&program, WITH_INCLUDE);
+    // The server knows what the program includes once it has analysed it.
+    let uri = file_uri(&program);
+    session.wait_for(|m| {
+        m["method"] == json!("textDocument/publishDiagnostics") && m["params"]["uri"] == json!(uri)
+    });
+    let before = full(&mut session, &program, WITH_INCLUDE);
+    assert!(
+        before.iter().any(|t| t.text == "gcShared" && t.line == 1),
+        "the include declares the name: {before:?}"
+    );
+
+    // The include, not saved, declares another variable.
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": file_uri(&include), "version": 2},
+            "contentChanges": [{
+                "text": "DEFINE VARIABLE gcOther AS CHARACTER NO-UNDO.\n"
+            }]
+        }
+    }));
+    session.wait_for(|m| m["method"] == json!("workspace/semanticTokens/refresh"));
+    let after = full(&mut session, &program, WITH_INCLUDE);
+    assert!(
+        !after.iter().any(|t| t.text == "gcShared" && t.line == 1),
+        "the name no longer resolves: {after:?}"
     );
 }
 
