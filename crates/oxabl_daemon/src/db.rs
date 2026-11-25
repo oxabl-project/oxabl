@@ -1463,6 +1463,12 @@ pub enum NavigationQuery {
     Highlights { file: PathBuf, offset: u32 },
     /// The links written in the root itself.
     Links,
+    /// The semantic tokens of `file`, which is the root or an include its
+    /// expansion reads, in the bytes of `range` when given.
+    SemanticTokens {
+        file: PathBuf,
+        range: Option<(u32, u32)>,
+    },
 }
 
 /// The answer to a [`NavigationQuery`], with the text of every file it places a
@@ -1476,6 +1482,12 @@ pub struct NavigationAnswer {
     /// The uses of a [`NavigationQuery::Highlights`] name; the text of the
     /// file is the only entry of `texts`.
     pub highlights: Vec<oxabl_pipeline::Highlight>,
+    /// The tokens of a [`NavigationQuery::SemanticTokens`] file; the text of
+    /// the file is the only entry of `texts`.
+    pub tokens: Vec<oxabl_pipeline::SemanticToken>,
+    /// The include files the analysed expansion read, for a
+    /// [`NavigationQuery::SemanticTokens`] query.
+    pub dependencies: Vec<PathBuf>,
     pub texts: HashMap<PathBuf, Arc<str>>,
 }
 
@@ -1537,6 +1549,18 @@ pub fn compute_navigation(
             NavigationQuery::Highlights { file, offset } => {
                 let file = unit.spelled(file);
                 answer.highlights = unit.navigation.highlights(&file, *offset);
+                let text = unit
+                    .fs
+                    .read(&file)
+                    .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+                answer
+                    .texts
+                    .insert(search::normalize_lexically(&file), text);
+            }
+            NavigationQuery::SemanticTokens { file, range } => {
+                let file = unit.spelled(file);
+                answer.tokens = unit.navigation.semantic_tokens(&file, to_span(*range));
+                answer.dependencies = unit.expansion.dependency_paths().to_vec();
                 let text = unit
                     .fs
                     .read(&file)
@@ -1677,6 +1701,43 @@ pub fn compute_highlights(
     schema: SchemaHandle,
     offset: u32,
 ) -> Option<Result<NavigationAnswer, String>> {
+    cached_navigation(snapshot, buffer, schema, |navigation, root| {
+        NavigationAnswer {
+            highlights: navigation.highlights(root, offset),
+            ..NavigationAnswer::default()
+        }
+    })
+}
+
+/// The semantic tokens of the open `buffer`, in the bytes of `range` when
+/// given, from the same cached analysis as [`compute_highlights`] and with the
+/// same conditions.
+pub fn compute_semantic_tokens(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+    range: Option<(u32, u32)>,
+) -> Option<Result<NavigationAnswer, String>> {
+    cached_navigation(snapshot, buffer, schema, |navigation, root| {
+        NavigationAnswer {
+            tokens: navigation.semantic_tokens(root, to_span(range)),
+            ..NavigationAnswer::default()
+        }
+    })
+}
+
+fn to_span(range: Option<(u32, u32)>) -> Option<oxabl_pipeline::Span> {
+    range.map(|(start, end)| oxabl_pipeline::Span { start, end })
+}
+
+/// Answer from the [`navigation_model`] of `buffer` and the expansion that
+/// diagnostics read, with the buffer's own text as the only text of the answer.
+fn cached_navigation(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+    answer: impl FnOnce(&oxabl_pipeline::Navigation<'_, '_>, &Path) -> NavigationAnswer,
+) -> Option<Result<NavigationAnswer, String>> {
     salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
         let root = buffer
             .path(snapshot)
@@ -1701,10 +1762,7 @@ pub fn compute_highlights(
         let Some(navigation) = handle.navigation_with(&expansion, model, &file_of) else {
             return Err("its preprocessing failed".to_string());
         };
-        let mut answer = NavigationAnswer {
-            highlights: navigation.highlights(&root, offset),
-            ..NavigationAnswer::default()
-        };
+        let mut answer = answer(&navigation, &root);
         answer.texts.insert(
             search::normalize_lexically(&root),
             Arc::from(buffer.text(snapshot).as_str()),

@@ -6,7 +6,8 @@
 //! `textDocument/formatting`, `textDocument/documentSymbol`, `textDocument/foldingRange`,
 //! `textDocument/selectionRange`, `workspace/symbol`,
 //! `textDocument/definition`, `textDocument/hover`, `textDocument/documentHighlight` and
-//! `textDocument/documentLink` (see `docs/design/navigation.md`), and `textDocument/references` and the call
+//! `textDocument/documentLink` (see `docs/design/navigation.md`), `textDocument/semanticTokens`
+//! (see `docs/design/semantic-tokens.md`), and `textDocument/references` and the call
 //! hierarchy (see `docs/design/references.md`). Strict database rules can also enable effect code lenses and
 //! database inlay hints (`docs/design/inlay-hints.md`). An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
@@ -44,6 +45,7 @@ mod navigation;
 pub mod position;
 mod references;
 mod schema;
+mod semantic_tokens;
 mod workspace_symbol;
 
 use std::collections::HashMap;
@@ -63,7 +65,8 @@ use lsp_types::request::{
     CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
     DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest,
     Formatting, GotoDefinition, HoverRequest, InlayHintRequest, References, Request as _,
-    SelectionRangeRequest, WorkspaceSymbolRequest,
+    SelectionRangeRequest, SemanticTokensFullDeltaRequest, SemanticTokensFullRequest,
+    SemanticTokensRangeRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -782,6 +785,7 @@ fn anchor_or_current_dir(declared: Option<PathBuf>) -> PathBuf {
 struct Negotiated {
     options: code_lens::Options,
     inlay: inlay_hint::Options,
+    semantic: semantic_tokens::Options,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
     /// Whether the client takes `textDocument/inactiveRegions`.
@@ -847,6 +851,10 @@ fn finish_handshake(
     let options = code_lens::Options::from_client(&init.capabilities, encoding.clone());
     let inlay =
         inlay_hint::Options::from_client(&init.capabilities, init.initialization_options.as_ref());
+    let semantic = semantic_tokens::Options::from_client(
+        &init.capabilities,
+        init.initialization_options.as_ref(),
+    );
     let hierarchical_symbols = init
         .capabilities
         .text_document
@@ -886,6 +894,9 @@ fn finish_handshake(
     if inlay.supported {
         capabilities.inlay_hint_provider = Some(lsp_types::OneOf::Left(true));
     }
+    if semantic.supported {
+        capabilities.semantic_tokens_provider = Some(semantic_tokens::capability());
+    }
     let result = InitializeResult {
         capabilities,
         server_info: Some(ServerInfo {
@@ -903,6 +914,7 @@ fn finish_handshake(
         Negotiated {
             options,
             inlay,
+            semantic,
             hierarchical_symbols,
             inactive_regions,
             related_information,
@@ -983,6 +995,8 @@ struct Server<'c> {
     lenses: code_lens::LensCache,
     /// The client's inlay hint support and the kinds it wants.
     inlay: inlay_hint::Options,
+    /// The client's semantic token support and the user's choice.
+    semantic: semantic_tokens::Options,
     /// The last outline of each open buffer, for its version.
     outlines: document_symbol::OutlineCache,
     /// The folding and selection facts of each open buffer, for its version.
@@ -1043,6 +1057,7 @@ impl<'c> Server<'c> {
         let Negotiated {
             options,
             inlay,
+            semantic,
             hierarchical_symbols,
             inactive_regions,
             related_information,
@@ -1069,6 +1084,7 @@ impl<'c> Server<'c> {
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
             inlay,
+            semantic,
             outlines: document_symbol::OutlineCache::default(),
             syntax: editor_syntax::SyntaxCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
@@ -1122,6 +1138,12 @@ impl<'c> Server<'c> {
                                 self.handle_code_lens(req, &lens_tx)?;
                             } else if req.method == InlayHintRequest::METHOD {
                                 self.handle_inlay_hint(req)?;
+                            } else if req.method == SemanticTokensFullRequest::METHOD {
+                                self.handle_semantic_tokens_full(req)?;
+                            } else if req.method == SemanticTokensFullDeltaRequest::METHOD {
+                                self.handle_semantic_tokens_delta(req)?;
+                            } else if req.method == SemanticTokensRangeRequest::METHOD {
+                                self.handle_semantic_tokens_range(req)?;
                             } else if req.method == Formatting::METHOD {
                                 self.handle_formatting(req)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
@@ -1213,11 +1235,15 @@ impl<'c> Server<'c> {
     fn fire_due_debounces(&mut self, result_tx: &crossbeam_channel::Sender<ComputeResult>) {
         let now = std::time::Instant::now();
         let mut context_due = false;
+        let mut include_due = false;
         for uri in self.debouncer.take_due(now) {
             let Some(doc) = self.documents.get(&uri) else {
                 continue;
             };
             let version = doc.version;
+            // Another open file reads this one: its tokens change with it.
+            include_due = include_due
+                || uri_to_path(&uri).is_some_and(|path| self.include_read_by_another(&path, &uri));
             if !self.features.diagnostics {
                 self.publish_inactive_regions(&uri, version, []);
                 self.publish(uri, Vec::new(), Some(version));
@@ -1264,6 +1290,11 @@ impl<'c> Server<'c> {
         // the client again once the edits settle, not on every keystroke.
         if context_due {
             self.refresh_inlay_hints();
+        }
+        // The same for the tokens of a file that reads an include with edits
+        // that are not saved.
+        if include_due && !context_due {
+            self.refresh_semantic_tokens();
         }
     }
 
@@ -1363,6 +1394,7 @@ impl<'c> Server<'c> {
                     self.ensure_config(&doc.uri);
                     self.outlines.invalidate(&doc.uri);
                     self.note_inlay_version(&doc.uri, Some(doc.version));
+                    self.note_semantic_version(&doc.uri, Some(doc.version));
                     self.syntax.invalidate(&doc.uri);
                     self.documents.open(doc.uri.clone(), doc.version, &doc.text);
                     // The path travels with the buffer because the *query* needs
@@ -1400,6 +1432,7 @@ impl<'c> Server<'c> {
                         &encoding,
                     );
                     self.note_inlay_version(&uri, Some(params.text_document.version));
+                    self.note_semantic_version(&uri, Some(params.text_document.version));
                     // Mirror the new text into the salsa input (write on main).
                     // This cancels any in-flight snapshot read for a superseded
                     // version via salsa's `Cancelled` unwind (KTD7).
@@ -1437,6 +1470,7 @@ impl<'c> Server<'c> {
                 }
             }
             "workspace/didChangeConfiguration" => {
+                self.handle_semantic_tokens_settings(&not.params);
                 self.handle_configuration_change(not.params);
             }
             DidCloseTextDocument::METHOD => {
@@ -1455,6 +1489,7 @@ impl<'c> Server<'c> {
                     });
                     self.dependencies.remove(&uri);
                     self.note_inlay_version(&uri, None);
+                    self.note_semantic_version(&uri, None);
                     self.debouncer.cancel(&uri);
                     // An include analysed in this root now reads its saved copy.
                     if let Some(path) = uri_to_path(&uri) {
@@ -2204,6 +2239,7 @@ mod tests {
                     refresh: false,
                 },
                 inlay: inlay_hint::Options::from_client(&Default::default(), None),
+                semantic: semantic_tokens::Options::from_client(&Default::default(), None),
                 hierarchical_symbols: false,
                 inactive_regions: false,
                 related_information: false,

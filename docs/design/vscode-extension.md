@@ -2,8 +2,8 @@
 
 The extension (`clients/vscode`) has five parts. A TextMate grammar
 highlights ABL with no other extension and no `oxabl` binary. A language
-client starts `oxabl lsp` for format-on-save, diagnostics and the document
-outline when the binary
+client starts `oxabl lsp` for format-on-save, diagnostics, the document
+outline and semantic tokens when the binary
 is there. A self-update keeps the extension current, because it is not on the
 Marketplace. An installer puts the `oxabl` CLI on the machine. A build loop
 runs `oxabl build` at open, on save and on changes on disk. This note records
@@ -138,8 +138,9 @@ how each part works and why.
   variable called `count`, a field without its table such as `WHERE date =`)
   shows as a keyword, and so does a label with a keyword's name (`total:`).
   So does a table name on the line after its record word, and a table after
-  `TO` in `BUFFER-COPY a TO item`. LSP semantic tokens are the planned
-  correction: the parser and the semantic model know what each name is.
+  `TO` in `BUFFER-COPY a TO item`. The LSP semantic tokens correct the names
+  that oxabl resolves (see [Semantic tokens](#semantic-tokens)). A name that
+  oxabl does not resolve keeps the colour of the grammar.
 - The grammar counts at most 50 nested block comments and 50 nested include
   references. Past that depth, `/*` is comment text and `{` is argument
   text, and each `*/` or `}` closes one of the 50 levels. So in a comment
@@ -274,6 +275,29 @@ From `clients/vscode`:
   `PATH` and sets `VSCODE_CLI=1` (otherwise VS Code reads the login shell's
   `PATH` and starts a real language server), and fails when a scenario leaves
   a process running.
+
+## Semantic tokens
+
+`oxabl lsp` gives a token for each name that it resolves (`semantic-tokens.md`).
+The grammar stays the base. VS Code draws a semantic token over the grammar
+colour of the same text, and draws nothing for a name that has no token. So a
+name that oxabl does not resolve, a keyword, a string and a comment keep the
+colour of the grammar, and the file has its full colours before the server
+starts, and when there is no `oxabl` binary.
+
+- The extension contributes the token types that are not standard
+  (`table`, `tempTable`, `buffer`, `dataset`, `databaseField`,
+  `tempTableField`) in `contributes.semanticTokenTypes`, each with a
+  `superType`. A theme that has no rule for the new type styles it as its super
+  type.
+- The setting `oxabl.semanticTokens.enable` (default `true`) goes to the server
+  in the initialization options and in `workspace/didChangeConfiguration`. A
+  change applies with no restart. With `false` the server answers no token.
+  VS Code's own `editor.semanticHighlighting.enabled` also applies.
+- The extension does not set `editor.semanticHighlighting.enabled`. The theme
+  decides, as it does for every language.
+- `src/config.ts` builds the setting (`semanticTokenSettings`) and
+  `src/config.test.ts` checks it and the manifest.
 
 ## The schema view
 

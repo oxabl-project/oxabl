@@ -33,6 +33,17 @@ After changing this setting, restart a static client to update its capabilities.
 
 The daemon protocol and the existing check and analyze JSON documents are unchanged.
 
+## Semantic tokens
+
+The server answers `textDocument/semanticTokens/full`, `full/delta` and `range` for a client
+that advertises `textDocument.semanticTokens`. A token is given for a name that oxabl resolves to
+one thing, by what it is (`variable`, `parameter`, `property`, `function`, `method`, `class`,
+`interface`, `event`, `table`, `tempTable`, `buffer`, `dataset`, `databaseField`,
+`tempTableField`), with the modifiers `declaration` and `static`. Any other text has no token.
+The client turns the tokens off with `semanticTokens.enable` (a boolean) in its initialization
+options or in `workspace/didChangeConfiguration` (`settings.oxabl.semanticTokens`). A request
+whose document changed answers `ContentModified`. See `docs/design/semantic-tokens.md`.
+
 ## Database inlay hints
 
 Files whose configuration has `diagnostics` on get inlay hints: the index oxabl expects a

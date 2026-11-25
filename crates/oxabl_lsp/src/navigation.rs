@@ -408,13 +408,23 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// differs from the file, which the cached analysis does not see. True when
 /// that cannot be told, and when another open document is not on disk: a new
 /// include is not among the dependencies, yet the expansion may read it.
-fn reads_unsaved_include(
+pub(crate) fn reads_unsaved_include(
     snapshot: &AnalysisDatabase,
     buffer: Buffer,
     root: &Path,
     overlay: &HashMap<PathBuf, Arc<str>>,
 ) -> bool {
-    let Some(dependencies) = buffer_dependencies(snapshot, buffer) else {
+    unsaved_among(buffer_dependencies(snapshot, buffer), root, overlay)
+}
+
+/// [`reads_unsaved_include`] for the dependencies of the expansion, or `None`
+/// when they could not be read.
+pub(crate) fn unsaved_among(
+    dependencies: Option<Vec<PathBuf>>,
+    root: &Path,
+    overlay: &HashMap<PathBuf, Arc<str>>,
+) -> bool {
+    let Some(dependencies) = dependencies else {
         return true;
     };
     let open: HashMap<PathBuf, &Arc<str>> = overlay

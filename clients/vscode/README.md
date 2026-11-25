@@ -193,6 +193,24 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   the view. The top of the view says when the expansion is reduced (an include
   that was not found, a cyclic include, the depth limit) or failed.
 
+- **Semantic highlighting.** The server colours a name by what it is: a
+  variable, a parameter, a property, a procedure or function, a method, a
+  class, an interface, an event, a database table, a database field, a
+  temp-table, a temp-table field, a buffer or a dataset. A token is given only
+  for a name that oxabl resolves to one thing. Text that it does not resolve (a
+  name it cannot find, a keyword, a string, a comment) keeps the colour of the
+  grammar, and so do the whole file and every name when no server runs or the
+  theme has semantic highlighting off. A declaration has the modifier
+  `declaration`, and a `STATIC` member of a class has `static`. The types that
+  VS Code does not know (`table`, `tempTable`, `buffer`, `dataset`,
+  `databaseField`, `tempTableField`) style like `type`, `variable` and
+  `property` until a theme styles them. To change a colour, add a rule to
+  `editor.semanticTokenColorCustomizations`, for example
+  `{"rules": {"databaseField": "#4ec9b0", "tempTableField:declaration": {"bold": true}}}`.
+  Set `oxabl.semanticTokens.enable` to `false` to turn the server's tokens off,
+  or `editor.semanticHighlighting.enabled` to `false` for every extension.
+  Preprocessor names (`{&name}`) are not tokens yet. See
+  `docs/design/semantic-tokens.md` in the repository.
 - **Database inlay hints.** Short labels in the code show the database facts
   that ABL does not show. `index <name>` after a search (with `WHOLE-INDEX` when
   no condition brackets the index) shows in every project, with no strict rule.
@@ -457,6 +475,7 @@ itself once a day when you run it.
 | `oxabl.build.args` | `[]` | Arguments added to `oxabl build`, for example `["--config-overlay", "/path/overlay.toml"]`. They also go to the call that reads the build setup. |
 | `oxabl.updates` | `auto` | `auto`, `notify` or `off`. See [Updates](#updates). |
 | `oxabl.trace.server` | `off` | Trace the JSON-RPC traffic with the server, for debugging. |
+| `oxabl.semanticTokens.enable` | `true` | Colour names by what they are, from the language server. The grammar colours everything else. A change applies at once. |
 | `oxabl.inlayHints.locks` | `true` | Show the lock a read takes when it names none. A change applies at once. |
 | `oxabl.inlayHints.index` | `true` | Show the index oxabl expects a search to use. Needs no strict rule. |
 | `oxabl.inlayHints.scope` | `true` | Show where a raised buffer scope starts and ends. |

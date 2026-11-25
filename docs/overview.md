@@ -28,6 +28,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - format/lint on save
   - document outline (`textDocument/documentSymbol`): the Outline view, breadcrumbs and "Go to Symbol in File", from `oxabl_pipeline::outline` on the raw buffer (`docs/design/document-outline.md`)
   - inactive `&IF` branches (`textDocument/inactiveRegions`, the shape clangd uses): the branches the preprocessor does not compile under `[workspace.preprocessor]` or the selected include context, sent with the diagnostics of the same analysis. A branch decided on a guess is never in the list (`docs/design/inactive-regions.md`)
+  - semantic highlighting (`textDocument/semanticTokens/full`, `full/delta` and `range`): a token for each name that oxabl resolves to one thing (variable, parameter, property, function, method, class, interface, event, table, temp-table, buffer, dataset, database field, temp-table field), with `declaration` and `static`. A name that does not resolve has no token, so the grammar of the editor colours it. A stale request answers `ContentModified` (`docs/design/semantic-tokens.md`)
   - folding and expand selection (`textDocument/foldingRange`, `textDocument/selectionRange`): syntax ranges from `oxabl_pipeline::document_syntax` on the raw buffer (`docs/design/folding-selection.md`)
   - Status: Experimental; usable in-editor via the sideloadable VS Code extension (`clients/vscode/`)
 - Formatter

@@ -163,6 +163,16 @@ pub mod panic_sites {
     pub const HOVER: &str = "hover";
     /// The language server's inlay hint analysis, for [`hold_if_injected`](super::hold_if_injected).
     pub const LSP_INLAY_HINTS: &str = "lsp.inlay-hints";
+    /// The language server's semantic tokens, for both
+    /// [`hold_if_injected`](super::hold_if_injected) and
+    /// [`panic_if_injected`](super::panic_if_injected).
+    pub const SEMANTIC_TOKENS: &str = "lsp.semantic-tokens";
+    /// The language server's semantic tokens after the analysis, before the
+    /// answer, for [`hold_if_injected`](super::hold_if_injected).
+    pub const SEMANTIC_ANSWER: &str = "lsp.semantic-answer";
+    /// The language server's semantic tokens while the analysis holds its
+    /// snapshot, for [`hold_if_injected`](super::hold_if_injected).
+    pub const SEMANTIC_SNAPSHOT: &str = "lsp.semantic-snapshot";
 }
 
 /// The marker that holds a site for [`HOLD_TIME`], for a test that needs a
@@ -170,16 +180,26 @@ pub mod panic_sites {
 /// `OXABL-TEST-HOLD:<site>` in the source, as with [`TEST_PANIC_MARKER`].
 pub const TEST_HOLD_MARKER: &str = "OXABL-TEST-HOLD";
 
+/// Whether the markers act: only with the test-only `test-panics` feature. A
+/// caller that must build a string to look for a marker checks this first.
+pub const INJECTION_ENABLED: bool = cfg!(feature = "test-panics");
+
 /// How long [`hold_if_injected`] waits.
 pub const HOLD_TIME: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Sleep [`HOLD_TIME`] when `source` carries this `site`'s hold marker. A no-op
-/// unless the test-only `test-panics` feature is enabled.
+/// Sleep [`HOLD_TIME`] when `source` carries this `site`'s hold marker, or the
+/// milliseconds that follow an `@` after it (`OXABL-TEST-HOLD:<site>@600`). A
+/// no-op unless the test-only `test-panics` feature is enabled.
 #[inline]
 pub fn hold_if_injected(site: &str, source: &str) {
     #[cfg(feature = "test-panics")]
-    if source.contains(&format!("{TEST_HOLD_MARKER}:{site}")) {
-        std::thread::sleep(HOLD_TIME);
+    if let Some(at) = source.find(&format!("{TEST_HOLD_MARKER}:{site}")) {
+        let rest = &source[at + TEST_HOLD_MARKER.len() + 1 + site.len()..];
+        let millis = rest.strip_prefix('@').and_then(|rest| {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            rest[..digits].parse::<u64>().ok()
+        });
+        std::thread::sleep(millis.map_or(HOLD_TIME, std::time::Duration::from_millis));
     }
 
     #[cfg(not(feature = "test-panics"))]

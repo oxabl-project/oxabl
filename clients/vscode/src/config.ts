@@ -39,3 +39,12 @@ export function inlayHintSettings(
   }
   return settings;
 }
+
+/**
+ * The `semanticTokens` object the server reads from its initialization options
+ * and from `workspace/didChangeConfiguration`. `enable` is the value of
+ * `oxabl.semanticTokens.enable`; a setting that is not set is on.
+ */
+export function semanticTokenSettings(enable: boolean | undefined): { enable: boolean } {
+  return { enable: enable ?? true };
+}

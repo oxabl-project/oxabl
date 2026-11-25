@@ -15,7 +15,8 @@
 //! diagnostics, *range* formatting, …) unset so clients don't offer features we
 //! don't have. The handshake adds effect code lenses only for supporting clients
 //! whose workspace enables strict database rules. Dynamic clients register per file.
-//! It adds inlay hints for every client that supports them: a file whose
+//! It adds semantic tokens (full, delta and range) for every client that
+//! supports them. It adds inlay hints for every client that supports them: a file whose
 //! configuration enables no strict database rule gets an empty list, so a change
 //! of `oxabl.toml` needs no new registration.
 
@@ -165,8 +166,10 @@ mod tests {
             caps.hover_provider,
             Some(HoverProviderCapability::Simple(true))
         );
-        // Inlay hints are added at the handshake, for a client that supports them.
+        // Inlay hints and semantic tokens are added at the handshake, for a
+        // client that supports them.
         assert!(caps.inlay_hint_provider.is_none());
+        assert!(caps.semantic_tokens_provider.is_none());
         assert!(caps.completion_provider.is_none());
         assert_eq!(caps.definition_provider, Some(OneOf::Left(true)));
         assert_eq!(caps.document_highlight_provider, Some(OneOf::Left(true)));
