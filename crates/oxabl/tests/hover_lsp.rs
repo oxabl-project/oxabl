@@ -157,6 +157,27 @@ const MISSING_INCLUDE: &str = "{missing.i}\n\
 const CTX: &str = "DEFINE VARIABLE iBefore AS INTEGER NO-UNDO.\n{uses.i}\n";
 const USES: &str = "iBefore = 1.\n";
 
+/// Names of built-in types and their members.
+const BUILTINS: &str = "DEFINE VARIABLE oErr AS Progress.Lang.AppError NO-UNDO.\n\
+    DEFINE VARIABLE oJson AS Progress.Json.ObjectModel.JsonObject NO-UNDO.\n\
+    DEFINE VARIABLE oNamed AS app.Named NO-UNDO.\n\
+    DEFINE VARIABLE oPlain AS app.Base NO-UNDO.\n\
+    DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n\
+    DEFINE VARIABLE i AS INTEGER NO-UNDO.\n\
+    c = oErr:GetMessage(1).\n\
+    MESSAGE oJson:Add(\"k\", \"v\").\n\
+    i = Progress.Json.ObjectModel.JsonDataType:NUMBER.\n\
+    MESSAGE Progress.ApplicationServer.AdapterTypes:SOAP.\n\
+    c = oPlain:ToString().\n\
+    c = oNamed:ToString().\n\
+    MESSAGE oErr oJson oNamed oPlain c i.\n";
+
+const NAMED: &str = "CLASS app.Named:\n\
+    \x20   METHOD PUBLIC OVERRIDE CHARACTER ToString():\n\
+    \x20       RETURN \"n\".\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
 const TOOLS: &str = "PROCEDURE Compute:\n\
     \x20   DEFINE INPUT PARAMETER piN AS INTEGER NO-UNDO.\n\
     END PROCEDURE.\n";
@@ -188,6 +209,8 @@ impl Workspace {
             ("app/Known.cls", KNOWN),
             ("app/Plain.cls", PLAIN),
             ("miss.p", MISSING_INCLUDE),
+            ("builtins.p", BUILTINS),
+            ("app/Named.cls", NAMED),
         ];
         for (name, text) in files {
             let path = root.join(name);
@@ -777,4 +800,68 @@ fn the_range_is_the_hovered_word() {
             "end": {"line": line, "character": character + "fnTotal".len() as u64}
         })
     );
+}
+
+#[test]
+fn built_in_types_and_members_show_their_catalog_entry() {
+    let ws = Workspace::new();
+    let file = ws.path("builtins.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&file, BUILTINS);
+    let docs = "https://docs-be.progress.com/bundle/abl-reference/page/";
+
+    assert_eq!(
+        markdown(&mut session, &file, BUILTINS, "Progress.Lang.AppError", 0),
+        code("CLASS Progress.Lang.AppError INHERITS Progress.Lang.ProError")
+            + &format!(
+                "\n\nBuilt-in class of OpenEdge 12.8. [Progress documentation]({docs}Progress.Lang.AppError-class.html)"
+            )
+    );
+    assert_eq!(
+        markdown(&mut session, &file, BUILTINS, "GetMessage", 0),
+        code("METHOD PUBLIC CHARACTER GetMessage (MessageIndex AS INTEGER)")
+            + &format!(
+                "\n\nDeclared in built-in class `Progress.Lang.ProError` (OpenEdge 12.8). Parameter modes are not known. [Progress documentation]({docs}Progress.Lang.ProError-class.html)"
+            )
+    );
+    // A method with more overloads than a hover shows.
+    let add = markdown(&mut session, &file, BUILTINS, "Add(", 0);
+    assert_eq!(add.matches("```abl").count(), 10, "{add}");
+    assert!(
+        add.ends_with(&format!(
+            "\n\n7 more overloads.\n\nDeclared in built-in class `Progress.Json.ObjectModel.JsonObject` (OpenEdge 12.8). Parameter modes are not known. [Progress documentation]({docs}Progress.Json.ObjectModel.JsonObject-class.html)"
+        )),
+        "{add}"
+    );
+    assert_eq!(
+        markdown(&mut session, &file, BUILTINS, "NUMBER", 0),
+        code("DEFINE PUBLIC STATIC PROPERTY Number AS INTEGER")
+            + &format!(
+                "\n\nDeclared in built-in class `Progress.Json.ObjectModel.JsonDataType` (OpenEdge 12.8). [Progress documentation]({docs}Progress.Json.ObjectModel.JsonDataType-class.html)"
+            )
+    );
+    assert_eq!(
+        markdown(&mut session, &file, BUILTINS, "SOAP", 0),
+        code("Progress.ApplicationServer.AdapterTypes:SOAP")
+            + &format!(
+                "\n\nMember of built-in enum `Progress.ApplicationServer.AdapterTypes` (OpenEdge 12.8). [Progress documentation]({docs}Progress.ApplicationServer.AdapterTypes-enumeration.html)"
+            )
+    );
+    assert_eq!(
+        markdown(&mut session, &file, BUILTINS, "ToString", 0),
+        code("METHOD PUBLIC CHARACTER ToString ()")
+            + &format!(
+                "\n\nDeclared in built-in class `Progress.Lang.Object` (OpenEdge 12.8). [Progress documentation]({docs}Progress.Lang.Object-class.html)"
+            )
+    );
+    // An override in a workspace class is that class's declaration.
+    let named = markdown(&mut session, &file, BUILTINS, "ToString", 1);
+    assert!(
+        named.starts_with(&code("METHOD PUBLIC OVERRIDE CHARACTER ToString ()")),
+        "{named}"
+    );
+    assert!(!named.contains("Progress.Lang.Object"), "{named}");
+    // A built-in method has no effects section.
+    let get = markdown(&mut session, &file, BUILTINS, "GetMessage", 0);
+    assert!(!get.contains("Database effects"), "{get}");
 }

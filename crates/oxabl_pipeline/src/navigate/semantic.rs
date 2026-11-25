@@ -382,7 +382,10 @@ impl Navigation<'_, '_> {
             SymbolKind::Event => SemanticKind::Event,
             SymbolKind::Procedure => SemanticKind::Function,
             SymbolKind::Function => {
-                if symbols.member_file(sym).is_some() || self.is_member(sym) {
+                if symbols.member_file(sym).is_some()
+                    || symbols.builtin_member(sym).is_some()
+                    || self.is_member(sym)
+                {
                     SemanticKind::Method
                 } else {
                     SemanticKind::Function

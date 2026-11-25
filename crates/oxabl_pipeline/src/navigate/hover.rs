@@ -26,6 +26,7 @@ use oxabl_semantic::{
 
 use oxabl_workspace::is_include_fragment;
 
+mod builtin;
 mod like;
 
 use super::{Navigation, Parsed, Target, search};
@@ -315,6 +316,12 @@ impl Navigation<'_, '_> {
     pub(crate) fn symbol_hover(&self, sym: SymbolId) -> Option<String> {
         let symbols = &self.model.semantic.symbols;
         let symbol = symbols.get(sym);
+        if let Some(class) = symbols.builtin_class(sym) {
+            return Some(builtin::type_hover(class));
+        }
+        if let Some(member) = symbols.builtin_member(sym) {
+            return Some(builtin::member_hover(symbols, sym, member));
+        }
         if let Some(file) = symbols.program_file(sym) {
             return self.program_hover(file);
         }

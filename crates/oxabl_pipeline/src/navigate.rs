@@ -31,8 +31,9 @@ use oxabl_index::calls::{
 use oxabl_index::search::{self, NameKind};
 use oxabl_schema::{FieldResolution, TableId};
 use oxabl_semantic::{
-    ClassResolution, ImportContext, IndexName, IndexedFileId, Resolution, ScopeKind, Semantic,
-    SiteTarget, SourceContext, SymbolFlags, SymbolId, SymbolKind, UnresolvedReason,
+    BuiltinMemberRef, ClassResolution, ImportContext, IndexName, IndexedFileId, Resolution,
+    ScopeKind, Semantic, SiteTarget, SourceContext, SymbolFlags, SymbolId, SymbolKind,
+    UnresolvedReason,
 };
 use oxabl_workspace::is_include_fragment;
 
@@ -122,6 +123,11 @@ enum Identity {
     Declared(SymbolId),
     /// A target from a lookup that found one or several files.
     At(Target),
+    /// A built-in type, by its row in the catalog.
+    BuiltinType(u16),
+    /// A member of a built-in type: the row of the declaring type and the
+    /// lower-case name.
+    BuiltinMember(u16, String),
 }
 
 /// The analysis of one expansion with its navigation sites recorded, apart from
@@ -461,6 +467,19 @@ impl Navigation<'_, '_> {
     fn symbol_identity(&self, sym: SymbolId) -> Option<Identity> {
         let symbols = &self.model.semantic.symbols;
         let symbol = symbols.get(sym);
+        if let Some(class) = symbols.builtin_class(sym) {
+            return Some(Identity::BuiltinType(class.row()));
+        }
+        if let Some(member) = symbols.builtin_member(sym) {
+            let (class, name) = match member {
+                BuiltinMemberRef::Member(m) => (m.class(), m.name()),
+                BuiltinMemberRef::EnumMember(class, name) => (class, name),
+            };
+            return Some(Identity::BuiltinMember(
+                class.row(),
+                name.to_ascii_lowercase(),
+            ));
+        }
         if let Some(file) = symbols
             .program_file(sym)
             .or_else(|| symbols.class_file(sym))

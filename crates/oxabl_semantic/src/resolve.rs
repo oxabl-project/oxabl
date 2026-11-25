@@ -3396,7 +3396,7 @@ impl<'a> ResolveWalker<'a> {
                 error_type,
                 body,
             } => {
-                self.note_class_name(error_type, scope, identifier_span(error_var));
+                self.note_declared_class(error_type, scope, identifier_span(error_var));
                 if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Catch) {
                     self.walk_block(body, cs);
                 }
