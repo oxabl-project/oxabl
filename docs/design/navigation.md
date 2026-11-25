@@ -46,6 +46,14 @@ with the call around it.
 | A schema field | The `ADD FIELD` in the `.df` |
 | An include reference `{x.i}` | The file the preprocessor opened |
 
+A member named through a receiver (`obj:Name`, `obj:Greet()`) resolves when
+oxabl knows the class of the receiver: a name declared `AS` a class, `NEW`,
+`CAST(x, Cls)`, `THIS-OBJECT` and `SUPER` in a class body, a type name for a
+static member, an enum member, and each link of a chain (`a:b():c`). The class
+can be a class of the analysed file, also with no index, or a workspace class.
+A method resolves to the first declaration of its name, which stands for the
+overload set. The rules are in `class-members.md`.
+
 ## What it never does
 
 - **Guess.** A name that does not resolve has no target. A computed target

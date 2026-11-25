@@ -121,7 +121,9 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 - Real-AVM suite - `crates/oxabl/tests/build_openedge.rs` and `build_openedge_scratch.rs` (with `build_openedge/`, `common/openedge/` and `fixtures/openedge/`): the opt-in tests of `oxabl build` against OpenEdge. Every test is `#[ignore]` and fails, never skips, without its `OXABL_OPENEDGE_*` variables; the variables and the commands are in `docs/overview.md`, "Testing against a real AVM". CI builds them and runs none
 - `crates/oxabl_nulls` - Unknown values per unit: buffers a failed `FIND ... NO-ERROR` may leave without a record and the field references that read them, and local variables that may hold `?` with the uses they reach
 
-(Not exhaustive — the workspace also holds `oxabl_preprocessor`, `oxabl_semantic`, `oxabl_schema`, `oxabl_lint`, `oxabl_analyze`, `oxabl_formatter`, `oxabl_style`, `oxabl_workspace`, `oxabl_lsp`, and `oxabl_wasm`; see the status section below.)
+- `crates/oxabl_semantic` - The declare, resolve and type-check passes: scopes, symbols, references and types per file. The resolve pass finds the class of a receiver (`obj:Name`, `THIS-OBJECT`, `SUPER`, `CAST`, a type name, a chain) and its member, through the scope tree or the workspace index; the type-check pass types the member and picks the method overload from the argument types (`overload.rs`). An unknown fact gives `Unknown`. See `docs/design/class-members.md`
+
+(Not exhaustive — the workspace also holds `oxabl_preprocessor`, `oxabl_schema`, `oxabl_lint`, `oxabl_analyze`, `oxabl_formatter`, `oxabl_style`, `oxabl_workspace`, `oxabl_lsp`, and `oxabl_wasm`; see the status section below.)
 
 ### Lexer (`oxabl_lexer`)
 

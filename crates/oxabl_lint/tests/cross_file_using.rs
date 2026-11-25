@@ -19,9 +19,8 @@
 //!    finding" it also asserts a sibling shape where the finding genuinely does
 //!    fire, so the assertion cannot pass by the rule being inert. The suite used
 //!    to require that *no* new finding ever arrived; a cross-file class is a real
-//!    type now, so the two class-typed mismatch shapes are enumerated as findings
-//!    while the `:`-qualified member shapes stay silent — deliberately, and
-//!    pinned as such.
+//!    type now, so the two class-typed mismatch shapes are enumerated as findings,
+//!    and so are the `:`-qualified member shapes, which have the member's type.
 
 mod support;
 
@@ -486,9 +485,8 @@ fn twenty_references_to_one_member_synthesize_it_once() {
 fn a_cross_file_class_is_judged_in_both_assignment_directions() {
     // The three shapes the old firewall was written to hold back, each a genuine
     // mistake `type-mismatch-assignment` reports the moment a cross-file class
-    // becomes a real `ResolvedType::Class`. Two of them now fire; the third does
-    // not, and the split is the deferred `:`-qualified boundary rather than
-    // anything about classes.
+    // becomes a real `ResolvedType::Class`. All three fire; the third is a
+    // `:`-qualified method call, which has the method's return type.
     //
     // Both directions matter because the rule reads the target's type and the
     // value's type from different places — `target_type` off the symbol,

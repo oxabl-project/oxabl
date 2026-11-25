@@ -470,6 +470,43 @@ State the numbers in the pull request.
 | Ranking of several Widen candidates | none | Rule 6 gives `Unknown` today. |
 | A chain after a call that only argument types pick | none | The resolve pass would need argument types. |
 
+## Implementation notes
+
+The implementation follows this design. These points are more exact than the
+text above, or differ from the steps document:
+
+- **Untyped references.** The resolve pass marks each member reference whose
+  type oxabl does not know (`SymbolTable::mark_untyped_member`, by node): a
+  static rule mismatch, a class on a cycle, or a method whose candidates may be
+  incomplete. The type-check pass gives such a node `Unknown`. The marks are
+  per reference, not per overload anchor, because the role decides the static
+  rule.
+- **The anchor of an inherited overload set** carries the type of its own
+  candidate. The agreement type of the set is
+  `SymbolTable::overload_set_data_type`, as for a local set.
+- **Local and inherited candidates.** For a method of a class of the analysed
+  file, the inherited candidates are minted and recorded
+  (`SymbolTable::inherited_candidates`) only when one of them has a parameter
+  list that no own declaration has. An inherited method that an own method
+  overrides is not minted, and nothing reaches it.
+- **Interfaces of an abstract class.** `ClassDescriptor::is_abstract` carries
+  the `ABSTRACT` of a workspace class, so rule 1 of "When a surface is not
+  complete" applies to it as to a local class. An unread supertype counts for
+  an interface or an abstract class also when it is a shipped interface.
+- **No index.** A class header whose supertype oxabl did not look up (no index
+  attached) does not make the lattice "unknown": a single-file run keeps its
+  answer. A class of the analysed file is still searched for its own members,
+  and its methods are `Unknown` when it inherits a class the file does not
+  declare.
+- **A class-typed `EXTENT` member** is `MemberType::Portable(Unknown)` in the
+  index, the same `Unknown` that a local declaration gets.
+- **Chain links.** The resolve pass walks each link of a receiver chain as a
+  member reference, so each link also has a navigation site.
+- **`DEFINE VARIABLE ... EXTENT n`.** The parser dropped an `EXTENT` that
+  follows the type directly, so such a variable was typed as a scalar. The
+  parser keeps it now, and an array variable has an array type. This is needed
+  for `cTags = oP:Tags.` with `cTags AS CHARACTER EXTENT 3`.
+
 ## Tests
 
 The black-box tests are `crates/oxabl/tests/class_members_cli.rs` (through

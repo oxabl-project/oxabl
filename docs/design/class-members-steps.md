@@ -238,9 +238,13 @@ list each one in the report.
     the call `choose(1)` / `label(1)` now picks the `INTEGER` overload and is
     reported. Keep each test's intent with an argument that picks nothing
     (`?`), which stays silent, and add the case that picks.
-  - `cross_file_inheritance.rs` `attaching_an_index_adds_exactly_the_enumerated_diagnostics`:
-    update only the rows whose fixture has a member access or a method call
-    that the design now types.
+  - `cross_file_using.rs` (not `cross_file_inheritance.rs`)
+    `attaching_an_index_adds_exactly_the_enumerated_diagnostics`: update only
+    the rows whose fixture has a member access or a method call that the
+    design now types. The same file has two more tests that pin the old
+    boundary and change here: `a_cross_file_class_is_judged_in_both_assignment_directions`
+    (its `:`-qualified call) and
+    `a_mismatch_through_a_colon_qualified_member_stays_silent_at_the_call_site`.
   - The module docs that state the old boundary: the head of `check.rs`, the
     head of `lint0004_inheritance_assignability.rs`, the comment in
     `type_mismatch_assignment.rs` `check_pair`.

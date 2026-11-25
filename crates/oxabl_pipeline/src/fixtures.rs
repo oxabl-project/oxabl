@@ -1731,7 +1731,7 @@ pub const FIXTURES: &[ParityFixture] = &[
     // through the index, and the row is still silent — but for a reason worth
     // stating precisely, since the class *does* type as itself now: the declared
     // type and the `NEW` name are the same class, so the assignment is legal, and
-    // the member call is `:`-qualified, which nothing types yet. So the shared
+    // the member call is a `MESSAGE` item, which no rule judges. So the shared
     // claim is an agreed silence over correct code — four clients resolve the
     // import and not one of them invents a finding out of it. The row below is the
     // one that pins the opposite direction.
