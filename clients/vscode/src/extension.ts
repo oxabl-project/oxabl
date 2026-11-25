@@ -104,7 +104,11 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
   // Not awaited: an update check never delays the language client.
   registerUpdates(context, log, cli);
   applyBuildEnabled();
-  const snippets = await registerSnippets(context.extensionPath, log);
+  const snippets = await registerSnippets(
+    context.extensionPath,
+    log,
+    () => client?.initializeResult?.capabilities.completionProvider !== undefined,
+  );
   if (snippets) {
     context.subscriptions.push(snippets);
   }

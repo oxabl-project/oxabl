@@ -97,3 +97,7 @@ harness = false
 [[bench]]
 name = "semantic_tokens_bench"
 harness = false
+
+[[bench]]
+name = "completion_bench"
+harness = false

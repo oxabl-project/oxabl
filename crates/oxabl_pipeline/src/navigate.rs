@@ -38,7 +38,7 @@ use oxabl_workspace::is_include_fragment;
 
 use crate::{Expansion, LintPipeline, OutlineKind, OutlineSymbol, outline};
 
-mod hover;
+pub(crate) mod hover;
 mod semantic;
 
 pub use hover::Hover;
@@ -681,7 +681,7 @@ impl Navigation<'_, '_> {
 
     /// The file ids under which the expansion holds the bytes of `file`: the
     /// root, or each expansion of an include.
-    fn file_ids(&self, file: &Path) -> Vec<FileId> {
+    pub(crate) fn file_ids(&self, file: &Path) -> Vec<FileId> {
         if self.root_path().as_deref() == Some(file) {
             return vec![self.expanded.root_file()];
         }

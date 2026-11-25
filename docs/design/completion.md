@@ -134,20 +134,26 @@ expansion (`ExpandedFile::expanded_offsets`, below).
 
 The model counts bytes in the expanded text. `ExpandedFile::expanded_offset`
 gives one place for a physical byte. An include that the unit reads twice has
-two places, so the engine needs all of them: add
-`ExpandedFile::expanded_offsets(file, real) -> Vec<u32>`. A physical byte with
-no place (text in an `&IF` branch that the preprocessor did not take, or text
-the expansion lost) gives `null`: the analysed text has no code there.
+two places, so the engine needs all of them:
+`ExpandedFile::expanded_offsets(file, real) -> Vec<u32>` gives every place of a
+byte of one file id, and each expansion of an include has its own file id, so
+the engine asks for each id of the document (`Navigation::file_ids`). A
+physical byte with no place, or one in the text of an `&IF` branch that the
+preprocessor did not take (`ExpandedFile::skipped_text`), gives `null`: the
+analysed text has no code there.
 
 ### The scope at the cursor
 
-The scope tree has no spans today. The declare pass records the span of each
-scope: the span of its owner statement, which covers the body and the `END`
-of a block. The file scope covers the whole text. A block that the parser
-closed at the end of the text without `END` (`recover_block_end`) covers up
-to the end of the text: the parser marks it (`Program::unclosed_blocks`), so
-that a routine the person is still writing holds the cursor. The scope at an
-offset is the innermost scope whose span holds it.
+The declare pass records the span of each scope (`Scope::span`): the span of
+its owner statement, which covers the body and the `END` of a block. The file
+scope covers the whole text. A block that the parser closed at the end of the
+text without `END` covers up to the end of the text: the parser marks it
+(`Program::unclosed_blocks`, for each block kind whose `END` the end of the
+text replaced), so that a routine the person is still writing holds the
+cursor. Both spans end at `u32::MAX`, so the scope tree needs no text length.
+The scope at an offset (`ScopeTree::innermost_at`) is the innermost scope whose
+span holds it; completion then steps out of the implicit scope of a
+`DEFINE TEMP-TABLE` or a frame.
 
 ### A parse error before the cursor
 
@@ -270,7 +276,7 @@ that can start a statement.
 
 | Scope kind at the cursor | Statement keywords |
 | --- | --- |
-| File scope of a procedure file (`.p`, `.w`, `.i` root) | Every statement of the keyword documentation index (`keyword_docs.rs`, entries of kind `Statement`), by its first word, except the class-only ones (`CLASS`, `INTERFACE`, `ENUM`, `METHOD`, `CONSTRUCTOR`, `DESTRUCTOR`) |
+| File scope of a procedure file (`.p`, `.w`, `.i` root) | Every statement of the keyword documentation index (`keyword_docs.rs`, entries of kind `Statement`), by its first word, except the class-only ones (`CLASS`, `INTERFACE`, `ENUM`, `METHOD`, `CONSTRUCTOR`, `DESTRUCTOR`) and `END`, which closes no block there |
 | File scope of a class file before the `CLASS`, `INTERFACE` or `ENUM` statement | `USING`, `CLASS`, `INTERFACE`, `ENUM`, `BLOCK-LEVEL`, `ROUTINE-LEVEL` |
 | Class body | `DEFINE`, `METHOD`, `CONSTRUCTOR`, `DESTRUCTOR`, `ON`, `END` |
 | Interface body | `DEFINE`, `METHOD`, `END` |
@@ -807,11 +813,18 @@ It is measured in two ways:
 
 - `cargo bench -p oxabl_pipeline --bench completion_bench` (CodSpeed tracks
   it). The file is the 10,000-line file of `semantic_tokens_bench`. The
-  benches are `fresh` (a statement start, `FIND FIRST`, `Customer.` and
-  `obj:` with a fresh base) and `stale` (the same after a one-line insert in
-  the middle of the file: lex, compare, map and collect). Each must stay under
-  20 ms in a release build. The numbers go into this section when step 2 is
-  done.
+  benches are `fresh/<context>` (the base is of the text the request reads)
+  and `stale/<context>` (the base is of the text before a one-line insert above
+  the cursor: lex both texts, compare, map and collect). Each must stay under
+  20 ms in a release build. Each later step adds its contexts (`FIND FIRST`,
+  `Customer.`, `obj:`).
+
+  | Context | Fresh | Stale |
+  | --- | --- | --- |
+  | `statement`: a statement start in a procedure (`FI`) | 1.6 ms | 3.5 ms |
+  | `define`: after `DEFINE ` | 1.5 ms | 3.4 ms |
+
+  Measured on a loaded machine, release build.
 - A black-box test over stdio (`crates/oxabl/tests/completion_budget_lsp.rs`)
   shows that the request path does not wait for an analysis: the refresh of a
   source with the marker `OXABL-TEST-HOLD:completion.refresh` waits three

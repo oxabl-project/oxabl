@@ -174,6 +174,8 @@ pub struct Session {
     /// [`Session::clear_workspace_progress`] and [`Session::install_workspace`]
     /// apply it.
     workspace_progress: Option<WorkspaceProgress>,
+    /// The bases code completion reads, per open document.
+    completion: Arc<crate::completion::Bases>,
 }
 
 /// Live counters for one whole-workspace pass, plus the signal that it ended.
@@ -495,7 +497,13 @@ impl Session {
             buffer_generation: 0,
             workspace: None,
             workspace_progress: None,
+            completion: Arc::default(),
         }
+    }
+
+    /// The bases code completion reads.
+    pub fn completion_bases(&self) -> Arc<crate::completion::Bases> {
+        Arc::clone(&self.completion)
     }
 
     pub fn root(&self) -> &Path {
@@ -721,6 +729,7 @@ impl Session {
     /// buffers need the room (see [`set_buffer_capacity`]).
     pub fn close_buffer(&mut self, key: &str) {
         self.buffer_paths.remove(key);
+        self.completion.forget(key);
         if let Some(buffer) = self.buffers.remove(key) {
             buffer.set_text(&mut self.db).to(String::new());
             self.closed.insert(key.to_string(), buffer);
@@ -795,6 +804,7 @@ impl Session {
         self.sync_index_preprocessor();
         self.config_generation += 1;
         self.workspace = None;
+        self.completion.clear();
     }
 
     /// Replace the whole analysis configuration, for a caller that owns the
@@ -804,6 +814,7 @@ impl Session {
         self.sync_index_preprocessor();
         self.config_generation += 1;
         self.workspace = None;
+        self.completion.clear();
     }
 
     /// Carry the installed `[workspace.preprocessor]` and include paths to the
@@ -818,6 +829,7 @@ impl Session {
         let revision = self.schema.revision(&self.db).wrapping_add(1);
         self.schema.set_revision(&mut self.db).to(revision);
         self.workspace = None;
+        self.completion.clear();
     }
 }
 

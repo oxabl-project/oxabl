@@ -373,7 +373,7 @@ impl HoverGate {
 impl HoverTicket {
     /// Wait for the hovers before this one, then the guard to compute under;
     /// `None` when a newer hover came or the client cancelled this one.
-    fn start(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+    pub(crate) fn start(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
         let guard = lock(&self.inner.running);
         self.started.store(true, Ordering::SeqCst);
         let cancelled = lock(&self.inner.pending).remove(&self.id).unwrap_or(false);

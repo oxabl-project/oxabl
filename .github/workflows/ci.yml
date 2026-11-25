@@ -277,6 +277,12 @@ jobs:
         run: cargo run -p oxabl_codegen -- keyword-docs
       - name: Assert no keyword docs drift
         run: git diff --exit-code -- crates/oxabl_pipeline/src/keyword_docs.rs
+      # The server's completion snippets are generated from the extension's
+      # snippets file.
+      - name: Regenerate completion snippets
+        run: cargo run -p oxabl_codegen -- snippets
+      - name: Assert no completion snippets drift
+        run: git diff --exit-code -- crates/oxabl_pipeline/src/completion/snippets.rs
 
   vscode-client:
     name: VS Code client

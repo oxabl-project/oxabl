@@ -31,6 +31,7 @@
 
 pub mod capabilities;
 mod code_lens;
+mod completion;
 pub mod debounce;
 pub mod diagnostics;
 pub mod document;
@@ -63,12 +64,12 @@ use lsp_types::notification::{
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
+    CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare, Completion,
     DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest,
     Formatting, GotoDefinition, GotoImplementation, HoverRequest, InlayHintRequest, References,
-    Request as _, SelectionRangeRequest, SemanticTokensFullDeltaRequest, SemanticTokensFullRequest,
-    SemanticTokensRangeRequest, TypeHierarchyPrepare, TypeHierarchySubtypes,
-    TypeHierarchySupertypes, WorkspaceSymbolRequest,
+    Request as _, ResolveCompletionItem, SelectionRangeRequest, SemanticTokensFullDeltaRequest,
+    SemanticTokensFullRequest, SemanticTokensRangeRequest, TypeHierarchyPrepare,
+    TypeHierarchySubtypes, TypeHierarchySupertypes, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -786,6 +787,8 @@ fn anchor_or_current_dir(declared: Option<PathBuf>) -> PathBuf {
 /// What the handshake learned from the client's capabilities.
 struct Negotiated {
     options: code_lens::Options,
+    /// What the client takes in a completion item.
+    completion: completion::Options,
     inlay: inlay_hint::Options,
     semantic: semantic_tokens::Options,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
@@ -917,6 +920,7 @@ fn finish_handshake(
     Ok((
         Negotiated {
             options,
+            completion: completion::Options::from_client(&init.capabilities),
             inlay,
             semantic,
             hierarchical_symbols,
@@ -1016,6 +1020,10 @@ struct Server<'c> {
     context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
     /// Hover requests, one at a time, the stale ones dropped.
     hovers: navigation::HoverGate,
+    /// What the client takes in a completion item.
+    completion: completion::Options,
+    /// The completion requests of each open document, one at a time.
+    completions: completion::Gates,
     /// The references and call hierarchy requests in flight, and the gaps
     /// already logged.
     references: references::InFlight,
@@ -1060,6 +1068,7 @@ impl<'c> Server<'c> {
     ) -> Self {
         let Negotiated {
             options,
+            completion,
             inlay,
             semantic,
             hierarchical_symbols,
@@ -1097,6 +1106,8 @@ impl<'c> Server<'c> {
             context_events,
             context_results,
             hovers: navigation::HoverGate::default(),
+            completion,
+            completions: completion::Gates::default(),
             references: references::InFlight::default(),
             schema_requests: Default::default(),
         }
@@ -1160,6 +1171,10 @@ impl<'c> Server<'c> {
                                 self.handle_definition(req)?;
                             } else if req.method == HoverRequest::METHOD {
                                 self.handle_hover(req)?;
+                            } else if req.method == Completion::METHOD {
+                                self.handle_completion(req)?;
+                            } else if req.method == ResolveCompletionItem::METHOD {
+                                self.handle_completion_resolve(req)?;
                             } else if req.method == DocumentHighlightRequest::METHOD {
                                 self.handle_document_highlight(req)?;
                             } else if req.method == DocumentLinkRequest::METHOD {
@@ -1398,6 +1413,7 @@ impl<'c> Server<'c> {
                         lsp_types::NumberOrString::String(s) => RequestId::from(s),
                     };
                     self.hovers.cancel(&id);
+                    self.cancel_completion(&id);
                     self.references.cancel(&id);
                 }
             }
@@ -1494,6 +1510,7 @@ impl<'c> Server<'c> {
                     self.documents.close(&uri);
                     self.contexts.forget(&uri);
                     self.highlight_turns.remove(&uri);
+                    self.completions.remove(&uri);
                     self.outlines.invalidate(&uri);
                     self.syntax.invalidate(&uri);
                     self.host.with(|sessions| {
@@ -2252,6 +2269,7 @@ mod tests {
                     dynamic: false,
                     refresh: false,
                 },
+                completion: completion::Options::default(),
                 inlay: inlay_hint::Options::from_client(&Default::default(), None),
                 semantic: semantic_tokens::Options::from_client(&Default::default(), None),
                 hierarchical_symbols: false,
