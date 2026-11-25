@@ -53,3 +53,12 @@ export function inlayHintSettings(
 export function semanticTokenSettings(enable: boolean | undefined): { enable: boolean } {
   return { enable: enable ?? true };
 }
+
+/**
+ * The `referenceLenses` object the server reads from its initialization options
+ * and from `workspace/didChangeConfiguration`. `enable` is the value of
+ * `oxabl.referenceLenses.enable`; a setting that is not set is off.
+ */
+export function referenceLensSettings(enable: boolean | undefined): { enable: boolean } {
+  return { enable: enable ?? false };
+}

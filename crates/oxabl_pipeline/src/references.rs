@@ -186,6 +186,20 @@ pub fn fold_gaps(gaps: Vec<Gap>) -> Vec<Gap> {
     out
 }
 
+/// What a count shows when a call that no search follows can reach the
+/// referent. Any procedure or function can be run by a call that no search
+/// follows (through a handle or a super procedure, `PUBLISH`, a trigger or a
+/// callback), so each of them always shows the first.
+const HANDLE_SHORT: &str = "calls through a handle are not followed";
+const RUN_VALUE_SHORT: &str = "a RUN VALUE can run it";
+const DYNAMIC_NEW_SHORT: &str = "a DYNAMIC-NEW can create it";
+const DYNAMIC_INVOKE_CLASS_SHORT: &str = "a DYNAMIC-INVOKE can name it";
+const DYNAMIC_INVOKE_SHORT: &str = "a DYNAMIC-INVOKE can call it";
+const DYNAMIC_PROPERTY_SHORT: &str = "a DYNAMIC-PROPERTY can name it";
+const SUBSCRIBE_SHORT: &str = "a class event Subscribe can call it";
+const REFLECTION_SHORT: &str = "a class reflection call can reach it";
+const UNKNOWN_FILE_SHORT: &str = "a file oxabl cannot read can reach it";
+
 /// Which other files can name a referent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reach {
@@ -318,9 +332,24 @@ pub struct Search {
     pub units: Vec<PathBuf>,
     /// Why the answer can miss a reference. Empty when it cannot.
     pub gaps: Vec<Gap>,
+    /// Calls of the workspace that no search follows and that can reach the
+    /// referent, as the short text a count of it shows. A count is not exact
+    /// while this is not empty. Find references does not show them: it lists
+    /// the places and does not claim a number.
+    pub counts: Vec<String>,
 }
 
 impl Referent {
+    /// Whether the referent is a member of a class (or of an interface): a
+    /// method or a property that a class can override or implement.
+    pub fn is_member(&self) -> bool {
+        self.reach.iter().any(|reach| match reach {
+            Reach::Member { .. } => true,
+            Reach::Included { kind, .. } => is_member_kind(*kind),
+            _ => false,
+        })
+    }
+
     /// Whether only the analysed unit can name it.
     pub fn is_local(&self) -> bool {
         self.reach.is_empty()
@@ -361,6 +390,16 @@ impl Referent {
             found
         };
         let mut handles = false;
+        let dynamic = graph.dynamic_calls();
+        let unknown_calls = graph.dynamic_calls_unknown();
+        // What can reach the referent and that no search follows, once for each
+        // text a count shows.
+        let mut counts: Vec<String> = Vec::new();
+        let mut note = |short: &str| {
+            if !counts.iter().any(|known| known == short) {
+                counts.push(short.to_string());
+            }
+        };
         let mut queue: VecDeque<Reach> = self.reach.iter().cloned().collect();
         let mut done: Vec<Reach> = Vec::new();
         while let Some(reach) = queue.pop_front() {
@@ -381,6 +420,12 @@ impl Referent {
             }
             match reach {
                 Reach::Program(program) => {
+                    if dynamic.run_value {
+                        note(RUN_VALUE_SHORT);
+                    }
+                    if unknown_calls {
+                        note(UNKNOWN_FILE_SHORT);
+                    }
                     add(
                         &Subject::file(&program),
                         &[EdgeKind::ProgramReference],
@@ -389,6 +434,7 @@ impl Referent {
                 }
                 Reach::Routine { program } => {
                     handles = true;
+                    note(HANDLE_SHORT);
                     add(
                         &Subject::file(&program),
                         &[EdgeKind::ProgramReference],
@@ -396,6 +442,21 @@ impl Referent {
                     );
                 }
                 Reach::Class(class) => {
+                    if dynamic.dynamic_new {
+                        note(DYNAMIC_NEW_SHORT);
+                    }
+                    if dynamic.dynamic_invoke {
+                        note(DYNAMIC_INVOKE_CLASS_SHORT);
+                    }
+                    if dynamic.dynamic_property {
+                        note(DYNAMIC_PROPERTY_SHORT);
+                    }
+                    if dynamic.reflection {
+                        note(REFLECTION_SHORT);
+                    }
+                    if unknown_calls {
+                        note(UNKNOWN_FILE_SHORT);
+                    }
                     add(
                         &Subject::file(&class),
                         &[EdgeKind::ClassReference],
@@ -403,6 +464,21 @@ impl Referent {
                     );
                 }
                 Reach::Member { class } => {
+                    if dynamic.subscribes(&self.name) {
+                        note(SUBSCRIBE_SHORT);
+                    }
+                    if dynamic.dynamic_invoke {
+                        note(DYNAMIC_INVOKE_SHORT);
+                    }
+                    if dynamic.dynamic_property {
+                        note(DYNAMIC_PROPERTY_SHORT);
+                    }
+                    if dynamic.reflection {
+                        note(REFLECTION_SHORT);
+                    }
+                    if unknown_calls {
+                        note(UNKNOWN_FILE_SHORT);
+                    }
                     // A class that names the class can inherit the member, and
                     // so can a class that names that one.
                     let mut seen = BTreeSet::from([search::normalize_lexically(&class)]);
@@ -498,6 +574,7 @@ impl Referent {
         Search {
             units: ordered,
             gaps,
+            counts,
         }
     }
 }
@@ -561,6 +638,12 @@ impl Navigation<'_, '_> {
             }),
         };
         self.referent(vec![key])
+    }
+
+    /// The program of this unit as a whole, for the places that run it. `None`
+    /// for an include, or when the unit has no item.
+    pub fn program_referent(&self) -> Option<Referent> {
+        self.unit_item().and_then(|item| self.referent_of(&item))
     }
 
     fn referent(&self, keys: Vec<Key>) -> Option<Referent> {

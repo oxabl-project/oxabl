@@ -268,18 +268,23 @@ fn apply_end_type(content: &str, ty: &str, style: &StyleGuide) -> Option<String>
 
 /// Print `program` against `source` and the attached comments into a line
 /// buffer. Blank-line normalization (U6) and the guard (U7) run afterward.
+///
+/// Also returns, per source line, its *anchor*: the earlier line whose leading
+/// indent its own indent is measured against (the first line of the statement
+/// a continuation line belongs to, say), or `None` when its indent does not
+/// depend on the leading indent of another line.
 pub(crate) fn print(
     source: &str,
     program: &oxabl_parser::Program,
     cmap: &CommentMap,
     style: &StyleGuide,
     toks: &[Token],
-) -> LineBuf {
+) -> (LineBuf, Vec<Option<usize>>) {
     let size = style.indent_size.max(1);
     let lines = split_lines(source, size);
     let mut buf = LineBuf::new();
     if lines.is_empty() {
-        return buf;
+        return (buf, Vec::new());
     }
 
     let line_starts: Vec<usize> = lines.iter().map(|l| l.start).collect();
@@ -378,10 +383,12 @@ pub(crate) fn print(
     // their depth; continuation lines delta-preserve the innermost covering
     // statement's alignment.
     let mut indent = vec![0usize; n];
+    let mut anchor: Vec<Option<usize>> = vec![None; n];
     for (l, slot) in indent.iter_mut().enumerate() {
         if let Some(d) = starter[l] {
             *slot = d * size;
         } else if let Some((_, fl)) = cover[l] {
+            anchor[l] = Some(fl);
             // Shift by what the covering statement's first line actually moves.
             // That line sits at the shallowest depth of any statement starting
             // on it, which is shallower than the statement's own depth when it
@@ -403,6 +410,7 @@ pub(crate) fn print(
     for (ll, d) in block_ends {
         if starter[ll].is_none() {
             indent[ll] = d * size;
+            anchor[ll] = None;
         }
     }
 
@@ -432,7 +440,11 @@ pub(crate) fn print(
                     == line_index(&line_starts, span_start)
             })
     };
-    let set_comment = |indent: &mut [usize], span_start: usize, span_end: usize, col: usize| {
+    let set_comment = |indent: &mut [usize],
+                       anchor: &mut [Option<usize>],
+                       span_start: usize,
+                       span_end: usize,
+                       col: usize| {
         let cfl = line_index(&line_starts, span_start);
         if code_before_on_line(span_start) {
             return;
@@ -444,6 +456,7 @@ pub(crate) fn print(
                 continue;
             }
             indent[l] = (leadings[l] as isize + delta).max(0) as usize;
+            anchor[l] = (l != cfl).then_some(cfl);
         }
     };
     for (id, nc) in cmap.iter_nodes() {
@@ -461,11 +474,18 @@ pub(crate) fn print(
                     .is_some_and(|t| matches!(t.kind, Kind::When | Kind::Otherwise))
             });
             let depth = before_branch_head.copied().unwrap_or(d);
-            set_comment(&mut indent, c.span.start as usize, end, depth * size);
+            set_comment(
+                &mut indent,
+                &mut anchor,
+                c.span.start as usize,
+                end,
+                depth * size,
+            );
         }
         for c in &nc.dangling {
             set_comment(
                 &mut indent,
+                &mut anchor,
                 c.span.start as usize,
                 c.span.end as usize,
                 (d + 1) * size,
@@ -473,7 +493,13 @@ pub(crate) fn print(
         }
     }
     for c in cmap.file_trailing() {
-        set_comment(&mut indent, c.span.start as usize, c.span.end as usize, 0);
+        set_comment(
+            &mut indent,
+            &mut anchor,
+            c.span.start as usize,
+            c.span.end as usize,
+            0,
+        );
     }
 
     // Property accessors: the walk puts the body one level below the property,
@@ -496,6 +522,7 @@ pub(crate) fn print(
             };
             let col = (leadings[a.head_line] as isize + moved).max(0) as usize;
             indent[a.head_line] = col;
+            anchor[a.head_line] = (!protected[pl] && pl != a.head_line).then_some(pl);
             col
         } else {
             indent[a.head_line]
@@ -521,7 +548,7 @@ pub(crate) fn print(
             if next_code.is_none_or(|t| t.start != a.head) {
                 break;
             }
-            set_comment(&mut indent, c.span.start as usize, end, col);
+            set_comment(&mut indent, &mut anchor, c.span.start as usize, end, col);
         }
     }
 
@@ -614,5 +641,10 @@ pub(crate) fn print(
         }
     }
 
-    buf
+    for (l, slot) in anchor.iter_mut().enumerate() {
+        if protected[l] {
+            *slot = None;
+        }
+    }
+    (buf, anchor)
 }

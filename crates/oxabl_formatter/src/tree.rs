@@ -321,7 +321,7 @@ fn is_access_modifier(kind: Kind) -> bool {
 }
 
 /// The trigger-block statement of an `ON` statement, if it has one.
-fn on_action(on_kind: &OnKind) -> Option<&Statement> {
+pub(crate) fn on_action(on_kind: &OnKind) -> Option<&Statement> {
     let action = match on_kind {
         OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => action,
         OnKind::KeyRemap { .. } => return None,

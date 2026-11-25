@@ -19,7 +19,7 @@
 
 use oxabl_ast::{
     DataType, Expression, ExpressionKind, OnAction, OnKind, ParameterDirection, ParameterType,
-    RunTarget, Span, Statement, StatementKind, TypeSource,
+    PersistentRunTarget, RunTarget, Span, Statement, StatementKind, TypeSource,
 };
 use oxabl_lexer::{Kind, Token};
 use oxabl_semantic::{IndexAnswer, IndexName, IndexedFileId, WorkspaceIndex};
@@ -143,6 +143,58 @@ pub struct FileCalls {
     pub functions: Vec<String>,
     /// More than [`MAX_SITES`] calls: the rest are not listed.
     pub truncated: bool,
+    /// The calls whose target is computed, from all the calls of the file,
+    /// also past [`MAX_SITES`].
+    pub dynamic: DynamicCalls,
+}
+
+/// The kinds of call that a file makes and that no static search can follow to
+/// a program, a class or a member. A workspace pass joins the facts of its
+/// files ([`absorb`](Self::absorb)).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DynamicCalls {
+    /// `RUN VALUE(...)`, `ON ... PERSISTENT RUN VALUE(...)` and `CREATE CALL`:
+    /// any program.
+    pub run_value: bool,
+    /// `DYNAMIC-NEW`: any class.
+    pub dynamic_new: bool,
+    /// `DYNAMIC-INVOKE`, and `CREATE CALL`: any method, also a static one by
+    /// class name.
+    pub dynamic_invoke: bool,
+    /// `DYNAMIC-PROPERTY`: any property.
+    pub dynamic_property: bool,
+    /// A `Progress.Lang.Class` reflection call (`GetClass`, `GetMethod`,
+    /// `GetProperty`, `GetConstructor`, `GetEvent`): a class and its members
+    /// by a name that the call computes.
+    pub reflection: bool,
+    /// The folded method names that the string form of a class event's
+    /// `Subscribe` or `Unsubscribe` names (`Subscribe(THIS-OBJECT, "Name")`).
+    pub subscribed: std::collections::BTreeSet<String>,
+    /// That form with a name that is computed: any method.
+    pub subscribed_computed: bool,
+}
+
+impl DynamicCalls {
+    /// Whether the file makes no such call.
+    pub fn is_empty(&self) -> bool {
+        *self == DynamicCalls::default()
+    }
+
+    /// Join the calls of another file into these.
+    pub fn absorb(&mut self, other: &DynamicCalls) {
+        self.run_value |= other.run_value;
+        self.dynamic_new |= other.dynamic_new;
+        self.dynamic_invoke |= other.dynamic_invoke;
+        self.dynamic_property |= other.dynamic_property;
+        self.reflection |= other.reflection;
+        self.subscribed.extend(other.subscribed.iter().cloned());
+        self.subscribed_computed |= other.subscribed_computed;
+    }
+
+    /// Whether a `Subscribe` of the workspace can run a method named `name`.
+    pub fn subscribes(&self, name: &str) -> bool {
+        self.subscribed_computed || self.subscribed.contains(&name.to_ascii_lowercase())
+    }
 }
 
 impl FileCalls {
@@ -156,12 +208,42 @@ impl FileCalls {
             functions: decls.functions.clone(),
             ..FileCalls::default()
         };
+        let mut dynamic = DynamicCalls::default();
         walk(program, &mut |s| {
+            // `ON ... PERSISTENT RUN VALUE(expr)` runs a program by a
+            // computed name.
+            if let StatementKind::On {
+                kind:
+                    OnKind::UiEvent {
+                        action:
+                            OnAction::PersistentRun {
+                                procedure: PersistentRunTarget::Value(_),
+                                ..
+                            },
+                        ..
+                    },
+            } = &s.kind
+            {
+                dynamic.run_value = true;
+            }
             if let Some(site) = run_site(s, tokens, &decls) {
+                if matches!(
+                    (&site.target, &s.kind),
+                    (
+                        CallTarget::Unknown {
+                            reason: UnknownCall::Dynamic,
+                            ..
+                        },
+                        StatementKind::Run { .. }
+                    )
+                ) {
+                    dynamic.run_value = true;
+                }
                 out.sites.push(site);
             }
         });
-        expression_calls(source, tokens, &decls, &mut out.sites);
+        expression_calls(source, tokens, &decls, &mut out.sites, &mut dynamic);
+        out.dynamic = dynamic;
         out.sites.sort_by_key(|s| (s.at.start, s.at.end));
         if out.sites.len() > MAX_SITES {
             out.sites.truncate(MAX_SITES);
@@ -630,10 +712,65 @@ fn receiver(source: &str, toks: &[&Token], colon: usize, decls: &Decls) -> Recei
     }
 }
 
+/// The string form of `Subscribe`: its second argument, from the token at
+/// `from` (after the parenthesis), is the name of a method of the subscriber.
+/// The form with one argument names the method by symbol and is not read here.
+fn note_subscribe(source: &str, toks: &[&Token], from: usize, dynamic: &mut DynamicCalls) {
+    let mut depth = 0i32;
+    let mut arg = 0;
+    let mut second: Vec<&Token> = Vec::new();
+    for t in &toks[from.min(toks.len())..] {
+        match t.kind {
+            Kind::LeftParen => depth += 1,
+            Kind::RightParen if depth == 0 => break,
+            Kind::RightParen => depth -= 1,
+            Kind::Comma if depth == 0 => {
+                arg += 1;
+                if arg > 1 {
+                    break;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if arg == 1 {
+            second.push(t);
+        }
+    }
+    match second.as_slice() {
+        [] => {}
+        [only] if only.kind == Kind::StringLiteral => {
+            let name = text(source, only).trim_matches(['"', '\'']);
+            dynamic.subscribed.insert(name.to_ascii_lowercase());
+        }
+        _ => dynamic.subscribed_computed = true,
+    }
+}
+
+/// Whether `word` is a method of `Progress.Lang.Class` that gives a class or
+/// a member by a name that the caller computes.
+fn is_reflection(word: &str) -> bool {
+    [
+        "GetClass",
+        "GetMethod",
+        "GetProperty",
+        "GetConstructor",
+        "GetEvent",
+    ]
+    .iter()
+    .any(|name| word.eq_ignore_ascii_case(name))
+}
+
 /// Function and method calls in expressions, found in the tokens: a name of
 /// a function of the file, `DYNAMIC-FUNCTION(`, `DYNAMIC-INVOKE(`,
 /// `DYNAMIC-NEW`, `SUPER(` in a function, and `x:name(`.
-fn expression_calls(source: &str, tokens: &[Token], decls: &Decls, out: &mut Vec<CallSite>) {
+fn expression_calls(
+    source: &str,
+    tokens: &[Token],
+    decls: &Decls,
+    out: &mut Vec<CallSite>,
+    dynamic: &mut DynamicCalls,
+) {
     let toks: Vec<&Token> = tokens
         .iter()
         .take_while(|t| t.kind != Kind::Eof)
@@ -655,14 +792,40 @@ fn expression_calls(source: &str, tokens: &[Token], decls: &Decls, out: &mut Vec
         };
         match t.kind {
             Kind::DynamicFunction | Kind::DynamicInvoke if next == Some(Kind::LeftParen) => {
+                dynamic.dynamic_invoke |= t.kind == Kind::DynamicInvoke;
                 out.push(unknown(UnknownCall::Dynamic));
                 continue;
             }
             Kind::DynamicNew => {
+                dynamic.dynamic_new = true;
                 out.push(unknown(UnknownCall::Dynamic));
                 continue;
             }
+            Kind::Create if next == Some(Kind::Call) => {
+                // A CALL object runs a program or a method by a computed name.
+                dynamic.run_value = true;
+                dynamic.dynamic_invoke = true;
+            }
             _ => {}
+        }
+        if t.kind != Kind::StringLiteral {
+            let word = text(source, t);
+            if next == Some(Kind::LeftParen) && prev == Some(Kind::Colon) && is_reflection(word) {
+                dynamic.reflection = true;
+            }
+            if next == Some(Kind::LeftParen)
+                && prev == Some(Kind::Colon)
+                && (same(word, "Subscribe") || same(word, "Unsubscribe"))
+            {
+                note_subscribe(source, &toks, i + 2, dynamic);
+            }
+            if word.len() >= "dynamic-prop".len()
+                && word.is_char_boundary("dynamic-prop".len())
+                && word[.."dynamic-prop".len()].eq_ignore_ascii_case("dynamic-prop")
+                && next == Some(Kind::LeftParen)
+            {
+                dynamic.dynamic_property = true;
+            }
         }
         if next != Some(Kind::LeftParen) || t.kind == Kind::StringLiteral {
             continue;

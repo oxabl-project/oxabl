@@ -119,6 +119,29 @@ you also get, with no setup:
   workspace index that is not ready. A reason that holds for the whole
   workspace and leaves out only a part of the search (a file that oxabl could
   not analyse) is written once to the `oxabl language server` output instead.
+- **Reference-count code lenses.** Set `oxabl.referenceLenses.enable` to
+  `true` to show a lens above each procedure, function, method, class,
+  interface and property, with the number of places that use it
+  (`3 references`), and above a program, with the number of files that run it
+  (`3 references · used by 2 files`). A click lists the places that the lens
+  counts. The count is the length of Find All References without the declaration,
+  and it is made when
+  the lens comes into view, so a large file does not run a search for each
+  declaration at once. A count that can be short says so
+  (`12+ references · incomplete: <reason>`). A procedure or function always says
+  that calls through a handle are not followed, because a super procedure, a
+  `PUBLISH`, a trigger or a callback can run it with no trace that oxabl
+  follows. A method that overrides or implements another says that calls
+  through a supertype are not counted. A program, class or member says it when a
+  `RUN VALUE`, `CREATE CALL`, `DYNAMIC-NEW`, `DYNAMIC-INVOKE`,
+  `DYNAMIC-PROPERTY`, a class event `Subscribe` with a method name as a string, or a class reflection call of the workspace can reach it,
+  or when a file of the workspace cannot be read. Without such a call the count is exact, but it does not count a caller
+  from outside the workspace (an AppServer client, a `-p` program). The lenses ask
+  again after a save, a change on disk and an edit of another file. A declaration that oxabl does
+  not resolve shows `references not known`, never a number. These lenses are
+  off by default, and apart from the database effect lenses, which follow the
+  rules in `oxabl.toml`. VS Code's `editor.codeLens` turns off both. See
+  `docs/design/reference-lenses.md` in the repository.
 - **Call hierarchy** (`Shift+Alt+H`). Shows the callers of a procedure,
   function, method or program, and the `RUN`, function and method calls it
   makes. On a name that is no routine, or on a keyword, it shows the routine
@@ -187,6 +210,15 @@ A folder with an `oxabl.toml` is a project. A project also gets:
 
 - **Format on save.** The formatter changes ABL files only. It leaves a file
   that it cannot format safely byte for byte unchanged.
+- **Format Selection.** Select text and run **Format Selection**. The
+  statements that the selection touches get the layout that the whole file
+  gives them, and no other line changes. A selection that starts or ends inside
+  a statement takes the whole statement. When the file does not format, or the
+  selection holds no statement, nothing changes and the `oxabl` output channel
+  says why. This also applies to format on paste. The later lines of a comment
+  that follows code on a line keep their indentation, unless the selection
+  includes the block around it. Format on type is not
+  offered.
 - **Live diagnostics.** Lint and semantic diagnostics show in the Problems
   panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
   applies at once, with no reload. A finding of the `strict.handles` and
@@ -320,7 +352,7 @@ order: the `oxabl.server.path` setting, `~/.local/bin/oxabl` (the directory in
 then run **oxabl: Restart Server**.
 
 In a project, these features follow `[workspace.features]` in `oxabl.toml`:
-`diagnostics = false` stops the diagnostics, the dimming of inactive branches, the code lenses and the inlay hints, and `format = false` stops formatting, so format on save does
+`diagnostics = false` stops the diagnostics, the dimming of inactive branches, the code lenses and the inlay hints, and `format = false` stops formatting, so format on save and Format Selection do
 nothing. An `oxabl.toml` that oxabl cannot read turns both off until you fix
 it.
 
@@ -535,6 +567,7 @@ itself once a day when you run it.
 | `oxabl.updates` | `auto` | `auto`, `notify` or `off`. See [Updates](#updates). |
 | `oxabl.trace.server` | `off` | Trace the JSON-RPC traffic with the server, for debugging. |
 | `oxabl.semanticTokens.enable` | `true` | Colour names by what they are, from the language server. The grammar colours everything else. A change applies at once. |
+| `oxabl.referenceLenses.enable` | `false` | Show the number of references above each declaration. Each lens runs a search when it comes into view. A change applies at once. |
 | `oxabl.inlayHints.locks` | `true` | Show the lock a read takes when it names none. A change applies at once. |
 | `oxabl.inlayHints.index` | `true` | Show the index oxabl expects a search to use. Needs no strict rule. |
 | `oxabl.inlayHints.scope` | `true` | Show where a raised buffer scope starts and ends. |

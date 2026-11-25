@@ -87,6 +87,7 @@ pub use effects::{EffectFile, Elsewhere, Routine, WorkspaceEffects};
 pub mod completion;
 mod config;
 mod format;
+mod format_range;
 mod hierarchy;
 mod hints;
 mod includers;
@@ -108,6 +109,7 @@ pub use config::{
     resolve_from_config_deferred,
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
+pub use format_range::{RangeBail, RangeEdit, RangeFailure};
 pub use hierarchy::{
     ClassDecl, MethodAt, MethodDecl, MethodsAt, TypeAt, class_decl, class_name_span,
 };
