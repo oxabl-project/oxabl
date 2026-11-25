@@ -6,7 +6,7 @@ use std::sync::{Arc, LazyLock};
 use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan};
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::PreprocVarTable;
 use crate::condition::{
@@ -1291,7 +1291,7 @@ impl ProcessContext<'_> {
         let scoped = kind == DefineKind::Scoped;
         if !self.region_decided {
             // It may or may not have happened.
-            self.knowledge.learn(name, false, scoped);
+            self.knowledge.maybe_defined(name, scoped);
             return;
         }
         if !emitting {
@@ -2424,11 +2424,17 @@ impl ProcessContext<'_> {
         // Scope isolation: open a variable scope, inject named args
         let scope = self.vars.begin_scope();
         self.knowledge.begin_scope();
+        if self.tracking {
+            // The arguments of the includes around are not defined here.
+            let vars = &self.vars;
+            self.knowledge
+                .hide_arguments(|name| vars.argument_hidden(name));
+        }
         let args_known = self.region_decided && !site_unknown;
         for (name, value) in &args.named {
             self.vars.define_argument(name, value);
             if self.tracking {
-                self.knowledge.learn(name, args_known, true);
+                self.knowledge.learn_argument(name, args_known);
             }
         }
         let outer_args = std::mem::replace(&mut self.args_uncertain, !args_known);
@@ -2516,7 +2522,27 @@ struct Knowledge {
     /// One frame per include being expanded: what was known of each name
     /// before the include first changed it with a scoped define or an
     /// argument, restored when the include ends.
-    frames: Vec<Vec<Saved>>,
+    frames: Vec<Frame>,
+    /// One list per include being expanded: each named argument and what was
+    /// known of its name before the argument defined it. A name is in a list
+    /// once.
+    arguments: Vec<Vec<Argument>>,
+    /// For each argument name, where it is in `arguments` (include, then
+    /// position), oldest first.
+    argument_places: FxHashMap<String, Vec<(usize, usize)>>,
+}
+
+struct Argument {
+    name: String,
+    before: (bool, bool),
+}
+
+/// What an include saved, in the order it saved it, with the position of each
+/// name so that a name is saved once at a constant cost.
+#[derive(Default)]
+struct Frame {
+    saved: Vec<Saved>,
+    index: FxHashMap<String, usize>,
 }
 
 struct Saved {
@@ -2583,7 +2609,7 @@ impl Knowledge {
     fn learn(&mut self, name: &str, known: bool, scoped: bool) {
         if known
             && !self.includer_unknown
-            && self.frames.iter().all(Vec::is_empty)
+            && self.frames.iter().all(|frame| frame.saved.is_empty())
             && (self.uncertain.is_empty()
                 || !with_folded(name, |name| self.uncertain.contains(name)))
         {
@@ -2593,6 +2619,27 @@ impl Knowledge {
         let name = name.to_ascii_lowercase();
         let set = known && self.includer_unknown;
         self.change(&name, (set, !known), scoped);
+    }
+
+    /// A define of `name` met in a region that may not run. The name is not
+    /// known, also below an argument that hides it: the define may have run
+    /// there.
+    fn maybe_defined(&mut self, name: &str, scoped: bool) {
+        self.learn(name, false, scoped);
+        if scoped {
+            self.set_argument_states(&name.to_ascii_lowercase(), (false, true));
+        }
+    }
+
+    /// A define acts on the definition that an argument hides, so `state` is
+    /// what the hidden name is known as from now on.
+    fn set_argument_states(&mut self, name: &str, state: (bool, bool)) {
+        let Some(places) = self.argument_places.get(name) else {
+            return;
+        };
+        for &(include, at) in places {
+            self.arguments[include][at].before = state;
+        }
     }
 
     /// `name` was undefined in a decided region: the definition it hid shows
@@ -2622,27 +2669,36 @@ impl Knowledge {
         // Defined or undefined in the source: no longer only a default.
         self.defaults.remove(name);
         if !scoped {
-            for saved in self.frames.iter_mut().flatten() {
-                if saved.name == name {
-                    saved.touched = true;
+            for frame in &mut self.frames {
+                if let Some(&at) = frame.index.get(name) {
+                    frame.saved[at].touched = true;
                 }
             }
+            self.set_argument_states(name, after);
         }
         let before = self.state(name);
         if before == after {
             return;
         }
-        if scoped
-            && let Some(frame) = self.frames.last_mut()
-            && !frame.iter().any(|saved| saved.name == name)
+        if scoped {
+            self.save(name, before);
+        }
+        self.apply(name, after);
+    }
+
+    /// Remember `before` as the state of `name` to restore when the include
+    /// being expanded ends. The first state saved in an include is kept.
+    fn save(&mut self, name: &str, before: (bool, bool)) {
+        if let Some(frame) = self.frames.last_mut()
+            && !frame.index.contains_key(name)
         {
-            frame.push(Saved {
+            frame.index.insert(name.to_string(), frame.saved.len());
+            frame.saved.push(Saved {
                 name: name.to_string(),
                 before,
                 touched: false,
             });
         }
-        self.apply(name, after);
     }
 
     fn apply(&mut self, name: &str, (set, uncertain): (bool, bool)) {
@@ -2660,12 +2716,63 @@ impl Knowledge {
         }
     }
 
+    /// `name` was defined as a named argument of the include being expanded.
+    fn learn_argument(&mut self, name: &str, known: bool) {
+        let lower = name.to_ascii_lowercase();
+        if let Some(include) = self.arguments.len().checked_sub(1) {
+            let places = self.argument_places.entry(lower.clone()).or_default();
+            // The first definition of a name has the state from before them all.
+            if places.last().is_none_or(|&(last, _)| last != include) {
+                places.push((include, self.arguments[include].len()));
+                let before = self.state(&lower);
+                self.arguments[include].push(Argument {
+                    name: lower,
+                    before,
+                });
+            }
+        }
+        self.learn(name, known, true);
+    }
+
+    /// The include being expanded does not see the named arguments of the
+    /// include directly around it, so each name that one of them defined and
+    /// that `hidden` says is still hidden is known as it was before the
+    /// argument. The includes further out were hidden the same way when that
+    /// include began, and a define since then updated their states. Call it
+    /// after [`Self::begin_scope`] for the include.
+    fn hide_arguments(&mut self, hidden: impl Fn(&str) -> bool) {
+        let Some(around) = self.arguments.len().checked_sub(2) else {
+            return;
+        };
+        let list = std::mem::take(&mut self.arguments[around]);
+        for argument in &list {
+            if hidden(&argument.name) {
+                // Saved also when the state does not change: a global define
+                // below this include must still leave the name unknown after
+                // it, for the include that reads the argument again.
+                let current = self.state(&argument.name);
+                self.save(&argument.name, current);
+                self.change(&argument.name, argument.before, true);
+            }
+        }
+        self.arguments[around] = list;
+    }
+
     fn begin_scope(&mut self) {
-        self.frames.push(Vec::new());
+        self.frames.push(Frame::default());
+        self.arguments.push(Vec::new());
     }
 
     fn end_scope(&mut self) {
-        for saved in self.frames.pop().unwrap_or_default() {
+        for argument in self.arguments.pop().unwrap_or_default() {
+            if let Some(places) = self.argument_places.get_mut(&argument.name) {
+                places.pop();
+                if places.is_empty() {
+                    self.argument_places.remove(&argument.name);
+                }
+            }
+        }
+        for saved in self.frames.pop().unwrap_or_default().saved {
             if saved.touched {
                 let set = self.set.contains(&saved.name);
                 self.apply(&saved.name, (set, true));
@@ -3254,7 +3361,7 @@ fn include_skeleton(nodes: Vec<SpanNode>) -> Vec<SpanNode> {
 /// with the square of a run of `{` or of `~{`.
 #[derive(Default)]
 struct BraceMatches {
-    found: rustc_hash::FxHashMap<usize, Option<usize>>,
+    found: FxHashMap<usize, Option<usize>>,
 }
 
 impl BraceMatches {
@@ -5651,15 +5758,12 @@ ELSE
     /// The AVM ignores a global define of a name that is an include argument.
     #[test]
     fn a_global_defined_over_an_include_argument_is_ignored() {
-        let fs = make_fs(&[
-            ("/inc/inc.i", "&GLOBAL-DEFINE a y\n[{&a}]"),
-            ("/inc/wrap.i", "{inc.i}[{&a}]"),
-        ]);
+        let fs = make_fs(&[("/inc/inc.i", "&GLOBAL-DEFINE a y\n[{&a}]")]);
         let include_paths = vec![PathBuf::from("/inc")];
         let pp = Preprocessor::new(&fs, &include_paths);
-        let result = pp.process(FileId::new(1), "{wrap.i &a=x}[{&a}]").unwrap();
+        let result = pp.process(FileId::new(1), "{inc.i &a=x}[{&a}]").unwrap();
 
-        assert_eq!(&*result.to_text(), "[x][x][]");
+        assert_eq!(&*result.to_text(), "[x][]");
     }
 
     #[test]

@@ -670,3 +670,134 @@ fn a_value_with_a_closing_brace_ends_the_nested_reference_there() {
     let kinds: Vec<TextLossKind> = result.text_losses.iter().map(|l| l.kind).collect();
     assert_eq!(kinds, [TextLossKind::UnmatchedArgumentBrace]);
 }
+
+const P9: &str = "MESSAGE \"P[{&x}]\".\n{b9.i}";
+
+#[test]
+fn a_nested_include_does_not_see_the_named_argument_of_its_includer() {
+    assert_passes(
+        "{/inc/p9.i &x=zzz}",
+        &[("/inc/p9.i", P9), ("/inc/b9.i", B_NAMED)],
+        "MESSAGE \"P[zzz]\".\nMESSAGE \"B[]\".",
+    );
+}
+
+#[test]
+fn a_nested_include_sees_only_its_own_named_arguments() {
+    assert_passes(
+        "{/inc/p10.i &x=zzz}",
+        &[
+            ("/inc/p10.i", "{b10.i &y=yyy}"),
+            ("/inc/b10.i", "MESSAGE \"B[{&x}|{&y}]\"."),
+        ],
+        "MESSAGE \"B[|yyy]\".",
+    );
+}
+
+#[test]
+fn a_scoped_name_of_the_unit_stays_visible_and_the_argument_does_not_replace_it_outside() {
+    assert_passes(
+        "&SCOPED-DEFINE x mainx\n{/inc/p9.i &x=zzz}\nMESSAGE \"M[{&x}]\".",
+        &[("/inc/p9.i", P9), ("/inc/b9.i", B_NAMED)],
+        "MESSAGE \"P[zzz]\".\nMESSAGE \"B[mainx]\".\nMESSAGE \"M[mainx]\".",
+    );
+}
+
+#[test]
+fn a_named_argument_passed_on_as_a_positional_value_defines_no_name_below() {
+    // `{1}` is `zzz`, so `{bx.i zzz}` defines no `&x` in `bx.i`.
+    assert_passes(
+        "{/inc/pass8.i &x=zzz}",
+        &[("/inc/pass8.i", "{bx.i {1}}"), ("/inc/bx.i", B_NAMED)],
+        "MESSAGE \"B[]\".",
+    );
+}
+
+#[test]
+fn a_global_define_below_an_argument_stays_after_the_include_ends() {
+    assert_passes(
+        "{/inc/p15.i &x=zzz}\nMESSAGE \"M[{&x}]\".",
+        &[
+            ("/inc/p15.i", "{b15.i}\nMESSAGE \"P[{&x}]\"."),
+            ("/inc/b15.i", "&GLOBAL-DEFINE x glob\nMESSAGE \"B[{&x}]\"."),
+        ],
+        "MESSAGE \"B[glob]\".\nMESSAGE \"P[zzz]\".\nMESSAGE \"M[glob]\".",
+    );
+}
+
+#[test]
+fn a_scoped_define_below_an_argument_ends_with_its_include() {
+    assert_passes(
+        "{/inc/p16.i &x=zzz}\nMESSAGE \"M[{&x}]\".",
+        &[
+            ("/inc/p16.i", "{b16.i}\nMESSAGE \"P[{&x}]\"."),
+            ("/inc/b16.i", "&SCOPED-DEFINE x scop\nMESSAGE \"B[{&x}]\"."),
+        ],
+        "MESSAGE \"B[scop]\".\nMESSAGE \"P[zzz]\".\nMESSAGE \"M[]\".",
+    );
+}
+
+#[test]
+fn a_global_define_over_an_argument_of_the_same_include_is_ignored() {
+    // The compiler warns (2967) and ignores the define.
+    assert_passes(
+        "{/inc/p17.i &x=zzz}\nMESSAGE \"M[{&x}]\".",
+        &[("/inc/p17.i", "&GLOBAL-DEFINE x glob\nMESSAGE \"P[{&x}]\".")],
+        "MESSAGE \"P[zzz]\".\nMESSAGE \"M[]\".",
+    );
+}
+
+const LADDER: &str = "&IF DEFINED(x) = 0 &THEN\nMESSAGE \"@-D0[{&x}]\".\n&ELSEIF DEFINED(x) = 1 &THEN\nMESSAGE \"@-D1[{&x}]\".\n&ELSEIF DEFINED(x) = 2 &THEN\nMESSAGE \"@-D2[{&x}]\".\n&ELSE\nMESSAGE \"@-D3[{&x}]\".\n&ENDIF";
+
+/// `p19.i` and `b19.i`: each shows the value of `x` and `DEFINED(x)`.
+fn ladder_files() -> [(&'static str, String); 2] {
+    [
+        ("/inc/b19.i", LADDER.replace('@', "B")),
+        (
+            "/inc/p19.i",
+            format!("{{b19.i}}{}", LADDER.replace('@', "P")),
+        ),
+    ]
+}
+
+fn assert_ladder(source: &str, expected: &str) {
+    let files = ladder_files();
+    let more: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    assert_passes(source, &more, expected);
+}
+
+#[test]
+fn an_undefine_below_an_argument_removes_the_visible_global_definition() {
+    assert_passes(
+        "&GLOBAL-DEFINE x g\n{/inc/p18.i &x=zzz}\nMESSAGE \"M[{&x}]\".",
+        &[
+            ("/inc/p18.i", "{b18.i}\nMESSAGE \"P[{&x}]\"."),
+            ("/inc/b18.i", "&UNDEFINE x\nMESSAGE \"B[{&x}]\"."),
+        ],
+        "MESSAGE \"B[]\".\nMESSAGE \"P[zzz]\".\nMESSAGE \"M[]\".",
+    );
+}
+
+#[test]
+fn defined_is_0_below_an_argument_and_2_for_the_argument() {
+    assert_ladder(
+        "{/inc/p19.i &x=zzz}",
+        "MESSAGE \"B-D0[]\".\nMESSAGE \"P-D2[zzz]\".\n",
+    );
+}
+
+#[test]
+fn defined_is_1_for_the_global_hidden_below_an_argument() {
+    assert_ladder(
+        "&GLOBAL-DEFINE x g\n{/inc/p19.i &x=zzz}",
+        "MESSAGE \"B-D1[g]\".\nMESSAGE \"P-D2[zzz]\".\n",
+    );
+}
+
+#[test]
+fn defined_is_3_for_the_scoped_name_below_an_argument() {
+    assert_ladder(
+        "&SCOPED-DEFINE x s\n{/inc/p19.i &x=zzz}",
+        "MESSAGE \"B-D3[s]\".\nMESSAGE \"P-D2[zzz]\".\n",
+    );
+}
