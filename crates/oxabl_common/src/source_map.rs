@@ -1,3 +1,8 @@
+/// How many maps this process built, counted only with the test-only
+/// `test-panics` feature.
+#[cfg(feature = "test-panics")]
+static BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Maps byte offsets to line/column positions
 pub struct SourceMap {
     /// Byte offset where each line starts
@@ -5,23 +10,28 @@ pub struct SourceMap {
 }
 
 impl SourceMap {
-    /// Build the source map in a single pass over source
+    /// Build the source map in a single pass over source.
+    ///
+    /// A scan of the bytes: `0x0A` is never part of a multi-byte UTF-8
+    /// sequence, so no character is decoded.
     pub fn new(source: &str) -> Self {
-        // pre-allocate assuming 40 chars per line average
-        let estimated_lines = source.len() / 40 + 1;
-        let mut line_starts = Vec::with_capacity(estimated_lines);
-
-        // Line 1 starts on byte 0, always
+        #[cfg(feature = "test-panics")]
+        BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // pre-allocate assuming 40 bytes per line average
+        let mut line_starts = Vec::with_capacity(source.len() / 40 + 1);
         line_starts.push(0);
-
-        // find all newlines
-        for (byte_offset, ch) in source.char_indices() {
-            if ch == '\n' {
-                line_starts.push(byte_offset + 1);
-            }
-        }
-
+        line_starts.extend(memchr::memchr_iter(b'\n', source.as_bytes()).map(|at| at + 1));
         Self { line_starts }
+    }
+
+    /// How many maps this process built, or `None` without the test-only
+    /// `test-panics` feature, so a test can see that a report builds one map
+    /// for each text and not one for each finding.
+    pub fn built() -> Option<usize> {
+        #[cfg(feature = "test-panics")]
+        return Some(BUILT.load(std::sync::atomic::Ordering::Relaxed));
+        #[cfg(not(feature = "test-panics"))]
+        None
     }
 
     /// Lookup line and column for a byte offset
@@ -187,6 +197,41 @@ mod tests {
 
         // "42" is at bytes 45-46
         assert_eq!(map.lookup(45), (2, 16));
+    }
+
+    /// The line table of a decode of each character, as the map was first built.
+    fn char_scan_lookup(source: &str, offset: usize) -> (usize, usize) {
+        let mut starts = vec![0];
+        for (at, ch) in source.char_indices() {
+            if ch == '\n' {
+                starts.push(at + 1);
+            }
+        }
+        let line = starts.partition_point(|&s| s <= offset) - 1;
+        (line + 1, offset - starts[line] + 1)
+    }
+
+    #[test]
+    fn byte_scan_equals_char_scan() {
+        // CRLF, a bare CR, multi-byte characters next to newlines, blank lines
+        // and no final newline.
+        let sources = [
+            "a\r\nb\rc\n\n\u{e9}\n\u{1F600}x\r\n\u{20AC}\u{20AC}\ny",
+            "\n",
+            "",
+            "\u{e9}",
+            "\r\n\r\n",
+        ];
+        for source in sources {
+            let map = SourceMap::new(source);
+            for offset in 0..=source.len() {
+                assert_eq!(
+                    map.lookup(offset),
+                    char_scan_lookup(source, offset),
+                    "offset {offset} of {source:?}"
+                );
+            }
+        }
     }
 
     #[test]

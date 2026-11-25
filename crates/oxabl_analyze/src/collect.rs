@@ -1849,6 +1849,7 @@ pub fn collect_from_expanded_with_summaries(
     out.parse_recovered = !program.errors.is_empty();
 
     let mut include_rows = IncludeRows::default();
+    let mut include_maps = Vec::new();
     for err in program.errors.into_iter().filter(|_| everything) {
         let at_end = err.span.start as usize >= expanded.text.len();
         let virt = err.into_diagnostic(root);
@@ -1873,7 +1874,7 @@ pub fn collect_from_expanded_with_summaries(
             // site in the root and in the include file.
             Err(d) if !at_end => {
                 out.diagnostics.push(CollectedDiagnostic {
-                    diagnostic: include_parse_error_at_site(&d, expanded),
+                    diagnostic: include_parse_error_at_site(&d, expanded, &mut include_maps),
                     source: DiagnosticSource::Parse,
                 });
                 include_rows.add(d, DiagnosticSource::Parse, expanded, &mut out);
@@ -2268,8 +2269,13 @@ fn analyze_expanded(
 /// diagnostic at the `{...}` site in the root that brought the text in. Its
 /// message says where the error is: in an include file, or in the value of a
 /// preprocessor name or an include argument. When no site leads to the text,
-/// it sits at the end of the root, so it is never dropped.
-fn include_parse_error_at_site(d: &Diagnostic, expanded: &ExpandedFile) -> Diagnostic {
+/// it sits at the end of the root, so it is never dropped. `maps` keeps the
+/// line table of each include text, so many errors in one include scan it once.
+fn include_parse_error_at_site(
+    d: &Diagnostic,
+    expanded: &ExpandedFile,
+    maps: &mut Vec<(FileId, SourceMap)>,
+) -> Diagnostic {
     let place = expanded
         .resolve_include_span(d.span.span)
         .map(|(path, span, _)| {
@@ -2279,8 +2285,17 @@ fn include_parse_error_at_site(d: &Diagnostic, expanded: &ExpandedFile) -> Diagn
             );
             let line_col = expanded
                 .resolve_include_origin(d.span.span)
-                .and_then(|(_, file, _)| expanded.file_text(file))
-                .map(|text| SourceMap::new(text).lookup(span.start as usize))
+                .and_then(|(_, file, _)| {
+                    let text = expanded.file_text(file)?;
+                    let at = match maps.iter().position(|(known, _)| *known == file) {
+                        Some(at) => at,
+                        None => {
+                            maps.push((file, SourceMap::new(text)));
+                            maps.len() - 1
+                        }
+                    };
+                    Some(maps[at].1.lookup(span.start as usize))
+                })
                 .map(|(line, column)| format!(":{line}:{column}"))
                 .unwrap_or_default();
             format!("{name}{line_col}")

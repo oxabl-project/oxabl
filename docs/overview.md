@@ -88,6 +88,8 @@ Requirements:
   - Produces line and column numbers from byte offsets stored in tokens.
   - Used in our token dumps and benchmarks.
   - Source maps line up to their source accurately.
+  - It finds the line starts with a scan of the bytes for `\n` (`memchr`). It does not decode characters, and the column is a byte column.
+  - `oxabl check` builds one map for each text in a report, and every finding and label in that text uses it. `crates/oxabl/tests/check_source_maps.rs` counts the maps that a test build makes, and fails when the count increases with the number of findings.
   - No new features planned, the source_map is complete, and will (most likely) only receive bug fixes and performance improvements.
 - `oxabl_ast`: Implemented in `crates/oxabl_ast`
   - Defines literals, statements, expressions, variable definitions, control flow, and data types.
