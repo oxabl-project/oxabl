@@ -143,6 +143,18 @@ impl BuiltinCatalog {
     }
 }
 
+/// `Progress.Lang.Object`, the root of every class and interface.
+pub(crate) fn object_class() -> &'static BuiltinClass {
+    static OBJECT: std::sync::OnceLock<&'static BuiltinClass> = std::sync::OnceLock::new();
+    OBJECT.get_or_init(|| builtin_class("Progress.Lang.Object").expect("in the catalog"))
+}
+
+/// `Progress.Lang.Enum`, the supertype of every enum.
+pub(crate) fn enum_class() -> &'static BuiltinClass {
+    static ENUM: std::sync::OnceLock<&'static BuiltinClass> = std::sync::OnceLock::new();
+    ENUM.get_or_init(|| builtin_class("Progress.Lang.Enum").expect("in the catalog"))
+}
+
 /// The documented built-in type named `name`, which may be written in any case
 /// and with generic arguments.
 pub fn builtin_class(name: &str) -> Option<&'static BuiltinClass> {
@@ -160,25 +172,41 @@ pub(crate) fn builtin_class_in(prefix: &str, name: &str) -> Option<&'static Buil
 }
 
 fn compare_folded(key: &str, prefix: &str, name: &str) -> Ordering {
-    let wanted = prefix
-        .bytes()
-        .chain(name.bytes())
-        .map(|b| b.to_ascii_lowercase());
-    key.bytes().cmp(wanted)
+    let key = key.as_bytes();
+    let (p, n) = (prefix.as_bytes(), name.as_bytes());
+    let wanted_len = p.len() + n.len();
+    for (i, k) in key.iter().enumerate() {
+        let w = match p.get(i).or_else(|| n.get(i - p.len())) {
+            Some(w) => w.to_ascii_lowercase(),
+            None => return Ordering::Greater,
+        };
+        if *k != w {
+            return k.cmp(&w);
+        }
+    }
+    key.len().cmp(&wanted_len)
 }
 
 fn compare_name_folded(name: &str, wanted: &str) -> Ordering {
-    name.bytes()
-        .map(|b| b.to_ascii_lowercase())
-        .cmp(wanted.bytes().map(|b| b.to_ascii_lowercase()))
+    let (a, b) = (name.as_bytes(), wanted.as_bytes());
+    for (x, y) in a.iter().zip(b) {
+        let (x, y) = (x.to_ascii_lowercase(), y.to_ascii_lowercase());
+        if x != y {
+            return x.cmp(&y);
+        }
+    }
+    a.len().cmp(&b.len())
 }
 
 impl BuiltinClass {
     /// The row of this type in the catalog.
     pub fn row(&self) -> u16 {
-        BUILTIN_CLASSES
-            .binary_search_by(|c| c.key.cmp(self.key))
-            .expect("a built-in type is a row of the catalog") as u16
+        // Every `BuiltinClass` is an element of `BUILTIN_CLASSES`: the type
+        // has private fields and no constructor.
+        let offset = (self as *const Self as usize) - (BUILTIN_CLASSES.as_ptr() as usize);
+        let row = offset / std::mem::size_of::<Self>();
+        debug_assert!(std::ptr::eq(&BUILTIN_CLASSES[row], self));
+        row as u16
     }
 
     /// The type at `row`.

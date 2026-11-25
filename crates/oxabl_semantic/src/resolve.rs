@@ -39,7 +39,9 @@ use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::builtin::{BuiltinClass, BuiltinMember, BuiltinShape, BuiltinType, builtin_class};
+use crate::builtin::{
+    BuiltinClass, BuiltinMember, BuiltinShape, BuiltinType, builtin_class, enum_class, object_class,
+};
 use crate::index::ImportCandidate;
 use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_records};
 use crate::signature::{CallParam, CallParamKind, MemberParamShape, ParamMode};
@@ -1859,8 +1861,6 @@ struct CrossFileState {
     builtin_ancestors: FxHashSet<SymbolId>,
     /// The built-in levels of each walked class, in walk order.
     builtin_levels: FxHashMap<SymbolId, SmallVec<[&'static BuiltinClass; 4]>>,
-    /// The names already looked up in [`Self::builtin_levels`].
-    builtin_probed: FxHashSet<(SymbolId, OxablAtom)>,
 }
 
 /// The atom carried by the resolution recorded for a run-time-computed `RUN`
@@ -2821,9 +2821,8 @@ impl<'a> ResolveWalker<'a> {
             // An enum widens to `Progress.Lang.Enum`. The index does not say
             // whether it is a `FLAGS` enum, so the chain past it is not known.
             if descriptor.kind == ClassKind::Enum {
-                if let Some(base) = builtin_class("Progress.Lang.Enum") {
-                    resolved.push(self.builtin_class_symbol(base));
-                }
+                let base = self.builtin_class_symbol(enum_class());
+                resolved.push(base);
                 self.symbols.record_incomplete_chain(sym);
             }
             self.symbols.record_resolved_supertypes(sym, resolved);
@@ -5306,6 +5305,12 @@ impl<'a> ResolveWalker<'a> {
         }
         self.walk_member_surface(class);
         self.probe_builtin_levels(class, atom);
+        if self
+            .cross_file()
+            .is_none_or(|cf| !cf.inherited.contains_key(&(class, atom.clone())))
+        {
+            return;
+        }
         let own_decls: SmallVec<[Option<Arc<[MemberParam]>>; 8]> =
             crate::overload::candidates_of(self.symbols, own)
                 .iter()
@@ -7294,6 +7299,13 @@ impl<'a> ResolveWalker<'a> {
         if !raw.contains('.') && imports.has_unseen_imports() {
             return None;
         }
+        let names_builtin = imports.candidates(raw).any(|c| match c {
+            ImportCandidate::Name(name) => builtin_class(name.as_atom()).is_some(),
+            ImportCandidate::Assembly => false,
+        });
+        if !names_builtin {
+            return None;
+        }
         for candidate in imports.candidates(raw) {
             let ImportCandidate::Name(name) = candidate else {
                 return None;
@@ -7494,13 +7506,13 @@ impl<'a> ResolveWalker<'a> {
             self.symbols.get(class).kind,
             SymbolKind::Class | SymbolKind::Interface
         );
-        let object = builtin_class("Progress.Lang.Object");
+        let object = object_class();
+        let object_row = object.row();
         loop {
             let Some((level, superclass)) = queue.pop_front().or_else(|| {
                 // The root of every class and interface, after every other level.
-                object
-                    .filter(|o| is_class && !visited.contains(&LevelKey::Row(o.row())))
-                    .map(|o| (Level::Builtin(o), false))
+                (is_class && !visited.contains(&LevelKey::Row(object_row)))
+                    .then_some((Level::Builtin(object), false))
             }) else {
                 break;
             };
@@ -7567,9 +7579,16 @@ impl<'a> ResolveWalker<'a> {
         let Some(levels) = cf.builtin_levels.get(&class) else {
             return;
         };
-        if !cf.builtin_probed.insert((class, atom.clone())) {
+        // A member whose symbol is minted has all its candidates.
+        if cf
+            .inherited
+            .get(&(class, atom.clone()))
+            .is_some_and(|m| m.symbol.is_some())
+        {
             return;
         }
+        // Adding a name twice adds nothing: a candidate with the parameter
+        // list of one already there is the same method.
         let levels = levels.clone();
         for builtin in levels {
             for (kind, namespace, member) in builtin_level_members_named(builtin, atom) {
@@ -7674,10 +7693,8 @@ impl<'a> ResolveWalker<'a> {
                     );
                 }
                 // An enum inherits `Progress.Lang.Enum`.
-                if descriptor.kind == ClassKind::Enum
-                    && let Some(base) = builtin_class("Progress.Lang.Enum")
-                {
-                    queue.push_back((Level::Builtin(base), superclass));
+                if descriptor.kind == ClassKind::Enum {
+                    queue.push_back((Level::Builtin(enum_class()), superclass));
                 }
                 if !descriptor.members_complete {
                     self.cross_file_mut().partial_surfaces.insert(class);
