@@ -7134,11 +7134,20 @@ impl Parser<'_> {
     // CREATE WIDGET-POOL [pool] [PERSISTENT] [NO-ERROR].
     fn parse_create_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CREATE
-        let resume = (self.current, self.errors.len(), self.stmt_start_token);
+        let resume = (
+            self.current,
+            self.errors.len(),
+            self.stmt_start_token,
+            self.imported_classes.len(),
+        );
         // The same tokens fail the same way again. Only a CREATE that met the
         // nesting limit can parse when tried again less deep, and the file
         // reports that limit (`limit_error`).
-        if self.failed_creates.contains(&resume.0) {
+        #[cfg(test)]
+        let memo = !self.reread_failed_creates;
+        #[cfg(not(test))]
+        let memo = true;
+        if memo && self.failed_creates.contains(&resume.0) {
             return Ok(self.recover_create_as_skipped(resume));
         }
 
@@ -7196,12 +7205,15 @@ impl Parser<'_> {
     /// after it is not swallowed. The names in it are still harvested.
     ///
     /// A failed `TRIGGERS:` block has parsed statements of its own, which moved
-    /// the harvest anchor, so the CREATE's own anchor is put back first.
+    /// the harvest anchor, so the CREATE's own anchor is put back first. It
+    /// may also have read `USING` statements, which the skip drops with the
+    /// rest of the block.
     fn recover_create_as_skipped(
         &mut self,
-        (resume, error_count, anchor): (usize, usize, usize),
+        (resume, error_count, anchor, import_count): (usize, usize, usize, usize),
     ) -> Statement {
         self.errors.truncate(error_count);
+        self.imported_classes.truncate(import_count);
         self.failed_creates.insert(resume);
         self.stmt_start_token = anchor;
         self.current = resume;

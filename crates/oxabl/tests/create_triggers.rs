@@ -125,3 +125,26 @@ fn a_failed_trigger_block_keeps_the_names_of_its_create() {
         "the CREATE names hButton, so it is not unused:\n{text}"
     );
 }
+
+/// The unclosed `DO:` of the first CREATE takes the next lines into its trigger
+/// block, `USING` included. The CREATE is skipped and the lines are read again,
+/// and the import must not reach the CREATE before it. Without it `Method` is
+/// no type there, the second CREATE is skipped too and its names are harvested.
+#[test]
+fn a_using_read_in_a_rewound_create_does_not_reach_an_earlier_statement() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("using.p");
+    std::fs::write(
+        &path,
+        "CREATE BUTTON h TRIGGERS: ON CHOOSE DO: END TRIGGERS.\n\
+         CREATE BUTTON hx TRIGGERS: ON CHOOSE DEFINE VARIABLE v AS Method NO-UNDO. END TRIGGERS.\n\
+         USING Foo.Method.\n",
+    )
+    .unwrap();
+    let output = check(&path);
+    let text = text(&output);
+    assert!(
+        !text.contains("LINT0001") && !text.contains("LINT0002"),
+        "the import comes after the second CREATE, so `Method` is no type there:\n{text}"
+    );
+}
