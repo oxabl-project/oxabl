@@ -190,9 +190,10 @@ debounce) and the last analysis of another open file read that file as an
 include: the tokens of the reader change with the include, and the reader has
 no edit of its own. The worker records the includes of each analysis, so this
 holds when the diagnostics are off. For a file with a selected context, the
-includes are the ones that the expansion of the context read. A file whose tokens the client never asked
-for has no recorded includes and gets no refresh. The check does nothing when
-the client cannot be asked again or the setting is off.
+recorded files are the context root and the includes that its expansion read,
+so an edit to the open root refreshes the tokens too. A file whose tokens the
+client never asked for has no recorded includes and gets no refresh. The check
+does nothing when the client cannot be asked again or the setting is off.
 
 The VS Code extension has the setting `oxabl.semanticTokens.enable` (default
 `true`) and sends it this way. The VS Code setting

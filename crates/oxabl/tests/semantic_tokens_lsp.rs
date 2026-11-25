@@ -1180,6 +1180,62 @@ fn an_edit_to_an_include_of_the_context_asks_again_with_the_diagnostics_off() {
     context_include_edit_asks_again(false);
 }
 
+/// An open include with a selected context gets the tokens asked for again
+/// when the open context root itself is edited.
+fn context_root_edit_asks_again(diagnostics: bool) {
+    let ws = Workspace::new();
+    if !diagnostics {
+        std::fs::write(
+            ws.path("oxabl.toml"),
+            format!("{CONFIG}[workspace.features]\ndiagnostics = false\n"),
+        )
+        .unwrap();
+    }
+    let host = ws.path("host_root.p");
+    let uses = ws.path("uses_root.i");
+    let host_text = "DEFINE VARIABLE iFromHost AS INTEGER NO-UNDO.\n{uses_root.i}\n";
+    let uses_text = "iFromHost = iFromHost + 1.\n";
+    std::fs::write(&host, host_text).unwrap();
+    std::fs::write(&uses, uses_text).unwrap();
+    let mut session = Session::start_with(&ws.root, capabilities());
+    session.open(&host, host_text);
+    session.open(&uses, uses_text);
+    let answer = session.request(
+        "oxabl/selectIncluderContext",
+        json!({"textDocument": {"uri": file_uri(&uses)}, "root": host}),
+    );
+    assert!(answer.get("error").is_none(), "{answer}");
+    let before = full(&mut session, &uses, uses_text);
+    assert!(
+        before.iter().any(|t| t.text == "iFromHost"),
+        "the context root declares the name: {before:?}"
+    );
+
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": file_uri(&host), "version": 2},
+            "contentChanges": [{"text": "{uses_root.i}\n"}]
+        }
+    }));
+    session.wait_for(|m| m["method"] == json!("workspace/semanticTokens/refresh"));
+    let after = full(&mut session, &uses, uses_text);
+    assert!(
+        !after.iter().any(|t| t.text == "iFromHost"),
+        "the name no longer resolves: {after:?}"
+    );
+}
+
+#[test]
+fn an_edit_to_the_context_root_asks_again() {
+    context_root_edit_asks_again(true);
+}
+
+#[test]
+fn an_edit_to_the_context_root_asks_again_with_the_diagnostics_off() {
+    context_root_edit_asks_again(false);
+}
+
 #[test]
 fn a_request_for_an_old_version_that_waited_is_dropped() {
     let ws = Workspace::new();

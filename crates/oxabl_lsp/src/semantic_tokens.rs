@@ -566,7 +566,10 @@ fn tokens_of(shared: &Shared, job: &Job, marked: &str) -> Computed {
                 },
             );
             if let Some(Ok(answer)) = &computed {
-                record_readers(shared, &job.uri, &answer.dependencies);
+                // A context root is read as well: an edit to it changes the
+                // include's tokens.
+                let root = (job.root != job.path).then_some(&job.root);
+                record_readers(shared, &job.uri, answer.dependencies.iter().chain(root));
             }
             computed
         }
