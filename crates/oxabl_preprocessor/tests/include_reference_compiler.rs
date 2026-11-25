@@ -712,3 +712,37 @@ fn a_named_argument_passed_on_as_a_positional_value_defines_no_name_below() {
         "MESSAGE \"B[]\".",
     );
 }
+
+#[test]
+fn a_global_define_below_an_argument_stays_after_the_include_ends() {
+    assert_passes(
+        "{/inc/p15.i &x=zzz}\nMESSAGE \"M[{&x}]\".",
+        &[
+            ("/inc/p15.i", "{b15.i}\nMESSAGE \"P[{&x}]\"."),
+            ("/inc/b15.i", "&GLOBAL-DEFINE x glob\nMESSAGE \"B[{&x}]\"."),
+        ],
+        "MESSAGE \"B[glob]\".\nMESSAGE \"P[zzz]\".\nMESSAGE \"M[glob]\".",
+    );
+}
+
+#[test]
+fn a_scoped_define_below_an_argument_ends_with_its_include() {
+    assert_passes(
+        "{/inc/p16.i &x=zzz}\nMESSAGE \"M[{&x}]\".",
+        &[
+            ("/inc/p16.i", "{b16.i}\nMESSAGE \"P[{&x}]\"."),
+            ("/inc/b16.i", "&SCOPED-DEFINE x scop\nMESSAGE \"B[{&x}]\"."),
+        ],
+        "MESSAGE \"B[scop]\".\nMESSAGE \"P[zzz]\".\nMESSAGE \"M[]\".",
+    );
+}
+
+#[test]
+fn a_global_define_over_an_argument_of_the_same_include_is_ignored() {
+    // The compiler warns (2967) and ignores the define.
+    assert_passes(
+        "{/inc/p17.i &x=zzz}\nMESSAGE \"M[{&x}]\".",
+        &[("/inc/p17.i", "&GLOBAL-DEFINE x glob\nMESSAGE \"P[{&x}]\".")],
+        "MESSAGE \"P[zzz]\".\nMESSAGE \"M[]\".",
+    );
+}
