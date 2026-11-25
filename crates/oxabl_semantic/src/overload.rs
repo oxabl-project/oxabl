@@ -158,17 +158,18 @@ pub struct CallReach {
 }
 
 /// Which of `params` (one list per declaration; `None` when a list is not
-/// known) a call with arguments of type `args` can reach. Fails closed: a
-/// declaration is dropped only when no argument could ever fit it, and one is
-/// picked only when the compiler must pick it.
+/// known, and whether the list states the modes of its parameters) a call
+/// with arguments of type `args` can reach. Fails closed: a declaration is
+/// dropped only when no argument could ever fit it, and one is picked only
+/// when the compiler must pick it.
 pub fn reachable_overloads(
-    params: &[Option<&[CallParam]>],
+    params: &[(Option<&[CallParam]>, bool)],
     args: &[ResolvedType],
     lattice: ClassLattice<'_>,
 ) -> CallReach {
     let candidates: Vec<Candidate<'_>> = params
         .iter()
-        .map(|&params| Candidate { ret: None, params })
+        .map(|&(params, _modes_known)| Candidate { ret: None, params })
         .collect();
     let kept = fitted(&candidates, args, lattice);
     let picked = match kept.as_slice() {

@@ -175,9 +175,13 @@ request returns only the hints in its range.
 - The parameter-name hints read other files, so their analysis does hold a
   snapshot, and the two things above are true of it. A write waits until the
   snapshot drops; it is a few ms to tens of ms for a file of 7,000 lines. A
-  write cancels the analysis. The worker then runs it again on a new snapshot
-  while the text of the file is the same, up to four times. When the text
-  changed, the request answers `ContentModified`, and the client asks again.
+  write cancels the analysis. The worker then runs it again on a new snapshot,
+  with the open buffers read again, while the text of the file is the same, up
+  to four times. When the text changed, the request answers `ContentModified`,
+  and the client asks again. After the edit of an open file settles, and while
+  another file is open, the server sends `workspace/inlayHint/refresh` for the
+  parameter-name hints, because a call in another file may read the edited
+  declaration.
 - The server keeps the hints of each open file until its text, its include
   context, the configuration, the schema, a file on disk (a watched-file
   event) or the kinds change. In a context it also keeps the files the root's
@@ -204,7 +208,9 @@ test build (the `test-panics` feature of `oxabl_common`), the comment
 2 s, so edits sent meanwhile are queued behind it. The comment
 `OXABL-TEST-HOLD:lsp.parameter-hints` makes the analysis of the parameter-name
 hints wait the same time while it holds its snapshot (`@600` after the name
-sets the time in ms).
+sets the time in ms). Just before it waits, the server sends the client the log
+message `OXABL-TEST-HOLD started: lsp.parameter-hints`, so a test acts when the
+hold is on and not after a guessed delay.
 
 `crates/oxabl_pipeline/benches/hints_bench.rs` measures the analysis of a
 procedure file of about 5,400 lines. On a loaded development machine it took

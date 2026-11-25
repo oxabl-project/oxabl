@@ -1037,6 +1037,71 @@ fn a_procedure_with_an_include_before_its_parameters_gives_no_signature_and_no_h
     assert_eq!(hints(&mut session, &case, 0, case.text.len()), []);
 }
 
+/// A `{&name}` reference may expand to a declaration, as an include does.
+fn reference_workspace() -> Workspace {
+    let ws = Workspace::new();
+    ws.write(
+        "ref_params.p",
+        "&SCOPED-DEFINE P DEFINE INPUT PARAMETER a AS CHARACTER NO-UNDO.\n{&P}\n\
+         DEFINE INPUT PARAMETER z AS INTEGER NO-UNDO.\n",
+    );
+    ws.write(
+        "ref_lib.p",
+        "&SCOPED-DEFINE P DEFINE INPUT PARAMETER a AS CHARACTER NO-UNDO.\n\
+         PROCEDURE hp:\n    {&P}\n    DEFINE INPUT PARAMETER z AS INTEGER NO-UNDO.\n\
+         END PROCEDURE.\n",
+    );
+    ws.write(
+        "app/RefMethod.cls",
+        "&SCOPED-DEFINE G METHOD PUBLIC VOID Go(INPUT a AS CHARACTER): END METHOD.\n\
+         CLASS app.RefMethod:\n{&G}\n\
+         \x20   METHOD PUBLIC VOID Go(INPUT z AS INTEGER):\n    END METHOD.\nEND CLASS.\n",
+    );
+    ws.write(
+        "app/RefCtor.cls",
+        "&SCOPED-DEFINE C CONSTRUCTOR PUBLIC RefCtor(INPUT a AS CHARACTER): END CONSTRUCTOR.\n\
+         CLASS app.RefCtor:\n{&C}\n\
+         \x20   CONSTRUCTOR PUBLIC RefCtor(INPUT z AS INTEGER):\n    END CONSTRUCTOR.\nEND CLASS.\n",
+    );
+    // A reference inside a method body declares nothing.
+    ws.write(
+        "app/RefBody.cls",
+        "CLASS app.RefBody:\n    METHOD PUBLIC VOID Go(INPUT z AS INTEGER):\n\
+         \x20       MESSAGE {&OPSYS}.\n    END METHOD.\nEND CLASS.\n",
+    );
+    ws
+}
+
+#[test]
+fn a_preprocessor_reference_that_may_declare_gives_no_signature_and_no_hint() {
+    let mut ws = reference_workspace();
+    let mut session = hint_session(&ws, Value::Null);
+    for marked in [
+        "RUN ref_params.p (\"a\", ‸3).\n",
+        "DEFINE VARIABLE hLib AS HANDLE NO-UNDO.\nRUN ref_lib.p PERSISTENT SET hLib.\n\
+         RUN hp IN hLib (\"a\", ‸3).\n",
+        "DEFINE VARIABLE o AS app.RefMethod NO-UNDO.\no = NEW app.RefMethod().\no:Go(‸\"a\").\n",
+        "DEFINE VARIABLE o AS app.RefCtor NO-UNDO.\no = NEW app.RefCtor(‸\"a\").\n",
+    ] {
+        let case = ws.program(&mut session, marked);
+        assert_eq!(help(&mut session, &case), Value::Null, "{marked}");
+        assert_eq!(
+            hints(&mut session, &case, 0, case.text.len()),
+            [],
+            "{marked}"
+        );
+    }
+    // A reference inside a method body does not hide the method.
+    let case = ws.program(
+        &mut session,
+        "DEFINE VARIABLE o AS app.RefBody NO-UNDO.\no = NEW app.RefBody().\no:Go(‸1).\n",
+    );
+    assert_eq!(
+        labels(&help(&mut session, &case)),
+        ["Go(INPUT z AS INTEGER): VOID"]
+    );
+}
+
 const FORWARD: &str = "\
 FUNCTION Fw RETURNS INTEGER (INPUT x AS INTEGER, INPUT y AS CHARACTER) FORWARD.
 FUNCTION Zero RETURNS INTEGER () FORWARD.
@@ -1163,7 +1228,8 @@ fn a_package_constructor_is_shown_to_the_classes_of_its_package_only() {
         sorted(help(&mut session, &case)),
         ["Pk()", "Pk(INPUT n AS INTEGER, INPUT m AS INTEGER)"]
     );
-    // Both in the unnamed package: oxabl does not read that rule.
+    // Both in the unnamed package: a package access there does not compile
+    // (error 19477), and oxabl gives no answer.
     let case = ws.program(&mut session, "oScorer = NEW Bare(‸1).\n");
     assert_eq!(help(&mut session, &case), Value::Null);
     let case = ws.open(
@@ -1253,6 +1319,32 @@ fn a_parenthesis_after_a_keyword_leaves_the_call_around_it() {
     }
 }
 
+#[test]
+fn a_user_function_may_have_the_name_of_a_keyword() {
+    let mut ws = Workspace::new();
+    let mut session = session_for(&ws);
+    let define = |name: &str| {
+        format!(
+            "FUNCTION {name} RETURNS INTEGER (INPUT x AS INTEGER, INPUT y AS CHARACTER):\n\
+             \x20   RETURN x.\nEND FUNCTION.\n"
+        )
+    };
+    for name in [
+        "Total", "Size", "Count", "Row", "Column", "Initial", "Average",
+    ] {
+        let label = format!("{name}(INPUT x AS INTEGER, INPUT y AS CHARACTER): INTEGER");
+        for call in [
+            format!("iResult = {name}(2, ‸\"x\").\n"),
+            format!("iResult = Calc(1, {name}(2, ‸\"x\")).\n"),
+            format!("iResult = Calc(1, {name}(2, \"x\", ‸yes)).\n"),
+        ] {
+            let case = ws.program(&mut session, &format!("{}{call}", define(name)));
+            let answer = help(&mut session, &case);
+            assert_eq!(answer["signatures"][0]["label"], label, "{call}");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The setting, and the names that repeat the parameter
 // ---------------------------------------------------------------------------
@@ -1307,8 +1399,9 @@ fn an_argument_that_repeats_the_parameter_name_gets_no_hint() {
 // A write while the hints are computed
 // ---------------------------------------------------------------------------
 
-/// The analysis of the parameter-name hints holds its snapshot for 600 ms.
-const HELD_PARAMETERS: &str = "/* OXABL-TEST-HOLD:lsp.parameter-hints@600 */\n\
+/// The analysis of the parameter-name hints holds its snapshot for 1.5 s, and
+/// tells the client when it starts to hold it.
+const HELD_PARAMETERS: &str = "/* OXABL-TEST-HOLD:lsp.parameter-hints@1500 */\n\
     FUNCTION Calc RETURNS INTEGER (INPUT a AS INTEGER, INPUT b AS CHARACTER):\n\
     \x20   RETURN a.\nEND FUNCTION.\nDEFINE VARIABLE iResult AS INTEGER NO-UNDO.\n\
     iResult = Calc(1, \"x\").‸\n";
@@ -1323,6 +1416,16 @@ fn ask_for_hints(session: &mut Session, case: &Case) -> u64 {
         }
     }));
     id
+}
+
+/// Wait until the analysis of the parameter-name hints holds its snapshot.
+fn wait_for_hold(session: &Session) {
+    session.wait_for(|m| {
+        m["method"] == "window/logMessage"
+            && m["params"]["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("OXABL-TEST-HOLD started: lsp.parameter-hints"))
+    });
 }
 
 fn change_text(session: &mut Session, file: &std::path::Path, version: i32, text: &str) {
@@ -1341,8 +1444,7 @@ fn an_edit_of_the_file_while_its_hints_are_computed_answers_content_modified() {
     let mut session = hint_session(&ws, Value::Null);
     let case = ws.open(&mut session, "held_edit.p", HELD_PARAMETERS);
     let slow = ask_for_hints(&mut session, &case);
-    // Long enough for the worker to take its snapshot, shorter than the hold.
-    std::thread::sleep(std::time::Duration::from_millis(250));
+    wait_for_hold(&session);
     let edited = format!("{}/* edit */\n", case.text);
     change_text(&mut session, &case.file, 2, &edited);
 
@@ -1376,7 +1478,7 @@ fn an_edit_of_another_file_while_the_hints_are_computed_does_not_lose_them() {
     let other = ws.open(&mut session, "other_file.p", "MESSAGE 1.‸\n");
     let case = ws.open(&mut session, "held_other.p", HELD_PARAMETERS);
     let slow = ask_for_hints(&mut session, &case);
-    std::thread::sleep(std::time::Duration::from_millis(250));
+    wait_for_hold(&session);
     // The text of the file is the same, and the client does not ask again
     // after `ContentModified`: the analysis runs again.
     change_text(&mut session, &other.file, 2, "MESSAGE 2.\n");
@@ -1390,6 +1492,70 @@ fn an_edit_of_another_file_while_the_hints_are_computed_does_not_lose_them() {
         .map(|h| h["label"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(labels, ["a:", "b:"], "{answer}");
+}
+
+#[test]
+fn the_rerun_after_an_edit_of_another_file_reads_the_edited_text() {
+    let mut ws = Workspace::new();
+    let mut session = hint_session(&ws, Value::Null);
+    let scorer = ws.open(&mut session, "app/Scorer.cls", &format!("{SCORER}\u{2038}"));
+    let case = ws.open(
+        &mut session,
+        "held_rerun.p",
+        "/* OXABL-TEST-HOLD:lsp.parameter-hints@1500 */\n\
+         DEFINE VARIABLE oScorer AS app.Scorer NO-UNDO.\n\
+         DEFINE VARIABLE i AS INTEGER NO-UNDO.\ni = oScorer:Total(2).\u{2038}\n",
+    );
+    let slow = ask_for_hints(&mut session, &case);
+    wait_for_hold(&session);
+    let renamed = SCORER.replace(
+        "Total(INPUT x AS INTEGER):\n        RETURN x.",
+        "Total(INPUT amount AS INTEGER):\n        RETURN amount.",
+    );
+    assert_ne!(renamed, SCORER);
+    change_text(&mut session, &scorer.file, 2, &renamed);
+
+    let answer = session.wait_for(|m| m["id"] == json!(slow));
+    assert!(answer.get("error").is_none(), "{answer}");
+    assert_eq!(answer["result"][0]["label"], "amount:", "{answer}");
+}
+
+/// Whether the server asks the client for new hints within `within`.
+fn asks_for_new_hints(session: &Session, within: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        if let Some(message) = session.try_next(left)
+            && message["method"] == "workspace/inlayHint/refresh"
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn an_edit_of_one_open_file_asks_the_client_for_the_hints_of_the_others() {
+    let capabilities = json!({
+        "textDocument": {"inlayHint": {}},
+        "workspace": {"inlayHint": {"refreshSupport": true}}
+    });
+    let quiet = std::time::Duration::from_millis(1500);
+    let wait = std::time::Duration::from_secs(10);
+    for (options, refreshed) in [
+        (json!({"inlayHints": {"parameters": true}}), true),
+        (json!({"inlayHints": {"parameters": false}}), false),
+    ] {
+        let mut ws = Workspace::new();
+        let mut session =
+            Session::start_with_options(ws.root.path(), capabilities.clone(), options);
+        ws.open(&mut session, "first.p", "MESSAGE 1.\u{2038}\n");
+        let second = ws.open(&mut session, "second.p", "MESSAGE 2.\u{2038}\n");
+        // Everything the opening sets going has settled.
+        while asks_for_new_hints(&session, quiet) {}
+        change_text(&mut session, &second.file, 2, "MESSAGE 3.\n");
+        let asked = asks_for_new_hints(&session, if refreshed { wait } else { quiet });
+        assert_eq!(asked, refreshed, "parameter hints on: {refreshed}");
+    }
 }
 
 #[test]

@@ -44,8 +44,9 @@ none.
 The package of a class is its name up to the last `.`. A constructor with a
 package access is compared with the package of the calling class. When the
 caller is a procedure, the class is in a package and the caller is not (or the
-reverse), the packages differ. When both are in the unnamed package, oxabl
-does not read the rule, and the call has no signature.
+reverse), the packages differ. A package access in a class of the unnamed
+package is compile error 19477, so such a class does not compile. When both
+are in the unnamed package, oxabl gives no signature for the call.
 
 ## Where the cursor is
 
@@ -54,10 +55,13 @@ counts the commas at its own level, and skips a pair of parentheses or
 brackets it passes. A string is one token, so a comma in a string does not
 count. The first unmatched `(` that follows a name that can be a callee opens
 the call. A `(` that follows no such name (`(1 + 2) * 3`), or follows a
-keyword that is no function (`IF (`, `NOT (`, `AND (`, `WHEN (`), is skipped,
-and the scan goes on to the call around it. A `(` that follows a name that can
-be a callee, and does not resolve, ends the scan with no answer. The scan stops at a period that ends a
-statement, and after 20,000 tokens.
+keyword that is no function and has no site in the analysis (`IF (`, `NOT (`,
+`AND (`, `WHEN (`), is skipped, and the scan goes on to the call around it.
+The analysis decides, not the kind of the token: a user function may have the
+name of a keyword that is not reserved (`Total`, `Size`, `Count`), and then
+the `(` opens its call. A `(` that follows a name that can be a callee, and
+does not resolve, ends the scan with no answer. The scan stops at a period
+that ends a statement, and after 20,000 tokens.
 
 A call in an argument list is the innermost call: the cursor in
 `f(g(1, ‸2), 3)` is in `g`.
@@ -86,6 +90,11 @@ not final.
 
 `oxabl_semantic::reachable_overloads` does the pick. It is the pick of the
 type-check pass, with the candidate as the result and not its return type.
+Each parameter list goes in with a flag that says whether the list states the
+modes of its parameters (`Sig::modes_known`). The pick does not read the flag
+yet, because every list that has parameters states its modes. It is there for
+the candidates of built-in classes, which state none: the type check fits such
+a candidate in any mode, and the pick must do the same.
 
 Each signature has its own `activeParameter`: the number of the argument at the
 cursor when the signature has a parameter there, else `null`. A built-in
@@ -109,9 +118,27 @@ A call has no signature when:
 - a candidate has no parameter list, or no declaration in the text agrees with
   it,
 - the file of a class, constructor, procedure or program does not parse, or
-  holds an `{include}` or an `&IF` where its members or parameters may be (for
-  a procedure, anywhere in its body, also when `RUN p IN h` reads it), or
+  holds an `{include}`, a `{&name}` reference or an `&IF` where its members or
+  parameters may be, or
 - the receiver is a handle, a built-in class or a .NET class.
+
+A file that is read as text is checked in its tokens, not in its statements,
+because the parser does not keep a `{&name}` reference as a declaration. The
+places are:
+
+- a program (`RUN prog.p`): the whole file, except its procedures and
+  functions;
+- a procedure (also when `RUN p IN h` reads it), and a function: the whole
+  declaration;
+- a class: the whole class, except the bodies of its methods and
+  constructors, where no member is declared. A reference in a method body does
+  not hide the method. For the methods an `{include}` does not count, because
+  the analysis expands it and the methods are checked against the analysis; for
+  the constructors it does, because they are read from the text alone.
+
+A reference that the compiler expands to nothing still hides the declaration:
+oxabl does not expand it. The guards are `program_may_hide_parameters`,
+`class_may_hide_members` and `Source::may_expand`.
 
 ### The seam for the built-in classes
 
@@ -210,6 +237,12 @@ it, the hint is `OUTPUT name:` or `INPUT-OUTPUT name:`.
     type letter (`cCustName` for `pcName`);
   - a parameter name that ends with the argument name (`qty` for `pdQty`).
 
+  An end counts only when it is a whole word of the longer name. A word starts
+  at the start of the name, after `-` or `_`, or at an upper-case letter that
+  follows a lower-case one. So `iDiscount` does not say `piCount`, `count`
+  does not say `discount`, and `age` does not say `message`; `cust-num` says
+  `ip-cust-num`.
+
   A name of fewer than three letters counts only as the same name or as the
   parameter without its prefix. The code of ABL projects names a variable and
   its parameter alike, so a hint for such an argument repeats the text.
@@ -236,9 +269,15 @@ The hints share the rules of the database inlay hints (`inlay-hints.md`):
 - The analysis holds that snapshot, so a write to the database waits for it
   and cancels it. When the text of the file is the same, the worker runs the
   analysis again on a new snapshot (four times at most), because the client
-  does not ask again after `ContentModified`. When the text changed, also while
+  does not ask again after `ContentModified`. Each attempt reads the open
+  buffers again, together with its snapshot, so the text of the edit that
+  cancelled the earlier attempt is in it. When the text changed, also while
   the analysis ran, the request answers `ContentModified` and the client asks
   again.
+- A hint of a call depends on a declaration in another open file. When an
+  open file changes and its debounced analysis is due, and another file is
+  open, the server sends `workspace/inlayHint/refresh` (when the hints are on
+  and the client supports it), so the hints of the other files follow.
 
 The setting is `inlayHints.parameters` (a boolean, off at the start), in the
 initialization options and in `workspace/didChangeConfiguration`. The VS Code

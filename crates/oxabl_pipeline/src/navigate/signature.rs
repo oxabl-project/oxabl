@@ -514,8 +514,11 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         let symbols = &self.nav.model.semantic.symbols;
         let path = self.nav.path_of(file)?;
         let loaded = self.load(&path)?;
-        let (class, body) = class_of(&loaded.parsed.program.statements)?;
+        let (found, class, body) = class_of(&loaded.parsed.program.statements)?;
         let source = Source::new(&loaded.text, &loaded.parsed.tokens);
+        if class_may_hide_members(&source, found, false) {
+            return None;
+        }
         let declared: Vec<Sig> = body
             .iter()
             .filter(|member| {
@@ -592,8 +595,11 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         if let Some(file) = symbols.class_file(class) {
             let path = self.nav.path_of(file)?;
             let loaded = self.load(&path)?;
-            let (name, body) = class_of(&loaded.parsed.program.statements)?;
+            let (found, name, body) = class_of(&loaded.parsed.program.statements)?;
             let source = Source::new(&loaded.text, &loaded.parsed.tokens);
+            if class_may_hide_members(&source, found, true) {
+                return None;
+            }
             return constructors(&source, &name, body, access, self.caller_class().as_deref());
         }
         if symbol.declaration == NodeId::DUMMY {
@@ -608,6 +614,9 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         let StatementKind::Class { name, body, .. } = &found.statement.kind else {
             return None;
         };
+        if class_may_hide_members(&source, found.statement, true) {
+            return None;
+        }
         constructors(&source, &name.name, body, ConstructorAccess::Own, None)
     }
 
@@ -622,7 +631,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
 
     /// The declared name of the class that the unit defines.
     fn caller_class(&self) -> Option<String> {
-        class_of(&self.nav.parsed().program.statements).map(|(name, _)| name)
+        class_of(&self.nav.parsed().program.statements).map(|(_, name, _)| name)
     }
 
     /// The constructors that `SUPER(` or `THIS-OBJECT(` may call.
@@ -643,6 +652,9 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         };
         if call.kind == CalleeKind::ThisObject {
             let source = Source::new(&self.nav.expanded.text, &parsed.tokens);
+            if class_may_hide_members(&source, class, true) {
+                return None;
+            }
             return constructors(&source, &name.name, body, ConstructorAccess::Own, None);
         }
         let parent = inherits.as_ref()?;
@@ -726,10 +738,10 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
     fn program_sig(&self, path: &Path, written: &str) -> Option<Vec<Sig>> {
         let loaded = self.load(path)?;
         let statements = &loaded.parsed.program.statements;
-        if may_hide_declarations(statements) {
+        let source = Source::new(&loaded.text, &loaded.parsed.tokens);
+        if program_may_hide_parameters(&source, statements) {
             return None;
         }
-        let source = Source::new(&loaded.text, &loaded.parsed.tokens);
         Some(vec![signature(
             &source,
             written,
@@ -817,7 +829,10 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
             .iter()
             .map(|range| self.arg_type(tokens, text, *range))
             .collect();
-        let lists: Vec<Option<&[CallParam]>> = sigs.iter().map(|s| s.call.as_deref()).collect();
+        let lists: Vec<(Option<&[CallParam]>, bool)> = sigs
+            .iter()
+            .map(|s| (s.call.as_deref(), s.modes_known))
+            .collect();
         reachable_overloads(
             &lists,
             &types,
@@ -848,7 +863,8 @@ impl ConstructorAccess {
                 .map(|(package, _)| package.to_string())
         };
         // Both in packages: the same one or not. One in a package: not the
-        // same. Both in the unnamed package: oxabl does not read that rule.
+        // same. Both in the unnamed package: a package access there is
+        // compile error 19477, so no answer.
         let same_package = || match (package(class), caller.and_then(package)) {
             (Some(a), Some(b)) => Some(a.eq_ignore_ascii_case(&b)),
             (Some(_), None) | (None, Some(_)) => Some(false),
@@ -865,8 +881,7 @@ impl ConstructorAccess {
 }
 
 /// The non-static constructors in `body` that `access` reaches from the class
-/// `caller`. `None` when the body may hold constructors the text does not
-/// show, when one is reached only by a package access that oxabl cannot
+/// `caller`. `None` when one is reached only by a package access that oxabl cannot
 /// compare, or when none is reached.
 fn constructors(
     source: &Source,
@@ -875,9 +890,6 @@ fn constructors(
     access: ConstructorAccess,
     caller: Option<&str>,
 ) -> Option<Vec<Sig>> {
-    if may_hide_declarations(body) {
-        return None;
-    }
     let short = class.rsplit('.').next().unwrap_or(class);
     let mut sigs: Vec<Sig> = Vec::new();
     for member in body {
@@ -897,11 +909,12 @@ fn constructors(
     (!sigs.is_empty()).then_some(sigs)
 }
 
-/// The first class or interface in `statements`: its name and its body.
-fn class_of(statements: &[Statement]) -> Option<(String, &[Statement])> {
+/// The first class or interface in `statements`: the statement, its name and
+/// its body.
+fn class_of(statements: &[Statement]) -> Option<(&Statement, String, &[Statement])> {
     statements.iter().find_map(|s| match &s.kind {
         StatementKind::Class { name, body, .. } | StatementKind::Interface { name, body, .. } => {
-            Some((name.name.clone(), body.as_slice()))
+            Some((s, name.name.clone(), body.as_slice()))
         }
         _ => None,
     })
@@ -940,13 +953,18 @@ fn sig_of(
                 return_type,
                 body,
                 prototype_parameters,
-            } => (
-                name.name.clone(),
-                function_parameters(statement, &name.name, body, prototype_parameters, scope)?,
-                type_name(return_type),
-            ),
+            } => {
+                if source.may_expand(statement.span.start, statement.span.end, &[], true) {
+                    return None;
+                }
+                (
+                    name.name.clone(),
+                    function_parameters(statement, &name.name, body, prototype_parameters, scope),
+                    type_name(return_type),
+                )
+            }
             StatementKind::Procedure { name, body, .. } => {
-                if may_hide_declarations(body) {
+                if source.may_expand(statement.span.start, statement.span.end, &[], true) {
                     return None;
                 }
                 (name.name.clone(), parameters_of(body), None)
@@ -959,39 +977,61 @@ fn sig_of(
     signature(source, &name, returns, parameters, owner)
 }
 
-/// Whether the statements of a file or a body may hold declarations the text
-/// does not show: an include or a conditional that is not expanded.
-fn may_hide_declarations(statements: &[Statement]) -> bool {
-    statements.iter().any(|s| {
-        matches!(
-            s.kind,
-            StatementKind::IncludeReference { .. }
-                | StatementKind::IncludeArgReference { .. }
-                | StatementKind::PreprocIf(_)
-        )
-    })
+/// Whether the main block of a file may define parameters the text does not
+/// show: an include, a `{&name}` reference or `&IF` outside its procedures and
+/// functions.
+fn program_may_hide_parameters(source: &Source, statements: &[Statement]) -> bool {
+    let routines: Vec<(u32, u32)> = statements
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                StatementKind::Procedure { .. } | StatementKind::Function { .. }
+            )
+        })
+        .map(|s| (s.span.start, s.span.end))
+        .collect();
+    source.may_expand(0, u32::MAX, &routines, true)
+}
+
+/// Whether a class may declare members the text does not show: a `{&name}`
+/// reference or `&IF` outside the bodies of its methods and constructors, and
+/// when `includes` is set an include. The analysis expands the includes of a
+/// class, and the methods are checked against it; the constructors are read
+/// from the text alone.
+fn class_may_hide_members(source: &Source, class: &Statement, includes: bool) -> bool {
+    let (StatementKind::Class { body, .. } | StatementKind::Interface { body, .. }) = &class.kind
+    else {
+        return true;
+    };
+    let bodies: Vec<(u32, u32)> = body
+        .iter()
+        .filter_map(|member| match &member.kind {
+            StatementKind::Method { body, .. } | StatementKind::Constructor { body, .. } => body
+                .first()
+                .map(|first| (first.span.start, member.span.end)),
+            _ => None,
+        })
+        .collect();
+    source.may_expand(class.span.start, class.span.end, &bodies, includes)
 }
 
 /// The parameters of a function: those of its `FORWARD` (or `IN`) prototype,
 /// those its body defines, or, for a definition that leaves out its list after
-/// a `FORWARD` in `scope`, those of that prototype. `None` when the body may
-/// define parameters the text does not show.
+/// a `FORWARD` in `scope`, those of that prototype.
 fn function_parameters<'a>(
     statement: &Statement,
     name: &str,
     body: &'a [Statement],
     prototype: &'a [Statement],
     scope: &'a [Statement],
-) -> Option<Vec<&'a Statement>> {
+) -> Vec<&'a Statement> {
     if !prototype.is_empty() {
-        return Some(parameters_of(prototype));
-    }
-    if may_hide_declarations(body) {
-        return None;
+        return parameters_of(prototype);
     }
     let own = parameters_of(body);
     if !own.is_empty() {
-        return Some(own);
+        return own;
     }
     let forward = scope.iter().find_map(|s| match &s.kind {
         StatementKind::Function {
@@ -1004,7 +1044,7 @@ fn function_parameters<'a>(
         }
         _ => None,
     });
-    Some(forward.map_or_else(Vec::new, |list| parameters_of(list)))
+    forward.map_or_else(Vec::new, |list| parameters_of(list))
 }
 
 /// `name(INPUT a AS INTEGER, OUTPUT b AS CHARACTER): VOID`.
@@ -1098,7 +1138,7 @@ fn dedupe(sigs: &mut Vec<Sig>) {
 
 /// Whether a token of this kind can be the name of a function that a `(`
 /// calls. A keyword that is no function (`IF`, `NOT`, `AND`, `WHEN`) opens a
-/// grouping, not a call.
+/// grouping, not a call, unless a user function has its name.
 fn can_name_a_call(kind: Kind, word: &str) -> bool {
     kind == Kind::Identifier
         || oxabl_lexer::is_callable_kind(kind)
@@ -1114,8 +1154,10 @@ fn picked_sig(sigs: &[Sig], reach: &oxabl_semantic::CallReach) -> Option<usize> 
 /// Whether an argument that is the name `argument` repeats what the hint for
 /// parameter `parameter` would say. That is the same name, or the same name
 /// with the prefix of the naming convention of ABL code (`pcName` for
-/// `cName`, `ipiCount` for `iCount`), or a name that is the end of the other
-/// (`Name` and `pcName`; `custName` and `Name`). Ignores case.
+/// `cName`, `ipiCount` for `iCount`), or a name that is the last word of the
+/// other (`Name` and `pcName`; `custName` and `Name`; `cust-num` and
+/// `ip-cust-num`). A word starts at the start of the name, after `-` or `_`,
+/// or at an upper-case letter after a lower-case one. Ignores case.
 fn says_the_name(argument: &str, parameter: &str) -> bool {
     if argument.eq_ignore_ascii_case(parameter) {
         return true;
@@ -1123,10 +1165,18 @@ fn says_the_name(argument: &str, parameter: &str) -> bool {
     // A name that short is more likely a coincidence than a repeat.
     const SHORT: usize = 3;
     let ends_with = |name: &str, end: &str| {
-        end.len() >= SHORT
-            && name.len() >= end.len()
-            && name.is_char_boundary(name.len() - end.len())
-            && name[name.len() - end.len()..].eq_ignore_ascii_case(end)
+        let Some(start) = name
+            .len()
+            .checked_sub(end.len())
+            .filter(|_| end.len() >= SHORT)
+        else {
+            return false;
+        };
+        let bytes = name.as_bytes();
+        let at_word_start = start == 0
+            || matches!(bytes[start - 1], b'-' | b'_')
+            || (bytes[start - 1].is_ascii_lowercase() && bytes[start].is_ascii_uppercase());
+        name.is_char_boundary(start) && at_word_start && name[start..].eq_ignore_ascii_case(end)
     };
     if ends_with(parameter, argument) {
         return true;
@@ -1175,10 +1225,12 @@ impl Navigation<'_, '_> {
             let Some(call) = call_at(tokens, text, open) else {
                 continue;
             };
-            // `IF (`, `NOT (`, `WHEN (`: a keyword that is no function opens
-            // no call, so the call around it is the one asked for.
+            // `IF (`, `NOT (`, `WHEN (`: a keyword that is no function and has no
+            // site in the analysis opens no call, so the call around it is the
+            // one asked for. A user function may have a keyword's name.
             if call.kind == CalleeKind::Function
                 && !can_name_a_call(tokens[call.name.1].kind, text_of(tokens, text, call.name.1))
+                && resolver.sites_of(tokens, &call).is_empty()
             {
                 continue;
             }
@@ -1413,6 +1465,8 @@ mod tests {
             ("name", "customerName"),
             ("qty", "pdQty"),
             ("cX", "pcX"),
+            ("cust-num", "ip-cust-num"),
+            ("cust_num", "ip_cust_num"),
         ] {
             assert!(says_the_name(argument, parameter), "{argument} {parameter}");
         }
@@ -1423,6 +1477,10 @@ mod tests {
             ("e", "pcName"),
             ("me", "pcName"),
             ("iTotal", "piCount"),
+            // The end of a word, not a word.
+            ("iDiscount", "piCount"),
+            ("count", "discount"),
+            ("age", "message"),
             ("pending", "pcName"),
             ("", "pcName"),
             ("cName", ""),

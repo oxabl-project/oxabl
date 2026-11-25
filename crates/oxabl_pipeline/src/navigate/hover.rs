@@ -969,6 +969,26 @@ impl<'t> Source<'t> {
             .unwrap_or_default()
     }
 
+    /// Whether a token in `from..to`, outside the `skip` ranges, may expand to
+    /// other text: a `{&name}` reference, `&IF`, and when `includes` is set an
+    /// include. The text then shows only part of what the compiler reads.
+    pub(super) fn may_expand(
+        &self,
+        from: u32,
+        to: u32,
+        skip: &[(u32, u32)],
+        includes: bool,
+    ) -> bool {
+        self.tokens_in(from, to).any(|(_, t)| {
+            let expands = t.kind == Kind::PreprocIf
+                || (includes
+                    && matches!(t.kind, Kind::IncludeReference | Kind::IncludeArgReference))
+                || self.token_text(t).starts_with("{&");
+            let start = t.start as u32;
+            expands && !skip.iter().any(|&(a, b)| a <= start && start < b)
+        })
+    }
+
     /// The tokens that start in `from..to`, comments left out.
     fn tokens_in(&self, from: u32, to: u32) -> impl Iterator<Item = (usize, &'t Token)> {
         let first = self.tokens.partition_point(|t| t.start < from as usize);

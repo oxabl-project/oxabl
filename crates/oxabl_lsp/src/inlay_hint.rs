@@ -19,8 +19,10 @@
 //! waits for them and no edit of another file cancels them. The parameter-name
 //! hints read other files, so the worker takes a snapshot for them: a write
 //! waits until it is dropped, and a write cancels the analysis that holds it.
-//! The analysis then runs again on a new snapshot while the text of the file
-//! is the same, and a few times at most. The hints of the whole file are kept
+//! The analysis then runs again on a new snapshot, with the open buffers read
+//! again, while the text of the file is the same, and a few times at most. An
+//! edit of an open file asks the client for new hints once it settles, because
+//! a call in another file may read the edited declaration. The hints of the whole file are kept
 //! per file until its text, its include context, the configuration, the
 //! schema, a file on disk or the kinds change (the parameter-name hints: any
 //! open buffer or file on disk); a request renders only the hints in its
@@ -142,6 +144,18 @@ impl Server<'_> {
     /// edit to it (the configuration, the schema, an include).
     pub(crate) fn refresh_inlay_hints(&mut self) {
         self.refresh_semantic_tokens();
+        self.send_inlay_refresh();
+    }
+
+    /// The parameter-name hints of a file read the open buffers of other
+    /// files: ask the client again once their edits settle.
+    pub(crate) fn refresh_parameter_hints(&mut self) {
+        if self.inlay.parameters {
+            self.send_inlay_refresh();
+        }
+    }
+
+    fn send_inlay_refresh(&mut self) {
         if self.inlay.supported && self.inlay.refresh {
             self.inlay.refreshes += 1;
             let id = format!("oxabl-inlay-refresh-{}", self.inlay.refreshes);
@@ -209,7 +223,6 @@ impl Server<'_> {
                             .clone()
                             .unwrap_or_else(|| oxabl_daemon::canonical_path(&path)),
                         file: oxabl_daemon::canonical_path(&path),
-                        overlay: session.buffer_overlay(),
                     })),
                 }
             });
@@ -404,7 +417,6 @@ struct ParameterSource {
     root: PathBuf,
     /// The file the hints are for.
     file: PathBuf,
-    overlay: HashMap<PathBuf, Arc<str>>,
 }
 
 /// How many times the analysis of the parameter-name hints runs for one
@@ -484,7 +496,7 @@ impl Options {
             .name("oxabl-inlay-hints".to_string())
             .spawn(move || {
                 for job in queue {
-                    let response = answer(&shared, job);
+                    let response = answer(&shared, &sender, job);
                     let _ = sender.send(Message::Response(response));
                 }
             })?;
@@ -493,7 +505,7 @@ impl Options {
     }
 }
 
-fn answer(shared: &Shared, job: Job) -> Response {
+fn answer(shared: &Shared, sender: &crossbeam_channel::Sender<Message>, job: Job) -> Response {
     let current = shared
         .versions
         .lock()
@@ -533,7 +545,7 @@ fn answer(shared: &Shared, job: Job) -> Response {
             let mut attempts = 0;
             let kept = loop {
                 attempts += 1;
-                let kept = parameter_hints(shared, &job, work);
+                let kept = parameter_hints(shared, sender, &job, work);
                 // A write to another file cancels the analysis. The text of
                 // this file is the same, and the client does not ask again
                 // after `ContentModified`, so it runs again.
@@ -609,30 +621,50 @@ fn database_hints(shared: &Shared, job: &Job) -> Hints {
 /// The parameter-name hints of the whole file. `None` when an edit cancelled
 /// the analysis. A file whose analysis fails has no hints, which is only a
 /// missing decoration.
-fn parameter_hints(shared: &Shared, job: &Job, work: &ParameterWork) -> Option<Hints> {
+fn parameter_hints(
+    shared: &Shared,
+    sender: &crossbeam_channel::Sender<Message>,
+    job: &Job,
+    work: &ParameterWork,
+) -> Option<Hints> {
     let uri = &job.uri;
     let source = match work {
         ParameterWork::Ready(hints) => return Some(Arc::clone(hints)),
         ParameterWork::Compute(source) => source,
     };
-    let (snapshot, schema) = source.host.with(|sessions| {
+    // The open buffers are read with the snapshot, on each attempt: an edit
+    // that cancelled an earlier one is in them.
+    let (snapshot, schema, overlay, buffers) = source.host.with(|sessions| {
         let session = sessions.get(&source.session_root)?;
-        Some((session.database().clone(), session.schema_handle()))
+        Some((
+            session.database().clone(),
+            session.schema_handle(),
+            session.buffer_overlay(),
+            session.buffer_generation(),
+        ))
     })?;
-    oxabl_common::hold_if_injected(
+    oxabl_common::hold_if_injected_with(
         oxabl_common::panic_sites::LSP_PARAMETER_HINTS,
         &job.source.text,
+        || signal_hold(sender, oxabl_common::panic_sites::LSP_PARAMETER_HINTS),
     );
-    let hints = compute_parameter_hints(
-        &snapshot,
-        schema,
-        &source.root,
-        &source.file,
-        source.overlay.clone(),
-    )?;
+    let hints = compute_parameter_hints(&snapshot, schema, &source.root, &source.file, overlay)?;
     let hints = Arc::new(hints.unwrap_or_default());
-    lock(&shared.parameters).insert(uri.clone(), (source.key.clone(), Arc::clone(&hints)));
+    let key = ParameterKey {
+        buffers,
+        ..source.key.clone()
+    };
+    lock(&shared.parameters).insert(uri.clone(), (key, Arc::clone(&hints)));
     Some(hints)
+}
+
+/// Tell a test that a hold site started to wait, in test builds. The log
+/// message is sent before the wait, so a test can act while it lasts.
+fn signal_hold(sender: &crossbeam_channel::Sender<Message>, site: &str) {
+    let _ = sender.send(Message::Notification(lsp_server::Notification::new(
+        "window/logMessage".to_string(),
+        serde_json::json!({"type": 4, "message": format!("OXABL-TEST-HOLD started: {site}")}),
+    )));
 }
 
 fn hash(text: &str) -> u64 {
