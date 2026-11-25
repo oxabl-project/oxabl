@@ -70,8 +70,9 @@ fn type_text(ty: BuiltinType) -> String {
             BuiltinShape::Buffer => "BUFFER",
         }
         .to_string(),
-        // A type parameter, a generic instance or a .NET type.
-        BuiltinType::Unknown => "?".to_string(),
+        // A type parameter, a generic instance, a .NET type, or a type the
+        // documentation does not give.
+        BuiltinType::Unknown => "/* type not documented */".to_string(),
     }
 }
 
@@ -90,44 +91,35 @@ fn params_text(member: &BuiltinMember) -> String {
     format!("({})", params.join(", "))
 }
 
-/// The declaration of one built-in member, as ABL would write it. No mode is
-/// written: the catalog has none.
+/// The declaration of one built-in member, as ABL would write it. No access
+/// and no mode are written: the catalog has neither.
 fn signature(member: &BuiltinMember) -> String {
-    let fixed = |m: &BuiltinMember| {
-        let mut out = String::from("PUBLIC");
-        if m.is_static() {
-            out.push_str(" STATIC");
-        }
-        out
-    };
+    let mut modifiers = String::new();
+    if member.is_static() {
+        modifiers.push_str(" STATIC");
+    }
+    if member.is_abstract() {
+        modifiers.push_str(" ABSTRACT");
+    }
     match member.kind() {
-        BuiltinMemberKind::Method => {
-            let mut head = format!("METHOD {}", fixed(member));
-            if member.is_abstract() {
-                head.push_str(" ABSTRACT");
-            }
-            format!(
-                "{head} {} {} {}",
-                type_text(member.ty()),
-                member.name(),
-                params_text(member)
-            )
-        }
+        BuiltinMemberKind::Method => format!(
+            "METHOD{modifiers} {} {} {}",
+            type_text(member.ty()),
+            member.name(),
+            params_text(member)
+        ),
         BuiltinMemberKind::Property => format!(
-            "DEFINE {} PROPERTY {} AS {}",
-            fixed(member),
+            "DEFINE{modifiers} PROPERTY {} AS {}",
             member.name(),
             type_text(member.ty())
         ),
         BuiltinMemberKind::Event => format!(
-            "DEFINE {} EVENT {} SIGNATURE VOID {}",
-            fixed(member),
+            "DEFINE{modifiers} EVENT {} SIGNATURE VOID {}",
             member.name(),
             params_text(member)
         ),
         BuiltinMemberKind::Constructor => format!(
-            "CONSTRUCTOR {} {} {}",
-            fixed(member),
+            "CONSTRUCTOR{modifiers} {} {}",
             member.name(),
             params_text(member)
         ),

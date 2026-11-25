@@ -61,8 +61,6 @@ const M_FINAL: u8 = 4;
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct BuiltinClass {
-    /// The lookup key: the name folded to lowercase.
-    pub(crate) key: &'static str,
     /// The qualified name as documented, without generic parameters.
     pub name: &'static str,
     pub kind: ClassKind,
@@ -73,7 +71,11 @@ pub struct BuiltinClass {
     pub inherits: Option<&'static str>,
     /// The implemented interfaces, as documented.
     pub implements: &'static [&'static str],
-    pub(crate) url: &'static str,
+    /// The documentation bundle: 0 `abl-reference`, 1
+    /// `openedge-abl-api-reference-128`.
+    pub(crate) bundle: u8,
+    /// The page of the type in its bundle.
+    pub(crate) page: &'static str,
     pub(crate) flags: u8,
     pub(crate) parent: Option<u16>,
     pub(crate) interfaces: &'static [u16],
@@ -133,13 +135,33 @@ impl BuiltinCatalog {
     /// The types whose qualified name starts with `package` (`"Progress.Lang."`),
     /// in any case.
     pub fn classes_in(&self, package: &str) -> &'static [BuiltinClass] {
-        let prefix = package.to_ascii_lowercase();
-        let start = BUILTIN_CLASSES.partition_point(|c| c.key < prefix.as_str());
+        let starts = |c: &BuiltinClass| {
+            c.name.len() >= package.len()
+                && c.name.as_bytes()[..package.len()].eq_ignore_ascii_case(package.as_bytes())
+        };
+        let start = BUILTIN_CLASSES
+            .partition_point(|c| !starts(c) && compare_name_folded(c.name, package).is_lt());
         let len = BUILTIN_CLASSES[start..]
             .iter()
-            .take_while(|c| c.key.starts_with(prefix.as_str()))
+            .take_while(|c| starts(c))
             .count();
         &BUILTIN_CLASSES[start..start + len]
+    }
+}
+
+/// Whether the OpenEdge version `version` (`12.8`, `12.8.9`, `13.0`) is at
+/// most `catalog` (`12.8`), by major and minor number. `false` for a version
+/// oxabl cannot read.
+pub(crate) fn version_at_most(version: &str, catalog: &str) -> bool {
+    fn parts(v: &str) -> Option<(u32, u32)> {
+        let mut it = v.trim().split('.');
+        let major = it.next()?.trim().parse().ok()?;
+        let minor = it.next().map_or(Some(0), |m| m.trim().parse().ok())?;
+        Some((major, minor))
+    }
+    match (parts(version), parts(catalog)) {
+        (Some(v), Some(c)) => v <= c,
+        _ => false,
     }
 }
 
@@ -166,7 +188,7 @@ pub fn builtin_class(name: &str) -> Option<&'static BuiltinClass> {
 pub(crate) fn builtin_class_in(prefix: &str, name: &str) -> Option<&'static BuiltinClass> {
     let name = name.split_once('<').map_or(name, |(base, _)| base);
     BUILTIN_CLASSES
-        .binary_search_by(|class| compare_folded(class.key, prefix, name))
+        .binary_search_by(|class| compare_folded(class.name, prefix, name))
         .ok()
         .map(|i| &BUILTIN_CLASSES[i])
 }
@@ -176,11 +198,12 @@ fn compare_folded(key: &str, prefix: &str, name: &str) -> Ordering {
     let (p, n) = (prefix.as_bytes(), name.as_bytes());
     let wanted_len = p.len() + n.len();
     for (i, k) in key.iter().enumerate() {
+        let k = k.to_ascii_lowercase();
         let w = match p.get(i).or_else(|| n.get(i - p.len())) {
             Some(w) => w.to_ascii_lowercase(),
             None => return Ordering::Greater,
         };
-        if *k != w {
+        if k != w {
             return k.cmp(&w);
         }
     }
@@ -225,8 +248,15 @@ impl BuiltinClass {
     }
 
     /// The URL of the documentation page.
-    pub fn docs_url(&self) -> &'static str {
-        self.url
+    pub fn docs_url(&self) -> String {
+        let bundle = match self.bundle {
+            0 => "abl-reference",
+            _ => "openedge-abl-api-reference-128",
+        };
+        format!(
+            "https://docs-be.progress.com/bundle/{bundle}/page/{}",
+            self.page
+        )
     }
 
     /// No member of the type was dropped as damaged.
@@ -312,7 +342,7 @@ impl BuiltinClass {
 
     /// Whether the type is `Progress.Lang.Object`.
     pub fn is_object(&self) -> bool {
-        self.key == "progress.lang.object"
+        self.name == "Progress.Lang.Object"
     }
 }
 
@@ -359,18 +389,18 @@ impl BuiltinMember {
 /// The macros the generated tables are written with: each row on one line, in
 /// a brace-delimited call that rustfmt leaves as it is.
 macro_rules! classes {
-    ($(($key:literal, $name:literal, $kind:ident, [$($tp:literal),*], $inherits:expr,
-        [$($imp:literal),*], $url:literal, $flags:literal, $parent:expr, [$($iface:literal),*],
+    ($(($name:literal, $kind:ident, [$($tp:literal),*], $inherits:expr,
+        [$($imp:literal),*], $bundle:literal, $page:literal, $flags:literal, $parent:expr, [$($iface:literal),*],
         $ctors:literal, $members:literal, $members_end:literal, $enums:literal,
         $enums_end:literal)),* $(,)?) => {
         &[$($crate::builtin::BuiltinClass {
-            key: $key,
             name: $name,
             kind: $crate::ClassKind::$kind,
             type_params: &[$($tp),*],
             inherits: $inherits,
             implements: &[$($imp),*],
-            url: $url,
+            bundle: $bundle,
+            page: $page,
             flags: $flags,
             parent: $parent,
             interfaces: &[$($iface),*],
@@ -520,11 +550,206 @@ mod tests {
         assert!(!list.is_complete());
     }
 
+    fn type_text(ty: BuiltinType) -> String {
+        match ty {
+            BuiltinType::Void => "VOID".into(),
+            BuiltinType::Primitive(p) => p.abl_keyword().into(),
+            BuiltinType::PrimitiveArray(p) => format!("{} EXTENT", p.abl_keyword()),
+            BuiltinType::Class(row) => BuiltinClass::at(row).name.into(),
+            BuiltinType::ClassArray(row) => format!("{} EXTENT", BuiltinClass::at(row).name),
+            BuiltinType::Shape(s) => format!("{s:?}"),
+            BuiltinType::Unknown => "?".into(),
+        }
+    }
+
+    /// Each overload of `class:name` as `[STATIC ]<type> <Name>(<params>)`.
+    fn overloads(class_name: &str, name: &str) -> Vec<String> {
+        class(class_name)
+            .members_named(name)
+            .iter()
+            .map(|m| {
+                let params: Vec<String> = m.params().iter().map(|p| type_text(p.ty)).collect();
+                let stat = if m.is_static() { "STATIC " } else { "" };
+                match m.kind() {
+                    BuiltinMemberKind::Property => {
+                        format!("{stat}PROPERTY {} {}", type_text(m.ty()), m.name())
+                    }
+                    _ => format!(
+                        "{stat}{} {}({})",
+                        type_text(m.ty()),
+                        m.name(),
+                        params.join(", ")
+                    ),
+                }
+            })
+            .collect()
+    }
+
+    /// Commonly used members, as the OpenEdge 12.8 documentation gives them.
+    /// A row that the scrape reads wrongly (an `EXTENT` return read as a
+    /// scalar) must be fixed in `resources/progress_builtin_overrides.toml`.
+    #[test]
+    fn common_members_match_the_documentation() {
+        let table: &[(&str, &str, &[&str])] = &[
+            (
+                "Progress.Lang.Object",
+                "ToString",
+                &["CHARACTER ToString()"],
+            ),
+            (
+                "Progress.Lang.Object",
+                "Equals",
+                &["LOGICAL Equals(Progress.Lang.Object)"],
+            ),
+            (
+                "Progress.Lang.Object",
+                "GetClass",
+                &["Progress.Lang.Class GetClass()"],
+            ),
+            (
+                "Progress.Lang.Object",
+                "Clone",
+                &["Progress.Lang.Object Clone()"],
+            ),
+            (
+                "Progress.Lang.ProError",
+                "GetMessage",
+                &["CHARACTER GetMessage(INTEGER)"],
+            ),
+            (
+                "Progress.Lang.ProError",
+                "GetMessageNum",
+                &["INTEGER GetMessageNum(INTEGER)"],
+            ),
+            (
+                "Progress.Lang.ProError",
+                "NumMessages",
+                &["PROPERTY INTEGER NumMessages"],
+            ),
+            (
+                "Progress.Lang.ProError",
+                "CallStack",
+                &["PROPERTY CHARACTER CallStack"],
+            ),
+            (
+                "Progress.Lang.AppError",
+                "AddMessage",
+                &["VOID AddMessage(CHARACTER, INTEGER)"],
+            ),
+            (
+                "Progress.Lang.AppError",
+                "RemoveMessage",
+                &["VOID RemoveMessage(INTEGER)"],
+            ),
+            (
+                "Progress.Lang.AppError",
+                "ReturnValue",
+                &["PROPERTY CHARACTER ReturnValue"],
+            ),
+            (
+                "Progress.Json.ObjectModel.JsonObject",
+                "GetNames",
+                &["CHARACTER EXTENT GetNames()"],
+            ),
+            (
+                "Progress.Json.ObjectModel.JsonObject",
+                "Has",
+                &["LOGICAL Has(CHARACTER)"],
+            ),
+            (
+                "Progress.Json.ObjectModel.JsonObject",
+                "GetCharacter",
+                &["CHARACTER GetCharacter(CHARACTER)"],
+            ),
+            (
+                "Progress.Json.ObjectModel.JsonObject",
+                "GetJsonObject",
+                &["Progress.Json.ObjectModel.JsonObject GetJsonObject(CHARACTER)"],
+            ),
+            (
+                "Progress.Json.ObjectModel.JsonObject",
+                "GetType",
+                &["INTEGER GetType(CHARACTER)"],
+            ),
+            (
+                "Progress.Json.ObjectModel.JsonDataType",
+                "Number",
+                &["STATIC PROPERTY INTEGER Number"],
+            ),
+            ("Progress.Lang.Enum", "GetValue", &["INT64 GetValue()"]),
+            (
+                "Progress.Lang.Enum",
+                "CompareTo",
+                &["INTEGER CompareTo(Progress.Lang.Enum)"],
+            ),
+            (
+                "OpenEdge.Core.String",
+                "Join",
+                &[
+                    "STATIC OpenEdge.Core.String Join(OpenEdge.Core.Collections.Array, CHARACTER)",
+                    "STATIC LONGCHAR Join(CHARACTER EXTENT, CHARACTER)",
+                    "STATIC OpenEdge.Core.String Join(OpenEdge.Core.String EXTENT, CHARACTER)",
+                ],
+            ),
+            (
+                "OpenEdge.Core.String",
+                "IsNullOrEmpty",
+                &[
+                    "LOGICAL IsNullOrEmpty()",
+                    "STATIC LOGICAL IsNullOrEmpty(LONGCHAR)",
+                ],
+            ),
+            (
+                "OpenEdge.Core.String",
+                "Value",
+                &["PROPERTY LONGCHAR Value"],
+            ),
+            (
+                "OpenEdge.Core.String",
+                "Split",
+                &[
+                    "OpenEdge.Core.Collections.Array Split()",
+                    "OpenEdge.Core.Collections.Array Split(CHARACTER)",
+                    "OpenEdge.Core.Collections.Array Split(CHARACTER EXTENT)",
+                    "STATIC CHARACTER EXTENT Split(LONGCHAR)",
+                    "STATIC CHARACTER EXTENT Split(LONGCHAR, CHARACTER)",
+                    "STATIC CHARACTER EXTENT Split(LONGCHAR, CHARACTER EXTENT)",
+                    "STATIC OpenEdge.Core.Collections.Array Split(OpenEdge.Core.String)",
+                    "STATIC OpenEdge.Core.Collections.Array Split(OpenEdge.Core.String, CHARACTER)",
+                    "STATIC OpenEdge.Core.Collections.Array Split(OpenEdge.Core.String, CHARACTER EXTENT)",
+                ],
+            ),
+            (
+                "OpenEdge.Core.Util.ConfigBuilder",
+                "GetOptionNames",
+                &["CHARACTER EXTENT GetOptionNames()"],
+            ),
+        ];
+        for (class_name, name, want) in table {
+            assert_eq!(overloads(class_name, name), *want, "{class_name}:{name}");
+        }
+    }
+
+    #[test]
+    fn versions_compare_by_major_and_minor() {
+        assert!(version_at_most("12.8", "12.8"));
+        assert!(version_at_most("12.8.9", "12.8"));
+        assert!(version_at_most("12.2", "12.8"));
+        assert!(version_at_most("11.7.4", "12.8"));
+        assert!(!version_at_most("12.9", "12.8"));
+        assert!(!version_at_most("13.0", "12.8"));
+        assert!(!version_at_most("next", "12.8"));
+    }
+
     #[test]
     fn a_package_lists_its_types() {
         let lang = BUILTIN_CATALOG.classes_in("progress.lang.");
         assert!(lang.iter().any(|c| c.name == "Progress.Lang.AppError"));
-        assert!(lang.iter().all(|c| c.key.starts_with("progress.lang.")));
+        assert!(lang.iter().all(|c| c.name.starts_with("Progress.Lang.")));
+        assert_eq!(
+            BUILTIN_CATALOG.classes_in("PROGRESS.LANG.").len(),
+            lang.len()
+        );
         assert!(BUILTIN_CATALOG.classes_in("nosuch.").is_empty());
         assert_eq!(BUILTIN_CATALOG.version(), "12.8");
     }

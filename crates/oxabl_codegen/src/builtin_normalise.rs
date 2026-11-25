@@ -110,11 +110,10 @@ pub enum NSuper {
 pub struct NTypeEntry {
     /// The documented name without generic parameters.
     pub name: String,
-    /// `name` folded to lowercase: the lookup key.
-    pub key: String,
     pub kind: TypeKind,
     pub type_params: Vec<String>,
-    pub page_url: String,
+    /// The page of the type in its documentation bundle.
+    pub page: String,
     pub is_abstract: bool,
     pub is_final: bool,
     pub parent: Option<NSuper>,
@@ -140,7 +139,7 @@ impl Catalog {
     pub fn get(&self, name: &str) -> Option<&NTypeEntry> {
         let key = name.to_ascii_lowercase();
         self.types
-            .binary_search_by(|t| t.key.as_str().cmp(key.as_str()))
+            .binary_search_by(|t| t.name.to_ascii_lowercase().cmp(&key))
             .ok()
             .map(|i| &self.types[i])
     }
@@ -168,6 +167,10 @@ struct Override {
     checked_against: String,
     inherits: Option<String>,
     drop_member: Option<String>,
+    /// A method whose return is an `EXTENT` of a primitive that the scrape
+    /// read as a scalar: every overload of the name with a scalar primitive
+    /// return gets `[]`.
+    extent_return: Option<String>,
     add_member: Option<OverrideMember>,
     replace_member: Option<OverrideMember>,
 }
@@ -245,12 +248,13 @@ pub fn apply_overrides(index: &mut BuiltinIndex, text: &str) -> Result<(), Strin
         let what = [
             o.inherits.is_some(),
             o.drop_member.is_some(),
+            o.extent_return.is_some(),
             o.add_member.is_some(),
             o.replace_member.is_some(),
         ];
         if what.iter().filter(|b| **b).count() != 1 {
             return Err(format!(
-                "override of `{}` must name exactly one of inherits, drop_member, add_member, replace_member",
+                "override of `{}` must name exactly one of inherits, drop_member, extent_return, add_member, replace_member",
                 o.type_name
             ));
         }
@@ -276,6 +280,28 @@ pub fn apply_overrides(index: &mut BuiltinIndex, text: &str) -> Result<(), Strin
             if !found {
                 return Err(format!(
                     "stale override: `{}` has no member `{name}` to drop",
+                    o.type_name
+                ));
+            }
+        } else if let Some(name) = &o.extent_return {
+            let mut found = false;
+            for m in entry
+                .methods
+                .iter_mut()
+                .filter(|m| m.name.eq_ignore_ascii_case(name))
+            {
+                if let Some(rt) = &mut m.return_type
+                    && PRIMITIVES
+                        .iter()
+                        .any(|(p, _)| p.eq_ignore_ascii_case(rt.trim()))
+                {
+                    rt.push_str("[]");
+                    found = true;
+                }
+            }
+            if !found {
+                return Err(format!(
+                    "stale override: `{}` has no method `{name}` with a scalar primitive return",
                     o.type_name
                 ));
             }
@@ -536,16 +562,6 @@ fn split_generic_name(name: &str) -> Option<&str> {
         .then_some(tail)
 }
 
-/// The URL of a type's documentation page.
-pub fn page_url(name: &str, page: &str) -> String {
-    let bundle = if name.starts_with("Progress.") {
-        "abl-reference"
-    } else {
-        "openedge-abl-api-reference-128"
-    };
-    format!("https://docs-be.progress.com/bundle/{bundle}/page/{page}")
-}
-
 // =============================================================================
 // The normaliser
 // =============================================================================
@@ -648,6 +664,11 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
                 let mut params = Vec::with_capacity(m.params.len());
                 let mut bad_param = false;
                 for p in &m.params {
+                    // A name the scrape broke (`) PUBLIC X (INPUT size`) is damage.
+                    if p.name.as_deref().is_some_and(|n| !is_abl_name(n)) {
+                        bad_param = true;
+                        continue;
+                    }
                     match read_type(&p.type_name, &owner, &names) {
                         NTypeOrDamaged::Type(ty) => params.push(NParam {
                             name: p.name.clone().unwrap_or_default(),
@@ -690,10 +711,9 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
 
         types.push(NTypeEntry {
             name: base.to_string(),
-            key: base.to_ascii_lowercase(),
             kind: e.kind,
             type_params,
-            page_url: page_url(base, &e.page),
+            page: e.page.clone(),
             is_abstract: e.is_abstract,
             is_final: e.is_final,
             parent,
@@ -843,6 +863,10 @@ mod tests {
             assert_eq!(call_stack.ty, NType::Primitive("Character"));
             assert!(t.members_trusted);
         }
+        // A return the scrape read as a scalar is an EXTENT.
+        let json = c.get("Progress.Json.ObjectModel.JsonObject").unwrap();
+        let names = json.members.iter().find(|m| m.name == "GetNames").unwrap();
+        assert_eq!(names.ty, NType::PrimitiveArray("Character"));
     }
 
     /// A one-type index named `owner` with the given member JSON.
@@ -1062,6 +1086,16 @@ mod tests {
     }
 
     #[test]
+    fn a_parameter_name_that_is_no_abl_name_is_damaged() {
+        let t = one(
+            r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
+                "constructors": [{"name": "B", "params": [{"name": ") PUBLIC B (INPUT size", "type_name": "INT64"}]}]}"#,
+        );
+        assert!(t.members.is_empty());
+        assert!(!t.members_trusted);
+    }
+
+    #[test]
     fn a_duplicate_signature_is_kept_once() {
         let t = one(
             r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
@@ -1129,6 +1163,10 @@ mod tests {
             (
                 "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\ndrop_member = \"Q\"\n",
                 "no member `Q`",
+            ),
+            (
+                "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_return = \"P\"\n",
+                "no method `P` with a scalar primitive return",
             ),
             (
                 "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nadd_member = { kind = \"property\", name = \"p\", type = \"INTEGER\" }\n",

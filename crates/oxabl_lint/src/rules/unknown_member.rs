@@ -31,7 +31,9 @@
 //! are not judged. Only a receiver whose type is the built-in type is judged,
 //! not a user class that inherits one. A name the type has in another
 //! namespace (a property called as a method) is no finding of this rule.
-//! Nothing in an include analysed alone is reported.
+//! Nothing in an include analysed alone is reported, and nothing when
+//! `[workspace.preprocessor].proversion` is newer than the catalog (12.8): a
+//! later version may have added the member.
 
 use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, Severity};

@@ -181,14 +181,14 @@ pub fn generate(catalog: &Catalog, index: &BuiltinIndex) -> Result<String, Strin
             TypeKind::Interface => "Interface",
             TypeKind::Enum => "Enum",
         };
+        let bundle = u8::from(!t.name.starts_with("Progress."));
         let _ = writeln!(
             classes,
-            "    ({:?}, {:?}, {kind}, [{}], {inherits}, [{}], {:?}, {flags}, {parent}, [{}], {ctor_start}, {member_start}, {n_members}, {enum_start}, {n_enums}),",
-            t.key,
+            "    ({:?}, {kind}, [{}], {inherits}, [{}], {bundle}, {:?}, {flags}, {parent}, [{}], {ctor_start}, {member_start}, {n_members}, {enum_start}, {n_enums}),",
             t.name,
             str_list(&type_params),
             str_list(&implements),
-            t.page_url,
+            t.page,
             interfaces.join(", "),
         );
     }
@@ -207,12 +207,17 @@ pub fn generate(catalog: &Catalog, index: &BuiltinIndex) -> Result<String, Strin
 //! `cargo run -p oxabl_codegen -- builtin-class-table`. The API over these
 //! tables is `builtin.rs`.
 //!
-//! A type row is `(key, name, kind, type_params, inherits, implements, url,
-//! flags, parent, interfaces, constructors, members, members_end, enum_members,
-//! enum_members_end)`. A member row is `(name, kind, flags, type, class,
-//! params, param_count)`. A parameter row is `(name, type)`.
+//! Each row is one line of a brace-delimited macro call (`builtin.rs`), which
+//! rustfmt leaves as it is. A type row is `(name, kind, type_params,
+//! inherits, implements, bundle, page, flags, parent, interfaces,
+//! constructors, members, members_end, enum_members, enum_members_end)`. A
+//! member row is `(name, kind, flags, type, class, params, param_count)`. A
+//! parameter row is `(name, type)`.
 
-use crate::PrimitiveTy as P;
+",
+    );
+    out.push_str(
+        "use crate::PrimitiveTy as P;
 use crate::builtin::{
     BuiltinClass, BuiltinMember, BuiltinParam, BuiltinShape as S, BuiltinType as T, classes,
     enum_names, members, params,
@@ -227,7 +232,7 @@ use crate::builtin::{
     );
     let _ = writeln!(
         out,
-        "/// Sorted by `key` ({} entries).\npub(crate) static BUILTIN_CLASSES: &[BuiltinClass] = classes! {{\n{classes}}};\n",
+        "/// Sorted by folded name ({} entries).\npub(crate) static BUILTIN_CLASSES: &[BuiltinClass] = classes! {{\n{classes}}};\n",
         catalog.types.len()
     );
     let _ = writeln!(

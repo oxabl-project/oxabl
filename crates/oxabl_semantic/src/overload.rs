@@ -209,9 +209,15 @@ pub(crate) enum NoFit {
 /// Whether no candidate can take `args`, and why. `None` when a candidate may
 /// take them, or when a parameter list is not known. Only a `No` fit removes a
 /// candidate, so a type oxabl is not sure of never makes a finding.
+///
+/// `may_be_extent[i]` says that argument `i` is a scalar primitive that a
+/// built-in member returns. The catalog can read an `EXTENT` return as a
+/// scalar, so such an argument never rules out a parameter that is an
+/// `EXTENT` of the same primitive.
 pub(crate) fn no_fit(
     candidates: &[Candidate<'_>],
     args: &[ResolvedType],
+    may_be_extent: &[bool],
     lattice: ClassLattice<'_>,
 ) -> Option<NoFit> {
     if candidates.is_empty() || candidates.iter().any(|c| c.params.is_none()) {
@@ -229,6 +235,15 @@ pub(crate) fn no_fit(
                 .zip(args)
                 .enumerate()
                 .any(|(at, (param, arg))| {
+                    if may_be_extent.get(at).copied().unwrap_or(false)
+                        && matches!(
+                            &param.kind,
+                            CallParamKind::Value(ResolvedType::Array { element, .. })
+                                if **element == *arg
+                        )
+                    {
+                        return false;
+                    }
                     let fit = if !candidate.modes_known || mixed.get(at).copied().unwrap_or(false) {
                         fit_any_mode(param, arg, lattice)
                     } else {

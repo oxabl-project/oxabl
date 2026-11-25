@@ -63,8 +63,8 @@ Severities: `off`, `hint`, `info`, `warn` (or `warning`), `error`. Any finding t
 | CL003 | `signature-mismatch` | `strict.calls` | A RUN whose arguments differ from the callee's parameters in count, kind, mode or type. |
 | CL004 | `unresolved-call` | `strict.calls` | A RUN of a name that is neither a procedure of the file nor a program on the search paths. |
 | CL005 | `shared-state` | `strict.calls` | NEW SHARED and SHARED definitions. |
-| CL006 | `member-call-mismatch` | `strict.calls` | A call of a built-in method, or a NEW of a built-in class, that no overload takes. |
-| CL007 | `unknown-member` | `strict.calls` | A member name that a built-in type does not have. |
+| CL006 | `member-call-mismatch` | `strict.calls` | A call of a built-in method, or a NEW of a built-in class, that no overload takes. The count is not judged when `proversion` is newer than 12.8. |
+| CL007 | `unknown-member` | `strict.calls` | A member name that a built-in type does not have, in the OpenEdge 12.8 catalog. Silent when `proversion` is newer than 12.8. |
 
 Rules on database tables skip temp-tables, and skip every table when no schema is loaded (for example LK001, LK002, TX001, DB001, NL003, NL004).
 

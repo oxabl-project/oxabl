@@ -83,7 +83,10 @@ pub struct SurfaceMember {
     /// `Function` for a method, `Property`, `Event`, or a data member's kind.
     /// An enum member is a static `Property`.
     pub kind: SymbolKind,
-    pub access: AccessModifier,
+    /// `None` for a member of a built-in type: the catalog has no access.
+    /// The roles reach such a member as if it were `PUBLIC`, so an outside
+    /// role can list a member that is `PROTECTED` (`Progress.Lang.Object:Clone`).
+    pub access: Option<AccessModifier>,
     pub is_static: bool,
     /// The type as written: a class by its qualified name.
     pub ty: MemberType,
@@ -483,7 +486,7 @@ impl<'a> Walk<'a> {
             self.push(SurfaceMember {
                 name: m.name().to_string(),
                 kind,
-                access: AccessModifier::Public,
+                access: None,
                 is_static: m.is_static(),
                 ty: builtin_member_type(m.ty()),
                 params: (kind == SymbolKind::Function).then(|| builtin_params(m)),
@@ -496,7 +499,7 @@ impl<'a> Walk<'a> {
                 self.push(SurfaceMember {
                     name: name.to_string(),
                     kind: SymbolKind::Property,
-                    access: AccessModifier::Public,
+                    access: None,
                     is_static: true,
                     ty: MemberType::Named(IndexName::new(class.name)),
                     params: None,
@@ -554,7 +557,7 @@ impl<'a> Walk<'a> {
             self.push(SurfaceMember {
                 name: m.name.as_written().to_string(),
                 kind: m.kind,
-                access: m.access,
+                access: Some(m.access),
                 is_static: m.is_static,
                 ty: m.ty.clone(),
                 params: m.params.as_deref().map(workspace_params),
@@ -651,7 +654,7 @@ impl<'a> Walk<'a> {
             self.push(SurfaceMember {
                 name: symbol.name.to_string(),
                 kind: symbol.kind,
-                access,
+                access: Some(access),
                 is_static,
                 ty,
                 params,
@@ -721,7 +724,7 @@ impl BuiltinMemberRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberDoc {
     pub title: String,
-    pub url: &'static str,
+    pub url: String,
     /// One line from the documentation, when the catalog has it (not yet).
     pub summary: Option<&'static str>,
 }

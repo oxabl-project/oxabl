@@ -1861,6 +1861,8 @@ struct CrossFileState {
     builtin_ancestors: FxHashSet<SymbolId>,
     /// The built-in levels of each walked class, in walk order.
     builtin_levels: FxHashMap<SymbolId, SmallVec<[&'static BuiltinClass; 4]>>,
+    /// The `(class, name)` pairs already read from [`Self::builtin_levels`].
+    builtin_probed: FxHashSet<(SymbolId, OxablAtom)>,
 }
 
 /// The atom carried by the resolution recorded for a run-time-computed `RUN`
@@ -2071,12 +2073,12 @@ fn same_param_type(shape: &MemberParamShape, ty: BuiltinType) -> bool {
         (MemberParamShape::Value(MemberType::Named(name)), BuiltinType::Class(row)) => {
             let class = BuiltinClass::at(row);
             let written = name.as_atom().as_ref();
-            written == class.key
+            written.eq_ignore_ascii_case(class.name)
                 || class
-                    .key
+                    .name
                     .rsplit('.')
                     .next()
-                    .is_some_and(|simple| simple == written)
+                    .is_some_and(|simple| simple.eq_ignore_ascii_case(written))
         }
         _ => false,
     }
@@ -2393,7 +2395,7 @@ impl<'a> ResolveWalker<'a> {
             return sym;
         }
         let sym = self.symbols.insert(Symbol::synthesized(
-            OxablAtom::from(class.key),
+            OxablAtom::from(class.name.to_ascii_lowercase().as_str()),
             NamespaceId::Types,
             match class.kind {
                 ClassKind::Class | ClassKind::Enum => SymbolKind::Class,
@@ -5216,7 +5218,7 @@ impl<'a> ResolveWalker<'a> {
     /// the catalog has the whole surface of `class` and no namespace of it has
     /// the name. The lookup that missed has walked the surface.
     fn note_unknown_member(&mut self, class: SymbolId, atom: &OxablAtom, member: &Identifier) {
-        if self.ctx.source_context.is_include_fragment() {
+        if self.ctx.source_context.is_include_fragment() || self.ctx.builtins_may_lack_members() {
             return;
         }
         let Some(builtin) = self.symbols.builtin_class(class) else {
@@ -7568,21 +7570,15 @@ impl<'a> ResolveWalker<'a> {
         let Some(cf) = self.cross_file.as_mut() else {
             return;
         };
-        let Some(levels) = cf.builtin_levels.get(&class) else {
+        let Some(count) = cf.builtin_levels.get(&class).map(|l| l.len()) else {
             return;
         };
-        // A member whose symbol is minted has all its candidates.
-        if cf
-            .inherited
-            .get(&(class, atom.clone()))
-            .is_some_and(|m| m.symbol.is_some())
-        {
+        // Each name is read from the catalog once per class.
+        if !cf.builtin_probed.insert((class, atom.clone())) {
             return;
         }
-        // Adding a name twice adds nothing: a candidate with the parameter
-        // list of one already there is the same method.
-        let levels = levels.clone();
-        for builtin in levels {
+        for at in 0..count {
+            let builtin = self.cross_file().expect("probed above").builtin_levels[&class][at];
             for (kind, namespace, member) in builtin_level_members_named(builtin, atom) {
                 let candidate = InheritedCandidate {
                     flags: SymbolFlags::PUBLIC | flag_if(member.is_static(), SymbolFlags::STATIC),

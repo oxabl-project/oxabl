@@ -393,8 +393,8 @@ Lint rules are in groups. The `LINT` rules are in the `default` group, which is 
 | CL003 | `signature-mismatch` | `strict.calls` | a `RUN` whose arguments differ from the callee's parameters in count, kind, mode or type |
 | CL004 | `unresolved-call` | `strict.calls` | a `RUN` of a name that is neither a procedure of the file nor a program on the search paths |
 | CL005 | `shared-state` | `strict.calls` | `NEW SHARED`, `NEW GLOBAL SHARED` and `SHARED` definitions |
-| CL006 | `member-call-mismatch` | `strict.calls` | a call of a method of a built-in type, or a `NEW` of a built-in class, that no overload takes: no overload has the number of arguments, or each one with that number has an argument whose type never converts (`docs/design/builtin-classes.md`) |
-| CL007 | `unknown-member` | `strict.calls` | a member name that a built-in type does not have. Only a type whose whole surface the catalog knows is judged |
+| CL006 | `member-call-mismatch` | `strict.calls` | a call of a method of a built-in type, or a `NEW` of a built-in class, that no overload takes: no overload has the number of arguments, or each one with that number has an argument whose type never converts (`docs/design/builtin-classes.md`). When `[workspace.preprocessor].proversion` is newer than the catalog (12.8), the count is not judged |
+| CL007 | `unknown-member` | `strict.calls` | a member name that a built-in type does not have. Only a type whose whole surface the catalog knows is judged. Silent when `[workspace.preprocessor].proversion` is newer than the catalog (12.8) |
 | TX006 | `missing-no-undo` | `strict.transactions` | a variable, parameter, temp-table or property without `NO-UNDO` |
 | HD001 | `handle-not-deleted` | `strict.handles` | a dynamic object (query, buffer, temp-table, dataset, widget, ...) that some path loses without a delete |
 | HD002 | `delete-not-in-finally` | `strict.handles` | a delete that an error between the create and the delete skips |

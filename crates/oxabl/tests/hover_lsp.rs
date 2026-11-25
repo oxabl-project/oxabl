@@ -819,7 +819,7 @@ fn built_in_types_and_members_show_their_catalog_entry() {
     );
     assert_eq!(
         markdown(&mut session, &file, BUILTINS, "GetMessage", 0),
-        code("METHOD PUBLIC CHARACTER GetMessage (MessageIndex AS INTEGER)")
+        code("METHOD CHARACTER GetMessage (MessageIndex AS INTEGER)")
             + &format!(
                 "\n\nDeclared in built-in class `Progress.Lang.ProError` (OpenEdge 12.8). Parameter modes are not known. [Progress documentation]({docs}Progress.Lang.ProError-class.html)"
             )
@@ -835,7 +835,7 @@ fn built_in_types_and_members_show_their_catalog_entry() {
     );
     assert_eq!(
         markdown(&mut session, &file, BUILTINS, "NUMBER", 0),
-        code("DEFINE PUBLIC STATIC PROPERTY Number AS INTEGER")
+        code("DEFINE STATIC PROPERTY Number AS INTEGER")
             + &format!(
                 "\n\nDeclared in built-in class `Progress.Json.ObjectModel.JsonDataType` (OpenEdge 12.8). [Progress documentation]({docs}Progress.Json.ObjectModel.JsonDataType-class.html)"
             )
@@ -849,7 +849,7 @@ fn built_in_types_and_members_show_their_catalog_entry() {
     );
     assert_eq!(
         markdown(&mut session, &file, BUILTINS, "ToString", 0),
-        code("METHOD PUBLIC CHARACTER ToString ()")
+        code("METHOD CHARACTER ToString ()")
             + &format!(
                 "\n\nDeclared in built-in class `Progress.Lang.Object` (OpenEdge 12.8). [Progress documentation]({docs}Progress.Lang.Object-class.html)"
             )

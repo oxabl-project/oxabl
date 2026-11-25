@@ -183,6 +183,9 @@ pub struct AnalysisContext<'a> {
     pub unclosed_blocks: &'a [NodeId],
     /// The catalog of built-in types the resolve pass reads.
     pub builtins: &'static BuiltinCatalog,
+    /// `[workspace.preprocessor].proversion`: the OpenEdge version the code
+    /// compiles with, when the configuration states it.
+    pub proversion: Option<&'a str>,
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -211,6 +214,7 @@ impl<'a> AnalysisContext<'a> {
             record_sites: false,
             unclosed_blocks: &[],
             builtins: &BUILTIN_CATALOG,
+            proversion: None,
         }
     }
 
@@ -218,6 +222,21 @@ impl<'a> AnalysisContext<'a> {
     pub fn with_unclosed_blocks(mut self, blocks: &'a [NodeId]) -> Self {
         self.unclosed_blocks = blocks;
         self
+    }
+
+    /// State the OpenEdge version the code compiles with (builder-style).
+    pub fn with_proversion(mut self, proversion: Option<&'a str>) -> Self {
+        self.proversion = proversion;
+        self
+    }
+
+    /// Whether the catalog of built-in types may be missing members of the
+    /// version the code compiles with: a stated `proversion` newer than the
+    /// catalog, or one oxabl cannot read. A rule that reports an absence
+    /// (a member, an overload count) stays silent then.
+    pub fn builtins_may_lack_members(&self) -> bool {
+        self.proversion
+            .is_some_and(|version| !builtin::version_at_most(version, self.builtins.version()))
     }
 
     /// Record navigation sites (builder-style); see

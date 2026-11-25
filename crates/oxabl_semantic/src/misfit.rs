@@ -75,12 +75,13 @@ pub fn builtin_call_misfit(
                 })
                 .collect();
             let args = argument_types(sem, arguments);
-            let found = no_fit(&candidates, &args, ClassLattice::new(&sem.symbols))?;
+            let loose = from_builtin_members(sem, arguments);
+            let found = no_fit(&candidates, &args, &loose, ClassLattice::new(&sem.symbols))?;
             // A set with static and instance candidates is judged by count.
             if found == NoFit::Types && sem.symbols.is_untyped_member(expr.id) {
                 return None;
             }
-            Some(misfit(class, member, found, args, expr.span))
+            verdict(ctx, class, member, found, args, expr.span)
         }
         ExpressionKind::New { arguments, .. } => {
             let Some(Resolution::Resolved(sym)) = sem.references.get(expr.id) else {
@@ -116,11 +117,28 @@ pub fn builtin_call_misfit(
                 })
                 .collect();
             let args = argument_types(sem, arguments);
-            let found = no_fit(&candidates, &args, ClassLattice::new(&sem.symbols))?;
-            Some(misfit(class, None, found, args, expr.span))
+            let loose = from_builtin_members(sem, arguments);
+            let found = no_fit(&candidates, &args, &loose, ClassLattice::new(&sem.symbols))?;
+            verdict(ctx, class, None, found, args, expr.span)
         }
         _ => None,
     }
+}
+
+/// The misfit, unless it is a count that a newer version may take.
+fn verdict(
+    ctx: &AnalysisContext,
+    class: &'static BuiltinClass,
+    member: Option<&'static str>,
+    found: NoFit,
+    args: Vec<ResolvedType>,
+    span: Span,
+) -> Option<CallMisfit> {
+    // A newer OpenEdge may add an overload with another number of parameters.
+    if found == NoFit::Count && ctx.builtins_may_lack_members() {
+        return None;
+    }
+    Some(misfit(class, member, found, args, span))
 }
 
 fn misfit(
@@ -152,6 +170,24 @@ fn receiver_builtin(sem: &Semantic, object: &Expression) -> Option<&'static Buil
         Some(Resolution::Resolved(sym)) => sem.symbols.builtin_class(*sym),
         _ => None,
     }
+}
+
+/// For each argument, whether it is a scalar primitive that a built-in
+/// member returns: the catalog may have lost the `EXTENT` of that return.
+fn from_builtin_members(sem: &Semantic, arguments: &[Expression]) -> Vec<bool> {
+    arguments
+        .iter()
+        .map(|a| {
+            matches!(
+                a.kind,
+                ExpressionKind::MethodCall { .. } | ExpressionKind::MemberAccess { .. }
+            ) && matches!(sem.types.get(a.id), Some(ResolvedType::Primitive(_)))
+                && matches!(
+                    sem.references.get(a.id),
+                    Some(Resolution::Resolved(sym)) if sem.symbols.builtin_member(*sym).is_some()
+                )
+        })
+        .collect()
 }
 
 fn argument_types(sem: &Semantic, arguments: &[Expression]) -> Vec<ResolvedType> {

@@ -106,6 +106,8 @@ The numbers are from a check of the checked-in file by the planner. Step 1 of
 | `STATIC` as the return type of a constructor | 32 | A static constructor. It is not a candidate of `NEW`. |
 | An `OpenEdge.*` or `Ccs.*` method with no return type | 3420 | `VOID` (the Javadoc renderer omits it). |
 | A `Progress.*` method with no return type | 1 | Damaged. |
+| A primitive return that is an `EXTENT` read as a scalar (`JsonObject:GetNames`, `OpenEdge.Core.String:Split(LONGCHAR)`, ...): the API reference writes the return type without `EXTENT`, the ABL Reference writes `CHARACTER` for `GetNames` | 26 found | An override (`extent_return`) for each one whose documentation comment says `@return <type>[]` or "an EXTENT" (found with a scan of the pages of the complete classes). `CL006` also fails closed for the rest: a scalar primitive that a built-in member returns never rules out a parameter that is an `EXTENT` of the same primitive (`overload::no_fit`). |
+| A parameter name that is not an ABL name (`) PUBLIC MemoryOutputStream (INPUT size`) | 1 | Damaged. |
 | A member name that is not an ABL name (HTML text, a code sample, `[ return-value = ] class-reference:Invoke`) | 71 in 35 types | Damaged. A name `&ltFile> Files` (7 of the 71: a generic return type that the renderer split) is read as the name `Files` with the generic type, which is `Unknown`. |
 | A typo or a fragment as a type (`Progrss.Reflect.Flags`, `Progress.Lang.Class \|`, `INTEGER )`) | 53 members in 28 types | Damaged. |
 | A .NET supertype or type (`System.Object`, `Telerik.*`) | 19 supertypes, 8 types | External. A level with a .NET supertype makes the surface opaque. A .NET type is `Unknown`. |
@@ -212,10 +214,19 @@ its version, and the hover shows it.
 
 A project on an older OpenEdge can use a member that 12.8 has and its version
 does not have. oxabl then types a call that does not compile there, which adds
-no finding to correct code. A member that 12.8 removed or changed is the only
-risk of a false finding. Progress does not remove members of these classes in
-practice, so this design does not make the findings depend on
-`[workspace.preprocessor].proversion`.
+no finding to correct code.
+
+A project on a newer OpenEdge can use a member, or an overload, that a later
+version added. The 12.8 catalog does not have it, so `CL007` and the count
+verdict of `CL006` would report correct code. So when
+`[workspace.preprocessor].proversion` is set and is newer than the catalog (by
+major and minor number; a value oxabl cannot read counts as newer),
+`CL007` and the count verdict of `CL006` stay silent
+(`AnalysisContext::builtins_may_lack_members`). The type verdict of `CL006`
+stays: a type that never converts does not convert in a later version either.
+With no `proversion`, oxabl assumes the catalog's version. The same limit
+holds when the `OpenEdge.*` source on the PROPATH of the project is of another
+version and is not in `include_paths`: oxabl reads the 12.8 catalog for it.
 
 The seam for more catalogs: the resolve pass reads the tables through one
 `&'static BuiltinCatalog` in `AnalysisContext`, which defaults to the 12.8
@@ -362,7 +373,8 @@ The rules of `class-members.md` hold without a change:
   receiver the instance members. A set that mixes both for the role gives
   `Unknown` (`OpenEdge.Core.String` has an instance `Split()` and a static
   `Split(LONGCHAR)`: `oStr:Split(",")` is `Unknown`).
-- All built-in members are `PUBLIC`: every role reaches them.
+- The catalog has no access, so every role reaches every built-in member
+  (see "Implementation notes").
 - A constructor is a candidate of `NEW` only. A static constructor is not.
 
 ### Overloads with modes that are not known
@@ -536,13 +548,14 @@ Hover of a member:
 
 ````text
 ```abl
-METHOD PUBLIC CHARACTER GetMessage (MessageIndex AS INTEGER)
+METHOD CHARACTER GetMessage (MessageIndex AS INTEGER)
 ```
 
 Declared in built-in class `Progress.Lang.ProError` (OpenEdge 12.8). Parameter modes are not known. [Progress documentation](https://docs-be.progress.com/bundle/abl-reference/page/Progress.Lang.ProError-class.html)
 ````
 
-- A method: `METHOD PUBLIC [STATIC] [ABSTRACT] <return> <Name> (<params>)`.
+- A method: `METHOD [STATIC] [ABSTRACT] <return> <Name> (<params>)`. No
+  access word: the catalog has no access.
   The return type is `VOID`, a primitive, or a documented type name (with
   `EXTENT` for an array). Each parameter is `<name> AS <type>`, or `<type>`
   alone when the catalog has no name. No mode is written. Each candidate of
@@ -550,9 +563,9 @@ Declared in built-in class `Progress.Lang.ProError` (OpenEdge 12.8). Parameter m
   order inside a level, joined by a blank line, at most 10; then the line
   `N more overloads.` The candidates of each declaring type form one group
   that ends with its own "Declared in" line.
-- A property: `DEFINE PUBLIC [STATIC] PROPERTY <Name> AS <type>`. No `GET` or
+- A property: `DEFINE [STATIC] [ABSTRACT] PROPERTY <Name> AS <type>`. No `GET` or
   `SET`: the catalog does not give them.
-- An event: `DEFINE PUBLIC [STATIC] EVENT <Name> SIGNATURE VOID (<params>)`.
+- An event: `DEFINE [STATIC] EVENT <Name> SIGNATURE VOID (<params>)`.
 - An enum member: the code block `<Enum>:<Member>`, then
   ``Member of built-in enum `<Enum>` (OpenEdge 12.8).`` and the link.
 - The line after the code blocks is
@@ -671,6 +684,19 @@ and on the opt-in group for the new rules.
 ## Implementation notes
 
 What the implementation decided differently from the sections above:
+
+- **Access.** The catalog has no access. The hover writes no access word
+  (`METHOD CHARACTER GetMessage (...)`), and `SurfaceMember::access` is
+  `None` for a built-in member. The roles reach a built-in member as a
+  `PUBLIC` one, so an outside role can list a `PROTECTED` member
+  (`Progress.Lang.Object:Clone`): no finding comes from it.
+- **Hover text.** A type the catalog does not give is written
+  `/* type not documented */`; an `ABSTRACT` property has `ABSTRACT`.
+- **Data form.** A type row keeps the bundle (a number) and the page name,
+  not the URL, and no lowercase key: the lookups fold the name as they
+  compare. This saves about 88 KB of URL text and 49 KB of keys. Struct
+  literals under `#[rustfmt::skip]` in place of the macros were measured and
+  not kept: the same data size, no faster to compile, and twice the source.
 
 - **The sure flag.** `TypeLookup::Builtin` carries `Option<SymbolId>` in place
   of `sure: bool`: the symbol is there when the answer is sure and the type is

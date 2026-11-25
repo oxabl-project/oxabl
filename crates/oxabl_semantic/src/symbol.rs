@@ -606,6 +606,8 @@ struct BuiltinFacts {
     classes: FxHashMap<SymbolId, &'static BuiltinClass>,
     /// The symbol of `Progress.Lang.Object`, once minted.
     object: Option<SymbolId>,
+    /// The symbol of each built-in type, by catalog row.
+    by_row: FxHashMap<u16, SymbolId>,
     /// The catalog member of each symbol minted for a built-in member.
     members: FxHashMap<SymbolId, BuiltinMemberRef>,
     /// Method symbols whose parameter modes are not known.
@@ -849,6 +851,7 @@ impl SymbolTable {
     pub(crate) fn record_builtin_class(&mut self, sym: SymbolId, class: &'static BuiltinClass) {
         let builtin = &mut self.side_mut().builtin;
         builtin.classes.insert(sym, class);
+        builtin.by_row.insert(class.row(), sym);
         if class.is_object() {
             builtin.object = Some(sym);
         }
@@ -901,12 +904,12 @@ impl SymbolTable {
 
     /// The symbol of the built-in type `class`, when the file uses it.
     pub fn builtin_symbol_of(&self, class: &BuiltinClass) -> Option<SymbolId> {
-        let side = self.side.as_deref()?;
-        side.builtin
-            .classes
-            .iter()
-            .find(|(_, c)| std::ptr::eq(**c, class))
-            .map(|(sym, _)| *sym)
+        self.side
+            .as_deref()?
+            .builtin
+            .by_row
+            .get(&class.row())
+            .copied()
     }
 
     pub(crate) fn record_indexed_class(&mut self, sym: SymbolId, name: IndexName) {
