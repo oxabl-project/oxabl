@@ -84,13 +84,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use oxabl_analyze::{
     BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
     ExpandedFile, IncludeOrigin, IncludeOriginDiagnostic, PreprocessMode, RuleSelection,
-    SkippedText, UnresolvedInclude, analyze_from_expanded, collect_from_expanded_with_summaries,
-    expand_source_tracking, expand_source_with,
+    SkippedText, UnresolvedInclude, analyze_from_expanded, analyze_from_expanded_inspecting,
+    collect_from_expanded_with_summaries, expand_source_tracking, expand_source_with,
 };
 
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
+use oxabl_index::calls::{DynamicCalls, FileCalls};
 use oxabl_index::{
     BatchIndex, BranchKind, ClosureExpansions, ClosureReference, ClosureTarget, ConditionalBranch,
     ConditionalInclude, ConditionalIncludeName, ConditionalReference, DirectIncludeInput,
@@ -1175,12 +1176,35 @@ impl<'a> LintPipeline<'a> {
         source: &str,
         inspect: impl FnOnce(&Expansion, &LintResult),
     ) -> Result<oxabl_index::DependencyEdges, String> {
+        self.edge_set_reading(source, inspect, |_, _, _| ())
+            .map(|(edges, ())| edges)
+    }
+
+    /// [`edge_set_with`](Self::edge_set_with), and the calls of the file that
+    /// no static search follows ([`DynamicCalls`]), read from the parse the
+    /// analysis ran on.
+    pub fn edge_set_with_calls(
+        &self,
+        source: &str,
+        inspect: impl FnOnce(&Expansion, &LintResult),
+    ) -> Result<(oxabl_index::DependencyEdges, DynamicCalls), String> {
+        self.edge_set_reading(source, inspect, |program, text, tokens| {
+            FileCalls::extract(program, text, tokens).dynamic
+        })
+    }
+
+    fn edge_set_reading<T: Default>(
+        &self,
+        source: &str,
+        inspect: impl FnOnce(&Expansion, &LintResult),
+        read: impl FnOnce(&[oxabl_ast::Statement], &str, &[oxabl_lexer::Token]) -> T,
+    ) -> Result<(oxabl_index::DependencyEdges, T), String> {
         let outcome = catch_panic(|| {
             let expansion = self.expand(source);
-            let result = self.analyze(&expansion);
+            let (result, read) = self.analyze_inspecting(&expansion, read);
             let edges = self.edges_of(&expansion, &result)?;
             inspect(&expansion, &result);
-            Ok(edges)
+            Ok((edges, read))
         });
         outcome.map_err(|panic| format!("analysis panicked: {panic}"))?
     }
@@ -1625,27 +1649,45 @@ impl<'a> LintPipeline<'a> {
     ///
     /// **Unguarded on purpose** (KTD6), like [`collect`](Self::collect).
     pub fn analyze(&self, expansion: &Expansion) -> LintResult {
+        self.analyze_inspecting(expansion, |_, _, _| ()).0
+    }
+
+    /// [`analyze`](Self::analyze), and what `inspect` makes of the parse it
+    /// ran on (the statements, the expanded text and its tokens). `T::default()`
+    /// when preprocessing failed fatally.
+    fn analyze_inspecting<T: Default>(
+        &self,
+        expansion: &Expansion,
+        inspect: impl FnOnce(&[oxabl_ast::Statement], &str, &[oxabl_lexer::Token]) -> T,
+    ) -> (LintResult, T) {
         let dependency_paths = expansion.dependency_paths().to_vec();
         let Ok(expanded) = &expansion.inner else {
-            return LintResult::computed(None, CollectedDiagnostics::default(), dependency_paths);
+            return (
+                LintResult::computed(None, CollectedDiagnostics::default(), dependency_paths),
+                T::default(),
+            );
         };
         let source_context = if self.file().is_some_and(is_include_fragment) {
             SourceContext::IncludeFragment
         } else {
             SourceContext::CompilationUnit
         };
-        let (semantic, parse_recovered) = self.with_run_index(|index| {
-            analyze_from_expanded(
+        let ((semantic, parse_recovered), inspected) = self.with_run_index(|index| {
+            analyze_from_expanded_inspecting(
                 expanded,
                 &self.config.schema,
                 self.config.schema_loaded,
                 index,
                 source_context,
+                inspect,
             )
         });
         let mut diagnostics = CollectedDiagnostics::new(Vec::new());
         diagnostics.parse_recovered = parse_recovered;
-        LintResult::computed(Some(Box::new(semantic)), diagnostics, dependency_paths)
+        (
+            LintResult::computed(Some(Box::new(semantic)), diagnostics, dependency_paths),
+            inspected,
+        )
     }
 
     /// Whether any context-free rule is enabled for this handle's file.

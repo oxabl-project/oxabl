@@ -276,6 +276,16 @@ eight internal procedures):
 A real program is larger than these, so a search over 2,000 real files takes
 longer. The limit bounds the work of one request.
 
+## Reference-count lenses
+
+The code lenses with the count of references (`docs/design/reference-lenses.md`)
+run this search for one declaration. Their count is the length of the
+references answer without the declaration, and the gaps of the referent mark it
+as incomplete. So does a call of the workspace that no search follows (see the
+table in that document): every procedure and function is marked, and a program,
+class or member when such a call can reach it. Find references does not show
+these marks.
+
 ## Tests
 
 `crates/oxabl/tests/references_lsp.rs` runs the real `oxabl lsp` over stdio:

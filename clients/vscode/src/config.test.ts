@@ -6,6 +6,7 @@ import {
   INLAY_HINT_KINDS,
   RESTART_CONFIG_KEYS,
   inlayHintSettings,
+  referenceLensSettings,
   semanticTokenSettings,
   shouldRestartForConfigChange,
 } from "./config";
@@ -145,5 +146,29 @@ describe("semanticTokenSettings", () => {
       databaseField: "property",
       tempTableField: "property",
     });
+  });
+});
+
+describe("referenceLensSettings", () => {
+  it("is off when the setting is not set", () => {
+    expect(referenceLensSettings(undefined)).toEqual({ enable: false });
+  });
+
+  it("follows the setting", () => {
+    expect(referenceLensSettings(true)).toEqual({ enable: true });
+    expect(referenceLensSettings(false)).toEqual({ enable: false });
+  });
+
+  it("does not restart the server", () => {
+    expect(shouldRestartForConfigChange((s) => s.startsWith("oxabl.referenceLenses"))).toBe(false);
+  });
+
+  it("has a boolean setting, off by default, apart from the effect lenses", () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    const props = manifest.contributes.configuration.properties as Record<string, unknown>;
+    expect(props["oxabl.referenceLenses.enable"]).toMatchObject({ type: "boolean", default: false });
+    expect(Object.keys(props).filter((key) => /lens/i.test(key))).toEqual([
+      "oxabl.referenceLenses.enable",
+    ]);
   });
 });

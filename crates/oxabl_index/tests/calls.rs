@@ -207,3 +207,69 @@ fn components_come_callees_first() {
     assert!(pos(1) < pos(0) && pos(3) < pos(0));
     assert_eq!(comps.len(), 3);
 }
+
+#[test]
+fn dynamic_calls_are_read_by_kind() {
+    let dynamic = |src: &str| calls(src).dynamic;
+    assert!(dynamic("PROCEDURE p:\nEND PROCEDURE.\nRUN p.\nRUN a.p.\n").is_empty());
+    // A call through a handle or a super procedure is no fact of this kind:
+    // it can reach only a routine.
+    assert!(dynamic("RUN doWork IN h.\nRUN SUPER.\nRUN VALUE(c) IN h.\n").run_value);
+    assert!(dynamic("RUN doWork IN h.\nRUN SUPER.\n").is_empty());
+
+    // A persistent trigger can run a program by a computed name.
+    let trigger = dynamic("DEFINE BUTTON b.\nON CHOOSE OF b PERSISTENT RUN VALUE(c).\n");
+    assert!(trigger.run_value && !trigger.dynamic_new);
+    assert!(dynamic("DEFINE BUTTON b.\nON CHOOSE OF b PERSISTENT RUN helper.\n").is_empty());
+
+    let run_value = dynamic("RUN VALUE(c).\n");
+    assert!(run_value.run_value && !run_value.dynamic_new && !run_value.reflection);
+
+    let new = dynamic("o = DYNAMIC-NEW \"demo.Thing\" ().\n");
+    assert!(new.dynamic_new && !new.dynamic_invoke && !new.run_value);
+    let invoke = dynamic("DYNAMIC-INVOKE(o, \"Go\").\n");
+    assert!(invoke.dynamic_invoke && !invoke.dynamic_new);
+    let property = dynamic("x = DYNAMIC-PROPERTY(o, \"Total\").\n");
+    assert!(property.dynamic_property && !property.dynamic_invoke);
+    // A DYNAMIC-FUNCTION can reach only a function, and every routine is
+    // marked anyway.
+    assert!(dynamic("x = DYNAMIC-FUNCTION(\"f\", 1).\n").is_empty());
+
+    // A reflection call, by any method that gives a class or a member.
+    for call in [
+        "o = Progress.Lang.Class:GetClass(\"a.B\"):New().\n",
+        "o:GetClass():Invoke(o, \"Go\").\n",
+        "m = c:GetMethod(\"Go\").\n",
+        "m = c:GETPROPERTY(\"Total\").\n",
+    ] {
+        let found = dynamic(call);
+        assert!(found.reflection, "{call}");
+        assert!(!found.dynamic_new && !found.run_value, "{call}");
+    }
+    // The string form of a class event's Subscribe names a method.
+    let named = dynamic(
+        "p:Changed:Subscribe(THIS-OBJECT, \"OnChanged\").\np:Changed:UNSUBSCRIBE(THIS-OBJECT, \"Other\").\n",
+    );
+    assert!(named.subscribes("onchanged") && named.subscribes("OTHER"));
+    assert!(!named.subscribes("third") && !named.subscribed_computed);
+    let computed = dynamic("p:Changed:Subscribe(THIS-OBJECT, cName).\n");
+    assert!(computed.subscribed_computed && computed.subscribes("anything"));
+    // The symbolic form names no string.
+    assert!(dynamic("p:Changed:Subscribe(OnSym).\n").is_empty());
+
+    // A method of another name is no reflection.
+    assert!(dynamic("x = o:GetName().\nGetClass = 1.\n").is_empty());
+
+    // A CALL object runs a program or a method by a name it computes.
+    let call = dynamic("DEFINE VARIABLE h AS HANDLE NO-UNDO.\nCREATE CALL h.\n");
+    assert!(call.run_value && call.dynamic_invoke && !call.dynamic_new);
+}
+
+#[test]
+fn the_dynamic_calls_of_two_files_join() {
+    let mut joined = calls("RUN VALUE(c).\n").dynamic;
+    joined.absorb(&calls("o = DYNAMIC-NEW \"x\" ().\n").dynamic);
+    joined.absorb(&calls("x = DYNAMIC-PROPERTY(o, \"p\").\n").dynamic);
+    assert!(joined.run_value && joined.dynamic_new && joined.dynamic_property);
+    assert!(!joined.dynamic_invoke && !joined.reflection);
+}

@@ -8,11 +8,17 @@ import {
 import { CliManager, resolveBinary } from "./binary";
 import { BuildController } from "./builds";
 import { binaryVersion, supportsYield } from "./cli";
-import { inlayHintSettings, semanticTokenSettings, shouldRestartForConfigChange } from "./config";
+import {
+  inlayHintSettings,
+  referenceLensSettings,
+  semanticTokenSettings,
+  shouldRestartForConfigChange,
+} from "./config";
 import { ExpandedUnits } from "./expandedUnit";
 import { InactiveRegions } from "./inactiveRegions";
 import { IncluderContexts } from "./includerContext";
 import { installRecordPath, isManaged } from "./install";
+import { SHOW_REFERENCES, readPlaces } from "./referenceLens";
 import { SchemaBrowser } from "./schemaView";
 import { registerSnippets } from "./snippetCompletion";
 import { installSkill } from "./skill";
@@ -70,6 +76,11 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     vscode.commands.registerCommand("oxabl.showExpandedUnit", () => expandedUnits.show()),
     vscode.commands.registerCommand("oxabl.selectIncluderContext", () => includerContexts.select()),
     vscode.commands.registerCommand("oxabl.goToSuperMethod", () => goToSuperMethod(() => client)),
+    vscode.commands.registerCommand(
+      SHOW_REFERENCES,
+      (uri: string, position: { line: number; character: number }, places: unknown) =>
+        showReferences(uri, position, places),
+    ),
     vscode.commands.registerCommand("oxabl.restartServer", restartServer),
     vscode.commands.registerCommand("oxabl.installCli", () => cli.installOrUpdate()),
     vscode.commands.registerCommand("oxabl.installSkill", installSkillCommand),
@@ -90,6 +101,11 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
       if (event.affectsConfiguration("oxabl.semanticTokens")) {
         void client?.sendNotification("workspace/didChangeConfiguration", {
           settings: { oxabl: { semanticTokens: readSemanticTokens() } },
+        });
+      }
+      if (event.affectsConfiguration("oxabl.referenceLenses")) {
+        void client?.sendNotification("workspace/didChangeConfiguration", {
+          settings: { oxabl: { referenceLenses: readReferenceLenses() } },
         });
       }
       if (event.affectsConfiguration("oxabl.build.enable")) {
@@ -205,6 +221,36 @@ function readSemanticTokens(): { enable: boolean } {
   return semanticTokenSettings(config.get<boolean>("enable"));
 }
 
+/** The `oxabl.referenceLenses.enable` setting, for the server. */
+function readReferenceLenses(): { enable: boolean } {
+  const config = vscode.workspace.getConfiguration("oxabl.referenceLenses");
+  return referenceLensSettings(config.get<boolean>("enable"));
+}
+
+/** Show the places that a lens counts, in the references view anchored at `position` in `uri`. */
+async function showReferences(
+  uri: string,
+  position: { line: number; character: number },
+  places: unknown,
+): Promise<void> {
+  const shown = readPlaces(places).map(
+    (place) =>
+      new vscode.Location(
+        vscode.Uri.parse(place.uri),
+        new vscode.Range(
+          new vscode.Position(place.start.line, place.start.character),
+          new vscode.Position(place.end.line, place.end.character),
+        ),
+      ),
+  );
+  await vscode.commands.executeCommand(
+    "editor.action.showReferences",
+    vscode.Uri.parse(uri),
+    new vscode.Position(position.line, position.character),
+    shown,
+  );
+}
+
 /** Start the client if enabled; a no-op (silent) when `oxabl.enable` is false. */
 async function startClient(): Promise<void> {
   const config = vscode.workspace.getConfiguration("oxabl");
@@ -235,7 +281,11 @@ async function startClient(): Promise<void> {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "abl" }],
     outputChannel: log,
-    initializationOptions: { inlayHints: readInlayHints(), semanticTokens: readSemanticTokens() },
+    initializationOptions: {
+      inlayHints: readInlayHints(),
+      semanticTokens: readSemanticTokens(),
+      referenceLenses: readReferenceLenses(),
+    },
     synchronize: {
       // The server watches these itself, but forwarding the events lets live
       // reload work even when the client owns the file watcher (#90 / U2).

@@ -8,7 +8,8 @@
 //! `textDocument/definition`, `textDocument/hover`, `textDocument/documentHighlight` and
 //! `textDocument/documentLink` (see `docs/design/navigation.md`), `textDocument/semanticTokens`
 //! (see `docs/design/semantic-tokens.md`), and `textDocument/references` and the call
-//! hierarchy (see `docs/design/references.md`). Strict database rules can also enable effect code lenses and
+//! hierarchy (see `docs/design/references.md`), and the reference-count code lenses
+//! (`docs/design/reference-lenses.md`). Strict database rules can also enable effect code lenses and
 //! database inlay hints (`docs/design/inlay-hints.md`). An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
@@ -46,6 +47,7 @@ mod inlay_hint;
 mod navigation;
 pub mod position;
 mod range_formatting;
+mod reference_lens;
 mod references;
 mod schema;
 mod semantic_tokens;
@@ -856,7 +858,11 @@ fn finish_handshake(
 
     let encoding = negotiate_position_encoding(&init.capabilities);
     let workspace_root = declared_workspace_root(&init);
-    let options = code_lens::Options::from_client(&init.capabilities, encoding.clone());
+    let options = code_lens::Options::from_client(
+        &init.capabilities,
+        encoding.clone(),
+        init.initialization_options.as_ref(),
+    );
     let inlay =
         inlay_hint::Options::from_client(&init.capabilities, init.initialization_options.as_ref());
     let semantic = semantic_tokens::Options::from_client(
@@ -887,16 +893,18 @@ fn finish_handshake(
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
-        && workspace_root.as_ref().is_some_and(|root| {
-            let (config, _) = PipelineConfig::resolve_for_editor(root, &ConfigOverrides::default());
-            let fs = oxabl_workspace::RealFileSystem;
-            oxabl_pipeline::LintPipeline::new(&config, &fs)
-                .with_file(root)
-                .effect_lenses_enabled()
-        })
+        && (options.reference_lenses
+            || workspace_root.as_ref().is_some_and(|root| {
+                let (config, _) =
+                    PipelineConfig::resolve_for_editor(root, &ConfigOverrides::default());
+                let fs = oxabl_workspace::RealFileSystem;
+                oxabl_pipeline::LintPipeline::new(&config, &fs)
+                    .with_file(root)
+                    .effect_lenses_enabled()
+            }))
     {
         capabilities.code_lens_provider = Some(lsp_types::CodeLensOptions {
-            resolve_provider: Some(false),
+            resolve_provider: Some(options.reference_lenses),
         });
     }
     if inlay.supported {
@@ -1006,6 +1014,10 @@ struct Server<'c> {
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     lenses: code_lens::LensCache,
+    /// The resolved titles of the reference-count lenses.
+    reference_cache: reference_lens::ResolveCache,
+    /// When to ask the client for the reference lenses again.
+    lens_refresh: reference_lens::Refresh,
     /// The client's inlay hint support and the kinds it wants.
     inlay: inlay_hint::Options,
     /// The client's semantic token support and the user's choice.
@@ -1101,6 +1113,8 @@ impl<'c> Server<'c> {
             features: FeaturesConfig::OFF,
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
+            reference_cache: reference_lens::ResolveCache::default(),
+            lens_refresh: reference_lens::Refresh::new(debounce_window),
             inlay,
             semantic,
             outlines: document_symbol::OutlineCache::default(),
@@ -1139,7 +1153,11 @@ impl<'c> Server<'c> {
         let mut shutdown_received = false;
         loop {
             // Size the timeout to the nearest pending debounce deadline.
-            let timer = match self.debouncer.next_deadline() {
+            let timer = match [self.debouncer.next_deadline(), self.lens_refresh.due()]
+                .into_iter()
+                .flatten()
+                .min()
+            {
                 Some(deadline) => {
                     after(deadline.saturating_duration_since(std::time::Instant::now()))
                 }
@@ -1156,6 +1174,8 @@ impl<'c> Server<'c> {
                                 self.respond(Response::new_ok(req.id, serde_json::Value::Null))?;
                             } else if req.method == "textDocument/codeLens" {
                                 self.handle_code_lens(req, &lens_tx)?;
+                            } else if req.method == "codeLens/resolve" {
+                                self.handle_code_lens_resolve(req)?;
                             } else if req.method == InlayHintRequest::METHOD {
                                 self.handle_inlay_hint(req)?;
                             } else if req.method == SemanticTokensFullRequest::METHOD {
@@ -1263,6 +1283,7 @@ impl<'c> Server<'c> {
                 }
                 recv(timer) -> _ => {
                     self.fire_due_debounces(&result_tx);
+                    self.fire_lens_refresh();
                 }
             }
         }
@@ -1491,6 +1512,7 @@ impl<'c> Server<'c> {
                     if let Some(path) = uri_to_path(&uri) {
                         self.schedule_context_users(&path);
                     }
+                    self.schedule_lens_refresh_for_edit(&uri);
                     self.debouncer.schedule(uri, std::time::Instant::now());
                 }
             }
@@ -1498,6 +1520,7 @@ impl<'c> Server<'c> {
                 if let Ok(params) = serde_json::from_value::<DidSaveTextDocumentParams>(not.params)
                 {
                     // Recompute on save so on-disk include changes are picked up.
+                    self.schedule_lens_refresh();
                     self.debouncer
                         .schedule(params.text_document.uri, std::time::Instant::now());
                 }
@@ -1507,11 +1530,13 @@ impl<'c> Server<'c> {
                     serde_json::from_value::<DidChangeWatchedFilesParams>(not.params)
                 {
                     self.handle_watched_files(params);
+                    self.schedule_lens_refresh();
                     self.inlay_disk_changed();
                 }
             }
             "workspace/didChangeConfiguration" => {
                 self.handle_semantic_tokens_settings(&not.params);
+                self.handle_reference_lens_settings(&not.params);
                 self.handle_configuration_change(not.params);
             }
             DidCloseTextDocument::METHOD => {
@@ -1533,6 +1558,7 @@ impl<'c> Server<'c> {
                     self.note_inlay_version(&uri, None);
                     self.note_semantic_version(&uri, None);
                     self.debouncer.cancel(&uri);
+                    self.lens_refresh.forget(&uri);
                     // An include analysed in this root now reads its saved copy.
                     if let Some(path) = uri_to_path(&uri) {
                         self.schedule_context_users(&path);
@@ -1803,6 +1829,8 @@ impl<'c> Server<'c> {
     /// expansion memo recomputes and re-reads the changed file.
     fn handle_watched_files(&mut self, params: DidChangeWatchedFilesParams) {
         let now = std::time::Instant::now();
+        // A file on disk changed: no session generation says so.
+        self.reference_cache.clear();
         let mut schema_changed = false;
         let mut config_changed = false;
         let mut changed_includes: Vec<PathBuf> = Vec::new();
@@ -2279,6 +2307,7 @@ mod tests {
                     supported: false,
                     dynamic: false,
                     refresh: false,
+                    reference_lenses: false,
                 },
                 completion: completion::Options::default(),
                 inlay: inlay_hint::Options::from_client(&Default::default(), None),

@@ -14,8 +14,9 @@
 //! diagnostics require no capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (pull
 //! diagnostics, …) unset so clients don't offer features we
-//! don't have. The handshake adds effect code lenses only for supporting clients
-//! whose workspace enables strict database rules. Dynamic clients register per file.
+//! don't have. The handshake adds code lenses only for supporting clients
+//! whose workspace enables strict database rules (effect lenses) or whose user turned
+//! on the reference-count lenses. Dynamic clients register per file.
 //! It adds semantic tokens (full, delta and range) for every client that
 //! supports them. It adds inlay hints for every client that supports them: a file whose
 //! configuration enables no strict database rule gets an empty list, so a change
