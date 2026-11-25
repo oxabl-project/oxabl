@@ -848,7 +848,7 @@ fn inherited_overloads_do_not_lend_calls_the_first_return_type() {
     let child = r#"CLASS orders.child INHERITS orders.calc-base:
         METHOD PUBLIC VOID run-it():
             DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
-            v-flag = choose(1).
+            v-flag = choose(?).
         END METHOD.
     END CLASS."#;
     let workspace = [(CALC_BASE_PATH, parent)];
@@ -860,7 +860,23 @@ fn inherited_overloads_do_not_lend_calls_the_first_return_type() {
         Some(ResolvedType::Unknown),
         "the candidates disagree on the return type"
     );
-    assert!(lint0004_with_index(child, &workspace).is_empty());
+    assert!(
+        lint0004_with_index(child, &workspace).is_empty(),
+        "`?` fits both overloads, so the call has no type"
+    );
+
+    // An argument that picks one overload gives the call its return type.
+    let picked = lint0004_with_index(&child.replace("choose(?)", "choose(1)"), &workspace);
+    assert_eq!(
+        picked.len(),
+        1,
+        "the INTEGER overload is picked: {picked:?}"
+    );
+    assert!(
+        picked[0].message.contains("INTEGER"),
+        "{}",
+        picked[0].message
+    );
 }
 
 #[test]
@@ -1058,13 +1074,9 @@ fn nothing_is_synthesized_and_nothing_is_typed_without_an_index() {
 }
 
 #[test]
-fn a_colon_qualified_call_on_this_object_stays_unjudged() {
-    // The deferred boundary, pinned rather than assumed. `check.rs` types every
-    // `MethodCall` and `MemberAccess` as `Unknown` without consulting the symbol
-    // the receiver resolved to, so an inherited type reaches the lattice only
-    // through an *unqualified* reference. `THIS-OBJECT:calc-total()` is the
-    // ordinary OO-ABL spelling of the same call and is silent — the larger half of
-    // the population, and its own unit of work.
+fn a_colon_qualified_call_on_this_object_is_judged() {
+    // `THIS-OBJECT:calc-total()` is the ordinary OO-ABL spelling of the
+    // unqualified call, and has the inherited return type too.
     let child = r#"CLASS orders.child INHERITS orders.calc-base:
     METHOD PUBLIC VOID run-it():
         DEFINE VARIABLE v-flag AS LOGICAL NO-UNDO.
@@ -1072,9 +1084,8 @@ fn a_colon_qualified_call_on_this_object_stays_unjudged() {
     END METHOD.
 END CLASS."#;
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
-    assert!(
-        lint0004_with_index(child, &workspace).is_empty(),
-        "a `:`-qualified call is not typed yet, deliberately"
-    );
-    assert_eq!(codes_added_by_index(child, &workspace), Vec::<&str>::new());
+    let found = lint0004_with_index(child, &workspace);
+    assert_eq!(found.len(), 1, "the call is typed: {found:?}");
+    assert!(found[0].message.contains("INTEGER"), "{}", found[0].message);
+    assert_eq!(codes_added_by_index(child, &workspace), vec![LINT0004]);
 }
