@@ -1050,6 +1050,39 @@ fn an_editor_refused_by_a_daemon_that_stays_fails_at_once() {
     );
 }
 
+/// The limit of the wait is one for every attempt. A daemon that refuses the editor
+/// after the limit has passed leaves no time for another start: the editor says so
+/// and starts no daemon.
+#[test]
+fn an_editor_starts_no_daemon_after_the_shared_limit_has_passed() {
+    let parent = tempfile::tempdir().expect("a workspace root");
+    let root = parent.path().join("ws-OXABL-TEST-LIMIT@2000");
+    std::fs::create_dir_all(&root).expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let (registration_path, socket) = registration_left_behind(&root, cache.path());
+    let exiting = StandIn::start(&socket, StandInMode::RefuseLateAndExit);
+    let exiting_pid = exiting.0.0.id();
+    rewrite_registration(&registration_path, |registration| {
+        registration["pid"] = serde_json::json!(exiting_pid);
+    });
+
+    // A daemon that this editor wrongly started would exit soon after it had no client.
+    let mut editor =
+        Editor::start_with(&root, cache.path(), &[("OXABL_DAEMON_IDLE_TIMEOUT", "1s")]);
+    let status = exits_within(&mut editor.child.0, Duration::from_secs(20))
+        .expect("the editor shim gives up");
+    let stderr = editor.stderr(Duration::from_secs(5));
+    assert!(!status.success());
+    assert!(
+        stderr.contains("the limit of 2 s ended before"),
+        "the editor says that the limit ended: {stderr}"
+    );
+    assert!(
+        !stderr.contains("still runs after"),
+        "the editor started no daemon after the limit: {stderr}"
+    );
+}
+
 /// The registration file and the two files beside it.
 fn registration_artifacts(registration_path: &std::path::Path) -> [std::path::PathBuf; 3] {
     [
@@ -1079,6 +1112,8 @@ enum StandInMode {
     /// Lets liveness probes go; closes the first connection that sends a frame without
     /// an answer, removes its socket and exits, as a daemon that decided to exit idle.
     RefuseAndExit,
+    /// The same, after holding the connection for four seconds.
+    RefuseLateAndExit,
     /// The same without the exit: closes every connection that sends a frame.
     Refuse,
     /// Takes the start lock at the path given in place of the socket, holds it for half
@@ -1147,11 +1182,14 @@ fn stand_in_daemon() {
             std::thread::sleep(Duration::from_secs(1));
         }
     }
-    if mode == "refuse-and-exit" || mode == "refuse" {
+    if mode == "refuse-and-exit" || mode == "refuse-late-and-exit" || mode == "refuse" {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
             if stream.read(&mut [0; 1]).is_ok_and(|read| read > 0) && mode != "refuse" {
+                if mode == "refuse-late-and-exit" {
+                    std::thread::sleep(Duration::from_secs(4));
+                }
                 drop(stream);
                 let _ = std::fs::remove_file(&socket);
                 std::process::exit(0);
@@ -1184,6 +1222,7 @@ impl StandIn {
                     StandInMode::IgnoreTerm => "ignore-term",
                     StandInMode::Busy => "busy",
                     StandInMode::RefuseAndExit => "refuse-and-exit",
+                    StandInMode::RefuseLateAndExit => "refuse-late-and-exit",
                     StandInMode::Refuse => "refuse",
                     StandInMode::HoldLock => "hold-lock",
                     StandInMode::HoldLockLong => "hold-lock-long",

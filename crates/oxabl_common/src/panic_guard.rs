@@ -196,6 +196,32 @@ pub mod panic_sites {
 /// `OXABL-TEST-HOLD:<site>` in the source, as with [`TEST_PANIC_MARKER`].
 pub const TEST_HOLD_MARKER: &str = "OXABL-TEST-HOLD";
 
+/// The marker that shortens a time limit, for a test that must reach it:
+/// `OXABL-TEST-LIMIT@<ms>` in the text the caller passes to [`injected_limit`].
+pub const TEST_LIMIT_MARKER: &str = "OXABL-TEST-LIMIT";
+
+/// The limit that `source` asks for with [`TEST_LIMIT_MARKER`], in test builds only.
+/// Always `None` unless the test-only `test-panics` feature is enabled.
+#[inline]
+pub fn injected_limit(source: &str) -> Option<std::time::Duration> {
+    #[cfg(feature = "test-panics")]
+    {
+        let at = source.find(&format!("{TEST_LIMIT_MARKER}@"))?;
+        let rest = &source[at + TEST_LIMIT_MARKER.len() + 1..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        rest[..digits]
+            .parse::<u64>()
+            .ok()
+            .map(std::time::Duration::from_millis)
+    }
+
+    #[cfg(not(feature = "test-panics"))]
+    {
+        let _ = source;
+        None
+    }
+}
+
 /// Whether the markers act: only with the test-only `test-panics` feature. A
 /// caller that must build a string to look for a marker checks this first.
 pub const INJECTION_ENABLED: bool = cfg!(feature = "test-panics");

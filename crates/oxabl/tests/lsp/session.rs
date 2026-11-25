@@ -73,11 +73,18 @@ impl Session {
     /// Start `oxabl lsp` and send `initialize` with `params` added, without waiting
     /// for the answer.
     pub fn launch(root: &Path, params: Value) -> Session {
+        Session::launch_after(root, params, |_| {})
+    }
+
+    /// [`Session::launch`], with `before` run on the path of the registration file
+    /// before `oxabl lsp` starts.
+    pub fn launch_after(root: &Path, params: Value, before: impl FnOnce(&Path)) -> Session {
         let base = tempfile::tempdir().unwrap();
         let registration = registration_path_in(
             &base.path().join("oxabl").join("daemon"),
             &canonical_root(root).unwrap(),
         );
+        before(&registration);
         let stderr = base.path().join("lsp.stderr");
         // No core dump from a daemon that crashes: it inherits the limit.
         let mut child = Command::new("sh")
@@ -135,6 +142,12 @@ impl Session {
             "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": all
         }));
         session
+    }
+
+    /// The path of the daemon's registration file; its socket and lock file are
+    /// beside it, with the extensions `sock` and `lock`.
+    pub fn registration_path(&self) -> &Path {
+        &self.registration
     }
 
     /// The exit status of `oxabl lsp` once it exits within `limit`.

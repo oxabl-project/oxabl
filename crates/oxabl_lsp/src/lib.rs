@@ -140,7 +140,8 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
     const ATTEMPTS: u32 = 3;
     let mut attempt = 1;
     let mut notices = Vec::new();
-    let mut progress = StartProgress::new(connection, &init);
+    // One limit for every attempt below, so the wait for a daemon never exceeds it.
+    let mut progress = StartProgress::new(connection, &init, start_limit(&workspace_root));
     let (daemon, daemon_threads, answer) = loop {
         let registration = match find_or_start_daemon(&workspace_root, &mut notices, &mut progress)
         {
@@ -335,10 +336,11 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 /// * `Live` — decided; return it.
 ///
 /// How long it waits: a start on a loaded machine can take many seconds, so no fixed
-/// time is right for it. The loop waits while there is a sign that a daemon is
-/// starting: the daemon this client started still runs, or the last one it started
-/// found the start lock held. It stops [`START_QUIET`] after the last sign, and at
-/// [`START_LIMIT`] in all.
+/// time is right for it. While the daemon this client started runs, the loop waits.
+/// A daemon that lost the start lock exits and is started again, so the loop also
+/// waits for the process that holds the lock. Without such a daemon it stops
+/// [`START_QUIET`] after the last poll that showed one. At `progress.deadline` it stops
+/// in every case: the deadline is the same for every call of one start.
 #[cfg(unix)]
 fn find_or_start_daemon(
     root: &Path,
@@ -349,12 +351,11 @@ fn find_or_start_daemon(
 
     const INTERVAL: Duration = Duration::from_millis(20);
     // A daemon that lost the start lock is started again after this interval, which
-    // doubles after each such start up to `RESTART_MAX`. `RESTART_MAX` stays below
-    // `START_QUIET`, so each restart is a sign before the quiet time ends.
+    // doubles after each such start up to `RESTART_MAX`.
     const RESTART_FIRST: Duration = Duration::from_millis(250);
     const RESTART_MAX: Duration = Duration::from_secs(1);
 
-    let limit = Instant::now() + START_LIMIT;
+    let limit = progress.deadline;
     let mut quiet_until = Instant::now() + START_QUIET;
     let mut restart_interval = RESTART_FIRST;
 
@@ -368,6 +369,15 @@ fn find_or_start_daemon(
     // so the loop keeps polling and reports it only at the deadline.
     let mut busy: Option<String> = None;
     let mut refusal: Option<String> = None;
+    let mut captured: Option<CapturedStderr> = None;
+    // A shared limit that an earlier attempt has used up leaves no time to start a daemon.
+    if Instant::now() >= limit {
+        anyhow::bail!(
+            "the oxabl daemon did not become ready in time: the limit of {} s ended before \
+             this client could look for it again",
+            progress.limit.as_secs()
+        );
+    }
     loop {
         match oxabl_daemon::discover(root) {
             oxabl_daemon::Discovery::Live(registration) => return Ok(registration),
@@ -427,9 +437,13 @@ fn find_or_start_daemon(
             oxabl_daemon::Discovery::Undecided(reason) => refusal = Some(reason),
             oxabl_daemon::Discovery::Absent => {
                 if let Some(status) = child.as_mut().and_then(|child| child.try_wait().ok()?) {
+                    let captured = captured.take();
                     if status.code()
                         != Some(i32::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD))
                     {
+                        if let Some(captured) = captured {
+                            eprint!("{}", captured.finish());
+                        }
                         anyhow::bail!(
                             "the oxabl daemon this client started for {} exited ({status}) \
                              before it served the root; its error is above",
@@ -440,21 +454,27 @@ fn find_or_start_daemon(
                     // the holder exits.
                     child_exit = Some(status);
                     child = None;
-                    quiet_until = Instant::now() + START_QUIET;
                 }
                 if child.is_none() && last_start.is_none_or(|at| at.elapsed() >= restart_interval) {
                     let executable =
                         std::env::current_exe().context("locating the oxabl executable")?;
-                    child = Some(
-                        Command::new(executable)
-                            .arg("daemon")
-                            .arg(root)
-                            .stdin(Stdio::null())
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::inherit())
-                            .spawn()
-                            .context("starting the oxabl daemon")?,
-                    );
+                    // The first start writes to the editor's log. A restart repeats
+                    // the first one's refusal once a second, so its output is kept: it
+                    // is shown only if the restart fails for another reason.
+                    let mut command = Command::new(executable);
+                    command
+                        .arg("daemon")
+                        .arg(root)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(if started {
+                            Stdio::piped()
+                        } else {
+                            Stdio::inherit()
+                        });
+                    let mut spawned = command.spawn().context("starting the oxabl daemon")?;
+                    captured = spawned.stderr.take().map(CapturedStderr::start);
+                    child = Some(spawned);
                     if started {
                         restart_interval = (restart_interval * 2).min(RESTART_MAX);
                     }
@@ -496,15 +516,25 @@ fn find_or_start_daemon(
     if let Some(child) = child.as_mut() {
         match child.try_wait() {
             Ok(Some(status)) => child_exit = Some(status),
-            Ok(None) => anyhow::bail!(
-                "the oxabl daemon did not become ready in time: the daemon this client \
-                 started for {} (pid {}) still runs after {} s and does not serve the root. \
-                 Its stderr is above; stop it with `kill {}`",
-                root.display(),
-                child.id(),
-                START_LIMIT.as_secs(),
-                child.id()
-            ),
+            Ok(None) => {
+                if let Some(captured) = &captured {
+                    eprint!("{}", captured.snapshot());
+                }
+                let probe = refusal
+                    .as_ref()
+                    .map(|reason| format!(" The last look for it said: {reason}."))
+                    .unwrap_or_default();
+                anyhow::bail!(
+                    "the oxabl daemon did not become ready in time: the daemon this client \
+                     started for {} (pid {}) still runs after {} s and does not serve the \
+                     root.{probe} It is left running, and the next start finds it when it is \
+                     ready; stop it with `kill {}`. Its stderr is above",
+                    root.display(),
+                    child.id(),
+                    progress.limit.as_secs(),
+                    child.id()
+                )
+            }
             Err(_) => {}
         }
     }
@@ -520,9 +550,69 @@ fn find_or_start_daemon(
     }
 }
 
-/// The longest wait for a daemon to serve the root, from the first look for it.
+/// The stderr of a daemon that `oxabl lsp` restarted, read on a thread until the daemon
+/// closes it. The text is kept up to [`CAPTURE_LIMIT`] bytes, and the thread goes on
+/// reading past it, so the daemon never blocks or fails on a full or closed pipe.
+#[cfg(unix)]
+struct CapturedStderr {
+    text: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    reader: std::thread::JoinHandle<()>,
+}
+
+#[cfg(unix)]
+const CAPTURE_LIMIT: usize = 64 * 1024;
+
+#[cfg(unix)]
+impl CapturedStderr {
+    fn start(mut stderr: std::process::ChildStderr) -> Self {
+        use std::io::Read;
+        let text = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = std::sync::Arc::clone(&text);
+        let reader = std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            while let Ok(read) = stderr.read(&mut chunk) {
+                if read == 0 {
+                    return;
+                }
+                let mut kept = kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let room = CAPTURE_LIMIT.saturating_sub(kept.len()).min(read);
+                kept.extend_from_slice(&chunk[..room]);
+            }
+        });
+        CapturedStderr { text, reader }
+    }
+
+    /// What the daemon wrote so far.
+    fn snapshot(&self) -> String {
+        let text = self
+            .text
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        String::from_utf8_lossy(&text).into_owned()
+    }
+
+    /// Everything the daemon wrote, for a daemon that has exited.
+    fn finish(self) -> String {
+        let _ = self.reader.join();
+        let text = self
+            .text
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        String::from_utf8_lossy(&text).into_owned()
+    }
+}
+
+/// The longest wait for a daemon to serve the root, from the first look for it,
+/// over every attempt.
 #[cfg(unix)]
 const START_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// [`START_LIMIT`], or the shorter limit that a test build reads from the root's path
+/// (`OXABL-TEST-LIMIT@<ms>`).
+#[cfg(unix)]
+fn start_limit(root: &Path) -> std::time::Duration {
+    oxabl_common::injected_limit(&root.to_string_lossy()).unwrap_or(START_LIMIT)
+}
 
 /// How long the wait goes on after the last sign that a daemon is starting.
 #[cfg(unix)]
@@ -540,16 +630,26 @@ struct StartProgress<'a> {
     connection: &'a Connection,
     token: Option<lsp_types::ProgressToken>,
     since: std::time::Instant,
+    /// The longest wait, and the time it ends: the same for every attempt.
+    limit: std::time::Duration,
+    deadline: std::time::Instant,
     shown: bool,
 }
 
 #[cfg(unix)]
 impl<'a> StartProgress<'a> {
-    fn new(connection: &'a Connection, init: &InitializeParams) -> Self {
+    fn new(
+        connection: &'a Connection,
+        init: &InitializeParams,
+        limit: std::time::Duration,
+    ) -> Self {
+        let since = std::time::Instant::now();
         StartProgress {
             connection,
             token: init.work_done_progress_params.work_done_token.clone(),
-            since: std::time::Instant::now(),
+            since,
+            limit,
+            deadline: since + limit,
             shown: false,
         }
     }
@@ -564,7 +664,7 @@ impl<'a> StartProgress<'a> {
             "the oxabl daemon for {} is still starting; waiting for it while it runs, for {} s \
              at most",
             root.display(),
-            START_LIMIT.as_secs()
+            self.limit.as_secs()
         );
         eprintln!("oxabl lsp: {message}");
         let _ = self
@@ -2801,7 +2901,7 @@ mod tests {
         }
 
         let (editor, _client) = Connection::memory();
-        let mut progress = StartProgress::new(&editor, &InitializeParams::default());
+        let mut progress = StartProgress::new(&editor, &InitializeParams::default(), START_LIMIT);
         let outcome = find_or_start_daemon(workspace.path(), &mut Vec::new(), &mut progress);
 
         unsafe {
