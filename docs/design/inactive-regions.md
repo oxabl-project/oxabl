@@ -167,10 +167,13 @@ database under `database-types` to dim on its type.
   compiler, so a condition there that reads the name is undecided too.
   A `&GLOBAL-DEFINE`, a `&SCOPED-DEFINE` or an `&UNDEFINE` of the name in an
   undecided region, in the include that has the argument or below it, is a
-  guess, so the name stays unknown in the includes deeper still. A global define or undefine of the name below the argument,
-  in a decided region or not, also makes the name undecided in the rest of
-  the include that has the argument: the run does not track what the define
-  did to the argument's own entry.
+  guess, so the name stays unknown in the includes deeper still. A global
+  define or undefine of the name below the argument, in a decided region or
+  not, also makes the name undecided in the rest of the include that has the
+  argument: the run does not track what the define did to the argument's own
+  entry. This holds for each include below, however deep, and also when the
+  state of the name does not change at the start of the include below (the
+  name and the argument are both unknown, or both known in fragment mode).
 
 ## Known limits
 

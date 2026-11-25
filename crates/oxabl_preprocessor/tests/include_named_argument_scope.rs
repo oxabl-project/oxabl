@@ -170,3 +170,47 @@ fn a_decided_scoped_define_below_the_argument_still_decides() {
     let result = run("{p.i &x=zzz}", &files, false);
     assert_eq!(&*result.to_text(), "A\n");
 }
+
+/// The name is unknown before the argument and the argument is unknown too,
+/// so the state does not change when the include below hides the argument.
+const UNKNOWN_ARGUMENT_ROOT: &str =
+    "&IF SEARCH(\"f\") <> ? &THEN\n&GLOBAL-DEFINE y 1\n&GLOBAL-DEFINE x 1\n&ENDIF\n{p.i &x={&y}}";
+const READS_ARGUMENT_AFTER: &str = "&IF \"{&x}\" = \"1\" &THEN\nA\n&ELSE\nZ\n&ENDIF\n";
+const DEFINES_GLOBAL: &str = "&GLOBAL-DEFINE x 1\n";
+
+fn all_undecided(result: &PreprocessedFile) {
+    assert_eq!(
+        states(result),
+        [
+            BranchState::Undecided,
+            BranchState::Undecided,
+            BranchState::Undecided
+        ],
+        "the argument of the include is unknown, whatever is defined below it"
+    );
+}
+
+#[test]
+fn a_global_define_below_an_unknown_argument_leaves_the_argument_unknown() {
+    let p = format!("{{b.i}}\n{READS_ARGUMENT_AFTER}");
+    let files = [("/inc/p.i", p.as_str()), ("/inc/b.i", DEFINES_GLOBAL)];
+    all_undecided(&run(UNKNOWN_ARGUMENT_ROOT, &files, false));
+}
+
+#[test]
+fn without_its_includer_a_global_define_below_an_unknown_argument_leaves_the_argument_unknown() {
+    let p = format!("{{b.i}}\n{READS_ARGUMENT_AFTER}");
+    let files = [("/inc/p.i", p.as_str()), ("/inc/b.i", DEFINES_GLOBAL)];
+    all_undecided(&run(UNKNOWN_ARGUMENT_ROOT, &files, true));
+}
+
+#[test]
+fn a_global_define_two_includes_below_an_unknown_argument_leaves_the_argument_unknown() {
+    let p = format!("{{m.i}}\n{READS_ARGUMENT_AFTER}");
+    let files = [
+        ("/inc/p.i", p.as_str()),
+        ("/inc/m.i", "{b.i}"),
+        ("/inc/b.i", DEFINES_GLOBAL),
+    ];
+    all_undecided(&run(UNKNOWN_ARGUMENT_ROOT, &files, false));
+}

@@ -2522,7 +2522,7 @@ struct Knowledge {
     /// One frame per include being expanded: what was known of each name
     /// before the include first changed it with a scoped define or an
     /// argument, restored when the include ends.
-    frames: Vec<Vec<Saved>>,
+    frames: Vec<Frame>,
     /// One list per include being expanded: each named argument and what was
     /// known of its name before the argument defined it. A name is in a list
     /// once.
@@ -2535,6 +2535,14 @@ struct Knowledge {
 struct Argument {
     name: String,
     before: (bool, bool),
+}
+
+/// What an include saved, in the order it saved it, with the position of each
+/// name so that a name is saved once at a constant cost.
+#[derive(Default)]
+struct Frame {
+    saved: Vec<Saved>,
+    index: FxHashMap<String, usize>,
 }
 
 struct Saved {
@@ -2601,7 +2609,7 @@ impl Knowledge {
     fn learn(&mut self, name: &str, known: bool, scoped: bool) {
         if known
             && !self.includer_unknown
-            && self.frames.iter().all(Vec::is_empty)
+            && self.frames.iter().all(|frame| frame.saved.is_empty())
             && (self.uncertain.is_empty()
                 || !with_folded(name, |name| self.uncertain.contains(name)))
         {
@@ -2661,9 +2669,9 @@ impl Knowledge {
         // Defined or undefined in the source: no longer only a default.
         self.defaults.remove(name);
         if !scoped {
-            for saved in self.frames.iter_mut().flatten() {
-                if saved.name == name {
-                    saved.touched = true;
+            for frame in &mut self.frames {
+                if let Some(&at) = frame.index.get(name) {
+                    frame.saved[at].touched = true;
                 }
             }
             self.set_argument_states(name, after);
@@ -2672,17 +2680,25 @@ impl Knowledge {
         if before == after {
             return;
         }
-        if scoped
-            && let Some(frame) = self.frames.last_mut()
-            && !frame.iter().any(|saved| saved.name == name)
+        if scoped {
+            self.save(name, before);
+        }
+        self.apply(name, after);
+    }
+
+    /// Remember `before` as the state of `name` to restore when the include
+    /// being expanded ends. The first state saved in an include is kept.
+    fn save(&mut self, name: &str, before: (bool, bool)) {
+        if let Some(frame) = self.frames.last_mut()
+            && !frame.index.contains_key(name)
         {
-            frame.push(Saved {
+            frame.index.insert(name.to_string(), frame.saved.len());
+            frame.saved.push(Saved {
                 name: name.to_string(),
                 before,
                 touched: false,
             });
         }
-        self.apply(name, after);
     }
 
     fn apply(&mut self, name: &str, (set, uncertain): (bool, bool)) {
@@ -2731,6 +2747,11 @@ impl Knowledge {
         let list = std::mem::take(&mut self.arguments[around]);
         for argument in &list {
             if hidden(&argument.name) {
+                // Saved also when the state does not change: a global define
+                // below this include must still leave the name unknown after
+                // it, for the include that reads the argument again.
+                let current = self.state(&argument.name);
+                self.save(&argument.name, current);
                 self.change(&argument.name, argument.before, true);
             }
         }
@@ -2738,7 +2759,7 @@ impl Knowledge {
     }
 
     fn begin_scope(&mut self) {
-        self.frames.push(Vec::new());
+        self.frames.push(Frame::default());
         self.arguments.push(Vec::new());
     }
 
@@ -2751,7 +2772,7 @@ impl Knowledge {
                 }
             }
         }
-        for saved in self.frames.pop().unwrap_or_default() {
+        for saved in self.frames.pop().unwrap_or_default().saved {
             if saved.touched {
                 let set = self.set.contains(&saved.name);
                 self.apply(&saved.name, (set, true));
