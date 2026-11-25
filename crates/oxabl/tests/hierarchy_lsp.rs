@@ -2021,3 +2021,185 @@ fn a_request_that_is_cancelled_stops_the_index_between_two_files() {
         "{elapsed:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Parameter lists that an include writes
+// ---------------------------------------------------------------------------
+
+/// Each parameter starts with a preprocessor name that has no value.
+const PARAMS_I: &str = "{&IO}INPUT pcA AS CHARACTER,\n\
+    {&IO}INPUT piB AS INTEGER\n";
+
+const INC_BASE: &str = "CLASS app.IncBase ABSTRACT:\n\
+    \x20   METHOD PUBLIC ABSTRACT VOID Init({params.i}).\n\
+    END CLASS.\n";
+
+const INC_DERIVED: &str = "CLASS app.IncDerived INHERITS app.IncBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Init({params.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn parameter_lists_from_one_include_are_compared_after_preprocessing() {
+    let ws = small(&[
+        ("params.i", PARAMS_I),
+        ("app/IncBase.cls", INC_BASE),
+        ("app/IncDerived.cls", INC_DERIVED),
+    ]);
+    let base = ws.path("app/IncBase.cls");
+    let derived = ws.path("app/IncDerived.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&derived, INC_DERIVED);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&derived, INC_DERIVED, "Init(", 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({"locations": [name_in(&base, INC_BASE, "VOID Init(", "Init")], "gaps": []})
+    );
+
+    session.open(&base, INC_BASE);
+    let (found, warnings) = implementation(&mut session, &base, INC_BASE, "Init(", 0);
+    assert_eq!(
+        found,
+        vec![name_in(&derived, INC_DERIVED, "VOID Init(", "Init")]
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+const NO_BASE: &str = "CLASS app.NoBase ABSTRACT:\n\
+    \x20   METHOD PUBLIC ABSTRACT VOID Init({nope.i}).\n\
+    END CLASS.\n";
+
+const NO_DERIVED: &str = "CLASS app.NoDerived INHERITS app.NoBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Init(INPUT pcA AS CHARACTER):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// The list is read, but an include that does not resolve comes first and
+/// can define `IO`.
+const HALF_BASE: &str = "{defs.i}\n\
+    CLASS app.HalfBase ABSTRACT:\n\
+    \x20   METHOD PUBLIC ABSTRACT VOID Init({params.i}).\n\
+    END CLASS.\n";
+
+const HALF_DERIVED: &str = "CLASS app.HalfDerived INHERITS app.HalfBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Init({params.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const CANNOT_COMPARE: &str = "with parameters oxabl cannot compare: it may be an overload";
+
+#[test]
+fn a_parameter_list_whose_expansion_is_not_known_is_not_compared() {
+    let ws = small(&[
+        ("params.i", PARAMS_I),
+        ("app/NoBase.cls", NO_BASE),
+        ("app/NoDerived.cls", NO_DERIVED),
+        ("app/HalfBase.cls", HALF_BASE),
+        ("app/HalfDerived.cls", HALF_DERIVED),
+    ]);
+    let mut session = Session::start(&ws.root);
+    for (base, base_text, derived, derived_text) in [
+        ("app/NoBase.cls", NO_BASE, "app/NoDerived.cls", NO_DERIVED),
+        (
+            "app/HalfBase.cls",
+            HALF_BASE,
+            "app/HalfDerived.cls",
+            HALF_DERIVED,
+        ),
+    ] {
+        let base = ws.path(base);
+        let derived = ws.path(derived);
+        session.open(&derived, derived_text);
+        let answer = ask(
+            &mut session,
+            "oxabl/superMethod",
+            position(&derived, derived_text, "Init(", 0),
+        );
+        assert_eq!(
+            answer.result["locations"],
+            json!([name_in(&base, base_text, "VOID Init(", "Init")]),
+            "{}",
+            derived.display()
+        );
+        let gaps = answer.result["gaps"].as_array().unwrap();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(
+            gaps[0].as_str().unwrap().contains(CANNOT_COMPARE),
+            "{gaps:?}"
+        );
+
+        session.open(&base, base_text);
+        let (found, warnings) = implementation(&mut session, &base, base_text, "Init(", 0);
+        assert_eq!(
+            found,
+            vec![name_in(&derived, derived_text, "VOID Init(", "Init")]
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains(CANNOT_COMPARE)),
+            "{warnings:?}"
+        );
+    }
+}
+
+/// The mode of the parameter is the value of `MODE` in the file that
+/// includes it.
+const MODE_I: &str = "{&MODE} pcA AS CHARACTER\n";
+
+const MODE_BASE: &str = "&SCOPED-DEFINE MODE INPUT\n\
+    CLASS app.ModeBase:\n\
+    \x20   METHOD PUBLIC VOID Init({mode.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const MODE_SAME: &str = "&SCOPED-DEFINE MODE INPUT\n\
+    CLASS app.ModeSame INHERITS app.ModeBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Init({mode.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// `OUTPUT`: an overload of `app.ModeBase:Init`.
+const MODE_OTHER: &str = "&SCOPED-DEFINE MODE OUTPUT\n\
+    CLASS app.ModeOther INHERITS app.ModeBase:\n\
+    \x20   METHOD PUBLIC VOID Init({mode.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn one_include_with_two_preprocessor_values_gives_two_lists() {
+    let ws = small(&[
+        ("mode.i", MODE_I),
+        ("app/ModeBase.cls", MODE_BASE),
+        ("app/ModeSame.cls", MODE_SAME),
+        ("app/ModeOther.cls", MODE_OTHER),
+    ]);
+    let base = ws.path("app/ModeBase.cls");
+    let same = ws.path("app/ModeSame.cls");
+    let other = ws.path("app/ModeOther.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&base, MODE_BASE);
+    let (found, warnings) = implementation(&mut session, &base, MODE_BASE, "Init(", 0);
+    assert_eq!(found, vec![name_in(&same, MODE_SAME, "VOID Init(", "Init")]);
+    assert_eq!(warnings, Vec::<String>::new());
+
+    session.open(&same, MODE_SAME);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&same, MODE_SAME, "Init(", 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({"locations": [name_in(&base, MODE_BASE, "VOID Init(", "Init")], "gaps": []})
+    );
+    session.open(&other, MODE_OTHER);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&other, MODE_OTHER, "Init(", 0),
+    );
+    assert_eq!(answer.result, json!({"locations": [], "gaps": []}));
+}

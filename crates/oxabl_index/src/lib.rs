@@ -420,10 +420,16 @@ fn index_parsed(file: IndexedFileId, source: &str) -> (FileFacts, bool) {
     let facts = FileFacts {
         file,
         parsed: true,
-        classes: declared_classes(file, &program.statements, &Arc::new(imports))
-            .into_iter()
-            .chain(declared_enums(file, &tokens, source))
-            .collect(),
+        classes: declared_classes(
+            file,
+            &program.statements,
+            &tokens,
+            source,
+            &Arc::new(imports),
+        )
+        .into_iter()
+        .chain(declared_enums(file, &tokens, source))
+        .collect(),
         procedures,
         functions,
         shared_definitions,
@@ -505,6 +511,8 @@ fn include_before_header(tokens: &[Token], statements: &[Statement]) -> bool {
 fn declared_classes(
     file: IndexedFileId,
     statements: &[Statement],
+    tokens: &[Token],
+    source: &str,
     imports: &Arc<ImportContext>,
 ) -> Vec<ClassFacts> {
     let imports_for = |has_supertype: bool, members: &[MemberDescriptor]| {
@@ -525,7 +533,7 @@ fn declared_classes(
             ..
         } = &stmt.kind
         {
-            let members = declared_members(body);
+            let members = declared_members(body, tokens, source);
             classes.push(ClassFacts {
                 descriptor: Arc::new(ClassDescriptor {
                     name: IndexName::new(&name.name),
@@ -548,7 +556,7 @@ fn declared_classes(
             body,
         } = &stmt.kind
         {
-            let members = declared_members(body);
+            let members = declared_members(body, tokens, source);
             classes.push(ClassFacts {
                 descriptor: Arc::new(ClassDescriptor {
                     name: IndexName::new(&name.name),
@@ -750,13 +758,55 @@ fn enum_members(
 /// buffers, temp-tables, datasets, data-sources, events).
 ///
 /// A data member written without an access modifier is `PRIVATE`, as in ABL.
-fn declared_members(body: &[Statement]) -> Arc<[MemberDescriptor]> {
+fn declared_members(body: &[Statement], tokens: &[Token], source: &str) -> Arc<[MemberDescriptor]> {
     let mut members = Vec::new();
-    collect_members(body, &mut members);
+    collect_members(body, tokens, source, &mut members);
     members.into()
 }
 
-fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
+/// Whether the parameter list after a method name that ends at `name_end`
+/// holds an include or preprocessor reference. The parser skips such a
+/// reference, so the statements of the list are not the whole list.
+fn list_hides_params(tokens: &[Token], source: &str, name_end: usize) -> bool {
+    let from = tokens.partition_point(|t| t.start < name_end);
+    let mut list = tokens[from..].iter().filter(|t| t.kind != Kind::Comment);
+    if !list.next().is_some_and(|t| t.kind == Kind::LeftParen) {
+        return false;
+    }
+    let mut depth = 1usize;
+    for token in list {
+        match token.kind {
+            Kind::LeftParen => depth += 1,
+            Kind::RightParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return false;
+                }
+            }
+            Kind::IncludeReference
+            | Kind::IncludeArgReference
+            | Kind::PreprocIf
+            | Kind::PreprocElseif
+            | Kind::PreprocElse
+            | Kind::PreprocEndif
+            | Kind::PreprocGlobalDefine
+            | Kind::PreprocScopedDefine
+            | Kind::PreprocUndefine
+            | Kind::Eof => return true,
+            // `{&name}`, which the lexer can also give a keyword kind.
+            _ if source[token.start..token.end].starts_with('{') => return true,
+            _ => {}
+        }
+    }
+    true
+}
+
+fn collect_members(
+    body: &[Statement],
+    tokens: &[Token],
+    source: &str,
+    members: &mut Vec<MemberDescriptor>,
+) {
     let data = |name: &oxabl_ast::Identifier,
                 kind: SymbolKind,
                 ty: MemberType,
@@ -794,7 +844,11 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                 access: *access,
                 is_static: *is_static,
                 record: None,
-                params: member_params(parameters).map(Into::into),
+                params: if list_hides_params(tokens, source, name.span.end as usize) {
+                    None
+                } else {
+                    member_params(parameters).map(Into::into)
+                },
             }),
             StatementKind::Property {
                 access,
@@ -902,7 +956,7 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                 *is_static,
             )),
             StatementKind::Block(inner) | StatementKind::VariableDeclarationList(inner) => {
-                collect_members(inner, members);
+                collect_members(inner, tokens, source, members);
             }
             _ => {}
         }

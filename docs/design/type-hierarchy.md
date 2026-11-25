@@ -175,6 +175,17 @@ its type. It answers `Yes`, `No` or `Unknown`:
 | `TABLE`, `BUFFER`, `DATASET` | `Unknown`: the table is not in the list |
 | A list that an `{include}` or `&IF` hides | `Unknown` |
 
+The facts of a class file come from its expanded text when the file names an
+include and its expansion settles: every include resolves and the
+preprocessor gives no warning. Then a list that an include writes, with the
+`{&NAME}` values of the file that includes it, is compared as written there.
+One include read with two values of a name gives two lists: an overload, or
+`Unknown`, and never `Yes`. When the expansion does not settle (an include
+that does not resolve, also one outside the list, which can define a name
+that the list reads), a list that holds an include or a preprocessor
+reference is `Unknown`. The parser skips such a reference in a parameter
+list, so the facts never take the rest of the list for the whole list.
+
 A method counts only when it is not `PRIVATE` and not `STATIC`. An `Unknown`
 match is listed and says that it may be an overload.
 
@@ -352,7 +363,10 @@ and in a header; a cursor on no method; a cycle; a class that is not saved
 yet; the implicit `Progress.Lang.Object`; a supertype name that go to
 definition and the hierarchy must read alike; a workspace class that oxabl cannot read, which is not
 taken for the built-in type of the same name; an interface match that does not
-hide an `Object` override; an enum; a protected method that does not implement
+hide an `Object` override; parameter lists that one include writes, compared
+after preprocessing, with two values of a preprocessor name, and with an
+include that does not resolve (also in `reference_lens_lsp.rs`, for the mark of
+calls through a supertype); an enum; a protected method that does not implement
 an interface method; a list cut at `MAX_LISTED`; and a cancel in the middle of
 the index (`OXABL-TEST-HOLD:daemon.hierarchy-index`, after a request that waits
 for the workspace pass, so that the cancel cannot meet the pass).
