@@ -39,12 +39,11 @@ use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::builtin::{
-    BuiltinClass, BuiltinMember, BuiltinMemberKind, BuiltinShape, BuiltinType, builtin_class,
-};
+use crate::builtin::{BuiltinClass, BuiltinMember, BuiltinShape, BuiltinType, builtin_class};
 use crate::index::ImportCandidate;
 use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_records};
 use crate::signature::{CallParam, CallParamKind, MemberParamShape, ParamMode};
+use crate::surface::{builtin_level_members, member_namespace};
 use crate::symbol::RecordSource;
 use crate::symbol::{BuiltinMemberRef, UnknownMember};
 use crate::{
@@ -7546,13 +7545,7 @@ impl<'a> ResolveWalker<'a> {
         for interface in builtin.interfaces() {
             queue.push_back((Level::Builtin(interface), false));
         }
-        for member in builtin.members() {
-            let (kind, namespace) = match member.kind() {
-                BuiltinMemberKind::Method => (SymbolKind::Function, NamespaceId::Functions),
-                BuiltinMemberKind::Property => (SymbolKind::Property, NamespaceId::Values),
-                BuiltinMemberKind::Event => (SymbolKind::Event, NamespaceId::Events),
-                BuiltinMemberKind::Constructor => continue,
-            };
+        for (kind, namespace, member) in builtin_level_members(builtin) {
             let candidate = InheritedCandidate {
                 flags: SymbolFlags::PUBLIC | flag_if(member.is_static(), SymbolFlags::STATIC),
                 source: CandidateSource::Builtin(member),
@@ -7731,19 +7724,8 @@ impl<'a> ResolveWalker<'a> {
                     // namespace a reference site could be asking in, so
                     // recording it as inaccessible could only soften a
                     // reference that was never about it.
-                    let namespace = match member.kind {
-                        SymbolKind::Function => NamespaceId::Functions,
-                        SymbolKind::Property
-                        | SymbolKind::Variable
-                        | SymbolKind::Dataset
-                        | SymbolKind::DataSource => NamespaceId::Values,
-                        SymbolKind::Buffer | SymbolKind::TempTable => NamespaceId::Buffers,
-                        SymbolKind::Event => NamespaceId::Events,
-                        // The index reports methods and properties and
-                        // nothing else; a kind that gained membership later
-                        // must choose its own namespace rather than
-                        // defaulting into one.
-                        _ => continue,
+                    let Some(namespace) = member_namespace(member.kind) else {
+                        continue;
                     };
                     // A member the role cannot reach is not synthesized.
                     // Doing so would resolve a reference that ABL rejects,

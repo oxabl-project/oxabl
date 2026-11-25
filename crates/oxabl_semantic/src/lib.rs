@@ -73,7 +73,11 @@ pub use signature::{
     CallParam, CallParamKind, MemberParam, MemberParamShape, Param, ParamMode, ParamShape,
     ProgramSignatures, Signature, call_param_of, member_params,
 };
-pub use surface::ClassOrigin;
+pub use surface::{
+    ClassOrigin, ClassSurface, MemberDoc, MemberOrigin, SupertypeOrigin,
+    Supertypes as ClassSupertypes, SurfaceMember, SurfaceParam, SurfaceRole, builtin_member_type,
+    local_surface, supertypes, surface,
+};
 pub use symbol::{
     BuiltinMemberRef, ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes,
     Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnknownMember, UnlinkedRun,
