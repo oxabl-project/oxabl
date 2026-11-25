@@ -39,9 +39,13 @@ use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::builtin::{BuiltinClass, builtin_class};
+use crate::builtin::{
+    BuiltinClass, BuiltinMember, BuiltinMemberKind, BuiltinShape, BuiltinType, builtin_class,
+};
 use crate::index::ImportCandidate;
 use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_records};
+use crate::signature::{CallParam, CallParamKind, MemberParamShape, ParamMode};
+use crate::symbol::BuiltinMemberRef;
 use crate::symbol::RecordSource;
 use crate::{
     AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
@@ -1997,15 +2001,104 @@ struct InheritedMember {
 
 /// One declaration of an inherited member, as the walk found it.
 struct InheritedCandidate {
-    /// The declared type as the declaring file wrote it.
-    ty: MemberType,
-    params: Option<Arc<[MemberParam]>>,
     flags: SymbolFlags,
-    /// The file of the class that declares it.
-    file: IndexedFileId,
-    /// The imports of the declaring file, under which a class name in `ty` or
-    /// `params` is written.
-    imports: Arc<ImportContext>,
+    source: CandidateSource,
+}
+
+/// Where an inherited declaration comes from.
+enum CandidateSource {
+    /// A member of a workspace class.
+    Workspace {
+        /// The declared type as the declaring file wrote it.
+        ty: MemberType,
+        params: Option<Arc<[MemberParam]>>,
+        /// The file of the class that declares it.
+        file: IndexedFileId,
+        /// The imports of the declaring file, under which a class name in `ty`
+        /// or `params` is written.
+        imports: Arc<ImportContext>,
+    },
+    /// A member of a built-in type: a static row, no allocation.
+    Builtin(&'static BuiltinMember),
+    /// A member of a built-in enum: a static property of the enum's type.
+    EnumMember(&'static BuiltinClass, &'static str),
+}
+
+impl InheritedCandidate {
+    /// The parameter declarations of a workspace candidate.
+    fn workspace_params(&self) -> Option<&Option<Arc<[MemberParam]>>> {
+        match &self.source {
+            CandidateSource::Workspace { params, .. } => Some(params),
+            CandidateSource::Builtin(_) | CandidateSource::EnumMember(..) => None,
+        }
+    }
+
+    /// Whether the two declarations have the same parameter list, as far as
+    /// oxabl can tell: the farther one is then the method the nearer one
+    /// overrides. `false` when not sure, which keeps both.
+    fn same_params(&self, other: &InheritedCandidate) -> bool {
+        use CandidateSource::{Builtin, Workspace};
+        match (&self.source, &other.source) {
+            (Workspace { params: a, .. }, Workspace { params: b, .. }) => a.is_some() && a == b,
+            (Builtin(a), Builtin(b)) => {
+                a.params().len() == b.params().len()
+                    && a.params().iter().zip(b.params()).all(|(x, y)| x.ty == y.ty)
+            }
+            (Workspace { params, .. }, Builtin(m)) | (Builtin(m), Workspace { params, .. }) => {
+                params.as_deref().is_some_and(|decls| {
+                    decls.len() == m.params().len()
+                        && decls
+                            .iter()
+                            .zip(m.params())
+                            .all(|(d, p)| same_param_type(&d.shape, p.ty))
+                })
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Whether a workspace parameter declaration and a built-in parameter type
+/// are surely the same type.
+fn same_param_type(shape: &MemberParamShape, ty: BuiltinType) -> bool {
+    match (shape, ty) {
+        (MemberParamShape::Value(MemberType::Portable(p)), BuiltinType::Primitive(b)) => {
+            *p.as_resolved() == ResolvedType::Primitive(b)
+        }
+        (MemberParamShape::Value(MemberType::Named(name)), BuiltinType::Class(row)) => {
+            let class = BuiltinClass::at(row);
+            let written = name.as_atom().as_ref();
+            written == class.key
+                || class
+                    .key
+                    .rsplit('.')
+                    .next()
+                    .is_some_and(|simple| simple == written)
+        }
+        _ => false,
+    }
+}
+
+/// A level of a member surface: a workspace class, or a built-in type.
+enum Level {
+    Workspace(IndexName),
+    Builtin(&'static BuiltinClass),
+}
+
+/// The identity of a [`Level`], for the visited set of the walk.
+#[derive(PartialEq, Eq, Hash)]
+enum LevelKey {
+    Name(IndexName),
+    Row(u16),
+}
+
+impl Level {
+    fn key(&self) -> LevelKey {
+        match self {
+            Level::Workspace(name) => LevelKey::Name(name.clone()),
+            Level::Builtin(class) => LevelKey::Row(class.row()),
+        }
+    }
 }
 
 impl<'a> ResolveWalker<'a> {
@@ -4690,8 +4783,11 @@ impl<'a> ResolveWalker<'a> {
         if !self.ctx.index_loaded {
             return self.inherits_unread_parent(class);
         }
+        // A built-in ancestor is read, but the catalog does not say which of
+        // its members are protected: a miss proves nothing either.
         self.walk_member_surface(class);
-        self.cross_file_mut().opaque_surfaces.contains(&class)
+        let cf = self.cross_file_mut();
+        cf.opaque_surfaces.contains(&class) || cf.builtin_ancestors.contains(&class)
     }
 
     /// Whether `class` inherits a parent this file does not declare, other than
@@ -5111,9 +5207,7 @@ impl<'a> ResolveWalker<'a> {
         let static_mismatch = crate::overload::candidates_of(self.symbols, sym)
             .iter()
             .any(|&c| self.symbols.get(c).flags.contains(SymbolFlags::STATIC) != wants_static);
-        if static_mismatch
-            || self.class_on_cycle(class)
-            || (method && self.method_set_open(class, &atom))
+        if static_mismatch || self.class_on_cycle(class) || (method && self.method_set_open(class))
         {
             self.symbols.mark_untyped_member(expr_id);
         }
@@ -5177,7 +5271,7 @@ impl<'a> ResolveWalker<'a> {
         use_site: &Identifier,
         public_only: bool,
     ) {
-        if !self.ctx.index_loaded || self.symbols.has_inherited_candidates(own) {
+        if self.symbols.has_inherited_candidates(own) {
             return;
         }
         self.walk_member_surface(class);
@@ -5191,10 +5285,10 @@ impl<'a> ResolveWalker<'a> {
             .and_then(|cf| cf.inherited.get(&(class, atom.clone())))
             .is_none_or(|member| {
                 member.namespace != NamespaceId::Functions
-                    || member
-                        .candidates
-                        .iter()
-                        .all(|c| c.params.is_some() && own_decls.contains(&c.params))
+                    || member.candidates.iter().all(|c| {
+                        c.workspace_params()
+                            .is_some_and(|p| p.is_some() && own_decls.contains(p))
+                    })
             });
         if shadowed {
             return;
@@ -5259,7 +5353,7 @@ impl<'a> ResolveWalker<'a> {
             && crate::overload::candidates_of(self.symbols, sym)
                 .iter()
                 .any(|&c| !self.symbols.get(c).flags.contains(SymbolFlags::STATIC));
-        if instance_in_static || self.class_on_cycle(class) || self.method_set_open(class, &atom) {
+        if instance_in_static || self.class_on_cycle(class) || self.method_set_open(class) {
             self.symbols.mark_untyped_member(expr_id);
         }
     }
@@ -5389,12 +5483,7 @@ impl<'a> ResolveWalker<'a> {
 
     /// Whether the method `atom` of `class` may have candidates oxabl did not
     /// see, so that a call may reach a declaration it does not know.
-    fn method_set_open(&mut self, class: SymbolId, atom: &OxablAtom) -> bool {
-        // Every class inherits these from `Progress.Lang.Object`, whose
-        // signatures oxabl does not model.
-        if matches!(atom.as_ref(), "clone" | "equals" | "getclass" | "tostring") {
-            return true;
-        }
+    fn method_set_open(&mut self, class: SymbolId) -> bool {
         let symbol = self.symbols.get(class);
         let needs_interfaces =
             symbol.kind == SymbolKind::Interface || symbol.flags.contains(SymbolFlags::ABSTRACT);
@@ -5407,9 +5496,8 @@ impl<'a> ResolveWalker<'a> {
         {
             return true;
         }
-        if !self.ctx.index_loaded {
-            return local && self.local_supertypes_unread(class, needs_interfaces);
-        }
+        // With no index the walk reads only the built-in levels, and marks a
+        // workspace supertype this file does not declare as not read.
         self.walk_member_surface(class);
         let Some(cf) = self.cross_file() else {
             return false;
@@ -5418,25 +5506,6 @@ impl<'a> ResolveWalker<'a> {
             || cf.partial_surfaces.contains(&class)
             || cf.cyclic_classes.contains(&class)
             || (needs_interfaces && cf.unread_supertypes.contains(&class))
-    }
-
-    /// With no index: whether a supertype of the local `class` is not
-    /// declared in this file. Interfaces count only for an interface or an
-    /// abstract class, which need not declare their interfaces' methods.
-    fn local_supertypes_unread(&self, class: SymbolId, interfaces: bool) -> bool {
-        if self.inherits_unread_parent(class) {
-            return true;
-        }
-        if !interfaces {
-            return false;
-        }
-        self.symbols.supertypes(class).is_some_and(|supers| {
-            supers.implements.iter().any(|s| {
-                self.tree
-                    .resolve(ScopeId::ROOT, NamespaceId::Types, s.name.as_atom())
-                    .is_none()
-            })
-        })
     }
 
     /// A receiver identifier that resolved to nothing local may still be a
@@ -6907,11 +6976,8 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
         use_site: &Identifier,
     ) -> InheritedLookup {
-        // The one gate: with no index attached nothing was looked at, so a
-        // cross-file name keeps exactly the answer it has today.
-        if !self.ctx.index_loaded {
-            return InheritedLookup::Absent;
-        }
+        // With no index attached only the built-in levels are read, so a
+        // workspace name keeps exactly the answer it has today.
         self.walk_member_surface(class);
 
         let key = (class, atom.clone());
@@ -6966,24 +7032,63 @@ impl<'a> ResolveWalker<'a> {
         // under the nearest one; the type-check pass picks among them.
         let mut anchor: Option<SymbolId> = None;
         for candidate in &candidates {
-            let data_type = self.inherited_member_type(&candidate.ty, &candidate.imports, use_site);
+            let data_type = match &candidate.source {
+                CandidateSource::Workspace { ty, imports, .. } => {
+                    self.inherited_member_type(ty, imports, use_site)
+                }
+                CandidateSource::Builtin(member) => self.builtin_type(member.ty()),
+                CandidateSource::EnumMember(enum_class, _) => {
+                    Some(ResolvedType::Class(self.builtin_class_symbol(enum_class)))
+                }
+            };
             let sym = self.symbols.insert(Symbol {
                 data_type,
                 flags: candidate.flags | SymbolFlags::INHERITED,
                 table_id,
                 ..Symbol::synthesized(atom.clone(), namespace, kind, identifier_span(use_site))
             });
-            if self.ctx.record_sites {
-                self.symbols.record_member_file(sym, candidate.file);
-            }
-            if kind == SymbolKind::Function
-                && let Some(decls) = &candidate.params
-            {
-                let imports = Arc::clone(&candidate.imports);
-                let params = crate::signature::call_params(decls, |name| {
-                    self.class_type_in_imports(name, &imports, use_site)
-                });
-                self.symbols.record_method_params(sym, params.into());
+            match &candidate.source {
+                CandidateSource::Workspace {
+                    params,
+                    file,
+                    imports,
+                    ..
+                } => {
+                    if self.ctx.record_sites {
+                        self.symbols.record_member_file(sym, *file);
+                    }
+                    if kind == SymbolKind::Function
+                        && let Some(decls) = params
+                    {
+                        let imports = Arc::clone(imports);
+                        let params = crate::signature::call_params(decls, |name| {
+                            self.class_type_in_imports(name, &imports, use_site)
+                        });
+                        self.symbols.record_method_params(sym, params.into());
+                    }
+                }
+                CandidateSource::Builtin(member) => {
+                    self.symbols
+                        .record_builtin_member(sym, BuiltinMemberRef::Member(member));
+                    if kind == SymbolKind::Function {
+                        let params: Vec<CallParam> = member
+                            .params()
+                            .iter()
+                            .map(|p| CallParam {
+                                // Not known: the pick reads every position of
+                                // a symbol marked below as one of mixed modes.
+                                mode: ParamMode::Input,
+                                kind: self.builtin_param_kind(p.ty),
+                            })
+                            .collect();
+                        self.symbols.record_method_params(sym, params.into());
+                        self.symbols.mark_modes_unknown(sym);
+                    }
+                }
+                CandidateSource::EnumMember(enum_class, name) => {
+                    self.symbols
+                        .record_builtin_member(sym, BuiltinMemberRef::EnumMember(enum_class, name));
+                }
             }
             match anchor {
                 None => anchor = Some(sym),
@@ -6997,6 +7102,46 @@ impl<'a> ResolveWalker<'a> {
             member.symbol = Some(sym);
         }
         InheritedLookup::Member(sym)
+    }
+
+    /// The type of a built-in member in this file's symbol space. `None` for
+    /// `VOID`. A generic type, a type parameter and a .NET type are `Unknown`.
+    fn builtin_type(&mut self, ty: BuiltinType) -> Option<ResolvedType> {
+        let array = |element: ResolvedType| ResolvedType::Array {
+            element: Box::new(element),
+            extent: None,
+        };
+        Some(match ty {
+            BuiltinType::Void => return None,
+            BuiltinType::Primitive(p) => ResolvedType::Primitive(p),
+            BuiltinType::PrimitiveArray(p) => array(ResolvedType::Primitive(p)),
+            BuiltinType::Class(row) => self.builtin_row_type(row),
+            BuiltinType::ClassArray(row) => array(self.builtin_row_type(row)),
+            BuiltinType::Shape(_) | BuiltinType::Unknown => ResolvedType::Unknown,
+        })
+    }
+
+    fn builtin_row_type(&mut self, row: u16) -> ResolvedType {
+        let class = BuiltinClass::at(row);
+        if class.is_generic() {
+            ResolvedType::Unknown
+        } else {
+            ResolvedType::Class(self.builtin_class_symbol(class))
+        }
+    }
+
+    /// What a built-in parameter is, in this file's symbol space.
+    fn builtin_param_kind(&mut self, ty: BuiltinType) -> CallParamKind {
+        match ty {
+            BuiltinType::Shape(BuiltinShape::Table) => CallParamKind::Table,
+            BuiltinType::Shape(BuiltinShape::TableHandle) => CallParamKind::TableHandle,
+            BuiltinType::Shape(BuiltinShape::Dataset) => CallParamKind::Dataset,
+            BuiltinType::Shape(BuiltinShape::DatasetHandle) => CallParamKind::DatasetHandle,
+            BuiltinType::Shape(BuiltinShape::Buffer) => CallParamKind::Buffer,
+            other => {
+                CallParamKind::Value(self.builtin_type(other).unwrap_or(ResolvedType::Unknown))
+            }
+        }
     }
 
     /// The type of an inherited member as the declaring file wrote it, in this
@@ -7105,6 +7250,48 @@ impl<'a> ResolveWalker<'a> {
         chain
     }
 
+    /// The built-in type the supertype name `raw`, written under `imports`,
+    /// means, when that is sure: the same order as
+    /// [`Self::search_in_imports`], without minting a symbol.
+    fn builtin_supertype(
+        &self,
+        imports: &ImportContext,
+        raw: &str,
+    ) -> Option<&'static BuiltinClass> {
+        let searched = self.ctx.index_loaded && self.ctx.index_searches_paths;
+        if !raw.contains('.') && imports.has_unseen_imports() {
+            return None;
+        }
+        for candidate in imports.candidates(raw) {
+            let ImportCandidate::Name(name) = candidate else {
+                return None;
+            };
+            if self
+                .tree
+                .resolve(ScopeId::ROOT, NamespaceId::Types, name.as_atom())
+                .is_some()
+            {
+                return None;
+            }
+            let builtin = builtin_class(name.as_atom());
+            if let Some(class) = builtin.filter(|c| is_avm_native(c)) {
+                return Some(class);
+            }
+            if self.ctx.index_loaded
+                && !matches!(self.ctx.index.class(&name), IndexAnswer::NotFound)
+            {
+                return None;
+            }
+            if builtin.is_some() {
+                return builtin;
+            }
+            if !searched {
+                return None;
+            }
+        }
+        None
+    }
+
     /// Queue the class the supertype name `raw` means, for the walk of `class`.
     ///
     /// `raw` is read through `imports`, the imports of the file that wrote it:
@@ -7126,11 +7313,31 @@ impl<'a> ResolveWalker<'a> {
         imports: &ImportContext,
         raw: &str,
         superclass: bool,
-        queue: &mut VecDeque<(IndexName, bool)>,
+        queue: &mut VecDeque<(Level, bool)>,
     ) {
+        if let Some(builtin) = self.builtin_supertype(imports, raw) {
+            queue.push_back((Level::Builtin(builtin), superclass));
+            return;
+        }
+        if !self.ctx.index_loaded {
+            // Nothing was looked up: a parent this file does not declare may
+            // declare any name, and none of it is recorded as a lookup.
+            let declared_here = self
+                .tree
+                .resolve(ScopeId::ROOT, NamespaceId::Types, &fold_atom(raw))
+                .is_some();
+            if !declared_here && !names_root_object(imports, raw) {
+                let cf = self.cross_file_mut();
+                cf.unread_supertypes.insert(class);
+                if superclass {
+                    cf.opaque_surfaces.insert(class);
+                }
+            }
+            return;
+        }
         match lookup_supertype(self.ctx.index, imports, raw) {
             SupertypeLookup::Class(name) => {
-                queue.push_back((name, superclass));
+                queue.push_back((Level::Workspace(name), superclass));
                 return;
             }
             SupertypeLookup::Assembly => {
@@ -7181,13 +7388,15 @@ impl<'a> ResolveWalker<'a> {
     ///   [`MemberRole::Subclass`] — its own members are in the scope tree
     ///   already, so the walk starts at its supertypes, and `PROTECTED` is
     ///   reachable;
-    /// * a class symbol *synthesized from the index* is walked as a
-    ///   [`MemberRole::Outside`] — the walk starts at the class itself so its own
-    ///   members are in play, and only `PUBLIC` ones are reachable.
+    /// * a class symbol *synthesized from the index* or minted for a built-in
+    ///   type is walked as a [`MemberRole::Outside`] — the walk starts at the
+    ///   class itself so its own members are in play, and only `PUBLIC` ones
+    ///   are reachable.
     ///
-    /// Sharing the walk is what keeps one memo behind both the unqualified
-    /// (`calc-total()` inside a subclass) and qualified (`v-base:calc-total()`)
-    /// paths, rather than two that could disagree.
+    /// A level is a workspace class, read through the index, or a built-in
+    /// type, read from the static catalog with no index. After every other
+    /// level the walk adds `Progress.Lang.Object`, the root of every class and
+    /// interface, once.
     ///
     /// Termination is a **visited set**, not a depth bound. A class inheriting
     /// itself, directly or around a cycle, is a real shape in broken code, and a
@@ -7201,229 +7410,355 @@ impl<'a> ResolveWalker<'a> {
         if !self.cross_file_mut().inherited_walked.insert(class) {
             return;
         }
-        // Copied out so no borrow of `self` is held across the synthesis below.
-        let index = self.ctx.index;
-        let mut visited: FxHashSet<IndexName> = FxHashSet::default();
-        // Each name with whether it is on the `INHERITS` chain.
-        let mut queue: VecDeque<(IndexName, bool)> = VecDeque::new();
+        let mut visited: FxHashSet<LevelKey> = FxHashSet::default();
+        // Each level with whether it is on the `INHERITS` chain.
+        let mut queue: VecDeque<(Level, bool)> = VecDeque::new();
         // Cloned out rather than borrowed: the `None` arm below reads
         // `self.symbols`, and the loop after it takes `&mut self`.
         let indexed_name = self
             .cross_file()
             .and_then(|cf| cf.indexed_class_of.get(&class))
             .cloned();
-        let role = match indexed_name {
-            Some(name) => {
-                queue.push_back((name, true));
-                MemberRole::Outside
+        let role = if let Some(builtin) = self.symbols.builtin_class(class) {
+            queue.push_back((Level::Builtin(builtin), true));
+            MemberRole::Outside
+        } else if let Some(name) = indexed_name {
+            queue.push_back((Level::Workspace(name), true));
+            MemberRole::Outside
+        } else {
+            visited.insert(LevelKey::Name(IndexName::new(
+                &self.symbols.get(class).name,
+            )));
+            let authored: Vec<(SupertypeRef, bool)> = self
+                .symbols
+                .supertypes(class)
+                .map(|supers| {
+                    let inherits = supers.inherits.iter().map(|s| (s.clone(), true));
+                    let implements = supers.implements.iter().map(|s| (s.clone(), false));
+                    inherits.chain(implements).collect()
+                })
+                .unwrap_or_default();
+            let imports = self.imports();
+            for (parent, superclass) in authored {
+                self.queue_supertype(
+                    class,
+                    &imports,
+                    parent.name.as_written(),
+                    superclass,
+                    &mut queue,
+                );
             }
-            None => {
-                visited.insert(IndexName::new(&self.symbols.get(class).name));
-                let authored: Vec<(SupertypeRef, bool)> = self
-                    .symbols
-                    .supertypes(class)
-                    .map(|supers| {
-                        let inherits = supers.inherits.iter().map(|s| (s.clone(), true));
-                        let implements = supers.implements.iter().map(|s| (s.clone(), false));
-                        inherits.chain(implements).collect()
-                    })
-                    .unwrap_or_default();
-                let imports = self.imports();
-                for (parent, superclass) in authored {
-                    self.queue_supertype(
-                        class,
-                        &imports,
-                        parent.name.as_written(),
-                        superclass,
-                        &mut queue,
-                    );
-                }
-                MemberRole::Subclass
-            }
+            MemberRole::Subclass
         };
 
         // The names on the `INHERITS` chain: one that comes back is a cycle.
-        let mut chain: FxHashSet<IndexName> = FxHashSet::default();
+        let mut chain: FxHashSet<LevelKey> = FxHashSet::default();
         if role == MemberRole::Subclass {
-            chain.insert(IndexName::new(&self.symbols.get(class).name));
+            chain.insert(LevelKey::Name(IndexName::new(
+                &self.symbols.get(class).name,
+            )));
         }
-        while let Some((name, superclass)) = queue.pop_front() {
-            if superclass && !chain.insert(name.clone()) {
+        let is_class = matches!(
+            self.symbols.get(class).kind,
+            SymbolKind::Class | SymbolKind::Interface
+        );
+        let object = builtin_class("Progress.Lang.Object");
+        loop {
+            let Some((level, superclass)) = queue.pop_front().or_else(|| {
+                // The root of every class and interface, after every other level.
+                object
+                    .filter(|o| is_class && !visited.contains(&LevelKey::Row(o.row())))
+                    .map(|o| (Level::Builtin(o), false))
+            }) else {
+                break;
+            };
+            let key = level.key();
+            if superclass && !chain.insert(level.key()) {
                 self.cross_file_mut().cyclic_classes.insert(class);
             }
-            if !visited.insert(name.clone()) {
+            if !visited.insert(key) {
                 continue;
             }
-            // The answer is recorded before it is acted on, on every arm. It is
-            // pure bookkeeping — no pass or rule branches on it — but it is the
-            // *only* record that this lookup happened: a supertype that resolved
-            // mints no symbol of its own (its members do), so without this the
-            // absent-parent case looks exactly like a parent that resolved and
-            // contributed nothing. The analyze envelope's dependency-state
-            // section is what reads it.
-            let (declaring, imports) = match index.class(&name) {
-                IndexAnswer::Found(descriptor) => {
-                    self.symbols
-                        .record_class_lookup(name.as_atom(), ClassLookup::Linked(descriptor.file));
-                    // An interface's methods contribute exactly as a superclass's
-                    // do, so the walk does not branch on `descriptor.kind`.
-                    let inherits = descriptor.inherits.iter().map(|s| (s, superclass));
-                    let implements = descriptor.implements.iter().map(|s| (s, false));
-                    for (supertype, on_chain) in inherits.chain(implements) {
-                        self.queue_supertype(
-                            class,
-                            &descriptor.imports,
-                            supertype.as_written(),
-                            on_chain,
-                            &mut queue,
-                        );
-                    }
-                    if !descriptor.members_complete {
-                        self.cross_file_mut().partial_surfaces.insert(class);
-                    }
-                    (descriptor.file, Arc::clone(&descriptor.imports))
+            match level {
+                Level::Builtin(builtin) => {
+                    self.walk_builtin_level(class, builtin, superclass, &mut queue)
                 }
-                // A supertype no file on the paths declares, or one that cannot
-                // be known statically, contributes nothing — and no diagnostic:
-                // the unresolved name is recorded on the class symbol, and
-                // reporting it is a rule's decision, not this pass's.
-                // A shipped class is not the workspace's to supply, so its miss
-                // is no gap in it either.
-                IndexAnswer::NotFound => {
-                    self.cross_file_mut().unread_supertypes.insert(class);
-                    if superclass {
-                        self.cross_file_mut().opaque_surfaces.insert(class);
-                    }
-                    if !is_system_namespace(name.as_atom()) {
-                        self.cross_file_mut().incomplete_surfaces.insert(class);
-                        self.symbols
-                            .record_class_lookup(name.as_atom(), ClassLookup::Absent);
-                    }
-                    continue;
+                Level::Workspace(name) => {
+                    self.walk_workspace_level(class, name, superclass, role, &mut queue)
                 }
-                // A supertype whose file was located and will not parse
-                // contributes no members either, but it is recorded as its own
-                // outcome: the envelope is where a reader finds out why a member
-                // did not resolve, and this one is oxabl's gap rather than a
-                // missing file.
-                IndexAnswer::Unusable => {
-                    let cf = self.cross_file_mut();
-                    cf.unread_supertypes.insert(class);
-                    cf.incomplete_surfaces.insert(class);
-                    if superclass {
-                        cf.opaque_surfaces.insert(class);
-                    }
-                    self.symbols
-                        .record_class_lookup(name.as_atom(), ClassLookup::Unusable);
-                    if let Located::In(file) = index.located(LocateKind::Class, &name) {
-                        self.symbols
-                            .record_unusable_class_file(name.as_atom(), file);
-                    }
-                    continue;
-                }
-                IndexAnswer::Unknowable => {
-                    let cf = self.cross_file_mut();
-                    cf.unread_supertypes.insert(class);
-                    cf.incomplete_surfaces.insert(class);
-                    if superclass {
-                        cf.opaque_surfaces.insert(class);
-                    }
-                    self.symbols
-                        .record_class_lookup(name.as_atom(), ClassLookup::Unknowable);
-                    continue;
-                }
+            }
+        }
+    }
+
+    /// What one built-in level contributes to the surface of `class`, and its
+    /// supertypes. Reads the static catalog; needs no index.
+    fn walk_builtin_level(
+        &mut self,
+        class: SymbolId,
+        builtin: &'static BuiltinClass,
+        superclass: bool,
+        queue: &mut VecDeque<(Level, bool)>,
+    ) {
+        let cf = self.cross_file_mut();
+        if superclass && !builtin.is_object() {
+            cf.builtin_ancestors.insert(class);
+        }
+        // A damaged member may be an overload of any name, and a generic level
+        // has members that name a type parameter.
+        if !builtin.members_trusted() || builtin.is_generic() {
+            cf.partial_surfaces.insert(class);
+        }
+        if !builtin.header_known() {
+            cf.unread_supertypes.insert(class);
+            if superclass {
+                cf.opaque_surfaces.insert(class);
+            }
+        }
+        if let Some(parent) = builtin.parent() {
+            queue.push_back((Level::Builtin(parent), superclass));
+        }
+        for interface in builtin.interfaces() {
+            queue.push_back((Level::Builtin(interface), false));
+        }
+        for member in builtin.members() {
+            let (kind, namespace) = match member.kind() {
+                BuiltinMemberKind::Method => (SymbolKind::Function, NamespaceId::Functions),
+                BuiltinMemberKind::Property => (SymbolKind::Property, NamespaceId::Values),
+                BuiltinMemberKind::Event => (SymbolKind::Event, NamespaceId::Events),
+                BuiltinMemberKind::Constructor => continue,
             };
-            match index.class_members(&name) {
-                IndexAnswer::Found(members) => {
-                    for member in members.iter() {
-                        // Derived *before* the reachability check below, because
-                        // both branches need it: the accessible one to gate the
-                        // lookup, and the inaccessible one to key the set it
-                        // records the name in. A member of a kind with no
-                        // namespace is skipped by either branch — it has no
-                        // namespace a reference site could be asking in, so
-                        // recording it as inaccessible could only soften a
-                        // reference that was never about it.
-                        let namespace = match member.kind {
-                            SymbolKind::Function => NamespaceId::Functions,
-                            SymbolKind::Property
-                            | SymbolKind::Variable
-                            | SymbolKind::Dataset
-                            | SymbolKind::DataSource => NamespaceId::Values,
-                            SymbolKind::Buffer | SymbolKind::TempTable => NamespaceId::Buffers,
-                            SymbolKind::Event => NamespaceId::Events,
-                            // The index reports methods and properties and
-                            // nothing else; a kind that gained membership later
-                            // must choose its own namespace rather than
-                            // defaulting into one.
-                            _ => continue,
-                        };
-                        // A member the role cannot reach is not synthesized.
-                        // Doing so would resolve a reference that ABL rejects,
-                        // and would hand a later access-check rule an
-                        // already-resolved reference instead of a violation. The
-                        // *name* is still worth remembering, under its namespace:
-                        // a reference **in that namespace** to it is an
-                        // inaccessible member rather than an undefined symbol,
-                        // and a reference in any other namespace is untouched.
-                        if !member_reachable(member, role) {
-                            self.cross_file_mut().inherited_inaccessible.insert((
-                                class,
-                                namespace,
-                                member.name.as_atom().clone(),
-                            ));
-                            continue;
-                        }
-                        let candidate = InheritedCandidate {
+            let candidate = InheritedCandidate {
+                flags: SymbolFlags::PUBLIC | flag_if(member.is_static(), SymbolFlags::STATIC),
+                source: CandidateSource::Builtin(member),
+            };
+            self.add_inherited(
+                class,
+                OxablAtom::from(member.name().to_ascii_lowercase().as_str()),
+                kind,
+                namespace,
+                candidate,
+                None,
+            );
+        }
+        for name in builtin.enum_members() {
+            let candidate = InheritedCandidate {
+                flags: SymbolFlags::PUBLIC | SymbolFlags::STATIC,
+                source: CandidateSource::EnumMember(builtin, name),
+            };
+            self.add_inherited(
+                class,
+                OxablAtom::from(name.to_ascii_lowercase().as_str()),
+                SymbolKind::Property,
+                NamespaceId::Values,
+                candidate,
+                None,
+            );
+        }
+    }
+
+    /// Record one member a level contributes to the surface of `class`. The
+    /// surface is walked breadth-first over the whole ancestor chain, so one
+    /// name arrives more than once for an `OVERRIDE` and for a class that
+    /// inherits an interface's contract as well as for a genuine overload. A
+    /// declaration with the parameter list of a nearer one is the same method;
+    /// ABL requires an `OVERRIDE` to keep the return type, so the nearer one
+    /// has the right type.
+    fn add_inherited(
+        &mut self,
+        class: SymbolId,
+        name: OxablAtom,
+        kind: SymbolKind,
+        namespace: NamespaceId,
+        candidate: InheritedCandidate,
+        record: Option<MemberRecord>,
+    ) {
+        match self.cross_file_mut().inherited.entry((class, name)) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let existing = entry.get_mut();
+                if existing.kind == SymbolKind::Function
+                    && kind == SymbolKind::Function
+                    && !existing
+                        .candidates
+                        .iter()
+                        .any(|c| c.same_params(&candidate))
+                {
+                    existing.candidates.push(candidate);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(InheritedMember {
+                    kind,
+                    namespace,
+                    candidates: vec![candidate],
+                    record,
+                    symbol: None,
+                });
+            }
+        }
+    }
+
+    /// What one workspace level contributes to the surface of `class`, and its
+    /// supertypes, read through the index.
+    fn walk_workspace_level(
+        &mut self,
+        class: SymbolId,
+        name: IndexName,
+        superclass: bool,
+        role: MemberRole,
+        queue: &mut VecDeque<(Level, bool)>,
+    ) {
+        // Copied out so no borrow of `self` is held across the synthesis below.
+        let index = self.ctx.index;
+        // The answer is recorded before it is acted on, on every arm. It is
+        // pure bookkeeping — no pass or rule branches on it — but it is the
+        // *only* record that this lookup happened: a supertype that resolved
+        // mints no symbol of its own (its members do), so without this the
+        // absent-parent case looks exactly like a parent that resolved and
+        // contributed nothing. The analyze envelope's dependency-state
+        // section is what reads it.
+        let (declaring, imports) = match index.class(&name) {
+            IndexAnswer::Found(descriptor) => {
+                self.symbols
+                    .record_class_lookup(name.as_atom(), ClassLookup::Linked(descriptor.file));
+                // An interface's methods contribute exactly as a superclass's
+                // do, so the walk does not branch on `descriptor.kind`.
+                let inherits = descriptor.inherits.iter().map(|s| (s, superclass));
+                let implements = descriptor.implements.iter().map(|s| (s, false));
+                for (supertype, on_chain) in inherits.chain(implements) {
+                    self.queue_supertype(
+                        class,
+                        &descriptor.imports,
+                        supertype.as_written(),
+                        on_chain,
+                        queue,
+                    );
+                }
+                // An enum inherits `Progress.Lang.Enum`.
+                if descriptor.kind == ClassKind::Enum
+                    && let Some(base) = builtin_class("Progress.Lang.Enum")
+                {
+                    queue.push_back((Level::Builtin(base), superclass));
+                }
+                if !descriptor.members_complete {
+                    self.cross_file_mut().partial_surfaces.insert(class);
+                }
+                (descriptor.file, Arc::clone(&descriptor.imports))
+            }
+            // A supertype no file on the paths declares, or one that cannot
+            // be known statically, contributes nothing — and no diagnostic:
+            // the unresolved name is recorded on the class symbol, and
+            // reporting it is a rule's decision, not this pass's.
+            // A shipped class is not the workspace's to supply, so its miss
+            // is no gap in it either.
+            IndexAnswer::NotFound => {
+                self.cross_file_mut().unread_supertypes.insert(class);
+                if superclass {
+                    self.cross_file_mut().opaque_surfaces.insert(class);
+                }
+                if !is_system_namespace(name.as_atom()) {
+                    self.cross_file_mut().incomplete_surfaces.insert(class);
+                    self.symbols
+                        .record_class_lookup(name.as_atom(), ClassLookup::Absent);
+                }
+                return;
+            }
+            // A supertype whose file was located and will not parse
+            // contributes no members either, but it is recorded as its own
+            // outcome: the envelope is where a reader finds out why a member
+            // did not resolve, and this one is oxabl's gap rather than a
+            // missing file.
+            IndexAnswer::Unusable => {
+                let cf = self.cross_file_mut();
+                cf.unread_supertypes.insert(class);
+                cf.incomplete_surfaces.insert(class);
+                if superclass {
+                    cf.opaque_surfaces.insert(class);
+                }
+                self.symbols
+                    .record_class_lookup(name.as_atom(), ClassLookup::Unusable);
+                if let Located::In(file) = index.located(LocateKind::Class, &name) {
+                    self.symbols
+                        .record_unusable_class_file(name.as_atom(), file);
+                }
+                return;
+            }
+            IndexAnswer::Unknowable => {
+                let cf = self.cross_file_mut();
+                cf.unread_supertypes.insert(class);
+                cf.incomplete_surfaces.insert(class);
+                if superclass {
+                    cf.opaque_surfaces.insert(class);
+                }
+                self.symbols
+                    .record_class_lookup(name.as_atom(), ClassLookup::Unknowable);
+                return;
+            }
+        };
+        match index.class_members(&name) {
+            IndexAnswer::Found(members) => {
+                for member in members.iter() {
+                    // Derived *before* the reachability check below, because
+                    // both branches need it: the accessible one to gate the
+                    // lookup, and the inaccessible one to key the set it
+                    // records the name in. A member of a kind with no
+                    // namespace is skipped by either branch — it has no
+                    // namespace a reference site could be asking in, so
+                    // recording it as inaccessible could only soften a
+                    // reference that was never about it.
+                    let namespace = match member.kind {
+                        SymbolKind::Function => NamespaceId::Functions,
+                        SymbolKind::Property
+                        | SymbolKind::Variable
+                        | SymbolKind::Dataset
+                        | SymbolKind::DataSource => NamespaceId::Values,
+                        SymbolKind::Buffer | SymbolKind::TempTable => NamespaceId::Buffers,
+                        SymbolKind::Event => NamespaceId::Events,
+                        // The index reports methods and properties and
+                        // nothing else; a kind that gained membership later
+                        // must choose its own namespace rather than
+                        // defaulting into one.
+                        _ => continue,
+                    };
+                    // A member the role cannot reach is not synthesized.
+                    // Doing so would resolve a reference that ABL rejects,
+                    // and would hand a later access-check rule an
+                    // already-resolved reference instead of a violation. The
+                    // *name* is still worth remembering, under its namespace:
+                    // a reference **in that namespace** to it is an
+                    // inaccessible member rather than an undefined symbol,
+                    // and a reference in any other namespace is untouched.
+                    if !member_reachable(member, role) {
+                        self.cross_file_mut().inherited_inaccessible.insert((
+                            class,
+                            namespace,
+                            member.name.as_atom().clone(),
+                        ));
+                        continue;
+                    }
+                    let candidate = InheritedCandidate {
+                        flags: access_flag(member.access)
+                            | flag_if(member.is_static, SymbolFlags::STATIC),
+                        source: CandidateSource::Workspace {
                             ty: member.ty.clone(),
                             params: member.params.clone(),
-                            flags: access_flag(member.access)
-                                | flag_if(member.is_static, SymbolFlags::STATIC),
                             file: declaring,
                             imports: Arc::clone(&imports),
-                        };
-                        match self
-                            .cross_file_mut()
-                            .inherited
-                            .entry((class, member.name.as_atom().clone()))
-                        {
-                            // The surface is walked breadth-first over the
-                            // whole ancestor chain, so one name arrives more
-                            // than once for an `OVERRIDE` and for a class that
-                            // inherits an interface's contract as well as for
-                            // a genuine overload. A declaration with the
-                            // parameter list of a nearer one is the same
-                            // method; ABL requires an `OVERRIDE` to keep the
-                            // return type, so the nearer one has the right type.
-                            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                                let existing = entry.get_mut();
-                                if existing.kind == SymbolKind::Function
-                                    && member.kind == SymbolKind::Function
-                                    && !existing
-                                        .candidates
-                                        .iter()
-                                        .any(|c| c.params.is_some() && c.params == candidate.params)
-                                {
-                                    existing.candidates.push(candidate);
-                                }
-                            }
-                            std::collections::hash_map::Entry::Vacant(entry) => {
-                                entry.insert(InheritedMember {
-                                    kind: member.kind,
-                                    namespace,
-                                    candidates: vec![candidate],
-                                    record: member.record.clone(),
-                                    symbol: None,
-                                });
-                            }
-                        }
-                    }
+                        },
+                    };
+                    self.add_inherited(
+                        class,
+                        member.name.as_atom().clone(),
+                        member.kind,
+                        namespace,
+                        candidate,
+                        member.record.clone(),
+                    );
                 }
-                IndexAnswer::NotFound | IndexAnswer::Unusable | IndexAnswer::Unknowable => {
-                    self.cross_file_mut().unread_supertypes.insert(class);
-                    if superclass {
-                        self.cross_file_mut().opaque_surfaces.insert(class);
-                    }
+            }
+            IndexAnswer::NotFound | IndexAnswer::Unusable | IndexAnswer::Unknowable => {
+                self.cross_file_mut().unread_supertypes.insert(class);
+                if superclass {
+                    self.cross_file_mut().opaque_surfaces.insert(class);
                 }
             }
         }
@@ -12472,7 +12807,7 @@ mod class_site_guard_tests {
     }
 
     #[test]
-    fn imported_builtin_constructors_are_external_without_dependency_sites() {
+    fn imported_builtin_constructors_resolve_without_dependency_sites() {
         for indexed in [false, true] {
             let source = "USING Ccs.Common.*.\nMESSAGE NEW Application().\n";
             let tokens = oxabl_lexer::tokenize(source);
@@ -12488,11 +12823,14 @@ mod class_site_guard_tests {
             let sem = crate::analyze_file(&program.statements, &ctx);
             assert!(sem.symbols.class_sites().is_empty());
             assert_eq!(sem.symbols.class_lookups().count(), 0);
+            // The first candidate is the wildcard's, so the answer is sure: the
+            // `NEW` resolves to the symbol of the built-in type.
             assert!(
                 sem.references.iter().any(|(_, resolution)| matches!(
                     resolution,
-                    Resolution::Unresolved { reason: UnresolvedReason::External, name }
-                        if name.as_ref() == "application"
+                    Resolution::Resolved(sym)
+                        if sem.symbols.builtin_class(*sym).map(|c| c.name)
+                            == Some("Ccs.Common.Application")
                 )),
                 "{:?}",
                 sem.references

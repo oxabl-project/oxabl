@@ -673,8 +673,6 @@ l = oP:Secret.
 l = oP:Level.
 l = oP:Count.
 l = app.Person:Age.
-l = oNamed:ToString().
-l = oP:ToString().
 l = oSc:Score(undefinedVar).
 MESSAGE oP oX oNamed oSc h l i.
 "#;
@@ -695,13 +693,47 @@ fn an_unknown_class_member_access_or_argument_gives_no_finding() {
         "Level",
         "Count",
         "Age",
-        "ToString",
     ] {
         assert!(
             !undefined.iter().any(|n| n == name),
             "LINT0001 on `{name}`: {undefined:?}"
         );
     }
+}
+
+#[test]
+fn the_methods_of_progress_lang_object_have_their_types() {
+    // Every class inherits `ToString` from `Progress.Lang.Object`; an
+    // `OVERRIDE` keeps its type.
+    let ws = Workspace::new();
+    assert_program(
+        &ws,
+        "object.p",
+        r#"DEFINE VARIABLE oP AS app.Person NO-UNDO.
+DEFINE VARIABLE oNamed AS app.Named NO-UNDO.
+DEFINE VARIABLE l AS LOGICAL NO-UNDO.
+l = oNamed:ToString().
+l = oP:ToString().
+MESSAGE oP oNamed l.
+"#,
+        list(&[
+            (
+                "l = oNamed:ToString().",
+                mismatch("CHARACTER", "LOGICAL"),
+                "l",
+            ),
+            ("l = oP:ToString().", mismatch("CHARACTER", "LOGICAL"), "l"),
+        ]),
+    );
+    let report = check(&ws, "object.p");
+    assert!(
+        !report
+            .span_texts("LINT0001")
+            .iter()
+            .any(|n| n == "ToString"),
+        "{:?}",
+        report.span_texts("LINT0001")
+    );
 }
 
 #[test]
@@ -745,7 +777,7 @@ fn a_method_of_a_class_with_an_unread_ancestor_is_unknown_but_a_property_is_not(
     assert_program(
         &ws,
         "opaque.p",
-        r#"DEFINE VARIABLE oErr AS app.AppErr NO-UNDO.
+        r#"DEFINE VARIABLE oErr AS app.OrphanErr NO-UNDO.
 DEFINE VARIABLE oBad AS app.Bad NO-UNDO.
 DEFINE VARIABLE oOnBad AS app.OnBad NO-UNDO.
 DEFINE VARIABLE l AS LOGICAL NO-UNDO.
@@ -759,6 +791,31 @@ MESSAGE oErr oBad oOnBad l.
         list(&[
             ("l = oErr:Code.", mismatch("INTEGER", "LOGICAL"), "l"),
             ("l = oOnBad:Y.", mismatch("INTEGER", "LOGICAL"), "l"),
+        ]),
+    );
+}
+
+#[test]
+fn a_class_with_a_built_in_ancestor_has_a_complete_surface() {
+    // The catalog has every member of `Progress.Lang.AppError` and its
+    // ancestors, so the methods of the class have their types.
+    let ws = Workspace::new();
+    assert_program(
+        &ws,
+        "builtin_parent.p",
+        r#"DEFINE VARIABLE oErr AS app.AppErr NO-UNDO.
+DEFINE VARIABLE l AS LOGICAL NO-UNDO.
+l = oErr:Code.
+l = oErr:Describe().
+MESSAGE oErr l.
+"#,
+        list(&[
+            ("l = oErr:Code.", mismatch("INTEGER", "LOGICAL"), "l"),
+            (
+                "l = oErr:Describe().",
+                mismatch("CHARACTER", "LOGICAL"),
+                "l",
+            ),
         ]),
     );
 }
