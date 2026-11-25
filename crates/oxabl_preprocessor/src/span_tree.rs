@@ -430,13 +430,23 @@ impl PreprocessedFile {
         if self.elided.is_empty() {
             return Vec::new();
         }
-        let sites: Vec<(FileSpan, Option<FileSpan>)> = self
+        let walk = self.walk(self.elided.iter().map(|e| e.site));
+        let mut out: Vec<u32> = self
             .elided
             .iter()
-            .filter(|e| keep(e))
-            .map(|e| (e.site, e.within))
+            .zip(&walk.found)
+            .filter(|(e, _)| keep(e))
+            .map(|(e, found)| {
+                found
+                    .or_else(|| {
+                        let w = e.within?;
+                        walk.includes
+                            .get(&(w.file, w.span.start, w.span.end))
+                            .map(|(start, _)| *start)
+                    })
+                    .unwrap_or(0)
+            })
             .collect();
-        let mut out: Vec<u32> = self.place(&sites).into_iter().map(|(at, _)| at).collect();
         out.sort_unstable();
         out
     }
@@ -445,25 +455,40 @@ impl PreprocessedFile {
     /// the file that writes it ends there (`u32::MAX` for the file being
     /// processed), in the order of [`Self::defines`].
     pub fn define_offsets(&self) -> Vec<(u32, u32)> {
-        let sites: Vec<(FileSpan, Option<FileSpan>)> = self
-            .defines
-            .iter()
-            .map(|define| (define.site, define.within))
-            .collect();
-        self.place(&sites)
-    }
-
-    /// Place each site between the text before and after it in its file; in
-    /// a file with no text next to it, where the text of its include site
-    /// starts. With each, the end of the text of its include site.
-    fn place(&self, sites: &[(FileSpan, Option<FileSpan>)]) -> Vec<(u32, u32)> {
-        if sites.is_empty() {
+        if self.defines.is_empty() {
             return Vec::new();
         }
+        let walk = self.walk(self.defines.iter().map(|define| define.site));
+        self.defines
+            .iter()
+            .zip(&walk.found)
+            .map(|(define, found)| {
+                let region = define.within.and_then(|w| {
+                    walk.includes
+                        .get(&(w.file, w.span.start, w.span.end))
+                        .copied()
+                });
+                let at = found
+                    .or_else(|| region.map(|(start, _)| start))
+                    .unwrap_or(0);
+                let end = match define.within {
+                    None => u32::MAX,
+                    Some(_) => region.map_or(u32::MAX, |(_, end)| end),
+                };
+                (at, end)
+            })
+            .collect()
+    }
+
+    /// Walk the tree once and find where each of `sites` lies between the
+    /// text before and after it in its file, and where the text of each
+    /// include site starts and ends.
+    fn walk(&self, sites: impl ExactSizeIterator<Item = FileSpan>) -> ElidedWalk {
         type Key = (FileId, u32);
         let mut by_start: FxHashMap<Key, Vec<usize>> = FxHashMap::default();
         let mut by_end: FxHashMap<Key, Vec<usize>> = FxHashMap::default();
-        for (i, (site, _)) in sites.iter().enumerate() {
+        let count = sites.len();
+        for (i, site) in sites.enumerate() {
             by_start
                 .entry((site.file, site.span.start))
                 .or_default()
@@ -477,29 +502,11 @@ impl PreprocessedFile {
             by_start,
             by_end,
             includes: FxHashMap::default(),
-            found: vec![None; sites.len()],
+            found: vec![None; count],
             cursor: 0,
         };
         walk.nodes(&self.tree);
-        sites
-            .iter()
-            .zip(&walk.found)
-            .map(|((_, within), found)| {
-                let region = within.and_then(|w| {
-                    walk.includes
-                        .get(&(w.file, w.span.start, w.span.end))
-                        .copied()
-                });
-                let at = found
-                    .or_else(|| region.map(|(start, _)| start))
-                    .unwrap_or(0);
-                let end = match within {
-                    None => u32::MAX,
-                    Some(_) => region.map_or(u32::MAX, |(_, end)| end),
-                };
-                (at, end)
-            })
-            .collect()
+        walk
     }
 
     /// Produce the logical source text for lexing.

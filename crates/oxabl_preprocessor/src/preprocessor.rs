@@ -1998,7 +1998,22 @@ impl ProcessContext<'_> {
 
     /// Keep a define or undefine that the run carried out at `[start, end)`
     /// of `file`, when the run records them.
+    #[inline]
     fn note_define_site(
+        &mut self,
+        name: &str,
+        directive: DefineDirective,
+        value: &str,
+        file: FileId,
+        span: (usize, usize),
+    ) {
+        if self.define_record {
+            self.push_define_site(name, directive, value, file, span);
+        }
+    }
+
+    #[cold]
+    fn push_define_site(
         &mut self,
         name: &str,
         directive: DefineDirective,
@@ -2006,9 +2021,6 @@ impl ProcessContext<'_> {
         file: FileId,
         (start, end): (usize, usize),
     ) {
-        if !self.define_record {
-            return;
-        }
         self.defines.push(DefineSite {
             name: name.to_string(),
             directive,
