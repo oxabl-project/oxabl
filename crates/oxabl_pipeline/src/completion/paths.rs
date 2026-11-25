@@ -17,7 +17,7 @@ use oxabl_lexer::Kind;
 use oxabl_semantic::{NamespaceId, ScopeId};
 
 use super::rank::{self, fit, nearness};
-use super::{Candidate, Engine, ItemData, ItemKind};
+use super::{Candidate, Engine, ItemData, ItemKind, PathData};
 
 /// The names the preprocessor defines itself.
 const PREDEFINED: [&str; 8] = [
@@ -316,10 +316,10 @@ impl Engine<'_, '_, '_, '_> {
                     insert: label.clone(),
                     detail: (kind == ItemKind::File)
                         .then(|| path.join(&found.name).display().to_string()),
-                    data: ItemData::Path {
+                    data: ItemData::Path(Box::new(PathData {
                         path: label.clone(),
                         entry: entry.clone(),
-                    },
+                    })),
                     label,
                     kind,
                     snippet: false,

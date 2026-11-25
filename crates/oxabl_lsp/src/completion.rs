@@ -315,8 +315,8 @@ fn render(
                 ItemData::Field { table, field } => {
                     Some(json!({ "base": base, "table": table, "field": field }))
                 }
-                ItemData::Path { path, entry } => {
-                    Some(json!({ "path": path, "entry": entry.to_string_lossy() }))
+                ItemData::Path(data) => {
+                    Some(json!({ "path": data.path, "entry": data.entry.to_string_lossy() }))
                 }
             };
             // A directory asks for the list of its entries.

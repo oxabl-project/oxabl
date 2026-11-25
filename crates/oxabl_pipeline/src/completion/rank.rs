@@ -33,22 +33,22 @@ pub(crate) fn quality(word: &str, label: &str) -> Option<Quality> {
             Quality::Prefix
         });
     }
-    let starts = part_starts(l);
-    if l[0].eq_ignore_ascii_case(&w[0])
-        && let Some(quality) = match_from(l, &starts, &w[1..], 1)
+    if l.first()?.eq_ignore_ascii_case(&w[0])
+        && let Some(quality) = match_from(l, &w[1..], 1)
     {
         return Some(quality);
     }
-    starts[1..]
-        .iter()
-        .filter(|start| l[**start].eq_ignore_ascii_case(&w[0]))
-        .find_map(|start| match_from(l, &starts, &w[1..], start + 1))
+    // A match from a later part: no list of the parts is made, as most
+    // labels have no part that starts with the first character of the word.
+    (1..l.len())
+        .filter(|at| l[*at].eq_ignore_ascii_case(&w[0]) && is_part_start(l, *at))
+        .find_map(|at| match_from(l, &w[1..], at + 1))
         .map(|_| Quality::Inner)
 }
 
 /// How the rest of a word, `rest`, matches `label` after byte `from`: on the
 /// starts of parts, or anywhere in order. `None` when it does not.
-fn match_from(label: &[u8], starts: &[usize], rest: &[u8], from: usize) -> Option<Quality> {
+fn match_from(label: &[u8], rest: &[u8], from: usize) -> Option<Quality> {
     let mut at = from;
     for c in rest {
         let found = label
@@ -59,9 +59,8 @@ fn match_from(label: &[u8], starts: &[usize], rest: &[u8], from: usize) -> Optio
     }
     let mut at = from;
     for c in rest {
-        match starts
-            .iter()
-            .find(|start| **start >= at && label[**start].eq_ignore_ascii_case(c))
+        match (at..label.len())
+            .find(|start| label[*start].eq_ignore_ascii_case(c) && is_part_start(label, *start))
         {
             Some(start) => at = start + 1,
             None => return Some(Quality::Other),
@@ -70,20 +69,17 @@ fn match_from(label: &[u8], starts: &[usize], rest: &[u8], from: usize) -> Optio
     Some(Quality::PartStarts)
 }
 
-/// The byte index of the first character of each part of `label`: after `-`,
-/// `_` or `.`, and an upper case letter after a lower case one.
-fn part_starts(label: &[u8]) -> Vec<usize> {
-    let mut starts = vec![0];
-    for i in 1..label.len() {
-        let prev = label[i - 1];
-        let here = label[i];
-        if matches!(prev, b'-' | b'_' | b'.' | b'/' | b'\\') && here.is_ascii_alphanumeric()
-            || prev.is_ascii_lowercase() && here.is_ascii_uppercase()
-        {
-            starts.push(i);
-        }
+/// Whether byte `at` of `label` starts a part of it: the first byte, a byte
+/// after `-`, `_`, `.`, `/` or `\`, and an upper case letter after a lower
+/// case one.
+fn is_part_start(label: &[u8], at: usize) -> bool {
+    if at == 0 {
+        return true;
     }
-    starts
+    let prev = label[at - 1];
+    let here = label[at];
+    matches!(prev, b'-' | b'_' | b'.' | b'/' | b'\\') && here.is_ascii_alphanumeric()
+        || prev.is_ascii_lowercase() && here.is_ascii_uppercase()
 }
 
 /// How near an item is to the cursor, nearest first.
@@ -143,6 +139,7 @@ mod tests {
         assert_eq!(quality("ne", "NO-ERROR"), Some(Quality::PartStarts));
         assert_eq!(quality("er", "NO-ERROR"), Some(Quality::Inner));
         assert_eq!(quality("", "DEFINE"), Some(Quality::Other));
+        assert_eq!(quality("a", ""), None);
         assert_eq!(quality("dtz", "DATETIME-TZ"), Some(Quality::Other));
         assert_eq!(quality("dt", "DATETIME-TZ"), Some(Quality::PartStarts));
         assert_eq!(quality("d-t", "DATETIME-TZ"), Some(Quality::Other));

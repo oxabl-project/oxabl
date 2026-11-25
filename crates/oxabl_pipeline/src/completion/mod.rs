@@ -174,12 +174,16 @@ pub enum ItemData {
         table: u32,
         field: u32,
     },
-    /// A program or include file: its path as the item writes it, and the
-    /// include path entry it is under.
-    Path {
-        path: String,
-        entry: PathBuf,
-    },
+    /// A program or include file. Boxed, so the other items stay small.
+    Path(Box<PathData>),
+}
+
+/// A program or include file of an item: its path as the item writes it,
+/// and the include path entry it is under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathData {
+    pub path: String,
+    pub entry: PathBuf,
 }
 
 /// An item before it is ranked.
