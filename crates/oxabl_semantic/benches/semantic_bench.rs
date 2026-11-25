@@ -12,7 +12,15 @@ use oxabl_common::FileId;
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
-use oxabl_semantic::{AnalysisContext, analyze_file, check_pass, declare_pass, resolve_pass};
+use std::sync::Arc;
+
+use oxabl_ast::AccessModifier;
+use oxabl_semantic::{
+    AnalysisContext, ClassDescriptor, ClassKind, IndexAnswer, IndexName, IndexRevision,
+    IndexedFileId, MemberDescriptor, MemberParam, MemberParamShape, MemberType, ParamMode,
+    PrimitiveTy, ResolvedType, SymbolFlags, SymbolKind, WorkspaceIndex, analyze_file, check_pass,
+    declare_pass, resolve_pass,
+};
 
 const TINY: &str = r#"
 DEFINE VARIABLE x AS INTEGER NO-UNDO.
@@ -91,6 +99,178 @@ MESSAGE Progress.Lang.Class:GetClass("OpenEdge.Core.String").
 MESSAGE OpenEdge.Net.URI:Decode("example").
 "#;
 
+/// A class of the analysed file: properties, overload sets, and a method body
+/// of `THIS-OBJECT` chains, static members and calls. No index.
+const CLASS_MEMBERS: &str = r#"
+CLASS bench.Node:
+    DEFINE PUBLIC PROPERTY Name AS CHARACTER NO-UNDO GET. SET.
+    DEFINE PUBLIC PROPERTY Size AS INTEGER NO-UNDO GET. SET.
+    DEFINE PUBLIC PROPERTY Tags AS CHARACTER EXTENT 3 NO-UNDO GET. SET.
+    DEFINE PUBLIC PROPERTY Next AS bench.Node NO-UNDO GET. SET.
+    DEFINE PUBLIC STATIC PROPERTY Count AS INTEGER NO-UNDO GET. SET.
+    METHOD PUBLIC INTEGER Score(INPUT p AS INTEGER):
+        RETURN p.
+    END METHOD.
+    METHOD PUBLIC CHARACTER Score(INPUT p AS CHARACTER):
+        RETURN p.
+    END METHOD.
+    METHOD PUBLIC DECIMAL Score(INPUT p AS INTEGER, INPUT q AS INTEGER):
+        RETURN p + q.
+    END METHOD.
+    METHOD PUBLIC bench.Node Link():
+        RETURN Next.
+    END METHOD.
+    METHOD PUBLIC STATIC bench.Node Make(INPUT n AS CHARACTER):
+        RETURN NEW bench.Node().
+    END METHOD.
+    METHOD PUBLIC VOID Walk():
+        DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+        DEFINE VARIABLE i AS INTEGER NO-UNDO.
+        DEFINE VARIABLE d AS DECIMAL NO-UNDO.
+        c = THIS-OBJECT:Name.
+        i = THIS-OBJECT:Size.
+        c = THIS-OBJECT:Next:Name.
+        c = THIS-OBJECT:Link():Link():Name.
+        i = THIS-OBJECT:Score(1).
+        c = THIS-OBJECT:Score("a").
+        d = THIS-OBJECT:Score(1, 2).
+        i = Score(i).
+        c = Score(c).
+        i = bench.Node:Count.
+        c = bench.Node:Make("x"):Name.
+        c = THIS-OBJECT:Tags[1].
+        c = CAST(THIS-OBJECT, bench.Node):Name.
+        MESSAGE c i d.
+    END METHOD.
+END CLASS.
+"#;
+
+/// A program over two workspace classes, through [`BenchIndex`].
+const CLASS_MEMBERS_INDEXED: &str = r#"
+DEFINE VARIABLE oP AS bench.Person NO-UNDO.
+DEFINE VARIABLE oE AS bench.Employee NO-UNDO.
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+DEFINE VARIABLE d AS DECIMAL NO-UNDO.
+c = oP:Name.
+i = oP:Age.
+c = oP:Spouse:Name.
+c = oP:Spouse:Spouse:Greet().
+i = oP:Score(1).
+c = oP:Score("a").
+c = oE:Name.
+d = oE:Salary.
+c = oE:Greet().
+i = oE:Score(i).
+c = oE:Spouse:Name.
+i = bench.Person:Count.
+c = NEW bench.Employee():Greet().
+MESSAGE c i d.
+"#;
+
+/// A stub of the environment: answers the two classes of
+/// [`CLASS_MEMBERS_INDEXED`] from fixed descriptors.
+struct BenchIndex;
+
+fn bench_member(
+    name: &str,
+    kind: SymbolKind,
+    ty: MemberType,
+    params: Option<Vec<MemberParam>>,
+) -> MemberDescriptor {
+    MemberDescriptor {
+        name: IndexName::new(name),
+        kind,
+        ty,
+        access: AccessModifier::Public,
+        is_static: false,
+        record: None,
+        params: params.map(Into::into),
+    }
+}
+
+fn prim(ty: PrimitiveTy) -> MemberType {
+    MemberType::portable(ResolvedType::Primitive(ty)).expect("a primitive is portable")
+}
+
+fn input(ty: PrimitiveTy) -> MemberParam {
+    MemberParam {
+        mode: ParamMode::Input,
+        shape: MemberParamShape::Value(prim(ty)),
+    }
+}
+
+impl WorkspaceIndex for BenchIndex {
+    fn class(&self, name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
+        let (file, inherits) = match name.as_str() {
+            "bench.person" => (1, None),
+            "bench.employee" => (2, Some(IndexName::new("bench.Person"))),
+            _ => return IndexAnswer::NotFound,
+        };
+        IndexAnswer::Found(Arc::new(ClassDescriptor {
+            name: name.clone(),
+            file: IndexedFileId::new(file),
+            kind: ClassKind::Class,
+            inherits,
+            implements: Vec::new(),
+            imports: Arc::default(),
+            members_complete: true,
+            is_abstract: false,
+        }))
+    }
+
+    fn class_members(&self, class: &IndexName) -> IndexAnswer<Arc<[MemberDescriptor]>> {
+        use PrimitiveTy::*;
+        let members = match class.as_str() {
+            "bench.person" => vec![
+                bench_member("name", SymbolKind::Property, prim(Character), None),
+                bench_member("age", SymbolKind::Property, prim(Integer), None),
+                bench_member(
+                    "spouse",
+                    SymbolKind::Property,
+                    MemberType::Named(IndexName::new("bench.Person")),
+                    None,
+                ),
+                MemberDescriptor {
+                    is_static: true,
+                    ..bench_member("count", SymbolKind::Property, prim(Integer), None)
+                },
+                bench_member("greet", SymbolKind::Function, prim(Character), Some(vec![])),
+                bench_member(
+                    "score",
+                    SymbolKind::Function,
+                    prim(Integer),
+                    Some(vec![input(Integer)]),
+                ),
+                bench_member(
+                    "score",
+                    SymbolKind::Function,
+                    prim(Character),
+                    Some(vec![input(Character)]),
+                ),
+            ],
+            "bench.employee" => vec![
+                bench_member("salary", SymbolKind::Property, prim(Decimal), None),
+                bench_member("greet", SymbolKind::Function, prim(Character), Some(vec![])),
+            ],
+            _ => return IndexAnswer::NotFound,
+        };
+        IndexAnswer::Found(members.into())
+    }
+
+    fn program(&self, _target: &IndexName) -> IndexAnswer<IndexedFileId> {
+        IndexAnswer::NotFound
+    }
+
+    fn shared_producer(&self, _name: &IndexName) -> IndexAnswer<IndexedFileId> {
+        IndexAnswer::NotFound
+    }
+
+    fn revision(&self) -> IndexRevision {
+        IndexRevision::new(1)
+    }
+}
+
 fn parse_program(source: &str) -> Vec<oxabl_ast::Statement> {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
@@ -102,9 +282,32 @@ fn bench_fixture(
     name: &str,
     source: &str,
 ) {
+    bench_fixture_with(group, name, source, None);
+}
+
+fn bench_fixture_with(
+    group: &mut BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    name: &str,
+    source: &str,
+    index: Option<&dyn WorkspaceIndex>,
+) {
     let program = parse_program(source);
     let schema = Schema::empty();
     let ctx = AnalysisContext::new(FileId::new(1), source, &schema);
+    let ctx = match index {
+        Some(index) => ctx.with_index(index),
+        None => ctx,
+    };
+    if index.is_some() {
+        // The fixture measures the surface walk only if the stub answers.
+        let sem = analyze_file(&program, &ctx);
+        assert!(
+            sem.symbols
+                .iter()
+                .any(|(_, s)| s.flags.contains(SymbolFlags::INHERITED)),
+            "{name}: no member came from the index"
+        );
+    }
 
     group.throughput(Throughput::Bytes(source.len() as u64));
 
@@ -173,6 +376,13 @@ fn semantic_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "medium", MEDIUM);
     bench_fixture(&mut group, "skipped", SKIPPED);
     bench_fixture(&mut group, "builtin_classes", BUILTIN_CLASSES);
+    bench_fixture(&mut group, "class_members", CLASS_MEMBERS);
+    bench_fixture_with(
+        &mut group,
+        "class_members_indexed",
+        CLASS_MEMBERS_INDEXED,
+        Some(&BenchIndex),
+    );
     group.finish();
 
     // Schema-loaded resolve bench: exercises the field-lookup hot path
