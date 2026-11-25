@@ -166,6 +166,9 @@ pub mod panic_sites {
     /// The language server's parameter-name hint analysis while it holds its
     /// snapshot, for [`hold_if_injected`](super::hold_if_injected).
     pub const LSP_PARAMETER_HINTS: &str = "lsp.parameter-hints";
+    /// The language server's reference-count lens search, for
+    /// [`hold_if_injected`](super::hold_if_injected).
+    pub const LSP_REFERENCE_LENS: &str = "lsp.reference-lens";
     /// The language server's semantic tokens, for both
     /// [`hold_if_injected`](super::hold_if_injected) and
     /// [`panic_if_injected`](super::panic_if_injected).

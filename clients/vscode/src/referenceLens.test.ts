@@ -1,35 +1,29 @@
 import { describe, expect, it } from "vitest";
 
-import { SHOW_REFERENCES, withoutDeclaration } from "./referenceLens";
+import { SHOW_REFERENCES, readPlaces } from "./referenceLens";
 
-interface Pos {
-  line: number;
-  character: number;
-}
+const place = (uri: string, line: number, from: number, to: number) => ({
+  uri,
+  range: { start: { line, character: from }, end: { line, character: to } },
+});
 
-/** A place in `uri` that spans `from` to `to` on one line. */
-function place(uri: string, line: number, from: number, to: number) {
-  return {
-    uri: { toString: () => uri },
-    range: {
-      contains: (p: Pos) => p.line === line && p.character >= from && p.character <= to,
-    },
-  };
-}
-
-describe("withoutDeclaration", () => {
-  const at = { line: 3, character: 10 };
-
-  it("drops the place that holds the declaration and keeps every use", () => {
-    const declaration = place("file:///a.p", 3, 10, 16);
-    const use = place("file:///a.p", 8, 4, 10);
-    const other = place("file:///b.p", 3, 10, 16);
-    expect(withoutDeclaration([declaration, use, other], "file:///a.p", at)).toEqual([use, other]);
+describe("readPlaces", () => {
+  it("reads every place of the list, in order", () => {
+    expect(readPlaces([place("file:///a.p", 3, 10, 16), place("file:///b.p", 0, 0, 4)])).toEqual([
+      { uri: "file:///a.p", start: { line: 3, character: 10 }, end: { line: 3, character: 16 } },
+      { uri: "file:///b.p", start: { line: 0, character: 0 }, end: { line: 0, character: 4 } },
+    ]);
   });
 
-  it("keeps all places when none holds the position", () => {
-    const uses = [place("file:///a.p", 1, 0, 4), place("file:///b.p", 2, 0, 4)];
-    expect(withoutDeclaration(uses, "file:///a.p", at)).toEqual(uses);
+  it("reads an empty list", () => {
+    expect(readPlaces([])).toEqual([]);
+  });
+
+  it("refuses a missing list and a malformed place, never a shorter list", () => {
+    expect(() => readPlaces(undefined)).toThrow(/no list/);
+    expect(() => readPlaces([place("file:///a.p", 1, 0, 4), { uri: "file:///b.p" }])).toThrow(/malformed/);
+    expect(() => readPlaces([null])).toThrow(/malformed/);
+    expect(() => readPlaces([{ ...place("file:///a.p", 1, 0, 4), uri: 7 }])).toThrow(/malformed/);
   });
 
   it("names the command that the server puts in a lens", () => {

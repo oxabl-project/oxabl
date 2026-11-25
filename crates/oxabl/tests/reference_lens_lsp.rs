@@ -195,6 +195,34 @@ fn find_references(session: &mut Session, file: &Path, text: &str, needle: &str)
     (counts[0], counts[1])
 }
 
+/// The places find references gives at the name that `needle` starts, without
+/// the declaration, as `(file, line)` pairs, sorted.
+fn find_places(session: &mut Session, file: &Path, text: &str, needle: &str) -> Vec<(String, u64)> {
+    let (line, character) = utf16_at(text, nth(text, needle, 0) + 1);
+    let answer = session.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": file_uri(file)},
+            "position": {"line": line, "character": character},
+            "context": {"includeDeclaration": false}
+        }),
+    );
+    assert!(answer.get("error").is_none(), "references gave {answer}");
+    let mut found: Vec<(String, u64)> = answer["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|place| {
+            (
+                place["uri"].as_str().unwrap().to_string(),
+                place["range"]["start"]["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    found.sort();
+    found
+}
+
 /// The number at the start of a title (`3 references`, `12+ references`).
 #[track_caller]
 fn count_of(title: &str) -> usize {
@@ -203,6 +231,33 @@ fn count_of(title: &str) -> usize {
         .next()
         .and_then(|digits| digits.parse().ok())
         .unwrap_or_else(|| panic!("`{title}` starts with no count"))
+}
+
+/// What the count of an internal procedure or function says: a file can reach
+/// it through a handle that oxabl does not follow.
+const HANDLES: &str = "calls through a handle are not followed";
+
+/// The title of a lens of a routine with `n` found references.
+fn routine_title(n: usize) -> String {
+    format!("{n}+ references · incomplete: {HANDLES}")
+}
+
+/// The places of a resolved lens, as `(file, line)` pairs, sorted.
+fn listed_places(lens: &Value) -> Vec<(String, u64)> {
+    let places = lens["command"]["arguments"][2]
+        .as_array()
+        .unwrap_or_else(|| panic!("the lens lists no places: {lens}"));
+    let mut found: Vec<(String, u64)> = places
+        .iter()
+        .map(|place| {
+            (
+                place["uri"].as_str().unwrap().to_string(),
+                place["range"]["start"]["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    found.sort();
+    found
 }
 
 /// A file, its text, and the declaration lines and names of its lenses.
@@ -265,13 +320,49 @@ fn the_count_of_each_lens_is_the_length_of_find_references() {
         assert_eq!(lines, want, "{name}: the lenses {found:?}");
         if is_program {
             assert_eq!(found[0].0, 0, "{name}: the program lens is on line 0");
+            // The program lens opens the list that it counts: one place for
+            // each RUN of the program.
+            let first = lenses(&mut session, &file).remove(0);
+            let program = resolve(&mut session, &first);
+            assert_eq!(
+                listed_places(&program).len(),
+                count_of(&found[0].1),
+                "{name}: the program list has the length of the program count"
+            );
+            if name == "lib/util.p" {
+                let mut want = vec![
+                    (file_uri(&ws.path("main.p")), 2),
+                    (file_uri(&ws.path("main.p")), 9),
+                    (file_uri(&ws.path("other.p")), 3),
+                    (file_uri(&ws.path("third.p")), 0),
+                ];
+                want.sort();
+                assert_eq!(listed_places(&program), want, "{name}: the RUN places");
+            }
         }
-        for ((_, symbol), (_, got)) in symbols.iter().zip(found.iter().skip(skip)) {
+        for (((header, symbol), (_, got)), lens) in symbols
+            .iter()
+            .zip(found.iter().skip(skip))
+            .zip(lenses(&mut session, &file).iter().skip(skip))
+        {
             let (uses, with_declaration) = find_references(&mut session, &file, text, symbol);
             assert_eq!(count_of(got), uses, "{name} `{symbol}`: `{got}`");
-            assert!(
-                !got.contains('+') && !got.contains("incomplete"),
-                "{name} `{symbol}`: `{got}` is exact"
+            let routine = header.starts_with("PROCEDURE") || header.starts_with("FUNCTION");
+            if routine {
+                assert_eq!(got, &routine_title(uses), "{name} `{symbol}`");
+            } else {
+                assert!(
+                    !got.contains('+') && !got.contains("incomplete"),
+                    "{name} `{symbol}`: `{got}` is exact"
+                );
+            }
+            // The list the lens opens is the answer of find references.
+            let listed = listed_places(&resolve(&mut session, lens));
+            assert_eq!(listed.len(), uses, "{name} `{symbol}`: the list");
+            assert_eq!(
+                listed,
+                find_places(&mut session, &file, text, symbol),
+                "{name} `{symbol}`: the list is the find references answer"
             );
             assert_eq!(
                 with_declaration - uses,
@@ -297,10 +388,10 @@ fn counts_are_the_uses_in_the_workspace() {
     assert_eq!(
         titles,
         [
-            "4 references · used by 3 files",
-            "2 references",
-            "1 reference",
-            "0 references",
+            "4 references · used by 3 files".to_string(),
+            routine_title(2),
+            routine_title(1),
+            routine_title(0),
         ]
     );
     let calc = ws.path("app/Calc.cls");
@@ -335,7 +426,7 @@ fn the_lenses_have_no_count_until_they_resolve() {
     }
     let resolved = resolve(&mut session, &listed[1]);
     assert_eq!(resolved["range"], listed[1]["range"]);
-    assert_eq!(title(&resolved), "2 references");
+    assert_eq!(title(&resolved), routine_title(2));
 }
 
 #[test]
@@ -348,9 +439,20 @@ fn a_resolved_lens_opens_the_references_of_its_symbol() {
     let resolved = resolve(&mut session, &listed[2]);
     assert_eq!(resolved["command"]["command"], "oxabl.showReferences");
     let (line, character) = utf16_at(UTIL, nth(UTIL, "helper:", 0));
+    let arguments = &resolved["command"]["arguments"];
+    assert_eq!(arguments[0], json!(file_uri(&util)));
+    assert_eq!(arguments[1], json!({"line": line, "character": character}));
+    // The one use of `helper`: the `RUN helper.` of `doWork`.
+    let (use_line, use_character) = utf16_at(UTIL, nth(UTIL, "helper.", 0));
     assert_eq!(
-        resolved["command"]["arguments"],
-        json!([file_uri(&util), {"line": line, "character": character}])
+        arguments[2],
+        json!([{
+            "uri": file_uri(&util),
+            "range": {
+                "start": {"line": use_line, "character": use_character},
+                "end": {"line": use_line, "character": use_character + 6},
+            }
+        }])
     );
 }
 
@@ -374,7 +476,7 @@ fn a_count_that_can_be_short_says_so() {
     let mut session = start(&ws);
     session.open(&main, MAIN);
     let titles = resolved_titles(&mut session, &main);
-    assert_eq!(titles[1].1, "1 reference", "{titles:?}");
+    assert_eq!(titles[1].1, routine_title(1), "{titles:?}");
 }
 
 #[test]
@@ -415,7 +517,7 @@ fn a_stale_lens_is_refused() {
     assert_eq!(answer["error"]["code"], -32801, "{answer}");
     // The lenses of the new text resolve.
     let found = resolved_titles(&mut session, &util);
-    assert_eq!(found[1].1, "2 references");
+    assert_eq!(found[1].1, routine_title(2));
 }
 
 #[test]
@@ -552,9 +654,9 @@ fn effect_lenses_and_reference_lenses_are_apart() {
         both.iter().any(|t| t.starts_with("reads customer")),
         "{both:?}"
     );
-    assert!(both.iter().any(|t| t == "1 reference"), "{both:?}");
+    assert!(both.iter().any(|t| *t == routine_title(1)), "{both:?}");
     assert!(
-        both.iter().any(|t| t.starts_with("reads customer")),
+        both.iter().any(|t| t == "0 references · used by 0 files"),
         "{both:?}"
     );
 
@@ -587,4 +689,191 @@ fn a_declaration_oxabl_does_not_resolve_has_no_count() {
     );
     // It opens nothing.
     assert_eq!(resolved["command"]["command"], "");
+}
+
+/// Workspace of a persistent library, a super procedure and two callers, one
+/// through a handle that comes in as a parameter.
+fn library_workspace() -> Workspace {
+    Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("lib.p", "PROCEDURE doWork:\nEND PROCEDURE.\n"),
+        (
+            "a.p",
+            "DEFINE VARIABLE h AS HANDLE NO-UNDO.\n\
+             RUN lib.p PERSISTENT SET h.\n\
+             SESSION:ADD-SUPER-PROCEDURE(h).\n\
+             RUN b.p (INPUT h).\n\
+             RUN c.p.\n",
+        ),
+        (
+            "b.p",
+            "DEFINE INPUT PARAMETER h AS HANDLE NO-UNDO.\nRUN doWork IN h.\n",
+        ),
+        ("c.p", "RUN doWork.\n"),
+    ])
+}
+
+#[test]
+fn a_routine_that_a_handle_can_call_never_has_an_exact_count() {
+    let ws = library_workspace();
+    let lib = ws.path("lib.p");
+    let mut session = start(&ws);
+    session.open(&lib, "PROCEDURE doWork:\nEND PROCEDURE.\n");
+    let titles = resolved_titles(&mut session, &lib);
+    // The program is run once, so its count is exact.
+    assert_eq!(titles[0].1, "1 reference · used by 1 file", "{titles:?}");
+    // `b.p` calls `doWork` through a handle it gets as a parameter, and `c.p`
+    // through a super procedure: no bare number.
+    let routine = &titles[1].1;
+    assert!(
+        routine.contains('+') && routine.contains(&format!("incomplete: {HANDLES}")),
+        "a bare number for a routine a handle can call: {routine}"
+    );
+}
+
+#[test]
+fn a_standing_gap_is_written_to_the_log_once() {
+    let ws = library_workspace();
+    let lib = ws.path("lib.p");
+    let mut session = start(&ws);
+    session.open(&lib, "PROCEDURE doWork:\nEND PROCEDURE.\n");
+    let listed = lenses(&mut session, &lib);
+    let mut logged = Vec::new();
+    for _ in 0..2 {
+        let id = session.next_request_id();
+        session.send(json!({
+            "jsonrpc": "2.0", "id": id, "method": "codeLens/resolve", "params": listed[1]
+        }));
+        loop {
+            let message = session
+                .try_next(std::time::Duration::from_secs(60))
+                .expect("no answer to the resolve");
+            if message["id"] == json!(id) {
+                break;
+            }
+            if message["method"] == "window/logMessage" {
+                logged.push(message["params"]["message"].as_str().unwrap().to_string());
+            }
+        }
+    }
+    let standing: Vec<&String> = logged
+        .iter()
+        .filter(|text| text.contains("references and calls may be incomplete"))
+        .collect();
+    assert_eq!(standing.len(), 1, "the log holds {logged:?}");
+    assert!(
+        standing[0].contains("a RUN ... IN a handle"),
+        "{standing:?}"
+    );
+}
+
+/// The text of `util.p` with a marker that holds each search of its lenses.
+fn held_util() -> String {
+    format!("{UTIL}/* OXABL-TEST-HOLD:lsp.reference-lens@1500 */\n")
+}
+
+#[test]
+fn a_second_resolve_of_an_unchanged_lens_runs_no_new_search() {
+    let ws = Workspace::standard();
+    let util = ws.path("lib/util.p");
+    let mut session = start(&ws);
+    session.open(&util, &held_util());
+    let listed = lenses(&mut session, &util);
+    let timed = |session: &mut Session| {
+        let started = std::time::Instant::now();
+        let lens = resolve(session, &listed[1]);
+        (started.elapsed(), title(&lens))
+    };
+    // The marker holds a search for 1.5 s; an answer from the cache does not.
+    let (first, first_title) = timed(&mut session);
+    assert!(
+        first >= std::time::Duration::from_millis(1400),
+        "the first resolve ran no search: {first:?}"
+    );
+    let (second, second_title) = timed(&mut session);
+    assert!(
+        second < std::time::Duration::from_millis(1000),
+        "the second resolve of an unchanged lens ran a search again: {second:?}"
+    );
+    assert_eq!(first_title, second_title);
+}
+
+#[test]
+fn a_change_in_another_file_makes_a_new_search() {
+    let ws = Workspace::standard();
+    let util = ws.path("lib/util.p");
+    let other = ws.path("other.p");
+    let mut session = start(&ws);
+    session.open(&util, UTIL);
+    session.open(&other, OTHER);
+    let listed = lenses(&mut session, &util);
+    assert_eq!(title(&resolve(&mut session, &listed[1])), routine_title(2));
+    // `other.p` stops calling `doWork`; the lens of `util.p` has the same
+    // version and the same text.
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": file_uri(&other), "version": 2},
+            "contentChanges": [{"text": "RUN lib/util.p.\n"}]
+        }
+    }));
+    assert_eq!(title(&resolve(&mut session, &listed[1])), routine_title(1));
+}
+
+#[test]
+fn a_static_client_that_was_not_told_lenses_resolve_gets_no_reference_lenses() {
+    const SCHEMA: &str = "ADD TABLE \"customer\"\n\
+        ADD FIELD \"id\" OF \"customer\" AS integer\n\
+        ADD INDEX \"pk\" ON \"customer\" IS PRIMARY UNIQUE\n\
+        INDEX-FIELD \"id\" ASCENDING\n";
+    const EFFECTS: &str = "[workspace]\nname = \"lenses\"\n\
+        [workspace.sources]\ninclude_paths = [\".\"]\n\
+        [workspace.schema]\nfiles = [\"schema.df\"]\n\
+        [workspace.lint]\nenable = [\"strict.access\"]\n";
+    const PROG: &str =
+        "PROCEDURE load:\n    FIND FIRST customer NO-LOCK NO-ERROR.\nEND PROCEDURE.\nRUN load.\n";
+    let ws = Workspace::new(&[
+        ("oxabl.toml", EFFECTS),
+        ("schema.df", SCHEMA),
+        ("prog.p", PROG),
+    ]);
+    let prog = ws.path("prog.p");
+    // Effect lenses are on, reference lenses are off: the client is told that
+    // lenses do not resolve.
+    let mut session = Session::start_with(&ws.root, client_capabilities());
+    assert_eq!(
+        session.initialized["result"]["capabilities"]["codeLensProvider"]["resolveProvider"],
+        false
+    );
+    session.open(&prog, PROG);
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeConfiguration",
+        "params": {"settings": {"oxabl": {"referenceLenses": {"enable": true}}}}
+    }));
+    session.wait_for(|m| m["method"] == "workspace/codeLens/refresh");
+    // Such a client would never resolve a lens that has no count.
+    for lens in lenses(&mut session, &prog) {
+        assert!(
+            lens["data"].is_null(),
+            "a lens that the client cannot resolve: {lens}"
+        );
+    }
+}
+
+#[test]
+fn a_change_of_a_file_on_disk_makes_a_new_search() {
+    let ws = Workspace::standard();
+    let util = ws.path("lib/util.p");
+    let other = ws.path("other.p");
+    let mut session = start(&ws);
+    session.open(&util, UTIL);
+    let listed = lenses(&mut session, &util);
+    assert_eq!(title(&resolve(&mut session, &listed[1])), routine_title(2));
+    // `other.p` is not open: only the watcher tells of the change.
+    std::fs::write(&other, "RUN lib/util.p.\n").unwrap();
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeWatchedFiles",
+        "params": {"changes": [{"uri": file_uri(&other), "type": 2}]}
+    }));
+    assert_eq!(title(&resolve(&mut session, &listed[1])), routine_title(1));
 }

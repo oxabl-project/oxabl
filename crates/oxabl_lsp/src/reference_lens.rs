@@ -5,11 +5,12 @@
 //! counts its locations. The effect lenses (`code_lens.rs`) are a different
 //! kind with their own configuration.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use lsp_server::{ErrorCode, Message, Request, Response};
-use lsp_types::{CodeLens, Command, Position, PositionEncodingKind, Range, Uri};
+use lsp_types::{CodeLens, Command, Location, Position, PositionEncodingKind, Range, Uri};
 use oxabl_daemon::canonical_path;
 use oxabl_daemon::references::{
     ReferenceAnswer, ReferenceError, ReferenceQuery, answer_references,
@@ -23,12 +24,67 @@ use crate::position::byte_to_position;
 use crate::references::{locations, with_dropped};
 use crate::{Server, uri_to_path};
 
-/// The client command a resolved lens runs. The client shows the references of
-/// the symbol at the position that the arguments name (`uri`, `position`).
+/// The client command a resolved lens runs. Its arguments are the `uri` and
+/// `position` that anchor the list, and the `locations` the count counts, so
+/// the list is the count and costs no second search.
 pub(crate) const COMMAND: &str = "oxabl.showReferences";
 
 /// The longest gap text a title shows, in characters.
 const REASON_LIMIT: usize = 60;
+
+/// The most titles kept; the cache is emptied when it grows past this.
+const CACHE_LIMIT: usize = 4096;
+
+/// The generations of the session a title was made at: buffers, configuration
+/// and schema.
+type Generations = (u64, u64, u32);
+
+/// What tells two resolves of one lens apart: the file, the unit that asked,
+/// the kind, the name's byte and the version of the text.
+#[derive(Hash, PartialEq, Eq)]
+struct CacheKey {
+    uri: String,
+    root: PathBuf,
+    kind: Kind,
+    offset: u32,
+    version: i32,
+}
+
+/// The titles of resolved lenses, shared with the resolve workers. A title is
+/// used again only at the session generations it was made at, so an edit of
+/// any open file, a change of the configuration or schema, or a change of a
+/// file on disk (which empties the cache) makes a new search.
+#[derive(Clone, Default)]
+pub(crate) struct ResolveCache {
+    titles: Arc<Mutex<HashMap<CacheKey, (Generations, Title)>>>,
+}
+
+impl ResolveCache {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<CacheKey, (Generations, Title)>> {
+        self.titles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn get(&self, key: &CacheKey, now: Generations) -> Option<Title> {
+        self.lock()
+            .get(key)
+            .filter(|(made, _)| *made == now)
+            .map(|(_, title)| title.clone())
+    }
+
+    fn put(&self, key: CacheKey, made: Generations, title: Title) {
+        let mut titles = self.lock();
+        if titles.len() >= CACHE_LIMIT {
+            titles.clear();
+        }
+        titles.insert(key, (made, title));
+    }
+
+    pub(crate) fn clear(&self) {
+        self.lock().clear();
+    }
+}
 
 /// The `enable` flag of a `referenceLenses` settings value: a boolean, or an
 /// object with a boolean `enable`.
@@ -54,7 +110,7 @@ struct LensData {
 
 const DATA_TAG: &str = "references";
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 enum Kind {
     Program,
@@ -211,6 +267,30 @@ impl Server<'_> {
                 },
             ),
         };
+        let generations: Option<Generations> = self.host.with(|sessions| {
+            sessions.get(&self.session_root).map(|session| {
+                (
+                    session.buffer_generation(),
+                    session.config_generation(),
+                    session.schema_revision(),
+                )
+            })
+        });
+        let key = CacheKey {
+            uri: data.uri.clone(),
+            root: root.clone(),
+            kind: data.kind,
+            offset: data.offset,
+            version: data.version,
+        };
+        if let Some(title) = generations.and_then(|now| self.reference_cache.get(&key, now)) {
+            return self.respond(Response::new_ok(req.id, resolved(lens, &data, title)));
+        }
+        // The text, to hold the search in a test that asks for it.
+        let hold_text = oxabl_common::INJECTION_ENABLED
+            .then(|| self.documents.get(&uri).map(|doc| doc.text()))
+            .flatten();
+        let cache = self.reference_cache.clone();
         let in_flight = self.references.clone();
         let cancel = in_flight.start(&req.id);
         let host = self.host.clone();
@@ -225,13 +305,27 @@ impl Server<'_> {
                 let in_flight = in_flight.clone();
                 let id = id.clone();
                 move || {
+                    if let Some(text) = &hold_text {
+                        oxabl_common::hold_if_injected(
+                            oxabl_common::panic_sites::LSP_REFERENCE_LENS,
+                            text,
+                        );
+                    }
                     let answered = oxabl_common::catch_panic(|| {
                         answer_references(&host, &session_root, &root, &query, &cancel)
                     });
                     in_flight.finish(&id);
                     let response = match answered {
                         Ok(Ok(answer)) => {
+                            crate::references::log_standing(&sender, &in_flight, "references and calls", &answer.gaps);
+                            let volatile = answer.volatile;
                             let title = title(answer, data.kind, &encoding);
+                            if !volatile
+                                && title.opens
+                                && let Some(made) = generations
+                            {
+                                cache.put(key, made, title.clone());
+                            }
                             Response::new_ok(id, resolved(lens, &data, title))
                         }
                         Ok(Err(ReferenceError::Cancelled)) => Response::new_err(
@@ -276,10 +370,12 @@ impl Server<'_> {
     }
 }
 
-/// A title, and whether it opens the references.
+/// A title, whether it opens the references, and the places it counts.
+#[derive(Clone)]
 struct Title {
     text: String,
     opens: bool,
+    locations: Vec<Location>,
 }
 
 fn resolved(mut lens: CodeLens, data: &LensData, title: Title) -> CodeLens {
@@ -294,6 +390,7 @@ fn resolved(mut lens: CodeLens, data: &LensData, title: Title) -> CodeLens {
             vec![
                 Value::String(data.uri.clone()),
                 serde_json::json!(data.position),
+                serde_json::json!(title.locations),
             ]
         }),
     });
@@ -305,12 +402,14 @@ fn unknown(reason: &str) -> Title {
     Title {
         text: format!("references not known: {}", shorten(reason)),
         opens: false,
+        locations: Vec::new(),
     }
 }
 
 /// The title for an answer: an exact count, or a count that says it can be
-/// short. Only the gaps of the referent mark a count; a standing gap holds for
-/// every request of the workspace and is only logged.
+/// short. A gap of the referent marks a count, and so does a standing gap that
+/// is a property of the referent's kind (a call through a handle). Another
+/// standing gap holds for every request of the workspace and is only logged.
 fn title(answer: ReferenceAnswer, kind: Kind, encoding: &PositionEncodingKind) -> Title {
     if !answer.resolved {
         return unknown("oxabl does not resolve this name");
@@ -322,11 +421,11 @@ fn title(answer: ReferenceAnswer, kind: Kind, encoding: &PositionEncodingKind) -
         .iter()
         .map(|target| canonical_path(&target.path))
         .collect();
-    let shown = locations(answer, encoding).len();
+    let places = locations(answer, encoding);
+    let shown = places.len();
     let reasons: Vec<String> = with_dropped(&gaps, wanted - shown)
-        .into_iter()
-        .filter(|gap| !gap.standing)
-        .map(|gap| gap.reason)
+        .iter()
+        .filter_map(|gap| gap.count_reason().map(str::to_string))
         .collect();
     let incomplete = !reasons.is_empty();
     let plus = if incomplete { "+" } else { "" };
@@ -351,7 +450,11 @@ fn title(answer: ReferenceAnswer, kind: Kind, encoding: &PositionEncodingKind) -
             text += &format!(" (+{} more)", reasons.len() - 1);
         }
     }
-    Title { text, opens: true }
+    Title {
+        text,
+        opens: true,
+        locations: places,
+    }
 }
 
 fn shorten(reason: &str) -> String {

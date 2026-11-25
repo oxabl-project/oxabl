@@ -113,6 +113,10 @@ pub struct ReferenceAnswer {
     /// Whether the name or item asked about refers to something. An empty
     /// `locations` of an answer that is not `resolved` is not a count of zero.
     pub resolved: bool,
+    /// Whether a later request can give another answer with no edit between:
+    /// the workspace pass was not ready, failed or was dated. A caller keeps
+    /// no such answer.
+    pub volatile: bool,
 }
 
 /// Why a request has no answer.
@@ -163,23 +167,31 @@ pub fn answer_references(
     let mut gaps = referent.gaps.clone();
     let mut units = Vec::new();
     let mut slot = None;
+    let mut volatile = false;
     if !referent.is_local() {
         cancelled()?;
         // These leave out or date the whole search, so they are gaps of this
         // answer, not standing ones.
         match graph_or_cancel(host, session_root, cancel)? {
             Ok(Ok(graph)) => {
+                volatile = !graph.gaps.is_empty();
                 gaps.extend(graph.gaps.into_iter().map(Gap::of_referent));
                 let search = referent.search(&graph.graph, root, MAX_UNITS);
                 gaps.extend(search.gaps);
                 units = search.units;
             }
-            Ok(Err(reason)) => gaps.push(Gap::of_referent(format!(
-                "other files are not searched: {reason}"
-            ))),
-            Err(error) => gaps.push(Gap::of_referent(format!(
-                "other files are not searched: {error}"
-            ))),
+            Ok(Err(reason)) => {
+                volatile = true;
+                gaps.push(Gap::of_referent(format!(
+                    "other files are not searched: {reason}"
+                )));
+            }
+            Err(error) => {
+                volatile = true;
+                gaps.push(Gap::of_referent(format!(
+                    "other files are not searched: {error}"
+                )));
+            }
         }
         cancelled()?;
         // Taken once the graph is ready: a request that waits for a pass holds
@@ -268,6 +280,7 @@ pub fn answer_references(
     answer.gaps = gaps;
     answer.texts = texts;
     answer.resolved = true;
+    answer.volatile = volatile;
     Ok(answer)
 }
 

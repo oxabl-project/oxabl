@@ -55,11 +55,29 @@ A count is exact only when the answer has no gap of the referent (the gaps of
 12+ references · incomplete: other files are not searched: no include path…
 ```
 
-A program lens with gaps shows `used by M+ files`. A standing gap (the same for
-every request of the workspace) does not mark a count. Find references writes
-it to the log once, and so do the lenses: a workspace nearly always has a file
-that oxabl cannot analyse, and a mark on every lens would hide the marks that
-matter.
+A program lens with gaps shows `used by M+ files`.
+
+A standing gap is the same for every request of the workspace (a file that
+oxabl cannot analyse, an incomplete dependency set). It does not mark a count,
+because a workspace nearly always has one and a mark on every lens would hide
+the marks that matter. Find references and the lenses write it to the log once
+per session.
+
+One standing gap is the exception: a RUN of an internal procedure or function
+can go through a handle, a shared variable or a super procedure that oxabl
+does not follow. That is a property of the kind of declaration, not of the
+workspace, so every procedure and function lens shows it:
+
+```text
+2+ references · incomplete: calls through a handle are not followed
+```
+
+A bare number would let a user delete a procedure that a persistent library
+or a super procedure still calls. A program, a class and a member of a class
+have no such gap.
+
+A method overload has the count of all overloads of its name, as find
+references has. Two overloads of one name show the same number.
 
 When no count is known, the lens says so and opens nothing:
 
@@ -74,12 +92,14 @@ edit replaces, is an error, not a title.
 
 ## The command
 
-A resolved lens runs the client command `oxabl.showReferences` with two
-arguments: the file URI and the position of the name. The VS Code extension
-registers it. It asks the language server for the references of that position,
-takes out the declaration, and shows the rest with `editor.action.showReferences`.
-The list has the length that the lens shows. A client without this command
-shows the title and does nothing on a click.
+A resolved lens runs the client command `oxabl.showReferences` with three
+arguments: the file URI, the position of the name (the anchor of the list) and
+the list of places, as LSP `Location` values. The list is the one the count
+counts, so the list and the number are one answer, a program lens has a list
+too, and a click runs no second search. The VS Code extension registers the
+command and shows the list with `editor.action.showReferences`. A client
+without this command shows the title and does nothing on a click. The answer
+to a resolve grows with the count, because it holds every place.
 
 ## Settings
 
@@ -99,16 +119,29 @@ a lens of either kind, with `resolveProvider` on when the setting is on. A
 change of the setting registers again. With static capabilities the server
 advertises `codeLensProvider` at the handshake when the setting is on or an
 effect rule is on; `resolveProvider` is on when the setting is on. A static
-client must restart to use a changed setting for the capability. A change that
-the server gets with `workspace/didChangeConfiguration` still applies to the
-answers, and the server asks for a refresh with `workspace/codeLens/refresh`.
+client must restart to use a changed setting for the capability. A static
+client that got `resolveProvider: false` gets no reference lens when the
+setting is turned on later, because it would never resolve one. Turning the
+setting off still applies to the answers, and the server asks for a refresh
+with `workspace/codeLens/refresh`.
 
 ## Cost
 
 A resolve costs one find references request. A file with many declarations
-makes many requests, two at a time, as the lenses come into view. A resolve
-that scrolls out of view is cancelled by the client. The lens needs no work
-until it is seen.
+makes many requests, two at a time, as the lenses come into view. A client
+can cancel a resolve that scrolls out of view (VS Code does). The lens needs
+no work until it is seen.
+
+The server keeps the title of each resolved lens. A second resolve of the
+same lens (the same file, unit, declaration and text version) runs no new
+search while the session is unchanged: the generations of the buffers, the
+configuration and the schema are the same, and no watched file changed on
+disk. An answer that a later request can change with no edit is not kept: a
+workspace pass that was not ready or that failed, or a title with no count.
+
+An edit changes the version of the text. VS Code asks for the lenses again
+after each edit, and then every lens that is in view runs its search again.
+This per-edit cost is the reason the setting is off by default.
 
 ## Tests
 
@@ -120,6 +153,13 @@ methods; that a listed lens has no count; the command and its arguments; the
 count with no include path and with a file that has a parse error; a lens for
 text that changed; a declaration that oxabl does not resolve; the setting
 (off by default, on from the options, off and on again at run time, and the
-registration for a client that registers); and the effect lenses with the
-reference lenses beside them. The `reference-lenses` scenario of
-`clients/vscode/test/e2e` shows the lenses and the click in a real VS Code.
+registration for a client that registers; a static client that was not told
+that lenses resolve); the list that each lens opens (equal to find references
+for a symbol, the places that run a program for a program); a procedure that a
+handle can call (never a bare number); the standing gap in the log, once; the
+cache (a second resolve runs no search, and a change in another open file, or
+of a file on disk, runs a new one); and the effect lenses with the reference
+lenses beside them. The `reference-lenses` scenario of
+`clients/vscode/test/e2e` shows the lenses in a real VS Code, clicks the
+procedure lens and the program lens, and counts the rows of the references
+view against the number on the lens.

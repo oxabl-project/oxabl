@@ -540,12 +540,25 @@ fn warn(
         send(lsp_types::notification::ShowMessage::METHOD, &message);
         send(lsp_types::notification::LogMessage::METHOD, &message);
     }
+    log_standing(sender, in_flight, standing, gaps);
+}
+
+/// Write each standing gap of `gaps` to the log, once per session.
+pub(crate) fn log_standing(
+    sender: &crossbeam_channel::Sender<Message>,
+    in_flight: &InFlight,
+    standing: &str,
+    gaps: &[Gap],
+) {
     for gap in gaps.iter().filter(|gap| gap.standing) {
         if in_flight.first_time(&gap.reason) {
-            send(
-                lsp_types::notification::LogMessage::METHOD,
-                &format!("oxabl: {standing} may be incomplete: {}", gap.reason),
-            );
+            let _ = sender.send(Message::Notification(Notification {
+                method: lsp_types::notification::LogMessage::METHOD.to_string(),
+                params: serde_json::json!({
+                    "type": MessageType::WARNING,
+                    "message": format!("oxabl: {standing} may be incomplete: {}", gap.reason),
+                }),
+            }));
         }
     }
 }

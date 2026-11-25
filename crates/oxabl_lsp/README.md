@@ -44,9 +44,10 @@ Each procedure, function, method, class, interface and property gets a lens, and
 line 1. `textDocument/codeLens` gives the ranges. `codeLens/resolve` runs the search of find references and
 fills in the title: `3 references`, and for a program `3 references · used by 2 files`. The count is the
 length of the find references answer without the declaration. A count that can be short says so:
-`12+ references · incomplete: <reason>`. A declaration that oxabl does not resolve says
-`references not known: ...` and shows no number. The command is `oxabl.showReferences`, with the file URI and
-the position of the name. See `docs/design/reference-lenses.md`.
+`12+ references · incomplete: <reason>`; a procedure or function always says that calls through a handle are
+not followed. A declaration that oxabl does not resolve says
+`references not known: ...` and shows no number. The command is `oxabl.showReferences`, with the file URI, the position of the name and the list
+of places that the count counts. The server keeps resolved titles for an unchanged session. See `docs/design/reference-lenses.md`.
 
 ## Semantic tokens
 

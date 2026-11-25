@@ -281,7 +281,8 @@ longer. The limit bounds the work of one request.
 The code lenses with the count of references (`docs/design/reference-lenses.md`)
 run this search for one declaration. Their count is the length of the
 references answer without the declaration, and the gaps of the referent mark it
-as incomplete.
+as incomplete. The standing gap of a RUN through a handle marks the count of
+every procedure and function.
 
 ## Tests
 

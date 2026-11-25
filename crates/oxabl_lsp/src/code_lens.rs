@@ -51,6 +51,9 @@ pub(crate) struct LensCache {
     options: Options,
     registered: Vec<String>,
     registered_resolve: bool,
+    /// A static client was told at the handshake that lenses resolve. Without
+    /// that, it never resolves one, so a lens of a later setting has no count.
+    resolve_advertised: bool,
     // An absent result marks an in-flight request, avoiding duplicate workers.
     ready: HashMap<Uri, Option<Vec<CodeLens>>>,
 }
@@ -63,6 +66,7 @@ pub(crate) struct LensResult {
 
 impl LensCache {
     pub(crate) fn new(options: Options) -> Self {
+        let resolve_advertised = !options.dynamic && options.reference_lenses;
         Self {
             epoch: 0,
             requests: 0,
@@ -70,6 +74,7 @@ impl LensCache {
             options,
             registered: Vec::new(),
             registered_resolve: false,
+            resolve_advertised,
             ready: HashMap::new(),
         }
     }
@@ -83,7 +88,7 @@ impl LensCache {
     }
 
     pub(crate) fn reference_lenses(&self) -> bool {
-        self.options.reference_lenses
+        self.options.reference_lenses && (self.options.dynamic || self.resolve_advertised)
     }
 
     /// Set the reference-lens choice; returns the one it replaced.

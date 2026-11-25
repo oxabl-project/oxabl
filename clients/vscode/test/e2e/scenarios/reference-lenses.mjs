@@ -8,7 +8,7 @@ import { addSettings, installVsix, launch, makeProfile } from "../lib/vscode.mjs
 
 // A real `oxabl` (OXABL_E2E_OXABL) in a real VS Code: the reference-count lenses are off until
 // `oxabl.referenceLenses.enable` is on, count the uses of a procedure and the files that run a
-// program, open the references when clicked, and go away when the setting is turned off again, with
+// program, list what they count when clicked, and go away when the setting is turned off again, with
 // no restart. OXABL_E2E_RUNTIME names a short directory, as for `outline`.
 
 const MAIN = [
@@ -36,6 +36,16 @@ const lenses = (page) =>
       e.textContent.replace(/ /g, " ").trim(),
     ),
   );
+
+// The open references view: the count in its title ("Locations (2)") and the text of its rows.
+const peek = (page) =>
+  page.evaluate(() => {
+    const zone = document.querySelector(".reference-zone-widget");
+    if (!zone) return null;
+    const title = zone.querySelector(".peekview-title")?.textContent ?? "";
+    const rows = [...zone.querySelectorAll(".monaco-list-row")].map((r) => r.textContent.replace(/\u00a0/g, " ").trim());
+    return { count: Number(/\((\d+)\)/.exec(title)?.[1] ?? NaN), rows };
+  });
 
 const until = (what, fn, timeout = 30_000) =>
   waitFor(what, fn, { timeout, interval: 300 })
@@ -81,7 +91,7 @@ export async function referenceLenses(ctx) {
       "the counts",
       async () => {
         const found = await lenses(page);
-        return found.includes("1 reference · used by 1 file") && found.includes("2 references");
+        return found.includes("1 reference · used by 1 file") && found.some((t) => t.startsWith("2+ references"));
       },
       60_000,
     );
@@ -92,17 +102,29 @@ export async function referenceLenses(ctx) {
     );
     await screenshot(page, `${name}-on`);
 
-    // 3. A click lists the references.
-    await page.locator(".monaco-editor .codelens-decoration a", { hasText: "2 references" }).first().click();
-    const peek = await until("the references view", async () =>
-      page.evaluate(() => {
-        const zone = document.querySelector(".reference-zone-widget");
-        return !!zone && /main\.p/.test(zone.textContent ?? "");
-      }),
+    // 3. A click lists what the lens counts: the number in the peek's title and its rows are the
+    // count on the lens, and the rows are the places themselves.
+    const clickLens = async (text) => {
+      await page.locator(".monaco-editor .codelens-decoration a", { hasText: text }).first().click();
+      const found = await until("the references view", async () => (await peek(page)) !== null);
+      const view = found ? await peek(page) : null;
+      await page.keyboard.press("Escape");
+      await until("the references view closed", async () => (await peek(page)) === null);
+      return view;
+    };
+    const procedure = await clickLens("2+ references");
+    check(
+      `${name}: a click on a procedure lists its two uses`,
+      procedure?.count === 2 && JSON.stringify(procedure.rows) === JSON.stringify(["RUN tally.", "RUN tally."]),
+      `peek: ${JSON.stringify(procedure)}`,
     );
-    check(`${name}: a click opens the references of the procedure`, peek);
+    const program = await clickLens("used by 1 file");
+    check(
+      `${name}: a click on the program lists the one place that runs it`,
+      program?.count === 1 && JSON.stringify(program.rows) === JSON.stringify(["RUN main.p."]),
+      `peek: ${JSON.stringify(program)}`,
+    );
     await screenshot(page, `${name}-peek`);
-    await page.keyboard.press("Escape");
 
     // 4. Off again, with no restart.
     addSettings(profile, { "oxabl.referenceLenses.enable": false });

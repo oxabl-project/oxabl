@@ -18,7 +18,7 @@ import { ExpandedUnits } from "./expandedUnit";
 import { InactiveRegions } from "./inactiveRegions";
 import { IncluderContexts } from "./includerContext";
 import { installRecordPath, isManaged } from "./install";
-import { SHOW_REFERENCES, withoutDeclaration } from "./referenceLens";
+import { SHOW_REFERENCES, readPlaces } from "./referenceLens";
 import { SchemaBrowser } from "./schemaView";
 import { registerSnippets } from "./snippetCompletion";
 import { installSkill } from "./skill";
@@ -78,7 +78,8 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     vscode.commands.registerCommand("oxabl.goToSuperMethod", () => goToSuperMethod(() => client)),
     vscode.commands.registerCommand(
       SHOW_REFERENCES,
-      (uri: string, position: { line: number; character: number }) => showReferences(uri, position),
+      (uri: string, position: { line: number; character: number }, places: unknown) =>
+        showReferences(uri, position, places),
     ),
     vscode.commands.registerCommand("oxabl.restartServer", restartServer),
     vscode.commands.registerCommand("oxabl.installCli", () => cli.installOrUpdate()),
@@ -226,20 +227,27 @@ function readReferenceLenses(): { enable: boolean } {
   return referenceLensSettings(config.get<boolean>("enable"));
 }
 
-/** Show the uses of the symbol at `position` in `uri`, as the lens above it counts them. */
-async function showReferences(uri: string, position: { line: number; character: number }): Promise<void> {
-  const target = vscode.Uri.parse(uri);
-  const at = new vscode.Position(position.line, position.character);
-  const found = await vscode.commands.executeCommand<vscode.Location[]>(
-    "vscode.executeReferenceProvider",
-    target,
-    at,
+/** Show the places that a lens counts, in the references view anchored at `position` in `uri`. */
+async function showReferences(
+  uri: string,
+  position: { line: number; character: number },
+  places: unknown,
+): Promise<void> {
+  const shown = readPlaces(places).map(
+    (place) =>
+      new vscode.Location(
+        vscode.Uri.parse(place.uri),
+        new vscode.Range(
+          new vscode.Position(place.start.line, place.start.character),
+          new vscode.Position(place.end.line, place.end.character),
+        ),
+      ),
   );
   await vscode.commands.executeCommand(
     "editor.action.showReferences",
-    target,
-    at,
-    withoutDeclaration(found ?? [], uri, at),
+    vscode.Uri.parse(uri),
+    new vscode.Position(position.line, position.character),
+    shown,
   );
 }
 

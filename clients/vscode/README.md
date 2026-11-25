@@ -117,11 +117,13 @@ you also get, with no setup:
   `true` to show a lens above each procedure, function, method, class,
   interface and property, with the number of places that use it
   (`3 references`), and above a program, with the number of files that run it
-  (`3 references · used by 2 files`). A click lists the references. The count is
-  the length of Find All References without the declaration, and it is made when
+  (`3 references · used by 2 files`). A click lists the places that the lens
+  counts. The count is the length of Find All References without the declaration,
+  and it is made when
   the lens comes into view, so a large file does not run a search for each
   declaration at once. A count that can be short says so
-  (`12+ references · incomplete: <reason>`), and a declaration that oxabl does
+  (`12+ references · incomplete: <reason>`); a procedure or function always says
+  that calls through a handle are not followed. A declaration that oxabl does
   not resolve shows `references not known`, never a number. These lenses are
   off by default, and apart from the database effect lenses, which follow the
   rules in `oxabl.toml`. VS Code's `editor.codeLens` turns off both. See

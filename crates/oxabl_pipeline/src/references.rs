@@ -51,6 +51,9 @@ pub struct Gap {
     /// True for a gap that every request in the workspace has (the state of
     /// the index, a limit of the analysis), false for one of this referent.
     pub standing: bool,
+    /// For a standing gap that is a property of the referent's kind: the short
+    /// text a count shows, so a count of such a referent is never exact.
+    count_reason: Option<String>,
     /// Set for a gap that one unit gives, so [`fold_gaps`] can join the gaps
     /// of many units into one.
     fold: Option<Fold>,
@@ -81,7 +84,27 @@ impl Gap {
         Gap {
             reason,
             standing: false,
+            count_reason: None,
             fold: None,
+        }
+    }
+
+    /// The text a count of the referent shows for this gap, or `None` for a gap
+    /// a count does not show (a standing gap of the workspace).
+    pub fn count_reason(&self) -> Option<&str> {
+        if self.standing {
+            self.count_reason.as_deref()
+        } else {
+            Some(&self.reason)
+        }
+    }
+
+    /// A standing gap that also makes the count of the referent inexact, with
+    /// the `short` text the count shows.
+    pub fn standing_in_counts(reason: String, short: &str) -> Gap {
+        Gap {
+            count_reason: Some(short.to_string()),
+            ..Gap::standing(reason)
         }
     }
 
@@ -90,6 +113,7 @@ impl Gap {
         Gap {
             reason,
             standing: true,
+            count_reason: None,
             fold: None,
         }
     }
@@ -105,6 +129,7 @@ impl Gap {
         Gap {
             reason: fold.reason(1),
             standing: false,
+            count_reason: None,
             fold: Some(fold),
         }
     }
@@ -180,6 +205,7 @@ pub fn fold_gaps(gaps: Vec<Gap>) -> Vec<Gap> {
         out[at] = Gap {
             reason: fold.reason(files.len()),
             standing: false,
+            count_reason: None,
             fold: None,
         };
     }
@@ -477,10 +503,11 @@ impl Referent {
             )));
         }
         if handles {
-            gaps.push(Gap::standing(
+            gaps.push(Gap::standing_in_counts(
                 "a RUN ... IN a handle that a file gets from elsewhere (a parameter, a shared \
                  variable, SESSION) is not followed"
                     .to_string(),
+                "calls through a handle are not followed",
             ));
         }
         let unanalysed = graph.unanalysed().len();

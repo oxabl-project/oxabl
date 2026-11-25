@@ -1014,6 +1014,8 @@ struct Server<'c> {
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     lenses: code_lens::LensCache,
+    /// The resolved titles of the reference-count lenses.
+    reference_cache: reference_lens::ResolveCache,
     /// The client's inlay hint support and the kinds it wants.
     inlay: inlay_hint::Options,
     /// The client's semantic token support and the user's choice.
@@ -1109,6 +1111,7 @@ impl<'c> Server<'c> {
             features: FeaturesConfig::OFF,
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
+            reference_cache: reference_lens::ResolveCache::default(),
             inlay,
             semantic,
             outlines: document_symbol::OutlineCache::default(),
@@ -1814,6 +1817,8 @@ impl<'c> Server<'c> {
     /// expansion memo recomputes and re-reads the changed file.
     fn handle_watched_files(&mut self, params: DidChangeWatchedFilesParams) {
         let now = std::time::Instant::now();
+        // A file on disk changed: no session generation says so.
+        self.reference_cache.clear();
         let mut schema_changed = false;
         let mut config_changed = false;
         let mut changed_includes: Vec<PathBuf> = Vec::new();
