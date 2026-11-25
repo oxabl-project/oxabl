@@ -12,6 +12,11 @@ in the editor, at the code they are about.
 - `oxabl lsp` sends them as the answer to `textDocument/inlayHint`.
 - The VS Code extension sends the settings that turn each kind off.
 
+The parameter-name hints (the name of the parameter before each argument of a
+call) are in the same answer and share the range and cost rules below. They
+are not database facts, and they need no strict rule. See
+`docs/design/signature-help.md`.
+
 ## Kinds
 
 | Kind | Label and place | Shown for | Selected by |
@@ -134,16 +139,18 @@ hints. A file that does not show hints gets an empty list, so a change of
 ## Settings
 
 The client turns each kind off on its own. The server reads an `inlayHints`
-object with the boolean keys `locks`, `index`, `scope` and `transactions`. A
-key that is absent keeps its value; at the start every kind is on.
+object with the boolean keys `locks`, `index`, `scope`, `transactions` and
+`parameters`. A key that is absent keeps its value; at the start every kind is
+on, except `parameters`, which is off.
 
 - At the start: `initializationOptions.inlayHints`.
 - After a change: `workspace/didChangeConfiguration` with
   `settings.oxabl.inlayHints` (or `settings.inlayHints`). The server then sends
   `workspace/inlayHint/refresh` when the client supports it.
 
-The VS Code settings are `oxabl.inlayHints.locks`, `.index`, `.scope` and
-`.transactions`. VS Code's own `editor.inlayHints.enabled` turns all hints off.
+The VS Code settings are `oxabl.inlayHints.locks`, `.index`, `.scope`,
+`.transactions` and `.parameters`. VS Code's own `editor.inlayHints.enabled`
+turns all hints off.
 
 ## Cost
 
@@ -161,10 +168,19 @@ request returns only the hints in its range.
   because the document changed. For an include in a context, an edit of the
   open root does the same, and the debounced refresh makes the client ask
   again. An edit, an open or a close of any other file does not.
-- The worker holds no snapshot of the session database. A write to the
-  database waits for every snapshot to drop, so an analysis that held one
-  would delay the next keystroke, and an edit of any other buffer would cancel
-  it.
+- The analysis of the database hints holds no snapshot of the session
+  database. A write to the database waits for every snapshot to drop, so an
+  analysis that held one would delay the next keystroke, and an edit of any
+  other buffer would cancel it.
+- The parameter-name hints read other files, so their analysis does hold a
+  snapshot, and the two things above are true of it. A write waits until the
+  snapshot drops; it is a few ms to tens of ms for a file of 7,000 lines. A
+  write cancels the analysis. The worker then runs it again on a new snapshot,
+  with the open buffers read again, while the text of the file is the same, up
+  to four times. When the text changed, the request answers `ContentModified`,
+  and the client asks again. An edit of an open file, or the close of a buffer
+  with unsaved edits, sends no refresh, so the parameter-name hints of other
+  open files can be stale (`signature-help.md`, "Known limit").
 - The server keeps the hints of each open file until its text, its include
   context, the configuration, the schema, a file on disk (a watched-file
   event) or the kinds change. In a context it also keeps the files the root's
@@ -176,7 +192,9 @@ request returns only the hints in its range.
   offset.
 - A kind that is off, or whose rule is off, is not computed. When no kind
   is wanted (the index setting is off and no strict rule is on), the file is
-  not analysed.
+  not analysed. The parameter-name hints are computed apart from the database
+  hints, once for each version of the text, and they are kept only while no
+  open buffer or file on disk changes, because they read other files.
 - Only the index needs the effects analysis. It needs the scope analysis, the
   flow analysis and the call facts too, so a project with no strict rule pays
   for these when the editor asks for hints. The analysis is for the requested
@@ -186,7 +204,12 @@ request returns only the hints in its range.
 The tests of this behaviour do not depend on the speed of the machine. In a
 test build (the `test-panics` feature of `oxabl_common`), the comment
 `OXABL-TEST-HOLD:lsp.inlay-hints` in the analysed text makes the analysis wait
-2 s, so edits sent meanwhile are queued behind it.
+2 s, so edits sent meanwhile are queued behind it. The comment
+`OXABL-TEST-HOLD:lsp.parameter-hints` makes the analysis of the parameter-name
+hints wait the same time while it holds its snapshot (`@600` after the name
+sets the time in ms). Just before it waits, the server sends the client the log
+message `OXABL-TEST-HOLD started: lsp.parameter-hints`, so a test acts when the
+hold is on and not after a guessed delay.
 
 `crates/oxabl_pipeline/benches/hints_bench.rs` measures the analysis of a
 procedure file of about 5,400 lines. On a loaded development machine it took

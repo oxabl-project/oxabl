@@ -101,3 +101,7 @@ harness = false
 [[bench]]
 name = "completion_bench"
 harness = false
+
+[[bench]]
+name = "signature_bench"
+harness = false

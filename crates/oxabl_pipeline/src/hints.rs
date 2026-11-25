@@ -25,6 +25,8 @@ pub enum InlayKind {
     Index,
     Scope,
     Transaction,
+    /// The name of the parameter an argument fills.
+    Parameter,
 }
 
 /// One hint, at a byte offset of the root file.

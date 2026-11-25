@@ -48,6 +48,7 @@ pub mod position;
 mod references;
 mod schema;
 mod semantic_tokens;
+mod signature_help;
 mod workspace_symbol;
 
 use std::collections::HashMap;
@@ -68,8 +69,8 @@ use lsp_types::request::{
     DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest,
     Formatting, GotoDefinition, GotoImplementation, HoverRequest, InlayHintRequest, References,
     Request as _, ResolveCompletionItem, SelectionRangeRequest, SemanticTokensFullDeltaRequest,
-    SemanticTokensFullRequest, SemanticTokensRangeRequest, TypeHierarchyPrepare,
-    TypeHierarchySubtypes, TypeHierarchySupertypes, WorkspaceSymbolRequest,
+    SemanticTokensFullRequest, SemanticTokensRangeRequest, SignatureHelpRequest,
+    TypeHierarchyPrepare, TypeHierarchySubtypes, TypeHierarchySupertypes, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -1175,6 +1176,8 @@ impl<'c> Server<'c> {
                                 self.handle_completion(req)?;
                             } else if req.method == ResolveCompletionItem::METHOD {
                                 self.handle_completion_resolve(req)?;
+                            } else if req.method == SignatureHelpRequest::METHOD {
+                                self.handle_signature_help(req)?;
                             } else if req.method == DocumentHighlightRequest::METHOD {
                                 self.handle_document_highlight(req)?;
                             } else if req.method == DocumentLinkRequest::METHOD {

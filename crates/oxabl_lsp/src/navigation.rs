@@ -192,7 +192,7 @@ impl Server<'_> {
     /// straight to the client. With a `buffer` key, a highlight query uses the
     /// open buffer's cached analysis. With a `turn`, the request waits for the
     /// one before it and is cancelled when a newer one came meanwhile.
-    fn spawn_navigation(
+    pub(crate) fn spawn_navigation(
         &mut self,
         id: RequestId,
         root: PathBuf,
@@ -323,7 +323,8 @@ impl Server<'_> {
     }
 }
 
-type Render = fn(NavigationAnswer, &PositionEncodingKind) -> serde_json::Result<serde_json::Value>;
+pub(crate) type Render =
+    fn(NavigationAnswer, &PositionEncodingKind) -> serde_json::Result<serde_json::Value>;
 
 /// Runs hover requests one at a time and drops the ones nobody waits for.
 #[derive(Clone, Default)]

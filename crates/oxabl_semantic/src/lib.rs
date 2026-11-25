@@ -55,6 +55,7 @@ pub use inherited::{
 };
 pub use namespace::{NUM_NAMESPACES, NamespaceId};
 pub use operators::{binary_op_result, unary_negate_result, unary_not_result};
+pub use overload::{CallReach, call_candidates, reachable_overloads};
 pub use resolve::{
     Resolution, UnresolvedReason, declare_pass, resolve_pass, run_miss_is_reported,
     run_target_climbs_out,
@@ -63,7 +64,7 @@ pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use sequence::{SequenceOperand, sequence_operand};
 pub use signature::{
     CallParam, CallParamKind, MemberParam, MemberParamShape, Param, ParamMode, ParamShape,
-    ProgramSignatures, Signature, member_params,
+    ProgramSignatures, Signature, call_param_of, member_params,
 };
 pub use symbol::{
     ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags,

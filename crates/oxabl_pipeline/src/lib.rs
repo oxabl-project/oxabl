@@ -80,6 +80,7 @@
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 
+mod builtin_signatures;
 mod effects;
 mod explain;
 pub use effects::{EffectFile, Elsewhere, Routine, WorkspaceEffects};
@@ -118,7 +119,7 @@ pub use lint::{
 };
 pub use navigate::{
     Highlight, Hover, Link, Navigation, NavigationModel, SemanticKind, SemanticModifiers,
-    SemanticToken, Target,
+    SemanticToken, SignatureHelp, SignatureInfo, Target, close_open_call,
 };
 pub use outline::{OutlineKind, OutlineSymbol, outline};
 // Re-exported so a client of navigation and the call hierarchy can name the

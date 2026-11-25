@@ -8,10 +8,10 @@
 //! definition (`definition_provider`), hover (`hover_provider`), document highlights
 //! (`document_highlight_provider`), document links (`document_link_provider`), find
 //! references (`references_provider`), the call hierarchy
-//! (`call_hierarchy_provider`), go to implementation (`implementation_provider`) and
-//! completion (`completion_provider`). The type hierarchy has no field in `lsp_types`: the
-//! handshake adds `typeHierarchyProvider`. Push diagnostics require no
-//! capability field — the server simply sends the notification — so we
+//! (`call_hierarchy_provider`), go to implementation (`implementation_provider`),
+//! completion (`completion_provider`) and signature help (`signature_help_provider`). The type
+//! hierarchy has no field in `lsp_types`: the handshake adds `typeHierarchyProvider`. Push
+//! diagnostics require no capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (pull
 //! diagnostics, *range* formatting, …) unset so clients don't offer features we
 //! don't have. The handshake adds effect code lenses only for supporting clients
@@ -25,7 +25,8 @@ use lsp_types::{
     CallHierarchyServerCapability, ClientCapabilities, DocumentLinkOptions,
     FoldingRangeProviderCapability, HoverProviderCapability, ImplementationProviderCapability,
     OneOf, PositionEncodingKind, SelectionRangeProviderCapability, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    SignatureHelpOptions, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions,
 };
 
 /// Negotiate a position encoding (KTD4): prefer UTF-8 when the client's
@@ -81,6 +82,11 @@ pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
         completion_provider: Some(crate::completion::capability()),
+        signature_help_provider: Some(SignatureHelpOptions {
+            trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+            retrigger_characters: Some(vec![",".to_string()]),
+            work_done_progress_options: Default::default(),
+        }),
         // Explicitly leave every other capability unset so clients don't offer
         // features v1 doesn't implement (R2).
         ..Default::default()
@@ -200,6 +206,11 @@ mod tests {
         assert_eq!(
             caps.implementation_provider,
             Some(ImplementationProviderCapability::Simple(true))
+        );
+        let signature_help = caps.signature_help_provider.expect("signature help");
+        assert_eq!(
+            signature_help.trigger_characters,
+            Some(vec!["(".to_string(), ",".to_string()])
         );
     }
 }
