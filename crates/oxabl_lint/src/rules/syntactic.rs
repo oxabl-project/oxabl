@@ -544,19 +544,19 @@ pub(super) fn leading_tokens(source: &str, span: Span, n: usize) -> Vec<(Token, 
 }
 
 /// The tokens of the statement at `span`, comments left out, with offsets in
-/// `source`. Empty when the span does not map into `source`.
-pub(super) fn statement_tokens(source: &str, span: Span) -> Vec<Token> {
-    let Some(text) = source_of(source, span) else {
-        return Vec::new();
-    };
+/// `source`, lexed as they are read. Empty when the span does not map into
+/// `source`.
+pub(super) fn statement_tokens(source: &str, span: Span) -> impl Iterator<Item = Token> + '_ {
     let base = span.start as usize;
-    Lexer::new(text)
+    source_of(source, span)
+        .map(Lexer::new)
+        .into_iter()
+        .flatten()
         .take_while(|t| t.kind != Kind::Eof)
         .filter(|t| t.kind != Kind::Comment)
-        .map(|mut t| {
+        .map(move |mut t| {
             t.start += base;
             t.end += base;
             t
         })
-        .collect()
 }

@@ -152,13 +152,19 @@ enum Insertion<'a> {
 
 /// The offset after the last token of the type phrase right after `name`:
 /// `AS <data type keyword>` or `LIKE <field>`. `None` when the tokens are not
-/// that shape.
-fn after_type(tokens: &[Token], name: &Identifier, type_source: &TypeSource) -> Option<usize> {
-    let at = tokens
-        .iter()
-        .position(|t| t.start == name.span.start as usize && t.end == name.span.end as usize)?;
-    let keyword = tokens.get(at + 1)?;
-    let ty = tokens.get(at + 2)?;
+/// that shape. Reads the tokens only up to the end of the type phrase.
+fn after_type(
+    mut tokens: impl Iterator<Item = Token>,
+    name: &Identifier,
+    type_source: &TypeSource,
+) -> Option<usize> {
+    let is_name =
+        |t: &Token| t.start == name.span.start as usize && t.end == name.span.end as usize;
+    tokens
+        .find(|t| is_name(t) || t.start >= name.span.end as usize)
+        .filter(is_name)?;
+    let keyword = tokens.next()?;
+    let ty = tokens.next()?;
     match type_source {
         TypeSource::Explicit(data_type) => {
             let plain = !matches!(
@@ -168,12 +174,16 @@ fn after_type(tokens: &[Token], name: &Identifier, type_source: &TypeSource) -> 
             (plain && keyword.kind == Kind::KwAs && ty.kind != Kind::Identifier).then_some(ty.end)
         }
         // A qualified field can be several tokens.
-        TypeSource::Like { source } => (keyword.kind == Kind::Like
-            && ty.start == source.span.start as usize
-            && tokens[at + 2..]
-                .iter()
-                .any(|t| t.end == source.span.end as usize))
-        .then_some(source.span.end as usize),
+        TypeSource::Like { source } => {
+            let end = source.span.end as usize;
+            (keyword.kind == Kind::Like
+                && ty.start == source.span.start as usize
+                && std::iter::once(ty)
+                    .chain(tokens)
+                    .take_while(|t| t.start < end)
+                    .any(|t| t.end == end))
+            .then_some(end)
+        }
     }
 }
 
@@ -207,8 +217,9 @@ impl Definitions<'_> {
     fn fix(&self, stmt: &Statement, insertion: Insertion) -> Option<Fix> {
         let tokens = statement_tokens(self.ctx.source, stmt.span);
         let at = match insertion {
-            Insertion::AfterType { name, type_source } => after_type(&tokens, name, type_source)?,
+            Insertion::AfterType { name, type_source } => after_type(tokens, name, type_source)?,
             Insertion::AfterName(name) => {
+                let tokens: Vec<Token> = tokens.collect();
                 // A header that writes `UNDO` asks for undo.
                 if tokens.iter().any(|t| t.kind == Kind::Undo) {
                     return None;

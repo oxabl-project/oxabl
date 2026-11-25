@@ -9,7 +9,7 @@
 mod guard;
 
 use oxabl_common::{Diagnostic, Fix};
-use oxabl_lexer::{Token, tokenize};
+use oxabl_lexer::{Kind, Lexer, Token, tokenize};
 use oxabl_style::KeywordCase;
 
 use crate::completion::case::{Case, is_keyword};
@@ -61,6 +61,20 @@ impl Root<'_> {
             return Case::of(keyword_case, "", "", &[], 0);
         }
         let text = self.text;
+        // The statement's own keyword decides, so its text is lexed alone. The
+        // whole file is lexed only for a statement with no keyword.
+        let own = Lexer::new(&text[start..end])
+            .take_while(|t| t.kind != Kind::Eof)
+            .find(|t| is_keyword(t.kind) && t.start < t.end);
+        if let Some(t) = own {
+            return Case::of(
+                keyword_case,
+                &text[start + t.start..start + t.end],
+                "",
+                &[],
+                0,
+            );
+        }
         let tokens = self.tokens.get_or_insert_with(|| tokenize(text));
         let first = tokens.partition_point(|t| t.start < start);
         let word = tokens[first..]
@@ -142,7 +156,11 @@ pub fn place_fixes<'a>(
             .filter_map(|mut fix| {
                 for edit in &mut fix.edits {
                     let statement = edit.statement.span;
-                    if statement.end as usize > root_text.len() {
+                    let (start, end) = (statement.start as usize, statement.end as usize);
+                    if start > end
+                        || !root_text.is_char_boundary(start)
+                        || !root_text.is_char_boundary(end)
+                    {
                         return None;
                     }
                     let case = root.case(
