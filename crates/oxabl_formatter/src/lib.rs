@@ -33,6 +33,13 @@
 //! intent, not a bug: reflow and the doc-IR it needs are deferred to v2. This
 //! keeps the v1 engine strictly "no-movement".
 //!
+//! # Formatting a range
+//!
+//! [`format_ranges`] gives the edits that lay out only the statements that a
+//! selection touches, as the whole file lays them out. [`format()`] itself stays
+//! whole-file: it never formats a region alone. [`format_ranges`] states which
+//! statements a range touches.
+//!
 //! The `oxabl format` CLI, `--check`/`--stdout`, and `oxabl.toml` `[style]`
 //! auto-discovery are a later slice and are not part of this crate.
 
@@ -43,9 +50,11 @@ mod ir;
 mod keyword_spelling;
 mod keywords;
 mod printer;
+mod range;
 mod tree;
 
 pub use attach::{CommentMap, NodeComments, attach};
+pub use range::{RangeBail, RangeEdit, RangeFailure, format_ranges, try_format_ranges};
 
 use oxabl_common::{InternalPanic, SourceMap, catch_panic, panic_if_injected, panic_sites};
 use oxabl_parser::Program;
@@ -55,9 +64,10 @@ use std::fmt;
 /// The single failure channel for [`format()`] (R6.5).
 ///
 /// Bails are **whole-file**: on any variant, [`format()`] returns the input
-/// source bytes unchanged. There is no region-level partial formatting — the
-/// contract is "a formatted string, or a reason and the exact bytes that came
-/// in".
+/// source bytes unchanged. [`format()`] has no region-level partial formatting —
+/// the contract is "a formatted string, or a reason and the exact bytes that
+/// came in". A range is formatted by [`format_ranges`], which refuses a file
+/// that has a bail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatBail {
     /// The [`Program`] carried parse errors; the tree is not trustworthy to
@@ -158,6 +168,25 @@ impl From<InternalPanic> for FormatFailure {
 /// See the [crate docs](crate) for the v1 layout-only scope and the reflow
 /// no-op contract.
 pub fn format(source: &str, program: &Program, style: &StyleGuide) -> Result<String, FormatBail> {
+    format_with_lines(source, program, style).map(|formatted| formatted.text)
+}
+
+/// The output of [`format_with_lines`]: the formatted text and where each
+/// source line went.
+pub(crate) struct LineFormat {
+    pub text: String,
+    /// Per source line (split at `\n`, as the printer does): the byte range of
+    /// its output line in `text`, without the line ending, or `None` for a
+    /// blank line the formatter dropped.
+    pub lines: Vec<Option<(usize, usize)>>,
+}
+
+/// [`format()`] with the map from source lines to output lines.
+pub(crate) fn format_with_lines(
+    source: &str,
+    program: &Program,
+    style: &StyleGuide,
+) -> Result<LineFormat, FormatBail> {
     if !program.errors.is_empty() {
         return Err(FormatBail::ParseErrors);
     }
@@ -172,7 +201,12 @@ pub fn format(source: &str, program: &Program, style: &StyleGuide) -> Result<Str
     let mut buf = printer::print(source, program, &cmap, style, &source_tokens);
     blanks::normalize(&mut buf, style);
     let ending = ir::dominant_line_ending(source);
-    let out = buf.flush(style.indent_style, style.indent_size.max(1), ending);
+    let (out, lines) = buf.flush_mapped(
+        style.indent_style,
+        style.indent_size.max(1),
+        ending,
+        range::source_line_count(source),
+    );
 
     // Semantic-preservation guard (U7): if re-lexing the candidate shows any
     // non-trivia drift, refuse to emit and bail whole-file (R6.3/R6.5). The
@@ -181,7 +215,7 @@ pub fn format(source: &str, program: &Program, style: &StyleGuide) -> Result<Str
     if !guard::preserves_with_input_tokens(source, &source_tokens, &out) {
         return Err(FormatBail::SemanticGuardTripped);
     }
-    Ok(out)
+    Ok(LineFormat { text: out, lines })
 }
 
 /// One-call convenience: tokenize + parse `source` (raw, preprocessing off) and

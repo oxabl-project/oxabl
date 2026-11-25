@@ -30,6 +30,8 @@ pub(crate) struct Line {
     pub indent: usize,
     pub content: String,
     pub protected: bool,
+    /// Index of the source line this line was printed from.
+    pub src: usize,
 }
 
 impl Line {
@@ -55,6 +57,7 @@ impl LineBuf {
             indent,
             content,
             protected: false,
+            src: self.lines.len(),
         });
     }
 
@@ -66,6 +69,7 @@ impl LineBuf {
             indent: 0,
             content,
             protected: true,
+            src: self.lines.len(),
         });
     }
 
@@ -75,6 +79,7 @@ impl LineBuf {
             indent: 0,
             content: String::new(),
             protected: false,
+            src: self.lines.len(),
         });
     }
 
@@ -92,19 +97,35 @@ impl LineBuf {
     ///
     /// An empty buffer flushes to an empty string (an empty file stays empty).
     /// Blank lines emit no trailing whitespace.
+    #[cfg(test)]
     pub(crate) fn flush(&self, style: IndentStyle, size: usize, line_ending: &str) -> String {
-        if self.lines.is_empty() {
-            return String::new();
-        }
+        self.flush_mapped(style, size, line_ending, 0).0
+    }
+
+    /// [`flush`](Self::flush), also giving for each of `source_lines` source
+    /// lines the byte range of its output line in the text (without the line
+    /// ending), or `None` for a source line the printer dropped.
+    pub(crate) fn flush_mapped(
+        &self,
+        style: IndentStyle,
+        size: usize,
+        line_ending: &str,
+        source_lines: usize,
+    ) -> (String, Vec<Option<(usize, usize)>>) {
+        let mut map = vec![None; source_lines];
         let mut out = String::new();
         for line in &self.lines {
+            let start = out.len();
             if !line.is_blank() {
                 render_indent_into(&mut out, line.indent, style, size);
                 out.push_str(&line.content);
             }
+            if let Some(slot) = map.get_mut(line.src) {
+                *slot = Some((start, out.len()));
+            }
             out.push_str(line_ending);
         }
-        out
+        (out, map)
     }
 }
 

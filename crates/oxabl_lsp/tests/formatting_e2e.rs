@@ -157,11 +157,12 @@ fn initialize_advertises_document_formatting() {
         result.capabilities.document_formatting_provider,
         Some(OneOf::Left(true))
     );
+    // Range formatting is implemented, so it is advertised.
     assert!(
         result
             .capabilities
             .document_range_formatting_provider
-            .is_none()
+            .is_some()
     );
     shutdown(&client, 99);
     assert!(handle.join().unwrap().unwrap());
