@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl_scope-v0.3.0...oxabl_scope-v0.3.1) (2026-11-25)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_flow bumped from 0.5.0 to 0.5.1
+    * oxabl_lexer bumped from 2.0.4 to 2.0.5
+    * oxabl_schema bumped from 0.6.0 to 0.6.1
+  * dev-dependencies
+    * oxabl_parser bumped from 5.0.0 to 5.0.1
+    * oxabl_schema bumped from 0.6.0 to 0.6.1
+
 ## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_scope-v0.2.10...oxabl_scope-v0.3.0) (2026-11-24)
 
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## [6.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_lint-v6.0.0...oxabl_lint-v6.0.1) (2026-11-25)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.4.0 to 1.5.0
+    * oxabl_effects bumped from 0.3.9 to 0.3.10
+    * oxabl_flow bumped from 0.5.0 to 0.5.1
+    * oxabl_handles bumped from 0.3.0 to 0.3.1
+    * oxabl_index bumped from 6.0.0 to 6.0.1
+    * oxabl_lexer bumped from 2.0.4 to 2.0.5
+    * oxabl_nulls bumped from 0.3.0 to 0.3.1
+    * oxabl_scope bumped from 0.3.0 to 0.3.1
+    * oxabl_semantic bumped from 6.0.0 to 6.0.1
+  * dev-dependencies
+    * oxabl_index bumped from 6.0.0 to 6.0.1
+    * oxabl_schema bumped from 0.6.0 to 0.6.1
+    * oxabl_parser bumped from 5.0.0 to 5.0.1
+    * oxabl_preprocessor bumped from 0.9.0 to 0.9.1
+    * oxabl_workspace bumped from 3.7.0 to 3.7.1
+
 ## [6.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lint-v5.1.1...oxabl_lint-v6.0.0) (2026-11-24)
 
 

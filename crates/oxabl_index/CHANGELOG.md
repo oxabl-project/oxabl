@@ -1,5 +1,22 @@
 # Changelog
 
+## [6.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v6.0.0...oxabl_index-v6.0.1) (2026-11-25)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.4.0 to 1.5.0
+    * oxabl_lexer bumped from 2.0.4 to 2.0.5
+    * oxabl_parser bumped from 5.0.0 to 5.0.1
+    * oxabl_preprocessor bumped from 0.9.0 to 0.9.1
+    * oxabl_schema bumped from 0.6.0 to 0.6.1
+    * oxabl_semantic bumped from 6.0.0 to 6.0.1
+    * oxabl_workspace bumped from 3.7.0 to 3.7.1
+  * dev-dependencies
+    * oxabl_schema bumped from 0.6.0 to 0.6.1
+
 ## [6.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.3.0...oxabl_index-v6.0.0) (2026-11-24)
 
 

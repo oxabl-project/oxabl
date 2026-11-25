@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.0.5](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v2.0.4...oxabl_lexer-v2.0.5) (2026-11-25)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.4.0 to 1.5.0
+
 ## [2.0.4](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v2.0.3...oxabl_lexer-v2.0.4) (2026-11-24)
 
 
