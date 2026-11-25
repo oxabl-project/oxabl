@@ -125,7 +125,21 @@ pub struct Supertypes {
 pub(crate) fn builtin_level_members(
     class: &'static BuiltinClass,
 ) -> impl Iterator<Item = (SymbolKind, NamespaceId, &'static BuiltinMember)> {
-    class.members().iter().filter_map(|m| {
+    with_namespace(class.members())
+}
+
+/// [`builtin_level_members`] for the members named `name` (any case).
+pub(crate) fn builtin_level_members_named(
+    class: &'static BuiltinClass,
+    name: &str,
+) -> impl Iterator<Item = (SymbolKind, NamespaceId, &'static BuiltinMember)> {
+    with_namespace(class.members_named(name))
+}
+
+fn with_namespace(
+    members: &'static [BuiltinMember],
+) -> impl Iterator<Item = (SymbolKind, NamespaceId, &'static BuiltinMember)> {
+    members.iter().filter_map(|m| {
         let (kind, ns) = match m.kind() {
             BuiltinMemberKind::Method => (SymbolKind::Function, NamespaceId::Functions),
             BuiltinMemberKind::Property => (SymbolKind::Property, NamespaceId::Values),

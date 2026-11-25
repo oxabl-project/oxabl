@@ -43,7 +43,7 @@ use crate::builtin::{BuiltinClass, BuiltinMember, BuiltinShape, BuiltinType, bui
 use crate::index::ImportCandidate;
 use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_records};
 use crate::signature::{CallParam, CallParamKind, MemberParamShape, ParamMode};
-use crate::surface::{builtin_level_members, member_namespace};
+use crate::surface::{builtin_level_members_named, member_namespace};
 use crate::symbol::RecordSource;
 use crate::symbol::{BuiltinMemberRef, UnknownMember};
 use crate::{
@@ -1857,6 +1857,10 @@ struct CrossFileState {
     /// `Progress.Lang.Object`. The catalog does not say which members are
     /// protected, so a bare name such a class does not declare is not judged.
     builtin_ancestors: FxHashSet<SymbolId>,
+    /// The built-in levels of each walked class, in walk order.
+    builtin_levels: FxHashMap<SymbolId, SmallVec<[&'static BuiltinClass; 4]>>,
+    /// The names already looked up in [`Self::builtin_levels`].
+    builtin_probed: FxHashSet<(SymbolId, OxablAtom)>,
 }
 
 /// The atom carried by the resolution recorded for a run-time-computed `RUN`
@@ -5226,6 +5230,7 @@ impl<'a> ResolveWalker<'a> {
         if !builtin.is_complete() {
             return;
         }
+        self.probe_builtin_levels(class, atom);
         let present = self
             .cross_file()
             .is_some_and(|cf| cf.inherited.contains_key(&(class, atom.clone())));
@@ -5300,6 +5305,7 @@ impl<'a> ResolveWalker<'a> {
             return;
         }
         self.walk_member_surface(class);
+        self.probe_builtin_levels(class, atom);
         let own_decls: SmallVec<[Option<Arc<[MemberParam]>>; 8]> =
             crate::overload::candidates_of(self.symbols, own)
                 .iter()
@@ -7004,6 +7010,7 @@ impl<'a> ResolveWalker<'a> {
         // With no index attached only the built-in levels are read, so a
         // workspace name keeps exactly the answer it has today.
         self.walk_member_surface(class);
+        self.probe_builtin_levels(class, atom);
 
         let key = (class, atom.clone());
         // The walk above created the cross-file state if it found anything at all,
@@ -7545,33 +7552,47 @@ impl<'a> ResolveWalker<'a> {
         for interface in builtin.interfaces() {
             queue.push_back((Level::Builtin(interface), false));
         }
-        for (kind, namespace, member) in builtin_level_members(builtin) {
-            let candidate = InheritedCandidate {
-                flags: SymbolFlags::PUBLIC | flag_if(member.is_static(), SymbolFlags::STATIC),
-                source: CandidateSource::Builtin(member),
-            };
-            self.add_inherited(
-                class,
-                OxablAtom::from(member.name().to_ascii_lowercase().as_str()),
-                kind,
-                namespace,
-                candidate,
-                None,
-            );
+        // The members are read by name, on the first lookup of each name
+        // ([`Self::probe_builtin_levels`]): a level can have hundreds.
+        cf.builtin_levels.entry(class).or_default().push(builtin);
+    }
+
+    /// Add what the built-in levels of `class` contribute to the name `atom`
+    /// to its surface, once per name. The levels are in walk order, after the
+    /// workspace levels, so a workspace member of the name is nearer.
+    fn probe_builtin_levels(&mut self, class: SymbolId, atom: &OxablAtom) {
+        let Some(cf) = self.cross_file.as_mut() else {
+            return;
+        };
+        let Some(levels) = cf.builtin_levels.get(&class) else {
+            return;
+        };
+        if !cf.builtin_probed.insert((class, atom.clone())) {
+            return;
         }
-        for name in builtin.enum_members() {
-            let candidate = InheritedCandidate {
-                flags: SymbolFlags::PUBLIC | SymbolFlags::STATIC,
-                source: CandidateSource::EnumMember(builtin, name),
-            };
-            self.add_inherited(
-                class,
-                OxablAtom::from(name.to_ascii_lowercase().as_str()),
-                SymbolKind::Property,
-                NamespaceId::Values,
-                candidate,
-                None,
-            );
+        let levels = levels.clone();
+        for builtin in levels {
+            for (kind, namespace, member) in builtin_level_members_named(builtin, atom) {
+                let candidate = InheritedCandidate {
+                    flags: SymbolFlags::PUBLIC | flag_if(member.is_static(), SymbolFlags::STATIC),
+                    source: CandidateSource::Builtin(member),
+                };
+                self.add_inherited(class, atom.clone(), kind, namespace, candidate, None);
+            }
+            if let Some(name) = builtin.enum_member(atom) {
+                let candidate = InheritedCandidate {
+                    flags: SymbolFlags::PUBLIC | SymbolFlags::STATIC,
+                    source: CandidateSource::EnumMember(builtin, name),
+                };
+                self.add_inherited(
+                    class,
+                    atom.clone(),
+                    SymbolKind::Property,
+                    NamespaceId::Values,
+                    candidate,
+                    None,
+                );
+            }
         }
     }
 
