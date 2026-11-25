@@ -4,6 +4,9 @@
 //! Like [`FormatPipeline`](crate::FormatPipeline), it reads the **raw** source:
 //! no preprocessing and no includes, so every span is a byte range of the
 //! buffer as written and a client can map it without a source map.
+//!
+//! [`outline_with_includes`](crate::outline_with_includes) puts the outline of
+//! each expanded include under the symbol of its reference.
 
 use std::collections::HashSet;
 
@@ -89,7 +92,7 @@ const TRIGGER_NAME_MAX: usize = 80;
 
 /// The most symbols that nest in each other. An editor shows no deeper tree, and
 /// the JSON of one that is deeper is more than a JSON reader accepts.
-const MAX_DEPTH: usize = 32;
+pub(crate) const MAX_DEPTH: usize = 32;
 
 fn outline_inner(source: &str) -> Vec<OutlineSymbol> {
     let tokens = oxabl_lexer::tokenize(source);

@@ -1,16 +1,22 @@
 //! `textDocument/documentSymbol`: the pipeline's outline rendered as LSP
 //! symbols, and the per-document cache of the last outline.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use lsp_types::{
     DocumentSymbol, DocumentSymbolResponse, Location, PositionEncodingKind, Range,
     SymbolInformation, SymbolKind, Uri,
 };
 use oxabl_common::InternalPanic;
-use oxabl_pipeline::{OutlineKind, OutlineSymbol};
+use oxabl_pipeline::{IncludeOutline, OutlineKind, OutlineNode, OutlineSymbol, Span};
 use ropey::Rope;
 
+use oxabl_daemon::canonical_path;
+
+use crate::path_to_uri;
 use crate::position::byte_to_position;
 
 fn symbol_kind(kind: OutlineKind) -> SymbolKind {
@@ -39,35 +45,88 @@ fn symbol_kind(kind: OutlineKind) -> SymbolKind {
     }
 }
 
+/// Renders an outline for a client.
+///
+/// A symbol that an include holds has no place in the buffer, and a
+/// hierarchical symbol has only a range of the buffer. So the range of such a
+/// symbol is the name of the nearest symbol of the buffer above it, which is
+/// the include reference. A flat symbol has a location of its own, in the
+/// include file.
 struct Render<'a> {
     rope: &'a Rope,
     encoding: &'a PositionEncodingKind,
+    outline: &'a IncludeOutline,
+    /// The directory that the path of an include shows relative to.
+    base: Option<&'a Path>,
+    /// The text of each include file as a rope, made when a flat symbol needs it.
+    ropes: RefCell<HashMap<usize, Rope>>,
 }
 
 impl Render<'_> {
-    fn range(&self, start: u32, end: u32) -> Range {
+    fn range(&self, span: Span) -> Range {
         Range {
-            start: byte_to_position(self.rope, start as usize, self.encoding),
-            end: byte_to_position(self.rope, end as usize, self.encoding),
+            start: byte_to_position(self.rope, span.start as usize, self.encoding),
+            end: byte_to_position(self.rope, span.end as usize, self.encoding),
         }
     }
 
-    fn nested(&self, symbols: &[OutlineSymbol]) -> Vec<DocumentSymbol> {
-        symbols
+    /// The range of `span` in include file `file`.
+    fn file_range(&self, file: usize, span: Span) -> Range {
+        let mut ropes = self.ropes.borrow_mut();
+        let rope = ropes
+            .entry(file)
+            .or_insert_with(|| Rope::from_str(&self.outline.files[file].text));
+        Range {
+            start: byte_to_position(rope, span.start as usize, self.encoding),
+            end: byte_to_position(rope, span.end as usize, self.encoding),
+        }
+    }
+
+    /// What follows the name: the path of the file that an include shows,
+    /// else the symbol's own detail.
+    fn detail(&self, node: &OutlineNode) -> Option<String> {
+        match node.opens {
+            Some(file) => {
+                let path = &self.outline.files[file].path;
+                let shown = self
+                    .base
+                    .and_then(|base| path.strip_prefix(base).ok())
+                    .unwrap_or(path);
+                Some(shown.display().to_string())
+            }
+            None => node.detail.clone(),
+        }
+    }
+
+    /// `anchor` is the selection of the nearest symbol of the buffer above.
+    fn nested(&self, nodes: &[OutlineNode], anchor: Option<Span>) -> Vec<DocumentSymbol> {
+        nodes
             .iter()
-            .map(|symbol| {
+            .filter_map(|node| {
+                let (range, selection) = match node.file {
+                    None => (self.range(node.span), self.range(node.selection_span)),
+                    Some(_) => {
+                        let anchor = self.range(anchor?);
+                        (anchor, anchor)
+                    }
+                };
+                let anchor = if node.file.is_none() {
+                    Some(node.selection_span)
+                } else {
+                    anchor
+                };
                 #[allow(deprecated)] // lsp-types makes the field mandatory
-                DocumentSymbol {
-                    name: symbol.name.clone(),
-                    detail: symbol.detail.clone(),
-                    kind: symbol_kind(symbol.kind),
+                Some(DocumentSymbol {
+                    name: node.name.clone(),
+                    detail: self.detail(node),
+                    kind: symbol_kind(node.kind),
                     tags: None,
                     deprecated: None,
-                    range: self.range(symbol.span.start, symbol.span.end),
-                    selection_range: self
-                        .range(symbol.selection_span.start, symbol.selection_span.end),
-                    children: (!symbol.children.is_empty()).then(|| self.nested(&symbol.children)),
-                }
+                    range,
+                    selection_range: selection,
+                    children: (!node.children.is_empty())
+                        .then(|| self.nested(&node.children, anchor)),
+                })
             })
             .collect()
     }
@@ -75,24 +134,50 @@ impl Render<'_> {
     fn flat(
         &self,
         uri: &Uri,
-        symbols: &[OutlineSymbol],
+        nodes: &[OutlineNode],
+        anchor: Option<Span>,
         container: Option<&str>,
         out: &mut Vec<SymbolInformation>,
     ) {
-        for symbol in symbols {
-            #[allow(deprecated)] // lsp-types makes the field mandatory
-            out.push(SymbolInformation {
-                name: symbol.name.clone(),
-                kind: symbol_kind(symbol.kind),
-                tags: None,
-                deprecated: None,
-                location: Location {
+        for node in nodes {
+            let location = match node.file {
+                None => Some(Location {
                     uri: uri.clone(),
-                    range: self.range(symbol.span.start, symbol.span.end),
-                },
-                container_name: container.map(str::to_owned),
+                    range: self.range(node.span),
+                }),
+                Some(file) => {
+                    path_to_uri(&canonical_path(&self.outline.files[file].path)).map(|uri| {
+                        Location {
+                            uri,
+                            range: self.file_range(file, node.span),
+                        }
+                    })
+                }
+            };
+            // A file that has no URI keeps its symbols at the reference.
+            let location = location.or_else(|| {
+                anchor.map(|anchor| Location {
+                    uri: uri.clone(),
+                    range: self.range(anchor),
+                })
             });
-            self.flat(uri, &symbol.children, Some(&symbol.name), out);
+            let anchor = if node.file.is_none() {
+                Some(node.selection_span)
+            } else {
+                anchor
+            };
+            if let Some(location) = location {
+                #[allow(deprecated)] // lsp-types makes the field mandatory
+                out.push(SymbolInformation {
+                    name: node.name.clone(),
+                    kind: symbol_kind(node.kind),
+                    tags: None,
+                    deprecated: None,
+                    location,
+                    container_name: container.map(str::to_owned),
+                });
+            }
+            self.flat(uri, &node.children, anchor, Some(&node.name), out);
         }
     }
 }
@@ -106,13 +191,60 @@ pub(crate) fn to_response(
     encoding: &PositionEncodingKind,
     hierarchical: bool,
 ) -> DocumentSymbolResponse {
-    let render = Render { rope, encoding };
+    let outline = IncludeOutline {
+        symbols: symbols
+            .iter()
+            .cloned()
+            .map(|symbol| OutlineNode::from_symbol(symbol, None))
+            .collect(),
+        files: Vec::new(),
+    };
+    to_response_with_includes(&outline, uri, rope, encoding, hierarchical, None)
+}
+
+/// [`to_response`] for an outline that holds the symbols of include files.
+/// `base` is the directory that the path of an include shows relative to.
+pub(crate) fn to_response_with_includes(
+    outline: &IncludeOutline,
+    uri: &Uri,
+    rope: &Rope,
+    encoding: &PositionEncodingKind,
+    hierarchical: bool,
+    base: Option<&Path>,
+) -> DocumentSymbolResponse {
+    let render = Render {
+        rope,
+        encoding,
+        outline,
+        base,
+        ropes: RefCell::default(),
+    };
     if hierarchical {
-        DocumentSymbolResponse::Nested(render.nested(symbols))
+        DocumentSymbolResponse::Nested(render.nested(&outline.symbols, None))
     } else {
         let mut out = Vec::new();
-        render.flat(uri, symbols, None, &mut out);
+        render.flat(uri, &outline.symbols, None, None, &mut out);
         DocumentSymbolResponse::Flat(out)
+    }
+}
+
+/// The outline of one buffer version with its includes, made once. Requests
+/// for the same version wait on the first.
+#[derive(Default)]
+pub(crate) struct IncludeSlot {
+    result: Mutex<Option<Result<Arc<IncludeOutline>, String>>>,
+}
+
+impl IncludeSlot {
+    /// The stored answer, or the result of `compute`, which is stored.
+    pub(crate) fn get_or_compute(
+        &self,
+        compute: impl FnOnce() -> Result<IncludeOutline, String>,
+    ) -> Result<Arc<IncludeOutline>, String> {
+        let mut result = self.result.lock().unwrap_or_else(PoisonError::into_inner);
+        result
+            .get_or_insert_with(|| compute().map(Arc::new))
+            .clone()
     }
 }
 
@@ -120,6 +252,9 @@ pub(crate) fn to_response(
 #[derive(Default)]
 pub(crate) struct OutlineCache {
     entries: HashMap<Uri, (i32, Vec<OutlineSymbol>)>,
+    /// The outlines with includes. An include is read from other files, so
+    /// any change that [`Self::invalidate`] sees drops all of them.
+    includes: Mutex<HashMap<Uri, (i32, Arc<IncludeSlot>)>>,
 }
 
 impl OutlineCache {
@@ -144,6 +279,29 @@ impl OutlineCache {
 
     pub(crate) fn invalidate(&mut self, uri: &Uri) {
         self.entries.remove(uri);
+        self.invalidate_includes();
+    }
+
+    /// Drop every outline that holds include symbols: a file that a buffer
+    /// includes, the configuration or the schema changed.
+    pub(crate) fn invalidate_includes(&self) {
+        self.includes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+
+    /// The slot for `uri` at `version`.
+    pub(crate) fn include_slot(&self, uri: &Uri, version: i32) -> Arc<IncludeSlot> {
+        let mut slots = self.includes.lock().unwrap_or_else(PoisonError::into_inner);
+        match slots.get(uri) {
+            Some((cached, slot)) if *cached == version => Arc::clone(slot),
+            _ => {
+                let slot = Arc::new(IncludeSlot::default());
+                slots.insert(uri.clone(), (version, Arc::clone(&slot)));
+                slot
+            }
+        }
     }
 }
 
