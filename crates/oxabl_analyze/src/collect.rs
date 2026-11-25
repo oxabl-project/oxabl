@@ -43,8 +43,8 @@ use oxabl_common::{
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{
-    BranchState, IfBranch, Preprocessor, ResolvedInclude, SkippedInclude, SkippedText, SpanNode,
-    TextLoss, UnreadableInclude, UnresolvedInclude,
+    BranchState, DefineDirective, IfBranch, IncludeArguments, Preprocessor, ResolvedInclude,
+    SkippedInclude, SkippedText, SpanNode, TextLoss, UnreadableInclude, UnresolvedInclude,
 };
 use oxabl_schema::Schema;
 use oxabl_semantic::{
@@ -394,6 +394,23 @@ pub struct IncludeOrigin {
     pub site: Span,
 }
 
+/// One `&GLOBAL-DEFINE`, `&SCOPED-DEFINE` or `&UNDEFINE` the expansion
+/// carried out, placed in the expanded text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacedDefine {
+    /// The name as written.
+    pub name: String,
+    pub directive: DefineDirective,
+    /// The value after expansion; empty for `&UNDEFINE`.
+    pub value: String,
+    /// Where the directive lies in the expanded text.
+    pub offset: u32,
+    /// Where the directive stops to hold in the expanded text: the end of
+    /// the file that writes a `&SCOPED-DEFINE`, `u32::MAX` for the root and
+    /// for the other directives.
+    pub scope_end: u32,
+}
+
 /// The preprocessed root buffer in owned, `Update`-trivial form.
 ///
 /// Holds the expanded text, a flattened virtual→real offset table (the only
@@ -484,6 +501,10 @@ pub struct ExpandedFile {
     /// The offsets of `elided_offsets` that are includes that did not
     /// arrive, sorted.
     elided_include_offsets: Vec<u32>,
+    /// The defines and undefines, at any depth, in the order they were met.
+    defines: Vec<PlacedDefine>,
+    /// The arguments of each include expansion that has any.
+    include_arguments: Vec<IncludeArguments>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -633,6 +654,18 @@ impl ExpandedFile {
     /// arrive. Sorted. Statements the include held may sit there.
     pub fn elided_include_offsets(&self) -> &[u32] {
         &self.elided_include_offsets
+    }
+
+    /// The defines and undefines the expansion carried out, at any depth, in
+    /// the order they were met.
+    pub fn defines(&self) -> &[PlacedDefine] {
+        &self.defines
+    }
+
+    /// The arguments of the include expansion whose text has id `file`.
+    /// `None` for an expansion with no argument, and for the root.
+    pub fn include_arguments(&self, file: FileId) -> Option<&IncludeArguments> {
+        self.include_arguments.iter().find(|args| args.file == file)
     }
 
     /// The root file's id. A span or offset in this id is in the root's own bytes.
@@ -1130,6 +1163,8 @@ pub fn expand_source_tracking(
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
+            defines: Vec::new(),
+            include_arguments: Vec::new(),
             root,
         });
     }
@@ -1282,6 +1317,22 @@ pub fn expand_source_tracking(
                 text_losses: pf.text_losses.clone(),
                 elided_offsets: pf.elided_offsets(),
                 elided_include_offsets: pf.elided_include_offsets(),
+                defines: pf
+                    .defines
+                    .iter()
+                    .zip(pf.define_offsets())
+                    .map(|(define, (offset, file_end))| PlacedDefine {
+                        name: define.name.clone(),
+                        directive: define.directive,
+                        value: define.value.clone(),
+                        offset,
+                        scope_end: match define.directive {
+                            DefineDirective::Scoped => file_end,
+                            DefineDirective::Global | DefineDirective::Undefine => u32::MAX,
+                        },
+                    })
+                    .collect(),
+                include_arguments: pf.include_arguments.clone(),
                 root,
             })
         }
@@ -2412,6 +2463,8 @@ mod tests {
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
+            defines: Vec::new(),
+            include_arguments: Vec::new(),
             root: ROOT,
         }
     }

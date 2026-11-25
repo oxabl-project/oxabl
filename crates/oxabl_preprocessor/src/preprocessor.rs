@@ -13,9 +13,9 @@ use crate::condition::{
     Environment, Gap, evaluate, find_var_ref, last_var_ref, skip_comment, visit_ref_names,
 };
 use crate::span_tree::{
-    BranchDirective, BranchState, ElidedKind, ElidedReference, IfBranch, PreprocessedFile,
-    ResolvedInclude, SkippedBranch, SkippedInclude, SkippedText, SpanNode, TextLoss, TextLossKind,
-    UnreadableInclude, UnresolvedInclude,
+    BranchDirective, BranchState, DefineDirective, DefineSite, ElidedKind, ElidedReference,
+    IfBranch, IncludeArguments, PreprocessedFile, ResolvedInclude, SkippedBranch, SkippedInclude,
+    SkippedText, SpanNode, TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
 };
 use crate::var_table::{BaseVars, Origin};
 
@@ -219,6 +219,8 @@ impl<'fs> Preprocessor<'fs> {
             args_uncertain: self.includer_unknown,
             text_losses: Vec::new(),
             elided: Vec::new(),
+            defines: Vec::new(),
+            include_arguments: Vec::new(),
             line_starts: HashMap::new(),
             expanding_vars: Vec::new(),
             sources: vec![(file, Arc::from(source))],
@@ -261,6 +263,8 @@ impl<'fs> Preprocessor<'fs> {
         processed.missed_expansion = ctx.missed_expansion;
         processed.text_losses = ctx.text_losses;
         processed.elided = ctx.elided;
+        processed.defines = ctx.defines;
+        processed.include_arguments = ctx.include_arguments;
         Ok(processed)
     }
 }
@@ -348,6 +352,10 @@ struct ProcessContext<'a> {
     text_losses: Vec<TextLoss>,
     /// References replaced with no text.
     elided: Vec<ElidedReference>,
+    /// The defines and undefines carried out.
+    defines: Vec<DefineSite>,
+    /// The arguments of each include expansion that has any.
+    include_arguments: Vec<IncludeArguments>,
     /// Byte offset of each line start, built on first use per source for
     /// `{&LINE-NUMBER}`. Keyed by the source's address and length, which are
     /// stable because every source is held for the whole run.
@@ -630,6 +638,13 @@ impl ProcessContext<'_> {
                                         i,
                                         directive.end,
                                     );
+                                    self.note_define_site(
+                                        &name,
+                                        DefineDirective::Scoped,
+                                        &expanded,
+                                        file,
+                                        (i, directive.end),
+                                    );
                                     self.vars.define(&name, &expanded);
                                     nodes.extend(reads);
                                 }
@@ -658,6 +673,13 @@ impl ProcessContext<'_> {
                                         i,
                                         directive.end,
                                     );
+                                    self.note_define_site(
+                                        &name,
+                                        DefineDirective::Global,
+                                        &expanded,
+                                        file,
+                                        (i, directive.end),
+                                    );
                                     self.vars.define_global(&name, &expanded);
                                     nodes.extend(reads);
                                 }
@@ -675,6 +697,13 @@ impl ProcessContext<'_> {
                                 }
                                 self.note_define(name, "", emitting, DefineKind::Undefine);
                                 if emitting {
+                                    self.note_define_site(
+                                        name,
+                                        DefineDirective::Undefine,
+                                        "",
+                                        file,
+                                        (i, directive.end),
+                                    );
                                     self.vars.undefine(name);
                                 }
                                 i = directive.end;
@@ -1952,6 +1981,31 @@ impl ProcessContext<'_> {
     }
 
     /// Record a reference the expansion replaced with no text.
+    /// Keep a define or undefine that the run carried out at `[start, end)`
+    /// of `file`.
+    fn note_define_site(
+        &mut self,
+        name: &str,
+        directive: DefineDirective,
+        value: &str,
+        file: FileId,
+        (start, end): (usize, usize),
+    ) {
+        self.defines.push(DefineSite {
+            name: name.to_string(),
+            directive,
+            value: value.trim().to_string(),
+            site: FileSpan {
+                file,
+                span: Span {
+                    start: start as u32,
+                    end: end as u32,
+                },
+            },
+            within: self.site_stack.last().copied(),
+        });
+    }
+
     fn elide(&mut self, kind: ElidedKind, site: FileSpan) {
         self.elided.push(ElidedReference {
             kind,
@@ -2440,6 +2494,14 @@ impl ProcessContext<'_> {
         let outer_args = std::mem::replace(&mut self.args_uncertain, !args_known);
         if self.tracking {
             self.include_files.push((include_file_id, path.clone()));
+        }
+
+        if args.positional.len() > 1 || !args.named.is_empty() {
+            self.include_arguments.push(IncludeArguments {
+                file: include_file_id,
+                positional: args.positional[1..].to_vec(),
+                named: args.named.clone(),
+            });
         }
 
         // Process recursively with positional args scoped to this include.
@@ -5700,6 +5762,42 @@ ELSE
         let result = pp.process(FileId::new(1), source).unwrap();
 
         assert_eq!(&*result.to_text(), "VER=42");
+    }
+
+    #[test]
+    fn defines_and_include_arguments_are_kept_with_their_places() {
+        let fs = make_fs(&[("/inc/inc.i", "&SCOPED-DEFINE s 2\nI{1}\n")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let source = "&GLOBAL-DEFINE g 1\nA\n{inc.i x &n=v}\nB\n&UNDEFINE g\nC\n\
+                      &IF FALSE &THEN\n&GLOBAL-DEFINE never 1\n&ENDIF\n";
+        let result = Preprocessor::new(&fs, &include_paths)
+            .process(FileId::new(1), source)
+            .unwrap();
+        let text = result.to_text();
+        assert_eq!(&*text, "A\nIx\n\nB\nC\n");
+        let found: Vec<(&str, DefineDirective, &str)> = result
+            .defines
+            .iter()
+            .map(|d| (d.name.as_str(), d.directive, d.value.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                ("g", DefineDirective::Global, "1"),
+                ("s", DefineDirective::Scoped, "2"),
+                ("g", DefineDirective::Undefine, ""),
+            ]
+        );
+        let at = |needle: &str| text.find(needle).unwrap() as u32;
+        assert_eq!(
+            result.define_offsets(),
+            vec![(0, u32::MAX), (at("Ix"), at("Ix") + 3), (at("C"), u32::MAX)]
+        );
+        assert_eq!(result.include_arguments.len(), 1);
+        let args = &result.include_arguments[0];
+        assert_eq!(args.positional, vec!["x", "v"]);
+        assert_eq!(args.named, vec![("n".to_string(), "v".to_string())]);
+        assert_ne!(args.file, FileId::new(1));
     }
 
     /// An include that defines nothing cannot change what a name means.
