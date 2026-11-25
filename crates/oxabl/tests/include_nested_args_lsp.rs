@@ -133,3 +133,20 @@ fn an_argument_that_ends_in_a_tilde_leaves_the_reference_unmatched() {
         "no PREPROC012: {answer}"
     );
 }
+
+#[test]
+fn an_argument_with_a_closing_brace_does_not_stay_one_argument() {
+    // The compiler ends `{b.i {1}}` at the `}` of the value `a}b` and reads
+    // ` b}` as code: it is never the one argument `a}b`.
+    let (body, answer) = expand(&[
+        ("b.i", "B[{1}]\n"),
+        ("pass.i", "{b.i {1}}\n"),
+        ("main.p", "{pass.i a~}b}\n"),
+    ]);
+    assert!(!body.contains("B[a}b]"), "{answer}");
+    assert_ne!(answer["status"], json!("complete"), "{answer}");
+    assert!(
+        answer.to_string().contains("PREPROC012"),
+        "no PREPROC012: {answer}"
+    );
+}

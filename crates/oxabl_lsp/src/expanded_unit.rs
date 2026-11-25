@@ -686,7 +686,7 @@ fn text_loss(kind: TextLossKind) -> &'static str {
             "an &IF was decided on a condition oxabl does not model"
         }
         TextLossKind::UnmatchedArgumentBrace => {
-            "an include argument leaves a brace of an include reference unmatched"
+            "an include argument leaves a brace of an include reference unmatched, or ends it early"
         }
         TextLossKind::ArgumentEndsWithTilde => "a substituted value ends with ~",
         _ => "the preprocessor dropped text",

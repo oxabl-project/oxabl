@@ -636,3 +636,37 @@ fn a_value_ending_in_a_tilde_leaves_the_nested_reference_unmatched() {
     let kinds: Vec<TextLossKind> = result.text_losses.iter().map(|l| l.kind).collect();
     assert_eq!(kinds, [TextLossKind::UnmatchedArgumentBrace]);
 }
+
+#[test]
+fn a_named_argument_takes_a_positional_slot() {
+    assert_passes(
+        "{/inc/p12.i &x=zzz}",
+        &[("/inc/p12.i", "MESSAGE \"P[{1}|{2}]\".")],
+        "MESSAGE \"P[zzz|]\".",
+    );
+}
+
+#[test]
+fn a_value_with_a_closing_brace_is_one_argument_where_it_is_only_used() {
+    assert_passes(
+        "{/inc/p14.i a~}b}",
+        &[("/inc/p14.i", "MESSAGE \"P[{1}]\".")],
+        "MESSAGE \"P[a}b]\".",
+    );
+}
+
+#[test]
+fn a_value_with_a_closing_brace_ends_the_nested_reference_there() {
+    // The compiler ends the reference at the `}` of the value and reads the
+    // text after it as code (a compile error). oxabl stops instead of giving
+    // the value as one argument.
+    let result = preprocess_with(
+        "{/inc/p13.i a~}b}",
+        &[("/inc/b13.i", B_TWO), ("/inc/p13.i", "{b13.i {1}}")],
+    );
+    let codes: Vec<&str> = result.diagnostics.iter().map(|d| d.code.0).collect();
+    assert_eq!(codes, ["PREPROC012"]);
+    assert_eq!(&*result.to_text(), "");
+    let kinds: Vec<TextLossKind> = result.text_losses.iter().map(|l| l.kind).collect();
+    assert_eq!(kinds, [TextLossKind::UnmatchedArgumentBrace]);
+}

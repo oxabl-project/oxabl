@@ -993,10 +993,15 @@ impl ProcessContext<'_> {
                                     });
                                 }
 
-                                // A value that ends in `~` escapes the `}` that
-                                // closes the reference: the compiler stops with
-                                // error 374.
-                                if ends_in_escape(&filled_inner) {
+                                // The compiler reads the end of the reference in the
+                                // filled text. A value with an unbalanced `}` ends
+                                // it early (the text after it is code), and a value
+                                // that ends in `~` or holds an unclosed `{` takes
+                                // the closing `}` (error 374). oxabl does not model
+                                // either.
+                                if matches!(filled_inner, Cow::Owned(_))
+                                    && fill_moves_reference_end(&filled_inner)
+                                {
                                     self.report_escaped_reference_end(include_site);
                                     self.knowledge.all_uncertain = true;
                                     self.missed_expansion = true;
@@ -1660,13 +1665,16 @@ impl ProcessContext<'_> {
         self.diagnostics.push(
             Diagnostic::error(
                 "PREPROC012",
-                "an include argument ends with `~`, so it escapes the `}` that closes the \
-                 reference: the compiler stops with unmatched braces (error 374)"
+                "an include argument changes where the include reference ends: a `}` in it \
+                 ends the reference early, and a `~` at its end or an unclosed `{` takes the \
+                 `}` that closes it (the compiler stops with unmatched braces, error 374)"
                     .to_string(),
                 anchor,
             )
             .with_help(
-                "do not pass a value that ends with `~` into an include reference".to_string(),
+                "do not pass a value with an unbalanced brace, or one that ends with `~`, into an \
+                 include reference"
+                    .to_string(),
             ),
         );
         self.text_losses.push(TextLoss {
@@ -3035,9 +3043,29 @@ fn positional_expansion_len(text: &str, args: &[String]) -> usize {
     total
 }
 
-/// Whether `text` ends in an unescaped `~`: an odd run of them.
-fn ends_in_escape(text: &str) -> bool {
-    text.bytes().rev().take_while(|&b| b == b'~').count() % 2 == 1
+/// Whether the text of an include reference, filled with arguments, ends
+/// anywhere but at its own closing `}`: it holds a `}` that no `{` opened, a
+/// `{` that no `}` closes, or ends in an odd run of `~`. A `~` escapes the next
+/// character, and [`NESTED_OPEN`] counts as a `{`.
+fn fill_moves_reference_end(text: &str) -> bool {
+    let mut depth = 0usize;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '~' => {
+                if chars.next().is_none() {
+                    return true;
+                }
+            }
+            '{' | NESTED_OPEN => depth += 1,
+            '}' => match depth.checked_sub(1) {
+                Some(d) => depth = d,
+                None => return true,
+            },
+            _ => {}
+        }
+    }
+    depth != 0
 }
 
 /// Whether `text` holds a `{` followed by a digit.
