@@ -670,3 +670,45 @@ fn a_value_with_a_closing_brace_ends_the_nested_reference_there() {
     let kinds: Vec<TextLossKind> = result.text_losses.iter().map(|l| l.kind).collect();
     assert_eq!(kinds, [TextLossKind::UnmatchedArgumentBrace]);
 }
+
+const P9: &str = "MESSAGE \"P[{&x}]\".\n{b9.i}";
+
+#[test]
+fn a_nested_include_does_not_see_the_named_argument_of_its_includer() {
+    assert_passes(
+        "{/inc/p9.i &x=zzz}",
+        &[("/inc/p9.i", P9), ("/inc/b9.i", B_NAMED)],
+        "MESSAGE \"P[zzz]\".\nMESSAGE \"B[]\".",
+    );
+}
+
+#[test]
+fn a_nested_include_sees_only_its_own_named_arguments() {
+    assert_passes(
+        "{/inc/p10.i &x=zzz}",
+        &[
+            ("/inc/p10.i", "{b10.i &y=yyy}"),
+            ("/inc/b10.i", "MESSAGE \"B[{&x}|{&y}]\"."),
+        ],
+        "MESSAGE \"B[|yyy]\".",
+    );
+}
+
+#[test]
+fn a_scoped_name_of_the_unit_stays_visible_and_the_argument_does_not_replace_it_outside() {
+    assert_passes(
+        "&SCOPED-DEFINE x mainx\n{/inc/p9.i &x=zzz}\nMESSAGE \"M[{&x}]\".",
+        &[("/inc/p9.i", P9), ("/inc/b9.i", B_NAMED)],
+        "MESSAGE \"P[zzz]\".\nMESSAGE \"B[mainx]\".\nMESSAGE \"M[mainx]\".",
+    );
+}
+
+#[test]
+fn a_named_argument_passed_on_as_a_positional_value_defines_no_name_below() {
+    // `{1}` is `zzz`, so `{bx.i zzz}` defines no `&x` in `bx.i`.
+    assert_passes(
+        "{/inc/pass8.i &x=zzz}",
+        &[("/inc/pass8.i", "{bx.i {1}}"), ("/inc/bx.i", B_NAMED)],
+        "MESSAGE \"B[]\".",
+    );
+}

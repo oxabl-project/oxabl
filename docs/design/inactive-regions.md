@@ -162,6 +162,9 @@ database under `database-types` to dim on its type.
   predefined ones too, and pass any argument. So a condition that reads a name
   the include did not set itself, or an argument, is undecided. A condition on
   the `OPSYS` function stays decided; one on `{&OPSYS}` does not.
+  A named argument (`&x=value`) is known only in the text of the include it is
+  passed to. An include that file references does not see it, as in the
+  compiler, so a condition there that reads the name is undecided too.
 
 ## Known limits
 

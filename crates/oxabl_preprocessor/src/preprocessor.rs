@@ -2424,11 +2424,17 @@ impl ProcessContext<'_> {
         // Scope isolation: open a variable scope, inject named args
         let scope = self.vars.begin_scope();
         self.knowledge.begin_scope();
+        if self.tracking {
+            // The arguments of the includes around are not defined here.
+            let vars = &self.vars;
+            self.knowledge
+                .hide_arguments(|name| vars.argument_hidden(name));
+        }
         let args_known = self.region_decided && !site_unknown;
         for (name, value) in &args.named {
             self.vars.define_argument(name, value);
             if self.tracking {
-                self.knowledge.learn(name, args_known, true);
+                self.knowledge.learn_argument(name, args_known);
             }
         }
         let outer_args = std::mem::replace(&mut self.args_uncertain, !args_known);
@@ -2517,6 +2523,9 @@ struct Knowledge {
     /// before the include first changed it with a scoped define or an
     /// argument, restored when the include ends.
     frames: Vec<Vec<Saved>>,
+    /// One list per include being expanded: each named argument and what was
+    /// known of its name before the argument defined it.
+    arguments: Vec<Vec<(String, (bool, bool))>>,
 }
 
 struct Saved {
@@ -2660,11 +2669,42 @@ impl Knowledge {
         }
     }
 
+    /// `name` was defined as a named argument of the include being expanded.
+    fn learn_argument(&mut self, name: &str, known: bool) {
+        let lower = name.to_ascii_lowercase();
+        let before = self.state(&lower);
+        if let Some(arguments) = self.arguments.last_mut() {
+            arguments.push((lower, before));
+        }
+        self.learn(name, known, true);
+    }
+
+    /// The include being expanded does not see the named arguments of the
+    /// includes around it, so each name that one of them defined and that
+    /// `hidden` says is still hidden is known as it was before the argument.
+    /// Call it after [`Self::begin_scope`] for the include.
+    fn hide_arguments(&mut self, hidden: impl Fn(&str) -> bool) {
+        let mut seen = FxHashSet::default();
+        let around = self.arguments.len().saturating_sub(1);
+        let restore: Vec<_> = self.arguments[..around]
+            .iter()
+            .rev()
+            .flatten()
+            .filter(|(name, _)| seen.insert(name.as_str()) && hidden(name))
+            .cloned()
+            .collect();
+        for (name, before) in restore {
+            self.change(&name, before, true);
+        }
+    }
+
     fn begin_scope(&mut self) {
         self.frames.push(Vec::new());
+        self.arguments.push(Vec::new());
     }
 
     fn end_scope(&mut self) {
+        self.arguments.pop();
         for saved in self.frames.pop().unwrap_or_default() {
             if saved.touched {
                 let set = self.set.contains(&saved.name);
@@ -5651,15 +5691,12 @@ ELSE
     /// The AVM ignores a global define of a name that is an include argument.
     #[test]
     fn a_global_defined_over_an_include_argument_is_ignored() {
-        let fs = make_fs(&[
-            ("/inc/inc.i", "&GLOBAL-DEFINE a y\n[{&a}]"),
-            ("/inc/wrap.i", "{inc.i}[{&a}]"),
-        ]);
+        let fs = make_fs(&[("/inc/inc.i", "&GLOBAL-DEFINE a y\n[{&a}]")]);
         let include_paths = vec![PathBuf::from("/inc")];
         let pp = Preprocessor::new(&fs, &include_paths);
-        let result = pp.process(FileId::new(1), "{wrap.i &a=x}[{&a}]").unwrap();
+        let result = pp.process(FileId::new(1), "{inc.i &a=x}[{&a}]").unwrap();
 
-        assert_eq!(&*result.to_text(), "[x][x][]");
+        assert_eq!(&*result.to_text(), "[x][]");
     }
 
     #[test]

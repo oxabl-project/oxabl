@@ -11,6 +11,9 @@ use rustc_hash::FxBuildHasher;
 /// it until it ends.
 /// - `&SCOPED-DEFINE` and an include argument end with the file that made them.
 ///   A second `&SCOPED-DEFINE` of a name in the same file replaces the first.
+/// - An include argument is visible only in the text of the include file it is
+///   passed to. An include that file references does not see it, and sees
+///   what the argument hides. A scoped name stays visible there.
 /// - `&GLOBAL-DEFINE` never ends, and `&UNDEFINE` removes the visible
 ///   definition wherever it came from, in any file. A global define of a name
 ///   that has a scoped name or an include argument is an error in the AVM and
@@ -114,7 +117,17 @@ impl PreprocVarTable {
 
     /// Define a preprocessor variable as `&GLOBAL-DEFINE` does.
     pub fn define_global(&mut self, name: &str, value: &str) {
-        with_folded(name, |key| match self.entry(key) {
+        with_folded(name, |key| {
+            if self.hides_argument(key) {
+                self.define_global_below(key, value);
+                return;
+            }
+            self.define_global_visible(key, value);
+        });
+    }
+
+    fn define_global_visible(&mut self, key: &[u8], value: &str) {
+        match self.entry(key) {
             None => self.store(
                 key,
                 None,
@@ -134,7 +147,24 @@ impl PreprocVarTable {
             }
             // The AVM rejects a global define over a scoped name or an argument.
             Some(_) => {}
-        });
+        }
+    }
+
+    /// `&GLOBAL-DEFINE` of a name whose newest definition is an argument of an
+    /// include that is not being read: the definition under it decides.
+    fn define_global_below(&mut self, key: &[u8], value: &str) {
+        let mut chain = self.chain(key);
+        match chain.iter().position(|e| !self.hidden(e)) {
+            None => chain.push(Entry {
+                value: Arc::from(value),
+                origin: Origin::Global,
+                depth: 0,
+                behind: None,
+            }),
+            Some(at) if chain[at].origin == Origin::Global => chain[at].value = Arc::from(value),
+            Some(_) => return,
+        }
+        self.store(key, None, Self::link(chain));
     }
 
     /// Define a named include argument (`{file.i &name=value}`).
@@ -171,6 +201,57 @@ impl PreprocVarTable {
         if let Some((shared, _)) = self.vars.get_key_value(key) {
             self.frame.push(Arc::clone(shared));
         }
+    }
+
+    /// Whether `entry` is an argument of an include that is not the one being
+    /// read, so that it is not visible.
+    fn hidden(&self, entry: &Entry) -> bool {
+        entry.origin == Origin::Argument && entry.depth != self.scopes
+    }
+
+    /// Whether the newest definition of the folded name `key` is not visible.
+    fn hides_argument(&self, key: &[u8]) -> bool {
+        self.entry(key).is_some_and(|e| self.hidden(e))
+    }
+
+    /// Whether the newest definition of `name` is an argument of an include
+    /// that is not being read.
+    pub(crate) fn argument_hidden(&self, name: &str) -> bool {
+        with_folded(name, |key| self.hides_argument(key))
+    }
+
+    /// The definition of the folded name `key` that `{&name}` reads: the newest
+    /// that is not a hidden argument.
+    fn visible(&self, key: &[u8]) -> Option<&Entry> {
+        let mut entry = self.entry(key)?;
+        while self.hidden(entry) {
+            entry = entry.behind.as_deref()?;
+        }
+        Some(entry)
+    }
+
+    /// The definitions of the folded name `key`, newest first.
+    fn chain(&self, key: &[u8]) -> Vec<Entry> {
+        let mut chain = Vec::new();
+        let mut next = self.entry(key);
+        while let Some(entry) = next {
+            chain.push(Entry {
+                behind: None,
+                ..entry.clone()
+            });
+            next = entry.behind.as_deref();
+        }
+        chain
+    }
+
+    /// The entry that holds `chain`, newest first, as its stack.
+    fn link(chain: Vec<Entry>) -> Option<Entry> {
+        chain.into_iter().rev().fold(None, |behind, entry| {
+            Some(Entry {
+                behind: behind.map(Arc::new),
+                ..entry
+            })
+        })
     }
 
     /// The entry of the folded name `key`, if it is defined.
@@ -242,23 +323,34 @@ impl PreprocVarTable {
 
     /// How `name` is defined now; `None` if it is not defined.
     pub(crate) fn origin(&self, name: &str) -> Option<Origin> {
-        with_folded(name, |key| self.entry(key).map(|e| e.origin))
+        with_folded(name, |key| self.visible(key).map(|e| e.origin))
     }
 
     /// Remove a preprocessor variable (from `&UNDEFINE`): the visible
     /// definition of the name ends, and an older one shows again.
     pub fn undefine(&mut self, name: &str) {
-        with_folded(name, |key| self.pop(key, None));
+        with_folded(name, |key| {
+            if !self.hides_argument(key) {
+                self.pop(key, None);
+                return;
+            }
+            // The newest definition is not visible, so it stays.
+            let mut chain = self.chain(key);
+            if let Some(at) = chain.iter().position(|e| !self.hidden(e)) {
+                chain.remove(at);
+                self.store(key, None, Self::link(chain));
+            }
+        });
     }
 
     /// Look up a variable's value. Returns `None` if not defined.
     pub fn get(&self, name: &str) -> Option<&Arc<str>> {
-        with_folded(name, |key| self.entry(key).map(|e| &e.value))
+        with_folded(name, |key| self.visible(key).map(|e| &e.value))
     }
 
     /// Check whether a variable is defined.
     pub fn is_defined(&self, name: &str) -> bool {
-        with_folded(name, |key| self.entry(key).is_some())
+        with_folded(name, |key| self.visible(key).is_some())
     }
 
     /// Copy every variable of `other` into `self`, replacing the ones it holds.
@@ -675,5 +767,104 @@ mod tests {
         let mut table = PreprocVarTable::new();
         table.merge_globals(&from);
         assert_eq!(table.get("A").map(|v| &**v), Some("1"));
+    }
+
+    #[test]
+    fn an_argument_is_visible_only_in_the_scope_that_made_it() {
+        let mut table = PreprocVarTable::new();
+        table.define("X", "main");
+        let outer = table.begin_scope();
+        table.define_argument("x", "arg");
+        assert_eq!(value(&table, "X"), Some("arg"));
+        let inner = table.begin_scope();
+        assert_eq!(value(&table, "X"), Some("main"));
+        assert_eq!(table.origin("X"), Some(Origin::Scoped));
+        assert!(table.argument_hidden("X"));
+        table.end_scope(inner);
+        assert_eq!(value(&table, "X"), Some("arg"));
+        table.end_scope(outer);
+        assert_eq!(value(&table, "X"), Some("main"));
+    }
+
+    #[test]
+    fn a_hidden_argument_is_not_a_definition() {
+        let mut table = PreprocVarTable::new();
+        let outer = table.begin_scope();
+        table.define_argument("A", "arg");
+        let inner = table.begin_scope();
+        assert!(!table.is_defined("A"));
+        assert_eq!(table.origin("A"), None);
+        assert_eq!(value(&table, "A"), None);
+        table.end_scope(inner);
+        table.end_scope(outer);
+    }
+
+    #[test]
+    fn a_scoped_name_of_the_include_with_the_argument_is_visible_below() {
+        let mut table = PreprocVarTable::new();
+        let outer = table.begin_scope();
+        table.define_argument("A", "arg");
+        table.define("A", "scoped");
+        let inner = table.begin_scope();
+        assert_eq!(value(&table, "A"), Some("scoped"));
+        table.end_scope(inner);
+        table.end_scope(outer);
+        assert!(!table.is_defined("A"));
+    }
+
+    #[test]
+    fn an_undefine_below_leaves_the_hidden_argument_and_removes_the_visible_name() {
+        let mut table = PreprocVarTable::new();
+        table.define("A", "main");
+        let outer = table.begin_scope();
+        table.define_argument("A", "arg");
+        let inner = table.begin_scope();
+        table.undefine("A");
+        assert!(!table.is_defined("A"));
+        table.end_scope(inner);
+        assert_eq!(value(&table, "A"), Some("arg"));
+        table.end_scope(outer);
+        assert!(!table.is_defined("A"));
+    }
+
+    #[test]
+    fn an_undefine_below_with_nothing_visible_leaves_the_hidden_argument() {
+        let mut table = PreprocVarTable::new();
+        let outer = table.begin_scope();
+        table.define_argument("A", "arg");
+        let inner = table.begin_scope();
+        table.undefine("A");
+        table.end_scope(inner);
+        assert_eq!(value(&table, "A"), Some("arg"));
+        table.end_scope(outer);
+    }
+
+    #[test]
+    fn a_global_define_below_a_hidden_argument_stays_after_both_scopes_end() {
+        let mut table = PreprocVarTable::new();
+        let outer = table.begin_scope();
+        table.define_argument("A", "arg");
+        let inner = table.begin_scope();
+        table.define_global("A", "global");
+        assert_eq!(value(&table, "A"), Some("global"));
+        assert_eq!(table.origin("A"), Some(Origin::Global));
+        table.end_scope(inner);
+        assert_eq!(value(&table, "A"), Some("arg"));
+        table.end_scope(outer);
+        assert_eq!(value(&table, "A"), Some("global"));
+        assert_eq!(table.origin("A"), Some(Origin::Global));
+    }
+
+    #[test]
+    fn a_global_define_below_a_hidden_argument_replaces_the_visible_global() {
+        let mut table = PreprocVarTable::new();
+        table.define_global("A", "one");
+        let outer = table.begin_scope();
+        table.define_argument("A", "arg");
+        let inner = table.begin_scope();
+        table.define_global("A", "two");
+        table.end_scope(inner);
+        table.end_scope(outer);
+        assert_eq!(value(&table, "A"), Some("two"));
     }
 }
