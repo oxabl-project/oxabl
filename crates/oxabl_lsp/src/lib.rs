@@ -3,7 +3,8 @@
 //!
 //! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
-//! `textDocument/formatting`, `textDocument/rangeFormatting`, `textDocument/documentSymbol`, `textDocument/foldingRange`,
+//! `textDocument/formatting`, `textDocument/rangeFormatting`, `textDocument/documentSymbol` (with the declarations of include files;
+//! see `docs/design/document-outline.md`), `textDocument/foldingRange`,
 //! `textDocument/selectionRange`, `workspace/symbol`,
 //! `textDocument/definition`, `textDocument/hover`, `textDocument/documentHighlight` and
 //! `textDocument/documentLink` (see `docs/design/navigation.md`), `textDocument/semanticTokens`
@@ -45,6 +46,7 @@ mod inactive_regions;
 mod includer_context;
 mod inlay_hint;
 mod navigation;
+mod outline_includes;
 pub mod position;
 mod range_formatting;
 mod reference_lens;
@@ -796,6 +798,8 @@ struct Negotiated {
     completion: completion::Options,
     inlay: inlay_hint::Options,
     semantic: semantic_tokens::Options,
+    /// The `outline` setting.
+    outline: outline_includes::Settings,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
     /// Whether the client takes `textDocument/inactiveRegions`.
@@ -936,6 +940,7 @@ fn finish_handshake(
             completion: completion::Options::from_client(&init.capabilities),
             inlay,
             semantic,
+            outline: outline_includes::Settings::from_init(init.initialization_options.as_ref()),
             hierarchical_symbols,
             inactive_regions,
             related_information,
@@ -1022,6 +1027,8 @@ struct Server<'c> {
     inlay: inlay_hint::Options,
     /// The client's semantic token support and the user's choice.
     semantic: semantic_tokens::Options,
+    /// The `outline` setting.
+    outline_settings: outline_includes::Settings,
     /// The last outline of each open buffer, for its version.
     outlines: document_symbol::OutlineCache,
     /// The folding and selection facts of each open buffer, for its version.
@@ -1088,6 +1095,7 @@ impl<'c> Server<'c> {
             completion,
             inlay,
             semantic,
+            outline,
             hierarchical_symbols,
             inactive_regions,
             related_information,
@@ -1117,6 +1125,7 @@ impl<'c> Server<'c> {
             lens_refresh: reference_lens::Refresh::new(debounce_window),
             inlay,
             semantic,
+            outline_settings: outline,
             outlines: document_symbol::OutlineCache::default(),
             syntax: editor_syntax::SyntaxCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
@@ -1447,6 +1456,7 @@ impl<'c> Server<'c> {
                     self.hovers.cancel(&id);
                     self.cancel_completion(&id);
                     self.references.cancel(&id);
+                    self.outlines.requests.cancel(&id);
                 }
             }
             DidOpenTextDocument::METHOD => {
@@ -1521,6 +1531,7 @@ impl<'c> Server<'c> {
                 {
                     // Recompute on save so on-disk include changes are picked up.
                     self.schedule_lens_refresh();
+                    self.outlines.invalidate_includes();
                     self.debouncer
                         .schedule(params.text_document.uri, std::time::Instant::now());
                 }
@@ -1537,6 +1548,7 @@ impl<'c> Server<'c> {
             "workspace/didChangeConfiguration" => {
                 self.handle_semantic_tokens_settings(&not.params);
                 self.handle_reference_lens_settings(&not.params);
+                self.handle_outline_settings(&not.params);
                 self.handle_configuration_change(not.params);
             }
             DidCloseTextDocument::METHOD => {
@@ -1706,6 +1718,7 @@ impl<'c> Server<'c> {
     fn install_config(&mut self, resolved: PipelineConfig) {
         // Every install moves the generation, so any worker still running against
         // the previous configuration is identifiable when its result lands.
+        self.outlines.invalidate_includes();
         self.formatter = FormatPipeline::new(resolved.style.clone());
         self.features = resolved.features;
         self.host.with(|sessions| {
@@ -1828,6 +1841,7 @@ impl<'c> Server<'c> {
     /// file's index inputs (R10). Re-triggering bumps the buffer's salsa input so the coarse
     /// expansion memo recomputes and re-reads the changed file.
     fn handle_watched_files(&mut self, params: DidChangeWatchedFilesParams) {
+        self.outlines.invalidate_includes();
         let now = std::time::Instant::now();
         // A file on disk changed: no session generation says so.
         self.reference_cache.clear();
@@ -2109,6 +2123,9 @@ impl<'c> Server<'c> {
         let Some(doc) = self.documents.get(&uri) else {
             return self.respond(Response::new_ok(req.id, serde_json::Value::Null));
         };
+        if self.outline_settings.includes && self.handle_document_symbol_includes(&req.id, &uri) {
+            return Ok(());
+        }
         let outline = self
             .outlines
             .get_or_compute(&uri, doc.version, || oxabl_pipeline::outline(&doc.text()));
@@ -2312,6 +2329,7 @@ mod tests {
                 completion: completion::Options::default(),
                 inlay: inlay_hint::Options::from_client(&Default::default(), None),
                 semantic: semantic_tokens::Options::from_client(&Default::default(), None),
+                outline: outline_includes::Settings::default(),
                 hierarchical_symbols: false,
                 inactive_regions: false,
                 related_information: false,

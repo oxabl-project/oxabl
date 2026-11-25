@@ -4,6 +4,9 @@
 //! Like [`FormatPipeline`](crate::FormatPipeline), it reads the **raw** source:
 //! no preprocessing and no includes, so every span is a byte range of the
 //! buffer as written and a client can map it without a source map.
+//!
+//! [`outline_with_includes`](crate::outline_with_includes) puts the outline of
+//! each expanded include under the symbol of its reference.
 
 use std::collections::HashSet;
 
@@ -78,6 +81,12 @@ pub struct OutlineSymbol {
 /// The parse recurses once for each level of nesting, so the caller's thread
 /// must hold that stack, as for every other parse.
 pub fn outline(source: &str) -> Result<Vec<OutlineSymbol>, InternalPanic> {
+    outline_recovered(source).map(|(symbols, _)| symbols)
+}
+
+/// [`outline`], and whether the parser had to recover from a syntax error, so
+/// that the symbols can be fewer than the file declares.
+pub(crate) fn outline_recovered(source: &str) -> Result<(Vec<OutlineSymbol>, bool), InternalPanic> {
     catch_panic(|| {
         panic_if_injected(panic_sites::OUTLINE, source);
         outline_inner(source)
@@ -89,9 +98,9 @@ const TRIGGER_NAME_MAX: usize = 80;
 
 /// The most symbols that nest in each other. An editor shows no deeper tree, and
 /// the JSON of one that is deeper is more than a JSON reader accepts.
-const MAX_DEPTH: usize = 32;
+pub(crate) const MAX_DEPTH: usize = 32;
 
-fn outline_inner(source: &str) -> Vec<OutlineSymbol> {
+fn outline_inner(source: &str) -> (Vec<OutlineSymbol>, bool) {
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     let mut walker = Walker {
@@ -104,7 +113,7 @@ fn outline_inner(source: &str) -> Vec<OutlineSymbol> {
     };
     walker.walk(&program.statements);
     walker.drop_shadowed_prototypes();
-    walker.top
+    (walker.top, !program.errors.is_empty())
 }
 
 /// A unit of pending work. The walk keeps its own stack, so the depth of the

@@ -4,11 +4,12 @@ import { runCommand, screenshot, waitForLanguage } from "../lib/editor.mjs";
 import { stopDaemons } from "../lib/daemon.mjs";
 import { startFakeGitHub } from "../lib/fake-github.mjs";
 import { check, sleep, waitFor } from "../lib/report.mjs";
-import { installVsix, launch, makeProfile } from "../lib/vscode.mjs";
+import { addSettings, installVsix, launch, makeProfile } from "../lib/vscode.mjs";
 
 // A real `oxabl` (OXABL_E2E_OXABL) in a real VS Code: the Outline view, the breadcrumbs and
 // "Go to Symbol in File" show the symbols of the open file, and "Go to Symbol in Workspace"
-// finds a procedure in a file that is not open.
+// finds a procedure in a file that is not open. The declarations of an include file show under its
+// reference, an include that does not resolve shows with a marker, and a setting hides them.
 // OXABL_E2E_RUNTIME names a short directory: VS Code's own socket must fit in 107 characters.
 
 const rows = (page, selector) =>
@@ -70,7 +71,7 @@ export async function outline(ctx) {
   const runtimeDir = path.resolve(process.env.OXABL_E2E_RUNTIME);
   fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
   const profile = makeProfile(name, {
-    files: ["outline.p", "OutlineDemo.cls", "archive.p"],
+    files: ["outline.p", "OutlineDemo.cls", "archive.p", "incdemo.p", "incdefs.i"],
     settings: {
       "oxabl.updates": "off",
       "oxabl.server.path": path.resolve(oxabl),
@@ -79,7 +80,10 @@ export async function outline(ctx) {
       "explorer.openEditors.visible": 0,
     },
   });
-  fs.writeFileSync(path.join(profile.workspace, "oxabl.toml"), '[workspace]\nname = "outline"\n');
+  fs.writeFileSync(
+    path.join(profile.workspace, "oxabl.toml"),
+    '[workspace]\nname = "outline"\n[workspace.sources]\ninclude_paths = ["."]\n',
+  );
   installVsix(ctx.exe, profile, ctx.vsix);
   const server = await startFakeGitHub({ installed: ctx.installed, newest: "99.0.0" });
   const vs = await launch(ctx.exe, profile, {
@@ -228,6 +232,65 @@ export async function outline(ctx) {
       `cursor ${JSON.stringify(landed)}, want line ${wantLine} col ${wantArchiveCol}`,
     );
     await screenshot(page, `${name}-workspace-symbol`);
+
+    // 7. The declarations of an include file show under its reference.
+    await openFile(page, "incdemo.p");
+    const inc = await waitOutline(page, ["incdefs.i", "OwnProc", "ttShared", "SharedProc"]);
+    console.log(`     incdemo.p rows: ${JSON.stringify(inc.map((r) => `${r.level}:${r.text}`))}`);
+    const ref = find(inc, "incdefs.i");
+    for (const n of ["ttShared", "SharedProc"]) {
+      const row = find(inc, n);
+      check(
+        `${name}: ${n} is a child of the include reference`,
+        !!(ref && row && row.level === ref.level + 1 && inc.indexOf(row) > inc.indexOf(ref)),
+        `rows: ${inc.map((r) => `${r.level}:${r.text}`).join(" | ")}`,
+      );
+    }
+    const own = find(inc, "OwnProc");
+    check(`${name}: the procedure of the program stays at the top level`, !!(own && ref && own.level === ref.level), `rows: ${inc.map((r) => `${r.level}:${r.text}`).join(" | ")}`);
+    const missing = find(inc, "nowhere.i");
+    check(`${name}: an include that does not resolve has a marker`, !!missing && missing.text.includes("not found"), `rows: ${inc.map((r) => r.text).join(" | ")}`);
+
+    // Choosing a declaration of the include puts the cursor on the reference; Go to Definition there opens the file.
+    await page.locator(".outline-tree .monaco-list-row", { hasText: "SharedProc" }).first().click();
+    const refLine = fs.readFileSync(path.join(profile.workspace, "incdemo.p"), "utf8").split("\n").findIndex((l) => l.startsWith("{incdefs.i}")) + 1;
+    let onRef = null;
+    await waitFor("the cursor on the include reference", async () => ((onRef = await cursor(page)), onRef && onRef.line === refLine), { timeout: 10_000, interval: 200 }).catch(() => {});
+    check(`${name}: choosing SharedProc puts the cursor on the include reference`, !!onRef && onRef.line === refLine, `cursor ${JSON.stringify(onRef)}, want line ${refLine}`);
+    await runCommand(page, "Go to Definition");
+    let opened = [];
+    await waitFor("incdefs.i open", async () => (opened = await rows(page, ".tab.active")).some((t) => t.includes("incdefs.i")), { timeout: 15_000 }).catch(() => {});
+    check(`${name}: Go to Definition on the reference opens the include file`, opened.some((t) => t.includes("incdefs.i")), `active tab: ${opened.join(" | ")}`);
+    await screenshot(page, `${name}-include`);
+
+    // The setting hides the declarations and keeps the reference. A change restarts the client,
+    // so each state must hold for a while before the next change.
+    const holds = async (isShown) => {
+      let rowsNow = [];
+      let steady = 0;
+      await waitFor(
+        `the Outline view to hold ${isShown ? "the declarations" : "no declarations"}`,
+        async () => {
+          // A node that gained children after it was a leaf comes back collapsed.
+          await page.evaluate(() =>
+            document.querySelectorAll('.outline-tree .monaco-list-row[aria-expanded="false"] .monaco-tl-twistie').forEach((t) => t.click()),
+          );
+          rowsNow = await outlineRows(page);
+          const ok = !!find(rowsNow, "incdefs.i") && !!find(rowsNow, "OwnProc") && !!find(rowsNow, "ttShared") === isShown;
+          steady = ok ? steady + 1 : 0;
+          return steady >= 6;
+        },
+        { timeout: 90_000, interval: 1000 },
+      ).catch(() => {});
+      return rowsNow;
+    };
+    await openFile(page, "incdemo.p");
+    addSettings(profile, { "oxabl.outline.includes": false });
+    const hidden = await holds(false);
+    check(`${name}: oxabl.outline.includes false hides the declarations of the include`, !!find(hidden, "incdefs.i") && !find(hidden, "ttShared") && !find(hidden, "SharedProc"), `rows: ${hidden.map((r) => r.text).join(" | ")}`);
+    addSettings(profile, { "oxabl.outline.includes": true });
+    const back = await holds(true);
+    check(`${name}: oxabl.outline.includes true shows them again`, !!find(back, "ttShared") && !!find(back, "SharedProc"), `rows: ${back.map((r) => r.text).join(" | ")}`);
   } finally {
     await vs.close();
     await sleep(1500);
