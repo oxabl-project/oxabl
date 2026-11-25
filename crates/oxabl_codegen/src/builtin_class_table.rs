@@ -73,7 +73,7 @@ pub fn generate_from(root: &std::path::Path) -> Result<String, String> {
     let mut index = read_index(&root.join(JSON_PATH))?;
     let overrides = std::fs::read_to_string(root.join(crate::builtin_normalise::OVERRIDES_PATH))
         .map_err(|e| format!("reading overrides: {e}"))?;
-    crate::builtin_normalise::apply_overrides(&mut index, &overrides)?;
+    crate::builtin_normalise::prepare(&mut index, &overrides)?;
     generate(&catalog, &index)
 }
 

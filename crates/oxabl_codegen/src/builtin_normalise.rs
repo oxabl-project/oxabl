@@ -7,7 +7,7 @@
 //! computes the trust and completeness flags of each type. It never guesses a
 //! signature: a member it cannot read is dropped and its type is not trusted.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::Deserialize;
 
@@ -173,19 +173,45 @@ struct Override {
     /// The page the fix was checked against.
     checked_against: String,
     inherits: Option<String>,
-    drop_member: Option<String>,
-    /// A method whose return is an `EXTENT` of a primitive that the scrape
-    /// read as a scalar: every overload of the name with a scalar primitive
-    /// return gets `[]`.
-    extent_return: Option<String>,
-    /// A property whose type is an `EXTENT` that the scrape read as a scalar
-    /// (the scrape writes no `EXTENT` on any property): its type gets `[]`.
-    extent_property: Option<String>,
-    /// The type of one parameter, by its name, in every overload of a member
-    /// that has a parameter of that name.
+    /// The one member of this kind and name.
+    drop_member: Option<OverrideTarget>,
+    /// The one overload, by its scraped parameter types, whose return is an
+    /// `EXTENT` of a primitive that the scrape read as a scalar: its return
+    /// gets `[]`.
+    extent_return: Option<OverrideOverload>,
+    /// The one property, with its scraped type, that is an `EXTENT` the
+    /// scrape read as a scalar (the scrape writes no `EXTENT` on any
+    /// property): its type gets `[]`.
+    extent_property: Option<OverrideProperty>,
+    /// The type of the parameters with this name and this scraped type, in
+    /// the overloads of a member.
     param_type: Option<OverrideParamType>,
     add_member: Option<OverrideMember>,
+    /// The one member of this kind and name.
     replace_member: Option<OverrideMember>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverrideTarget {
+    kind: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverrideOverload {
+    member: String,
+    /// The scraped type of each parameter, in order.
+    params: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverrideProperty {
+    name: String,
+    /// The scraped type.
+    from: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,6 +232,8 @@ struct OverrideMember {
 struct OverrideParamType {
     member: String,
     param: String,
+    /// The scraped type of the parameter, without `[]`.
+    from: String,
     #[serde(rename = "type")]
     type_name: String,
 }
@@ -255,12 +283,136 @@ fn all_members(entry: &mut TypeEntry) -> [&mut Vec<Member>; 4] {
     ]
 }
 
+/// The position of the one member named `name` (any case) in `list`. None,
+/// or more than one, is an error: an override names exactly one row.
+fn exactly_one(list: &[Member], name: &str, type_name: &str, kind: &str) -> Result<usize, String> {
+    let hits: Vec<usize> = list
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.name.eq_ignore_ascii_case(name))
+        .map(|(i, _)| i)
+        .collect();
+    match hits[..] {
+        [at] => Ok(at),
+        _ => Err(format!(
+            "stale override: `{type_name}` has {} {kind} rows `{name}`, not one",
+            hits.len()
+        )),
+    }
+}
+
+/// The folded signature of each row of `entry`, by kind and folded name,
+/// with the number of rows.
+type Rows = BTreeMap<(usize, String), (usize, BTreeSet<Vec<String>>)>;
+
+fn distinct_rows(entry: &TypeEntry) -> Rows {
+    let mut out: Rows = BTreeMap::new();
+    let lists = [
+        &entry.constructors,
+        &entry.methods,
+        &entry.properties,
+        &entry.events,
+    ];
+    for (kind, list) in lists.into_iter().enumerate() {
+        for m in list {
+            let mut sig: Vec<String> = m
+                .params
+                .iter()
+                .map(|p| p.type_name.to_ascii_lowercase())
+                .collect();
+            if kind == 0
+                && m.return_type
+                    .as_deref()
+                    .is_some_and(|r| r.trim().eq_ignore_ascii_case("STATIC"))
+            {
+                sig.push("static".into());
+            }
+            let slot = out.entry((kind, m.name.to_ascii_lowercase())).or_default();
+            slot.0 += 1;
+            slot.1.insert(sig);
+        }
+    }
+    out
+}
+
+/// Drop each row that the page lists twice: the same member, with the same
+/// names and types. Returns how many it dropped. Run on the scrape, before the
+/// overrides, so that a row an override makes equal to another is the
+/// collision error of [`normalise`], not a silent drop.
+pub fn drop_repeated_rows(index: &mut BuiltinIndex) -> usize {
+    let mut dropped = 0;
+    for entry in index.types.values_mut() {
+        for list in all_members(entry) {
+            let mut kept: Vec<Member> = Vec::with_capacity(list.len());
+            for m in list.drain(..) {
+                if kept.contains(&m) {
+                    dropped += 1;
+                } else {
+                    kept.push(m);
+                }
+            }
+            *list = kept;
+        }
+    }
+    dropped
+}
+
+/// [`drop_repeated_rows`], then [`apply_overrides`], then a check that the
+/// overrides kept every member's rows: for each type, kind and name, the same
+/// number of rows and at least as many distinct signatures as before (an
+/// override may tell two scraped rows apart, never make two rows one), except
+/// where an override drops or adds a member.
+pub fn prepare(index: &mut BuiltinIndex, text: &str) -> Result<(), String> {
+    drop_repeated_rows(index);
+    let before: BTreeMap<String, _> = index
+        .types
+        .iter()
+        .map(|(name, entry)| (name.clone(), distinct_rows(entry)))
+        .collect();
+    let touched = apply_overrides(index, text)?;
+    for (name, entry) in &index.types {
+        let after = distinct_rows(entry);
+        for (key, rows) in &before[name] {
+            if touched.contains(&(name.clone(), key.1.clone())) {
+                continue;
+            }
+            let (count, distinct) = after
+                .get(key)
+                .map_or((0, 0), |(count, sigs)| (*count, sigs.len()));
+            if count != rows.0 || distinct < rows.1.len() {
+                return Err(format!(
+                    "the overrides of `{name}` turn {} `{}` rows ({} distinct) into {count} \
+                     ({distinct} distinct)",
+                    rows.0,
+                    key.1,
+                    rows.1.len()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Apply the overrides in `text` to `index`. An entry that matches nothing is
 /// an error, so a later scrape cannot leave a stale fix behind.
-pub fn apply_overrides(index: &mut BuiltinIndex, text: &str) -> Result<(), String> {
+/// Returns the `(type, folded member name)` of each member that a
+/// `drop_member` or `add_member` changes the number of rows of.
+pub fn apply_overrides(
+    index: &mut BuiltinIndex,
+    text: &str,
+) -> Result<BTreeSet<(String, String)>, String> {
     let file: OverridesFile =
         toml::from_str(text).map_err(|e| format!("parsing {OVERRIDES_PATH}: {e}"))?;
+    let mut touched = BTreeSet::new();
     for o in &file.overrides {
+        if let Some(name) = o
+            .drop_member
+            .as_ref()
+            .map(|t| &t.name)
+            .or(o.add_member.as_ref().map(|m| &m.name))
+        {
+            touched.insert((o.type_name.clone(), name.to_ascii_lowercase()));
+        }
         if o.checked_against.trim().is_empty() {
             return Err(format!(
                 "override of `{}` names no page it was checked against",
@@ -294,55 +446,62 @@ pub fn apply_overrides(index: &mut BuiltinIndex, text: &str) -> Result<(), Strin
                 ));
             }
             entry.inherits = Some(parent.clone());
-        } else if let Some(name) = &o.drop_member {
-            let mut found = false;
-            for list in all_members(entry) {
-                let before = list.len();
-                list.retain(|m| m.name != *name);
-                found |= list.len() != before;
-            }
-            if !found {
-                return Err(format!(
-                    "stale override: `{}` has no member `{name}` to drop",
-                    o.type_name
-                ));
-            }
-        } else if let Some(name) = &o.extent_return {
-            let mut found = false;
-            for m in entry
+        } else if let Some(t) = &o.drop_member {
+            let list = member_list(entry, &t.kind)?;
+            let at = exactly_one(list, &t.name, &o.type_name, &t.kind)?;
+            list.remove(at);
+        } else if let Some(t) = &o.extent_return {
+            let hits: Vec<usize> = entry
                 .methods
-                .iter_mut()
-                .filter(|m| m.name.eq_ignore_ascii_case(name))
-            {
-                if let Some(rt) = &mut m.return_type
-                    && PRIMITIVES
-                        .iter()
-                        .any(|(p, _)| p.eq_ignore_ascii_case(rt.trim()))
-                {
-                    rt.push_str("[]");
-                    found = true;
-                }
-            }
-            if !found {
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| {
+                    m.name.eq_ignore_ascii_case(&t.member)
+                        && m.params.len() == t.params.len()
+                        && m.params
+                            .iter()
+                            .zip(&t.params)
+                            .all(|(p, want)| p.type_name.eq_ignore_ascii_case(want))
+                })
+                .map(|(i, _)| i)
+                .collect();
+            let [at] = hits[..] else {
                 return Err(format!(
-                    "stale override: `{}` has no method `{name}` with a scalar primitive return",
-                    o.type_name
-                ));
-            }
-        } else if let Some(name) = &o.extent_property {
-            let Some(rt) = entry
-                .properties
-                .iter_mut()
-                .find(|m| m.name.eq_ignore_ascii_case(name))
-                .and_then(|m| m.return_type.as_mut())
-                .filter(|rt| !rt.trim_end().ends_with("[]"))
-            else {
-                return Err(format!(
-                    "stale override: `{}` has no scalar property `{name}`",
-                    o.type_name
+                    "stale override: `{}` has {} methods `{}({})`, not one",
+                    o.type_name,
+                    hits.len(),
+                    t.member,
+                    t.params.join(", ")
                 ));
             };
-            rt.push_str("[]");
+            match &mut entry.methods[at].return_type {
+                Some(rt)
+                    if PRIMITIVES
+                        .iter()
+                        .any(|(p, _)| p.eq_ignore_ascii_case(rt.trim())) =>
+                {
+                    rt.push_str("[]")
+                }
+                _ => {
+                    return Err(format!(
+                        "stale override: `{}:{}({})` has no scalar primitive return",
+                        o.type_name,
+                        t.member,
+                        t.params.join(", ")
+                    ));
+                }
+            }
+        } else if let Some(t) = &o.extent_property {
+            let at = exactly_one(&entry.properties, &t.name, &o.type_name, "property")?;
+            match &mut entry.properties[at].return_type {
+                Some(rt) if rt.trim().eq_ignore_ascii_case(&t.from) => rt.push_str("[]"),
+                other => {
+                    return Err(format!(
+                        "stale override: `{}:{}` is {other:?}, not `{}`",
+                        o.type_name, t.name, t.from
+                    ));
+                }
+            }
         } else if let Some(t) = &o.param_type {
             let mut found = false;
             for list in [&mut entry.constructors, &mut entry.methods] {
@@ -350,31 +509,26 @@ pub fn apply_overrides(index: &mut BuiltinIndex, text: &str) -> Result<(), Strin
                     .iter_mut()
                     .filter(|m| m.name.eq_ignore_ascii_case(&t.member))
                 {
-                    for p in m
-                        .params
-                        .iter_mut()
-                        .filter(|p| p.name.as_deref() == Some(t.param.as_str()))
-                    {
+                    for p in m.params.iter_mut().filter(|p| {
+                        p.name.as_deref() == Some(t.param.as_str())
+                            && p.type_name
+                                .trim_end()
+                                .trim_end_matches("[]")
+                                .eq_ignore_ascii_case(&t.from)
+                    }) {
                         // An `EXTENT` parameter keeps its marker.
-                        let wanted = match p.type_name.trim_end().ends_with("[]") {
+                        p.type_name = match p.type_name.trim_end().ends_with("[]") {
                             true => format!("{}[]", t.type_name),
                             false => t.type_name.clone(),
                         };
-                        if p.type_name == wanted {
-                            return Err(format!(
-                                "stale override: `{}:{}` parameter `{}` is already `{}`",
-                                o.type_name, t.member, t.param, t.type_name
-                            ));
-                        }
-                        p.type_name = wanted;
                         found = true;
                     }
                 }
             }
             if !found {
                 return Err(format!(
-                    "stale override: `{}` has no member `{}` with a parameter `{}`",
-                    o.type_name, t.member, t.param
+                    "stale override: `{}` has no member `{}` with a parameter `{}` of type `{}`",
+                    o.type_name, t.member, t.param, t.from
                 ));
             }
         } else if let Some(m) = &o.add_member {
@@ -399,19 +553,11 @@ pub fn apply_overrides(index: &mut BuiltinIndex, text: &str) -> Result<(), Strin
             list.push(added);
         } else if let Some(m) = &o.replace_member {
             let list = member_list(entry, &m.kind)?;
-            let Some(slot) = list
-                .iter_mut()
-                .find(|x| x.name.eq_ignore_ascii_case(&m.name))
-            else {
-                return Err(format!(
-                    "stale override: `{}` has no {} `{}` to replace",
-                    o.type_name, m.kind, m.name
-                ));
-            };
-            *slot = to_member(m);
+            let at = exactly_one(list, &m.name, &o.type_name, &m.kind)?;
+            list[at] = to_member(m);
         }
     }
-    Ok(())
+    Ok(touched)
 }
 
 // =============================================================================
@@ -551,12 +697,19 @@ struct Owner<'a> {
     type_params: &'a [String],
 }
 
+/// `t` without a leading `CLASS ` keyword (any case), when it has one and a
+/// type after it.
+fn strip_class_keyword(t: &str) -> Option<&str> {
+    let head = t.get(..6)?;
+    (head.eq_ignore_ascii_case("CLASS ") && t.len() > 6).then(|| &t[6..])
+}
+
 /// Read a raw type of a member of `owner`, and the type as scraped: they
 /// differ for a conflated name (see [`Names::conflated`]), which reads as
 /// `Unknown`.
 fn read_type(raw: &str, owner: &Owner, names: &Names) -> (NTypeOrDamaged, NType) {
     let read = read_scraped(raw, owner, names);
-    let explicit_class = raw.trim().len() > 6 && raw.trim()[..6].eq_ignore_ascii_case("CLASS ");
+    let explicit_class = strip_class_keyword(raw.trim()).is_some();
     match read {
         NTypeOrDamaged::Type(t @ (NType::Class(i) | NType::ClassArray(i)))
             if names.conflated[i] && !explicit_class =>
@@ -571,8 +724,8 @@ fn read_type(raw: &str, owner: &Owner, names: &Names) -> (NTypeOrDamaged, NType)
 /// [`read_type`] with no rule for conflated names.
 fn read_scraped(raw: &str, owner: &Owner, names: &Names) -> NTypeOrDamaged {
     let mut t = raw.trim().to_string();
-    if t.len() > 6 && t[..6].eq_ignore_ascii_case("CLASS ") {
-        t = t[6..].trim().to_string();
+    if let Some(rest) = strip_class_keyword(&t) {
+        t = rest.trim().to_string();
     }
     t = extent_to_brackets(&t);
     t = strip_kind_word(&t);
@@ -647,8 +800,8 @@ fn read_base(b: &str, owner: &Owner, names: &Names) -> Read {
 
 fn read_super(raw: &str, package: &str, names: &Names) -> NSuper {
     let mut t = raw.trim();
-    if t.len() > 6 && t[..6].eq_ignore_ascii_case("CLASS ") {
-        t = t[6..].trim();
+    if let Some(rest) = strip_class_keyword(t) {
+        t = rest.trim();
     }
     let (base, _) = split_generic(t);
     if let Some(i) = names.lookup(base, package) {
@@ -753,13 +906,11 @@ pub fn normalise(index: &BuiltinIndex) -> Result<Catalog, String> {
                         .map(|p| p.type_name.to_ascii_lowercase())
                         .collect::<Vec<_>>(),
                 );
-                // A row the page repeats is dropped. Two different rows with
-                // one signature are a scrape that lost a type (an override
-                // must say which is which).
+                // Two rows with one signature are a scrape that lost a type,
+                // or an override that made two rows one (an override must
+                // say which is which). Rows the page repeats are dropped
+                // before the overrides (`drop_repeated_rows`).
                 if let Some((_, first)) = seen.iter().find(|(s, _)| *s == sig) {
-                    if *first == m {
-                        continue;
-                    }
                     return Err(format!(
                         "`{base}` has two {kind:?} rows `{}` with one signature: \
                          {first:?} and {m:?}; add an override that tells them apart",
@@ -1007,7 +1158,7 @@ pub fn load(root: &std::path::Path) -> Result<Catalog, String> {
     let path = root.join(OVERRIDES_PATH);
     let text =
         std::fs::read_to_string(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    apply_overrides(&mut index, &text)?;
+    prepare(&mut index, &text)?;
     normalise(&index)
 }
 
@@ -1336,7 +1487,7 @@ mod tests {
         ]);
         apply_overrides(
             &mut index,
-            "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_property = \"value\"\n",
+            "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_property = { name = \"value\", from = \"Progress.Lang.Object\" }\n",
         )
         .unwrap();
         let c = normalise(&index).unwrap();
@@ -1345,12 +1496,21 @@ mod tests {
 
     #[test]
     fn a_repeated_row_is_kept_once_and_two_rows_with_one_signature_fail() {
-        let t = one(
-            r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
+        let repeated = r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
                 "methods": [{"name": "M", "return_type": "INTEGER", "params": [{"name": "a", "type_name": "CHARACTER"}]},
-                            {"name": "M", "return_type": "INTEGER", "params": [{"name": "a", "type_name": "CHARACTER"}]}]}"#,
+                            {"name": "M", "return_type": "INTEGER", "params": [{"name": "a", "type_name": "CHARACTER"}]}]}"#;
+        let mut index = index_with(&[OBJECT, ("A.B", repeated)]);
+        // The repeat is dropped on the scrape; left in, it is a collision.
+        assert!(
+            normalise(&index)
+                .unwrap_err()
+                .contains("with one signature")
         );
-        assert_eq!(t.members.len(), 1);
+        assert_eq!(drop_repeated_rows(&mut index), 1);
+        assert_eq!(
+            normalise(&index).unwrap().get("A.B").unwrap().members.len(),
+            1
+        );
         let index = index_with(&[
             OBJECT,
             (
@@ -1442,19 +1602,20 @@ mod tests {
     }
 
     #[test]
-    fn a_param_type_override_types_each_overload_and_keeps_the_extent() {
+    fn a_param_type_override_types_only_the_parameters_of_its_scraped_type() {
         let mut index = index_with(&[
             OBJECT,
             MEMPTR_CLASS,
             (
                 "A.W",
                 r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
-                    "methods": [{"name": "Write", "params": [{"name": "pData", "type_name": "A.Memptr"}]},
+                    "methods": [{"name": "Write", "params": [{"name": "pData", "type_name": "CHARACTER"}]},
+                                {"name": "Write", "params": [{"name": "pData", "type_name": "A.Memptr"}]},
                                 {"name": "Write", "params": [{"name": "pData", "type_name": "A.Memptr[]"}]}]}"#,
             ),
         ]);
-        let text = "[[override]]\ntype = \"A.W\"\nchecked_against = \"x\"\nparam_type = { member = \"write\", param = \"pData\", type = \"MEMPTR\" }\n";
-        apply_overrides(&mut index, text).unwrap();
+        let text = "[[override]]\ntype = \"A.W\"\nchecked_against = \"x\"\nparam_type = { member = \"write\", param = \"pData\", from = \"A.Memptr\", type = \"MEMPTR\" }\n";
+        prepare(&mut index, text).unwrap();
         let c = normalise(&index).unwrap();
         let tys: Vec<_> = c
             .get("A.W")
@@ -1463,21 +1624,78 @@ mod tests {
             .iter()
             .map(|m| m.params[0].ty)
             .collect();
+        // The CHARACTER overload keeps its type: three rows stay three.
         assert_eq!(
             tys,
-            [NType::Primitive("Memptr"), NType::PrimitiveArray("Memptr")]
+            [
+                NType::Primitive("Character"),
+                NType::Primitive("Memptr"),
+                NType::PrimitiveArray("Memptr")
+            ]
         );
-        // The same entry again matches nothing new.
+        // The same entry again matches no parameter of that scraped type.
         assert!(
             apply_overrides(&mut index, text)
                 .unwrap_err()
-                .contains("already")
+                .contains("of type `A.Memptr`")
         );
-        let missing = "[[override]]\ntype = \"A.W\"\nchecked_against = \"x\"\nparam_type = { member = \"Write\", param = \"pNope\", type = \"MEMPTR\" }\n";
+    }
+
+    #[test]
+    fn an_override_that_names_a_member_with_two_rows_fails() {
+        let mut index = index_with(&[
+            OBJECT,
+            (
+                "A.B",
+                r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
+                    "methods": [{"name": "M", "return_type": "INTEGER"},
+                                {"name": "M", "return_type": "INTEGER", "params": [{"name": "a", "type_name": "CHARACTER"}]}]}"#,
+            ),
+        ]);
+        for text in [
+            "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nreplace_member = { kind = \"method\", name = \"M\", type = \"LOGICAL\" }\n",
+            "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\ndrop_member = { kind = \"method\", name = \"M\" }\n",
+        ] {
+            let err = apply_overrides(&mut index, text).unwrap_err();
+            assert!(err.contains("has 2 method rows `M`, not one"), "{err}");
+        }
+        // An overload named by its parameter types is exact.
+        apply_overrides(
+            &mut index,
+            "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_return = { member = \"M\", params = [\"CHARACTER\"] }\n",
+        )
+        .unwrap();
+        let rts: Vec<_> = index.types["A.B"]
+            .methods
+            .iter()
+            .map(|m| m.return_type.clone().unwrap())
+            .collect();
+        assert_eq!(rts, ["INTEGER", "INTEGER[]"]);
+    }
+
+    #[test]
+    fn an_override_that_makes_two_rows_one_fails() {
+        let index = || {
+            index_with(&[
+                OBJECT,
+                (
+                    "A.W",
+                    r#"{"kind": "class", "package": "A", "page": "p", "inherits": "Progress.Lang.Object",
+                        "methods": [{"name": "Write", "params": [{"name": "pData", "type_name": "CHARACTER"}]},
+                                    {"name": "Write", "params": [{"name": "pData", "type_name": "LONGCHAR"}]}]}"#,
+                ),
+            ])
+        };
+        let text = "[[override]]\ntype = \"A.W\"\nchecked_against = \"x\"\nparam_type = { member = \"Write\", param = \"pData\", from = \"CHARACTER\", type = \"LONGCHAR\" }\n";
+        let err = prepare(&mut index(), text).unwrap_err();
+        assert!(err.contains("turn 2 `write` rows (2 distinct)"), "{err}");
+        // And `normalise` alone refuses the two rows as one signature.
+        let mut overridden = index();
+        apply_overrides(&mut overridden, text).unwrap();
         assert!(
-            apply_overrides(&mut index, missing)
+            normalise(&overridden)
                 .unwrap_err()
-                .contains("no member `Write` with a parameter `pNope`")
+                .contains("with one signature")
         );
     }
 
@@ -1544,16 +1762,20 @@ mod tests {
                 "already documents",
             ),
             (
-                "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\ndrop_member = \"Q\"\n",
-                "no member `Q`",
+                "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\ndrop_member = { kind = \"property\", name = \"Q\" }\n",
+                "has 0 property rows `Q`",
             ),
             (
-                "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_return = \"P\"\n",
-                "no method `P` with a scalar primitive return",
+                "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_return = { member = \"P\", params = [] }\n",
+                "has 0 methods `P()`",
             ),
             (
-                "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_property = \"Q\"\n",
-                "no scalar property `Q`",
+                "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nextent_property = { name = \"P\", from = \"CHARACTER\" }\n",
+                "is Some(\"INTEGER\"), not `CHARACTER`",
+            ),
+            (
+                "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nparam_type = { member = \"P\", param = \"a\", from = \"X\", type = \"MEMPTR\" }\n",
+                "no member `P` with a parameter `a` of type `X`",
             ),
             (
                 "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nadd_member = { kind = \"property\", name = \"p\", type = \"INTEGER\" }\n",
@@ -1561,7 +1783,7 @@ mod tests {
             ),
             (
                 "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\nreplace_member = { kind = \"method\", name = \"P\", type = \"INTEGER\" }\n",
-                "no method `P`",
+                "has 0 method rows `P`",
             ),
         ] {
             let err = apply_overrides(&mut index, text).unwrap_err();
@@ -1569,7 +1791,7 @@ mod tests {
         }
         apply_overrides(
             &mut index,
-            "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\ndrop_member = \"P\"\n",
+            "[[override]]\ntype = \"A.B\"\nchecked_against = \"x\"\ndrop_member = { kind = \"property\", name = \"P\" }\n",
         )
         .unwrap();
         assert!(index.types["A.B"].properties.is_empty());
@@ -1590,5 +1812,9 @@ mod tests {
         assert!(!is_abl_name("file-name at line"));
         assert!(is_handle_placeholder("tt-handle"));
         assert!(!is_handle_placeholder("TABLE-HANDLE"));
+        assert_eq!(strip_class_keyword("class A.B"), Some("A.B"));
+        assert_eq!(strip_class_keyword("CLASS "), None);
+        // A multi-byte character in the first six bytes is no keyword.
+        assert_eq!(strip_class_keyword("Ünïcode.Type"), None);
     }
 }

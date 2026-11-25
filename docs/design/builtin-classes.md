@@ -115,8 +115,8 @@ The numbers are from a check of the checked-in file by the planner. Step 1 of
 | No supertype on a class that has one (`Progress.Lang.AppError`, the `Progress.Util.*` helpers, `Progress.Data.*`, `Progress.IO.ByteOrder`) | 13 types | The header is not known: an override gives it, else the surface is opaque. |
 | An undocumented supertype (`Progress.Web.AbstractWebRouter`) | 1 | The header is not known. |
 | A wrong member (`Progress.Lang.Error` and `Progress.Lang.ProError` list `CallStack` as `file-name at line line-number`) | 2 | An override fixes it. |
-| The same row twice (the page lists a member twice) | 27 | The normaliser keeps the first. |
-| Two different rows that read as one signature (`ByteBucket:PutBytes(poData)` and `PutBytes(pmData)`, both scraped as `OpenEdge.Core.Memptr`) | 2 | A codegen error, unless an override tells them apart (`param_type`). ABL cannot declare two overloads with one signature, so the rows show a type the scrape lost. |
+| The same row twice (the page lists a member twice) | 27 | Dropped on the scrape, before the overrides (`drop_repeated_rows`), so that a row an override makes equal to another is an error, not a silent drop. |
+| Two different rows that read as one signature (`ByteBucket:PutBytes(poData)` and `PutBytes(pmData)`, both scraped as `OpenEdge.Core.Memptr`) | 2 | A codegen error, unless an override tells them apart (`param_type`). ABL cannot declare two overloads with one signature, so the rows show a type the scrape lost. The same error holds after the overrides, and `prepare` checks that, for each type and member, the overrides keep the number of rows and do not lower the number of distinct signatures (only `drop_member` and `add_member` change a member's rows). |
 | A class named like an ABL primitive (`OpenEdge.Core.Memptr`, `Decimal`, `Integer`, `WidgetHandle`): the API reference links the primitive (`memptr`) to the page of the class, so the scrape writes the class for both | 4 such classes; 36 member types name one (35 `Memptr`, 1 `WidgetHandle`) | Such a scraped type reads as not known (`Names::conflated`), so it gives no finding. The short signature on the page keeps the case (`PutBytes (memptr)` is the primitive, `PutBytes (Memptr)` the class), so `param_type` overrides give the type of 23 of the 24 parameters (`MEMPTR`, or `CLASS OpenEdge.Core.Memptr`: an explicit `CLASS` keeps the class). `RecordHeader(name, val)` stays not known: the page has a `memptr` and a `Memptr` constructor, and the scrape kept one. A return has no short signature, so `GetBytes`, `Empty`, `GetRawEntity`, `SocketReadEventArgs:Data` and `Session:GetFirstRunningProc` stay not known. `Memptr:Value` and `ByteBucket:Value` are `MEMPTR` by the `IMemptrHolder` contract (`replace_member`). The other wrapper classes (`OpenEdge.Core.String`, `LogicalValue`, the date holders) are not named like a primitive, and no parameter typed as one has a `pc`, `pl` or `pd` prefix. |
 | A member whose type disagrees with the interface member it implements | 2 (`Memptr:Value`, `ByteBucket:Value`) | A codegen error (`interface_disagreements`): ABL requires an implementation to keep the type of the interface member. The check compares the types as scraped, before a conflated name is read as not known, for every property and every method with the same parameter types. |
 | A parameter with no name | 11 | Kept with no name. |
@@ -128,9 +128,21 @@ The numbers are from a check of the checked-in file by the planner. Step 1 of
 
 `resources/progress_builtin_overrides.toml` holds fixes that a person checked
 against the Progress documentation. The codegen applies them after the
-normaliser. Each entry names a type and one of: a supertype, a member to drop,
-a member to add, a member to replace. The codegen fails when an entry matches
-nothing, so a later scrape cannot leave a stale fix behind. This work adds three
+normaliser. Each entry names a type and one change, and names the rows it
+changes exactly, never by a name alone:
+
+| Key | Changes |
+| --- | --- |
+| `inherits` | The supertype of a type that documents none. |
+| `drop_member = { kind, name }` | The one row of that kind and name. |
+| `replace_member = { kind, name, type, params }` | The one row of that kind and name. |
+| `add_member` | Adds a row; fails when a row with these parameter types exists. |
+| `extent_return = { member, params }` | The one overload with these scraped parameter types: its scalar primitive return gets `[]`. |
+| `extent_property = { name, from }` | The one property, whose scraped type is `from`: it gets `[]`. |
+| `param_type = { member, param, from, type }` | Each parameter with this name and the scraped type `from` (with or without `[]`), in the overloads of the member. |
+
+The codegen fails when an entry matches nothing, or more than the one row it
+names, so a later scrape cannot leave a stale fix behind. This work adds three
 entries, and no more:
 
 - `Progress.Lang.AppError` inherits `Progress.Lang.ProError`.
@@ -721,7 +733,7 @@ What the implementation decided differently from the sections above:
   macro call (`classes!`, `members!`, `params!`, `enum_names!` in
   `builtin.rs`), which rustfmt leaves as it is.
 - **Overrides file.** Each entry has a `checked_against` page and one of
-  `inherits`, `drop_member`, `add_member`, `replace_member`. The three changes
+  the keys of "Overrides". The three changes
   of the design are five entries (a drop and an add for each error class).
   A `inherits` entry on a type that documents a supertype is stale.
 - **A property with no type** in the catalog keeps the property, with the type

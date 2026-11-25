@@ -4,9 +4,13 @@
 # `cargo run -p oxabl_codegen -- builtin-class-table` applies them before it
 # compiles the catalog. Each entry names a type, the documentation page a
 # person checked the fix against, and exactly one change: `inherits`,
-# `drop_member`, `extent_return`, `extent_property`, `param_type`, `add_member` or
-# `replace_member`. An entry that matches
-# nothing fails the codegen, so a later scrape cannot leave a stale fix.
+# `drop_member`, `extent_return`, `extent_property`, `param_type`,
+# `add_member` or `replace_member`. Each entry names the rows it changes
+# exactly: a member by kind and name, an overload by its scraped parameter
+# types, a parameter by its name and scraped type (`from`). An entry that
+# matches nothing, or more than the one row it names, fails the codegen, so a
+# later scrape cannot leave a stale fix. The codegen also fails when the
+# overrides make two rows of a member one.
 
 # The class page lists no supertype. The page says AppError inherits ProError.
 [[override]]
@@ -19,7 +23,7 @@ inherits = "Progress.Lang.ProError"
 [[override]]
 type = "Progress.Lang.ProError"
 checked_against = "https://docs-be.progress.com/bundle/abl-reference/page/CallStack-property.html"
-drop_member = "file-name at line line-number"
+drop_member = { kind = "property", name = "file-name at line line-number" }
 
 [[override]]
 type = "Progress.Lang.ProError"
@@ -29,7 +33,7 @@ add_member = { kind = "property", name = "CallStack", type = "CHARACTER" }
 [[override]]
 type = "Progress.Lang.Error"
 checked_against = "https://docs-be.progress.com/bundle/abl-reference/page/CallStack-property.html"
-drop_member = "file-name at line line-number"
+drop_member = { kind = "property", name = "file-name at line line-number" }
 
 [[override]]
 type = "Progress.Lang.Error"
@@ -44,134 +48,149 @@ add_member = { kind = "property", name = "CallStack", type = "CHARACTER" }
 [[override]]
 type = "OpenEdge.ABLUnit.Runner.ABLRunner"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.ABLUnit.Runner.ABLRunner.html"
-extent_return = "ScoreMatches"
+extent_return = { member = "ScoreMatches", params = ["OpenEdge.Core.Collections.Array", "OpenEdge.Core.Collections.Array"] }
 
 [[override]]
 type = "OpenEdge.BusinessLogic.Query.QueryBuilder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.BusinessLogic.Query.QueryBuilder.html"
-extent_return = "BuildQueryStrings"
+extent_return = { member = "BuildQueryStrings", params = ["Ccs.BusinessLogic.IGetDataRequest", "HANDLE"] }
 
 [[override]]
 type = "OpenEdge.Core.String"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.String.html"
-extent_return = "Split"
+extent_return = { member = "Split", params = ["LONGCHAR"] }
+
+[[override]]
+type = "OpenEdge.Core.String"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.String.html"
+extent_return = { member = "Split", params = ["LONGCHAR", "CHARACTER"] }
+
+[[override]]
+type = "OpenEdge.Core.String"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.String.html"
+extent_return = { member = "Split", params = ["LONGCHAR", "CHARACTER[]"] }
 
 [[override]]
 type = "OpenEdge.Core.Util.BuilderRegistry"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Util.BuilderRegistry.html"
-extent_return = "GetKeys"
+extent_return = { member = "GetKeys", params = [] }
 
 [[override]]
 type = "OpenEdge.Core.Util.ConfigBuilder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Util.ConfigBuilder.html"
-extent_return = "GetOptionNames"
+extent_return = { member = "GetOptionNames", params = [] }
 
 [[override]]
 type = "OpenEdge.Core.Util.ConfigBuilder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Util.ConfigBuilder.html"
-extent_return = "GetOptionStringArrayValue"
+extent_return = { member = "GetOptionStringArrayValue", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.Core.Util.LeakCheck"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Util.LeakCheck.html"
-extent_return = "GetReportGroups"
+extent_return = { member = "GetReportGroups", params = [] }
 
 [[override]]
 type = "OpenEdge.Core.Util.LeakCheck"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Util.LeakCheck.html"
-extent_return = "GetReportSessions"
+extent_return = { member = "GetReportSessions", params = [] }
 
 [[override]]
 type = "OpenEdge.Core.Util.TokenResolver"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Util.TokenResolver.html"
-extent_return = "SplitTokenArg"
+extent_return = { member = "SplitTokenArg", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.DataAdmin.Util.CDCTrackingHelper"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.DataAdmin.Util.CDCTrackingHelper.html"
-extent_return = "GetChangedFields"
+extent_return = { member = "GetChangedFields", params = [] }
 
 [[override]]
 type = "OpenEdge.Net.FileTypeRegistry"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.FileTypeRegistry.html"
-extent_return = "GetKeys"
+extent_return = { member = "GetKeys", params = [] }
+
+[[override]]
+type = "OpenEdge.Net.FileTypeRegistry"
+checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.FileTypeRegistry.html"
+extent_return = { member = "GetKeys", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.Net.MimeTypeHelper"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.MimeTypeHelper.html"
-extent_return = "SplitType"
+extent_return = { member = "SplitType", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.Net.URI"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.URI.html"
-extent_return = "GetQueryValues"
+extent_return = { member = "GetQueryValues", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.Net.URI"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.URI.html"
-extent_return = "Split"
+extent_return = { member = "Split", params = [] }
 
 [[override]]
 type = "OpenEdge.Net.URI"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.URI.html"
-extent_return = "SplitUri"
+extent_return = { member = "SplitUri", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.Security.Provider.IAuthProvider"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Security.Provider.IAuthProvider.html"
-extent_return = "GetAttributeNames"
+extent_return = { member = "GetAttributeNames", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.Security.Provider.IAuthProviderAdmin"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Security.Provider.IAuthProviderAdmin.html"
-extent_return = "GetUserNames"
+extent_return = { member = "GetUserNames", params = [] }
 
 [[override]]
 type = "OpenEdge.Security.Provider.IAuthProviderAdmin"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Security.Provider.IAuthProviderAdmin.html"
-extent_return = "GetUserNamesByQuery"
+extent_return = { member = "GetUserNamesByQuery", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.Security.Provider.UserTableAuthProvider"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Security.Provider.UserTableAuthProvider.html"
-extent_return = "GetAttributeNames"
+extent_return = { member = "GetAttributeNames", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.Security.Provider.UserTableAuthProvider"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Security.Provider.UserTableAuthProvider.html"
-extent_return = "SplitUserId"
+extent_return = { member = "SplitUserId", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.Web.DataObject.DataObjectHandler"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.DataObjectHandler.html"
-extent_return = "SplitServicePath"
+extent_return = { member = "SplitServicePath", params = ["CHARACTER"] }
 
 [[override]]
 type = "OpenEdge.Web.DataObject.DataObjectService"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.DataObjectService.html"
-extent_return = "GetSchemas"
+extent_return = { member = "GetSchemas", params = [] }
 
 [[override]]
 type = "OpenEdge.Web.DataObject.IServiceRegistry"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.IServiceRegistry.html"
-extent_return = "GetSchemas"
+extent_return = { member = "GetSchemas", params = ["CHARACTER", "OpenEdge.Core.SemanticVersion"] }
 
 [[override]]
 type = "OpenEdge.Web.DataObject.SchemaOption"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.SchemaOption.html"
-extent_return = "GetChildSchemas"
+extent_return = { member = "GetChildSchemas", params = [] }
 
 [[override]]
 type = "OpenEdge.Web.DataObject.ServiceRegistryImpl"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.ServiceRegistryImpl.html"
-extent_return = "GetSchemas"
+extent_return = { member = "GetSchemas", params = ["CHARACTER", "OpenEdge.Core.SemanticVersion"] }
 
 # The ABL Reference says "Returns an ABL array" and gives the return type as
 # CHARACTER.
 [[override]]
 type = "Progress.Json.ObjectModel.JsonObject"
 checked_against = "https://docs-be.progress.com/bundle/abl-reference/page/GetNames-method-JsonObject.html"
-extent_return = "GetNames"
+extent_return = { member = "GetNames", params = [] }
 
 # The scrape writes no EXTENT on any property: the API reference renders the
 # property type without it. Each property below holds an EXTENT. The evidence
@@ -185,189 +204,189 @@ extent_return = "GetNames"
 [[override]]
 type = "Ccs.Common.Support.ICharacterArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.ICharacterArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "CHARACTER" }
 
 [[override]]
 type = "Ccs.Common.Support.IDateArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IDateArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "DATE" }
 
 [[override]]
 type = "Ccs.Common.Support.IDateTimeArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IDateTimeArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "DATETIME" }
 
 [[override]]
 type = "Ccs.Common.Support.IDateTimeTzArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IDateTimeTzArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "DATETIME-TZ" }
 
 [[override]]
 type = "Ccs.Common.Support.IDecimalArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IDecimalArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "DECIMAL" }
 
 [[override]]
 type = "Ccs.Common.Support.IHandleArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IHandleArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "HANDLE" }
 
 [[override]]
 type = "Ccs.Common.Support.IInt64ArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IInt64ArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "INT64" }
 
 [[override]]
 type = "Ccs.Common.Support.IIntegerArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IIntegerArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "INTEGER" }
 
 [[override]]
 type = "Ccs.Common.Support.ILogicalArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.ILogicalArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "LOGICAL" }
 
 [[override]]
 type = "Ccs.Common.Support.ILongcharArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.ILongcharArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "LONGCHAR" }
 
 [[override]]
 type = "Ccs.Common.Support.IMemptrArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IMemptrArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "MEMPTR" }
 
 [[override]]
 type = "Ccs.Common.Support.IRowidArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/Ccs.Common.Support.IRowidArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "ROWID" }
 
 [[override]]
 type = "OpenEdge.Core.DateArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.DateArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "DATE" }
 
 [[override]]
 type = "OpenEdge.Core.DateTimeArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.DateTimeArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "DATETIME" }
 
 [[override]]
 type = "OpenEdge.Core.DateTimeTzArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.DateTimeTzArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "DATETIME-TZ" }
 
 [[override]]
 type = "OpenEdge.Core.DecimalArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.DecimalArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "DECIMAL" }
 
 [[override]]
 type = "OpenEdge.Core.HandleArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.HandleArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "HANDLE" }
 
 [[override]]
 type = "OpenEdge.Core.IObjectArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.IObjectArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "Progress.Lang.Object" }
 
 [[override]]
 type = "OpenEdge.Core.IntegerArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.IntegerArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "INT64" }
 
 [[override]]
 type = "OpenEdge.Core.LogicalArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.LogicalArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "LOGICAL" }
 
 [[override]]
 type = "OpenEdge.Core.LongcharArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.LongcharArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "LONGCHAR" }
 
 [[override]]
 type = "OpenEdge.Core.MemptrArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.MemptrArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Core.ObjectArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.ObjectArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "Progress.Lang.Object" }
 
 [[override]]
 type = "OpenEdge.Core.RowidArrayHolder"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.RowidArrayHolder.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "ROWID" }
 
 [[override]]
 type = "OpenEdge.Core.StringArray"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.StringArray.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "LONGCHAR" }
 
 [[override]]
 type = "OpenEdge.Core.LogicalArray"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.LogicalArray.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "LOGICAL" }
 
 [[override]]
 type = "OpenEdge.Core.Collections.Array"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Collections.Array.html"
-extent_property = "Value"
+extent_property = { name = "Value", from = "Progress.Lang.Object" }
 
 [[override]]
 type = "OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters.html"
-extent_property = "SslProtocols"
+extent_property = { name = "SslProtocols", from = "CHARACTER" }
 
 [[override]]
 type = "OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters.html"
-extent_property = "SslCiphers"
+extent_property = { name = "SslCiphers", from = "CHARACTER" }
 
 [[override]]
 type = "OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.ServerConnection.ClientSocketConnectionParameters.html"
-extent_property = "TlsSupportedGroups"
+extent_property = { name = "TlsSupportedGroups", from = "CHARACTER" }
 
 [[override]]
 type = "OpenEdge.DataAdmin.Binding.IRow"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.DataAdmin.Binding.IRow.html"
-extent_property = "KeyValues"
+extent_property = { name = "KeyValues", from = "CHARACTER" }
 
 [[override]]
 type = "OpenEdge.DataAdmin.Binding.RowImpl"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.DataAdmin.Binding.RowImpl.html"
-extent_property = "KeyValues"
+extent_property = { name = "KeyValues", from = "CHARACTER" }
 
 [[override]]
 type = "OpenEdge.DataAdmin.Binding.RowBuffer"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.DataAdmin.Binding.RowBuffer.html"
-extent_property = "KeyValues"
+extent_property = { name = "KeyValues", from = "CHARACTER" }
 
 # These methods return an EXTENT: the documentation comment says "Returns an
 # array of the option names" (or "a character array").
 [[override]]
 type = "OpenEdge.Messaging.IProducerRecord"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Messaging.IProducerRecord.html"
-extent_return = "GetOptionNames"
+extent_return = { member = "GetOptionNames", params = [] }
 
 [[override]]
 type = "OpenEdge.Messaging.ITopicConfiguration"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Messaging.ITopicConfiguration.html"
-extent_return = "GetOptionNames"
+extent_return = { member = "GetOptionNames", params = [] }
 
 [[override]]
 type = "OpenEdge.Messaging.ProducerRecord"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Messaging.ProducerRecord.html"
-extent_return = "GetOptionNames"
+extent_return = { member = "GetOptionNames", params = [] }
 
 [[override]]
 type = "OpenEdge.Messaging.TopicConfiguration"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Messaging.TopicConfiguration.html"
-extent_return = "GetOptionNames"
+extent_return = { member = "GetOptionNames", params = [] }
 
 # The API reference links the primitive MEMPTR to the page of the class
 # OpenEdge.Core.Memptr, so the scrape writes the class for both. The
@@ -380,112 +399,112 @@ extent_return = "GetOptionNames"
 [[override]]
 type = "OpenEdge.Core.ByteBucket"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.ByteBucket.html"
-param_type = { member = "PutBytes", param = "pmData", type = "MEMPTR" }
+param_type = { member = "PutBytes", param = "pmData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Core.ByteBucket"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.ByteBucket.html"
-param_type = { member = "PutBytes", param = "poData", type = "CLASS OpenEdge.Core.Memptr" }
+param_type = { member = "PutBytes", param = "poData", from = "OpenEdge.Core.Memptr", type = "CLASS OpenEdge.Core.Memptr" }
 
 [[override]]
 type = "OpenEdge.Core.ByteBucket"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.ByteBucket.html"
-param_type = { member = "ReadBytes", param = "pData", type = "MEMPTR" }
+param_type = { member = "ReadBytes", param = "pData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Core.Memptr"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Memptr.html"
-param_type = { member = "Memptr", param = "pmValue", type = "MEMPTR" }
+param_type = { member = "Memptr", param = "pmValue", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Core.Memptr"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Core.Memptr.html"
-param_type = { member = "PutBytes", param = "pmData", type = "MEMPTR" }
+param_type = { member = "PutBytes", param = "pmData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Security.Principal"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Security.Principal.html"
-param_type = { member = "Import", param = "pmCP", type = "MEMPTR" }
+param_type = { member = "Import", param = "pmCP", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Security.Principal"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Security.Principal.html"
-param_type = { member = "Import", param = "poCP", type = "CLASS OpenEdge.Core.Memptr" }
+param_type = { member = "Import", param = "poCP", from = "OpenEdge.Core.Memptr", type = "CLASS OpenEdge.Core.Memptr" }
 
 [[override]]
 type = "OpenEdge.Net.ServerConnection.ClientSocket"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.ServerConnection.ClientSocket.html"
-param_type = { member = "WriteData", param = "poData", type = "CLASS OpenEdge.Core.Memptr" }
+param_type = { member = "WriteData", param = "poData", from = "OpenEdge.Core.Memptr", type = "CLASS OpenEdge.Core.Memptr" }
 
 [[override]]
 type = "OpenEdge.Net.ServerConnection.SocketReadEventArgs"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.ServerConnection.SocketReadEventArgs.html"
-param_type = { member = "SocketReadEventArgs", param = "poData", type = "CLASS OpenEdge.Core.Memptr" }
+param_type = { member = "SocketReadEventArgs", param = "poData", from = "OpenEdge.Core.Memptr", type = "CLASS OpenEdge.Core.Memptr" }
 
 [[override]]
 type = "OpenEdge.Net.HTTP.Filter.Payload.BinaryBodyWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.BinaryBodyWriter.html"
-param_type = { member = "Write", param = "pData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Net.HTTP.Filter.Payload.BinaryEntityWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.BinaryEntityWriter.html"
-param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pmData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Net.HTTP.Filter.Payload.ClientSocketResponseWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.ClientSocketResponseWriter.html"
-param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pmData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Net.HTTP.Filter.Payload.FormDataEntityWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.FormDataEntityWriter.html"
-param_type = { member = "Write", param = "pData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Net.HTTP.Filter.Payload.JsonBodyWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.JsonBodyWriter.html"
-param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pmData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Net.HTTP.Filter.Payload.JsonEntityWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.JsonEntityWriter.html"
-param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pmData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Net.HTTP.Filter.Payload.MultipartEntityWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.MultipartEntityWriter.html"
-param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pmData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Net.HTTP.Filter.Payload.StringBodyWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.StringBodyWriter.html"
-param_type = { member = "Write", param = "pData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Net.HTTP.Filter.Payload.StringEntityWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.StringEntityWriter.html"
-param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pmData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Net.HTTP.Filter.Payload.XmlEntityWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Net.HTTP.Filter.Payload.XmlEntityWriter.html"
-param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pmData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Web.DataObject.Writer.CollectionValueWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.Writer.CollectionValueWriter.html"
-param_type = { member = "Write", param = "pValue", type = "MEMPTR" }
+param_type = { member = "Write", param = "pValue", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Web.DataObject.Writer.JsonValueWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.Writer.JsonValueWriter.html"
-param_type = { member = "Write", param = "pmData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pmData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 [[override]]
 type = "OpenEdge.Web.DataObject.Writer.MemptrArrayValueWriter"
 checked_against = "https://docs-be.progress.com/bundle/openedge-abl-api-reference-128/page/OpenEdge.Web.DataObject.Writer.MemptrArrayValueWriter.html"
-param_type = { member = "Write", param = "pData", type = "MEMPTR" }
+param_type = { member = "Write", param = "pData", from = "OpenEdge.Core.Memptr", type = "MEMPTR" }
 
 # `Value` of these classes implements `Ccs.Common.Support.IMemptrHolder:Value`,
 # which is MEMPTR; the property must have the type of the interface.
