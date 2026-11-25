@@ -11,6 +11,7 @@ import { binaryVersion, supportsYield } from "./cli";
 import {
   inlayHintSettings,
   referenceLensSettings,
+  outlineSettings,
   semanticTokenSettings,
   shouldRestartForConfigChange,
 } from "./config";
@@ -251,6 +252,12 @@ async function showReferences(
   );
 }
 
+/** The `oxabl.outline.includes` setting, for the server. */
+function readOutline(): { includes: boolean } {
+  const config = vscode.workspace.getConfiguration("oxabl.outline");
+  return outlineSettings(config.get<boolean>("includes"));
+}
+
 /** Start the client if enabled; a no-op (silent) when `oxabl.enable` is false. */
 async function startClient(): Promise<void> {
   const config = vscode.workspace.getConfiguration("oxabl");
@@ -285,6 +292,7 @@ async function startClient(): Promise<void> {
       inlayHints: readInlayHints(),
       semanticTokens: readSemanticTokens(),
       referenceLenses: readReferenceLenses(),
+      outline: readOutline(),
     },
     synchronize: {
       // The server watches these itself, but forwarding the events lets live

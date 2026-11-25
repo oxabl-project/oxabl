@@ -8,6 +8,9 @@ export const RESTART_CONFIG_KEYS = [
   "oxabl.enable",
   "oxabl.server.path",
   "oxabl.trace.server",
+  // The editor asks for the outline again only when a provider is registered
+  // or the document changes, so a new setting needs the client to restart.
+  "oxabl.outline.includes",
 ] as const;
 
 /**
@@ -61,4 +64,13 @@ export function semanticTokenSettings(enable: boolean | undefined): { enable: bo
  */
 export function referenceLensSettings(enable: boolean | undefined): { enable: boolean } {
   return { enable: enable ?? false };
+}
+
+/**
+ * The `outline` object the server reads from its initialization options.
+ * `includes` is the value of `oxabl.outline.includes`; a setting that is not
+ * set is on.
+ */
+export function outlineSettings(includes: boolean | undefined): { includes: boolean } {
+  return { includes: includes ?? true };
 }

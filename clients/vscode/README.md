@@ -75,8 +75,14 @@ you also get, with no setup:
 - **Document outline.** The Outline view, the breadcrumbs, "Go to Symbol in
   File" (`Ctrl+Shift+O`) and sticky scroll show the declarations of the file:
   classes and their members, procedures, functions, temp-tables with their
-  fields, variables, buffers and `ON` triggers. The outline reads the file as
-  written, so declarations in an include file do not show.
+  fields, variables, buffers and `ON` triggers. The declarations of an include
+  file show under the `{file.i}` reference that brings them in; an include that
+  oxabl cannot expand shows with a marker (`not found`, `cannot be read`,
+  `not compiled`, ...). The editor places a declaration of an include at the
+  reference, so choose it, then run Go to Definition (F12) in the editor to
+  open the include file. The setting
+  `oxabl.outline.includes` turns this off. The rest of the outline reads the
+  file as written.
 - **Syntax folding and selection.** Fold blocks, routines, definitions, long
   statements, comments, preprocessor branches, and the `&ANALYZE-SUSPEND` and
   `// #region` markers. **Fold All Block Comments** and **Fold All Regions**
@@ -562,6 +568,7 @@ itself once a day when you run it.
 | `oxabl.trace.server` | `off` | Trace the JSON-RPC traffic with the server, for debugging. |
 | `oxabl.semanticTokens.enable` | `true` | Colour names by what they are, from the language server. The grammar colours everything else. A change applies at once. |
 | `oxabl.referenceLenses.enable` | `false` | Show the number of references above each declaration. Each lens runs a search when it comes into view. A change applies at once. |
+| `oxabl.outline.includes` | `true` | Show the declarations of include files in the Outline view, the breadcrumbs and Go to Symbol in File, under the `{file.i}` reference. A change restarts the language server. |
 | `oxabl.inlayHints.locks` | `true` | Show the lock a read takes when it names none. A change applies at once. |
 | `oxabl.inlayHints.index` | `true` | Show the index oxabl expects a search to use. Needs no strict rule. |
 | `oxabl.inlayHints.scope` | `true` | Show where a raised buffer scope starts and ends. |
