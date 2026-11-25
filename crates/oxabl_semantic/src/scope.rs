@@ -107,6 +107,11 @@ pub enum BindingMap {
     Large(FxHashMap<OxablAtom, SymbolId>),
 }
 
+// Lock the size of a binding map deliberately: each scope holds one for each
+// namespace. Gated to 64-bit; bump the bound deliberately.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<BindingMap>() <= 144);
+
 /// Inline capacity at which [`BindingMap::Small`] spills into
 /// [`BindingMap::Large`]. Chosen to cover the vast majority of ABL method
 /// bodies, blocks, and procedures without heap allocation.
@@ -196,6 +201,11 @@ pub struct Scope {
     /// a block that the end of the text closed runs to `u32::MAX`.
     pub span: VirtualSpan,
 }
+
+// Lock the size of a scope deliberately: a file has one for each block and
+// routine. Gated to 64-bit; bump the bound deliberately.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Scope>() <= 1_464);
 
 impl Scope {
     fn new(

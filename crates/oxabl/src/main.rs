@@ -4,7 +4,11 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-#[cfg(not(any(target_env = "msvc", target_arch = "wasm32")))]
+#[cfg(not(any(
+    target_env = "msvc",
+    target_arch = "wasm32",
+    feature = "system-allocator"
+)))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

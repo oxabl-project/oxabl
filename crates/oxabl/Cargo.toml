@@ -115,6 +115,11 @@ self-update = [
     "dep:rustix",
 ]
 
+# Build the CLI with the system allocator instead of jemalloc. For heap
+# profilers such as heaptrack and valgrind's DHAT, which see only the calls of
+# the C library's allocator (`scripts/bench/cli.sh`). Never in a release.
+system-allocator = ["cli"]
+
 # The CLI's allocator. Its workers allocate heavily on every core, where
 # jemalloc is markedly faster than the system allocator. MSVC and wasm keep
 # the system one.

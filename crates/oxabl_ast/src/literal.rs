@@ -19,6 +19,11 @@ pub enum Literal {
     Unknown(UnknownLiteral),
 }
 
+// Lock the size of a literal deliberately. Gated to 64-bit; bump the bound
+// deliberately.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Literal>() <= 40);
+
 /// An integer literal value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntegerLiteral {

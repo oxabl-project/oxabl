@@ -59,7 +59,14 @@ oxabl_pipeline = { path = "../oxabl_pipeline", version = "4.1.0", features = [
     "test-support",
 ] }
 tempfile = "3"
+# The bench inputs and the counting allocator. Not published, so a path with no
+# version: `cargo publish` leaves it out.
+oxabl_bench = { path = "../oxabl_bench" }
 
 [[bench]]
 name = "daemon_cycle_bench"
+harness = false
+
+[[bench]]
+name = "daemon_features_bench"
 harness = false

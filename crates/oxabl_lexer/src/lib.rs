@@ -80,6 +80,14 @@ pub enum TokenValue {
     Boolean(bool),
 }
 
+// Lock the token sizes deliberately: a file has about one token for each six
+// bytes of source, so each byte here costs about a sixth of a byte for each
+// byte of source. Gated to 64-bit; bump the bounds deliberately.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Token>() <= 48);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<TokenValue>() <= 24);
+
 pub struct Lexer<'a> {
     /// Source Text
     source: &'a str,

@@ -12,6 +12,11 @@ pub struct Identifier {
     pub name: String,
 }
 
+// Lock the size of a name deliberately: the tree holds one for each name in the
+// source. Gated to 64-bit; bump the bound deliberately.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Identifier>() <= 32);
+
 /// An ABL expression node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpressionKind {
