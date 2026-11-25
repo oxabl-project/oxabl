@@ -31,8 +31,8 @@ use oxabl_index::calls::{
 use oxabl_index::search::{self, NameKind};
 use oxabl_schema::{FieldResolution, TableId};
 use oxabl_semantic::{
-    IndexName, IndexedFileId, Resolution, ScopeKind, Semantic, SiteTarget, SourceContext,
-    SymbolFlags, SymbolId, SymbolKind, UnresolvedReason,
+    ClassResolution, ImportContext, IndexName, IndexedFileId, NullIndex, Resolution, ScopeKind,
+    Semantic, SiteTarget, SourceContext, SymbolFlags, SymbolId, SymbolKind, UnresolvedReason,
 };
 use oxabl_workspace::is_include_fragment;
 
@@ -507,6 +507,39 @@ impl Navigation<'_, '_> {
         self.file_ids(file)
             .iter()
             .find_map(|id| self.expanded.expanded_offset(*id, offset))
+    }
+
+    /// The documented built-in type whose name is at byte `offset` of `file`,
+    /// as the file's imports read it, and where the name is written in `file`.
+    /// `None` on any other name, and on a name that a workspace class supplies
+    /// (go to definition finds that one).
+    pub fn builtin_type_at(&self, file: &Path, offset: u32) -> Option<(&'static str, Span)> {
+        let file = search::normalize_lexically(file);
+        for at in [Some(offset), offset.checked_sub(1)].into_iter().flatten() {
+            let Some(virt) = self.expanded_at(&file, at) else {
+                continue;
+            };
+            let site = self.innermost(
+                virt,
+                &|_| None,
+                &|target, span| match target {
+                    SiteTarget::Type(Resolution::Unresolved { .. }) => Some(Some(span)),
+                    _ => None,
+                },
+                &|answer: &Option<VirtualSpan>| answer.is_some(),
+                || None,
+            );
+            let Some(span) = site.flatten() else {
+                continue;
+            };
+            let written = self.text(span)?;
+            let imports = ImportContext::from_statements(&self.parsed().program.statements);
+            return match imports.resolve_class(written, &NullIndex) {
+                ClassResolution::Builtin(known) => Some((known.name, self.physical(span, &file)?)),
+                _ => None,
+            };
+        }
+        None
     }
 
     /// The uses of the name at byte `offset` of `file` that are written in

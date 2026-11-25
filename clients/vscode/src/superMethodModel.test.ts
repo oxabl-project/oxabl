@@ -28,6 +28,14 @@ describe("planSuperMethod", () => {
     expect(plan.message?.text).not.toContain("does not override");
   });
 
+  it("says that the cursor is on no method, and never that the method overrides nothing", () => {
+    const reason = "oxabl finds no method at the cursor: the name is not one that it resolves to a method of a class";
+    expect(planSuperMethod({ locations: [], gaps: [], notAMethod: reason })).toEqual({
+      action: "none",
+      message: { level: "info", text: `${reason}.` },
+    });
+  });
+
   it("warns when a list with a method can be short", () => {
     const plan = planSuperMethod({ locations: [place("file:///a.cls")], gaps: ["one"] });
     expect(plan.action).toBe("open");
@@ -38,6 +46,7 @@ describe("planSuperMethod", () => {
 describe("isSuperMethodAnswer", () => {
   it("accepts the answer of the server", () => {
     expect(isSuperMethodAnswer({ locations: [], gaps: [] })).toBe(true);
+    expect(isSuperMethodAnswer({ locations: [], gaps: [], notAMethod: "no method" })).toBe(true);
   });
 
   it("refuses what is not an answer", () => {
@@ -45,5 +54,6 @@ describe("isSuperMethodAnswer", () => {
     expect(isSuperMethodAnswer([])).toBe(false);
     expect(isSuperMethodAnswer({ locations: [] })).toBe(false);
     expect(isSuperMethodAnswer({ locations: [], gaps: [1] })).toBe(false);
+    expect(isSuperMethodAnswer({ locations: [], gaps: [], notAMethod: 3 })).toBe(false);
   });
 });

@@ -353,7 +353,16 @@ pub fn reference_graph(
             freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
         }
     }
-    let gaps = match freshness.state {
+    let gaps = state_gaps(freshness.state);
+    Ok(Ok(ReferenceGraph {
+        graph: Arc::clone(&workspace.graph),
+        gaps,
+    }))
+}
+
+/// Why a graph in `state` may not describe the workspace as it is now.
+fn state_gaps(state: IndexState) -> Vec<String> {
+    match state {
         IndexState::Ready => Vec::new(),
         IndexState::Indexing { indexed, total } => vec![format!(
             "the workspace index is not ready: {indexed} of {total} files are indexed"
@@ -364,11 +373,7 @@ pub fn reference_graph(
         IndexState::Superseded { attempts, .. } => vec![format!(
             "the workspace index is out of date: edits replaced each of {attempts} passes"
         )],
-    };
-    Ok(Ok(ReferenceGraph {
-        graph: Arc::clone(&workspace.graph),
-        gaps,
-    }))
+    }
 }
 
 /// The lock that one forced pass of a workspace root holds.
@@ -1304,6 +1309,31 @@ fn span(value: oxabl_ast::Span) -> ByteSpan {
 mod tests {
     use super::*;
     use crate::session::Sessions;
+
+    #[test]
+    fn a_graph_that_is_not_current_says_why() {
+        use oxabl_daemon_protocol::StalenessCause;
+
+        assert!(state_gaps(IndexState::Ready).is_empty());
+        assert_eq!(
+            state_gaps(IndexState::Indexing {
+                indexed: 3,
+                total: 9
+            }),
+            ["the workspace index is not ready: 3 of 9 files are indexed"]
+        );
+        assert_eq!(
+            state_gaps(IndexState::Stale { changed_files: 2 }),
+            ["the workspace index is out of date: 2 file(s) changed after it was built"]
+        );
+        assert_eq!(
+            state_gaps(IndexState::Superseded {
+                cause: StalenessCause::BuffersMoved,
+                attempts: 4
+            }),
+            ["the workspace index is out of date: edits replaced each of 4 passes"]
+        );
+    }
 
     /// A workspace with one file, enough to build a real snapshot against.
     fn workspace_root() -> tempfile::TempDir {

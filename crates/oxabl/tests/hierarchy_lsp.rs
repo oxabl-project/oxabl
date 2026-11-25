@@ -984,15 +984,16 @@ const HYBRID: &str = "CLASS app.Hybrid INHERITS app.Plain IMPLEMENTS app.IDescri
     END CLASS.\n";
 
 #[test]
-fn the_super_method_is_in_the_nearest_supertype_that_declares_it() {
+fn a_method_overrides_the_nearest_class_method_and_implements_the_interface_method() {
     let ws =
         Workspace::with_extras(&[("app/IDescribe.cls", IDESCRIBE), ("app/Hybrid.cls", HYBRID)]);
     let hybrid = ws.path("app/Hybrid.cls");
     let mut session = Session::start(&ws.root);
     session.open(&hybrid, HYBRID);
 
-    // The interface is one level up; `Shape` is two levels up through `Plain`,
-    // which does not declare it. Only the nearer one is the answer.
+    // The interface is one level up. `Shape` is two levels up through `Plain`,
+    // which does not declare it, and it is the method that `OVERRIDE`
+    // overrides. Both are answers: the compiler accepts this class.
     let answer = ask(
         &mut session,
         "oxabl/superMethod",
@@ -1001,7 +1002,10 @@ fn the_super_method_is_in_the_nearest_supertype_that_declares_it() {
     assert_eq!(
         answer.result,
         json!({
-            "locations": [location(&ws.path("app/IDescribe.cls"), IDESCRIBE, "Describe", 1)],
+            "locations": sorted(vec![
+                location(&ws.path("app/IDescribe.cls"), IDESCRIBE, "Describe", 1),
+                location(&ws.path("app/Shape.cls"), SHAPE, "Describe", 0),
+            ]),
             "gaps": []
         })
     );
@@ -1130,4 +1134,717 @@ fn an_index_that_stops_at_its_limit_says_so() {
     let (marker, found) = without_marker(&answer.result);
     assert!(marker.is_some(), "the answer must be marked incomplete");
     assert!(found.len() < 20_001, "{}", found.len());
+}
+
+// ---------------------------------------------------------------------------
+// The compiler's rules for an inherited method, an override, and an interface
+// ---------------------------------------------------------------------------
+
+/// The location of `name`, inside the first occurrence of `context`.
+#[track_caller]
+fn name_in(file: &Path, text: &str, context: &str, name: &str) -> Value {
+    let start = nth(text, context, 0) + context.find(name).expect("name in context");
+    let (line, character) = utf16_at(text, start);
+    let (end_line, end_character) = utf16_at(text, start + name.len());
+    json!({
+        "uri": file_uri(file),
+        "range": {
+            "start": {"line": line, "character": character},
+            "end": {"line": end_line, "character": end_character}
+        }
+    })
+}
+
+/// A workspace of exactly these files.
+fn small(files: &[(&str, &str)]) -> Workspace {
+    let mut all = vec![("oxabl.toml", CONFIG)];
+    all.extend_from_slice(files);
+    Workspace::new(&all)
+}
+
+const IFACE_I: &str = "INTERFACE app.I:\n\
+    \x20   METHOD PUBLIC VOID M().\n\
+    END INTERFACE.\n";
+
+const CLASS_BASE: &str = "CLASS app.Base:\n\
+    \x20   METHOD PUBLIC VOID M():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// Declares nothing: `app.Base` supplies the method of the interface.
+const CLASS_C: &str = "CLASS app.C INHERITS app.Base IMPLEMENTS app.I:\n\
+    END CLASS.\n";
+
+const CLASS_C_SUB: &str = "CLASS app.CSub INHERITS app.C:\n\
+    END CLASS.\n";
+
+#[test]
+fn an_interface_method_is_implemented_by_the_method_a_class_inherits() {
+    let ws = small(&[
+        ("app/I.cls", IFACE_I),
+        ("app/Base.cls", CLASS_BASE),
+        ("app/C.cls", CLASS_C),
+        ("app/CSub.cls", CLASS_C_SUB),
+    ]);
+    let iface = ws.path("app/I.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&iface, IFACE_I);
+
+    // `C` and `CSub` declare nothing; the one implementation is `Base.M`,
+    // which is no subtype of the interface.
+    let (found, warnings) = implementation(&mut session, &iface, IFACE_I, "M()", 0);
+    assert_eq!(
+        found,
+        vec![name_in(
+            &ws.path("app/Base.cls"),
+            CLASS_BASE,
+            "VOID M(",
+            "M"
+        )]
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+#[test]
+fn an_inherited_method_that_cannot_be_read_is_a_gap_of_the_implementations() {
+    let ws = small(&[
+        ("app/I.cls", IFACE_I),
+        (
+            "app/Lost.cls",
+            "CLASS app.Lost INHERITS app.Gone IMPLEMENTS app.I:\nEND CLASS.\n",
+        ),
+    ]);
+    let iface = ws.path("app/I.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&iface, IFACE_I);
+    let (found, warnings) = implementation(&mut session, &iface, IFACE_I, "M()", 0);
+    assert_eq!(found, Vec::<Value>::new());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("`app.Lost` extends `app.Gone`")
+            && warnings[0].contains("may declare `M`"),
+        "{}",
+        warnings[0]
+    );
+}
+
+const CLASS_A: &str = "CLASS app.A:\n\
+    \x20   METHOD PUBLIC VOID M():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const CLASS_B: &str = "CLASS app.B INHERITS app.A:\n\
+    END CLASS.\n";
+
+const IFACE_J: &str = "INTERFACE app.J:\n\
+    \x20   METHOD PUBLIC VOID M().\n\
+    END INTERFACE.\n";
+
+/// The compiler accepts it: `OVERRIDE` overrides `app.A.M`, and the method
+/// also implements `app.J.M`.
+const CLASS_D: &str = "CLASS app.D INHERITS app.B IMPLEMENTS app.J:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID M():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// The compiler refuses it (the method hides `app.A.M` with no `OVERRIDE`).
+/// The answer for it is the same.
+const CLASS_E: &str = "CLASS app.E INHERITS app.B IMPLEMENTS app.J:\n\
+    \x20   METHOD PUBLIC VOID M():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn an_override_that_implements_an_interface_has_both_super_methods() {
+    let ws = small(&[
+        ("app/A.cls", CLASS_A),
+        ("app/B.cls", CLASS_B),
+        ("app/J.cls", IFACE_J),
+        ("app/D.cls", CLASS_D),
+        ("app/E.cls", CLASS_E),
+    ]);
+    let mut session = Session::start(&ws.root);
+    let both = json!({
+        "locations": sorted(vec![
+            name_in(&ws.path("app/A.cls"), CLASS_A, "VOID M(", "M"),
+            name_in(&ws.path("app/J.cls"), IFACE_J, "VOID M(", "M"),
+        ]),
+        "gaps": []
+    });
+    for (file, text) in [("app/D.cls", CLASS_D), ("app/E.cls", CLASS_E)] {
+        let path = ws.path(file);
+        session.open(&path, text);
+        let answer = ask(
+            &mut session,
+            "oxabl/superMethod",
+            position(&path, text, "M()", 0),
+        );
+        assert_eq!(answer.result, both, "{file}");
+    }
+
+    // From above: both classes declare a method like `app.A.M` and like
+    // `app.J.M`, and `app.B` declares none.
+    let a = ws.path("app/A.cls");
+    session.open(&a, CLASS_A);
+    let (found, warnings) = implementation(&mut session, &a, CLASS_A, "M()", 0);
+    assert_eq!(
+        found,
+        sorted(vec![
+            name_in(&ws.path("app/D.cls"), CLASS_D, "VOID M(", "M"),
+            name_in(&ws.path("app/E.cls"), CLASS_E, "VOID M(", "M"),
+        ])
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+    let j = ws.path("app/J.cls");
+    session.open(&j, IFACE_J);
+    let (found, _) = implementation(&mut session, &j, IFACE_J, "M()", 0);
+    assert_eq!(
+        found,
+        sorted(vec![
+            name_in(&ws.path("app/D.cls"), CLASS_D, "VOID M(", "M"),
+            name_in(&ws.path("app/E.cls"), CLASS_E, "VOID M(", "M"),
+        ])
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A class-typed parameter means the class its own file names
+// ---------------------------------------------------------------------------
+
+const PERSON_1: &str = "CLASS p1.Person:\nEND CLASS.\n";
+const PERSON_2: &str = "CLASS p2.Person:\nEND CLASS.\n";
+
+const CLASS_K: &str = "USING p1.*.\n\
+    CLASS app.K:\n\
+    \x20   METHOD PUBLIC VOID M(INPUT x AS Person):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// `Person` here is another class: this is an overload of `app.K.M`.
+const CLASS_L: &str = "USING p2.*.\n\
+    CLASS app.L INHERITS app.K:\n\
+    \x20   METHOD PUBLIC VOID M(INPUT x AS Person):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// The same `Person`: an override.
+const CLASS_N: &str = "USING p1.*.\n\
+    CLASS app.N INHERITS app.K:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID M(INPUT x AS Person):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn class_typed_parameters_are_compared_by_the_class_not_the_spelling() {
+    let ws = small(&[
+        ("p1/Person.cls", PERSON_1),
+        ("p2/Person.cls", PERSON_2),
+        ("app/K.cls", CLASS_K),
+        ("app/L.cls", CLASS_L),
+        ("app/N.cls", CLASS_N),
+    ]);
+    let k = ws.path("app/K.cls");
+    let l = ws.path("app/L.cls");
+    let n = ws.path("app/N.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&k, CLASS_K);
+
+    // Only the method with the same `Person` overrides.
+    let (found, warnings) = implementation(&mut session, &k, CLASS_K, "M(", 0);
+    assert_eq!(found, vec![name_in(&n, CLASS_N, "VOID M(", "M")]);
+    assert_eq!(warnings, Vec::<String>::new());
+
+    // The overload has no super method, and says nothing of doubt.
+    session.open(&l, CLASS_L);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&l, CLASS_L, "M(", 0),
+    );
+    assert_eq!(answer.result, json!({"locations": [], "gaps": []}));
+    session.open(&n, CLASS_N);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&n, CLASS_N, "M(", 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({"locations": [name_in(&k, CLASS_K, "VOID M(", "M")], "gaps": []})
+    );
+}
+
+const GONE_PARENT: &str = "CLASS app.GoneParent:\n\
+    \x20   METHOD PUBLIC VOID M(INPUT x AS vendor.Missing):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const GONE_CHILD: &str = "CLASS app.GoneChild INHERITS app.GoneParent:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID M(INPUT x AS vendor.Missing):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn a_class_name_that_resolves_nowhere_is_one_name_when_both_lists_write_it_alike() {
+    let ws = small(&[
+        ("app/GoneParent.cls", GONE_PARENT),
+        ("app/GoneChild.cls", GONE_CHILD),
+    ]);
+    let parent = ws.path("app/GoneParent.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&parent, GONE_PARENT);
+    let (found, warnings) = implementation(&mut session, &parent, GONE_PARENT, "M(", 0);
+    assert_eq!(
+        found,
+        vec![name_in(
+            &ws.path("app/GoneChild.cls"),
+            GONE_CHILD,
+            "VOID M(",
+            "M"
+        )]
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+// ---------------------------------------------------------------------------
+// An open buffer is read for the supertypes too
+// ---------------------------------------------------------------------------
+
+const PARENT_DISK: &str = "CLASS app.Parent:\n\
+    \x20   METHOD PUBLIC VOID Other():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const PARENT_BUFFER: &str = "CLASS app.Parent:\n\
+    \x20   METHOD PUBLIC VOID Other():\n\
+    \x20   END METHOD.\n\
+    \x20   METHOD PUBLIC VOID Fresh():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const CHILD: &str = "CLASS app.Child INHERITS app.Parent:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Fresh():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn a_super_method_is_read_from_the_open_buffer_of_the_parent() {
+    let ws = small(&[("app/Parent.cls", PARENT_DISK), ("app/Child.cls", CHILD)]);
+    let parent = ws.path("app/Parent.cls");
+    let child = ws.path("app/Child.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&parent, PARENT_BUFFER);
+    session.open(&child, CHILD);
+
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&child, CHILD, "Fresh", 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({
+            "locations": [name_in(&parent, PARENT_BUFFER, "VOID Fresh(", "Fresh")],
+            "gaps": []
+        })
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Root-relative search paths
+// ---------------------------------------------------------------------------
+
+const ROOT_RELATIVE: &str = "[workspace]\nname = \"hierarchy\"\n\
+    [workspace.sources]\nroot_relative_include_paths = [\".\"]\n";
+
+const ROOT_BASE: &str = "CLASS app.RootBase:\n\
+    \x20   METHOD PUBLIC VOID M():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const ROOT_HEIR: &str = "CLASS app.RootHeir INHERITS app.RootBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID M():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn a_class_found_through_a_root_relative_path_is_resolved() {
+    let ws = Workspace::new(&[
+        ("oxabl.toml", ROOT_RELATIVE),
+        ("app/RootBase.cls", ROOT_BASE),
+        ("app/RootHeir.cls", ROOT_HEIR),
+    ]);
+    let base = ws.path("app/RootBase.cls");
+    let heir = ws.path("app/RootHeir.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&base, ROOT_BASE);
+    session.open(&heir, ROOT_HEIR);
+
+    let item = prepared(&mut session, &base, ROOT_BASE, "app.RootBase", 0);
+    let answer = subtypes(&mut session, &item);
+    let (marker, found) = without_marker(&answer.result);
+    assert_eq!(marker, None);
+    assert_eq!(found, vec![node("app.RootHeir", CLASS, "INHERITS", &heir)]);
+
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&heir, ROOT_HEIR, "M()", 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({"locations": [name_in(&base, ROOT_BASE, "VOID M(", "M")], "gaps": []})
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Built-in types, and a cursor on no method
+// ---------------------------------------------------------------------------
+
+const MY_ERR: &str = "USING Progress.Lang.*.\n\
+    CLASS app.MyErr INHERITS AppError:\n\
+    END CLASS.\n";
+
+const SUB_ERR: &str = "CLASS app.SubErr INHERITS app.MyErr:\n\
+    END CLASS.\n";
+
+const ERR_USE: &str = "DEFINE VARIABLE e AS Progress.Lang.AppError NO-UNDO.\n\
+    DEFINE VARIABLE o AS Progress.Lang.Object NO-UNDO.\n\
+    DEFINE VARIABLE x AS app.Gone NO-UNDO.\n\
+    o:ToString().\n\
+    x:Foo().\n";
+
+#[test]
+fn a_built_in_type_lists_the_workspace_classes_that_extend_it() {
+    let ws = small(&[
+        ("app/MyErr.cls", MY_ERR),
+        ("app/SubErr.cls", SUB_ERR),
+        ("use.p", ERR_USE),
+    ]);
+    let user = ws.path("use.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&user, ERR_USE);
+
+    let answer = ask(
+        &mut session,
+        "textDocument/implementation",
+        position(&user, ERR_USE, "AppError", 0),
+    );
+    assert_eq!(
+        locations(&answer.result),
+        sorted(vec![
+            location(&ws.path("app/MyErr.cls"), MY_ERR, "app.MyErr", 0),
+            location(&ws.path("app/SubErr.cls"), SUB_ERR, "app.SubErr", 0),
+        ])
+    );
+    assert_eq!(answer.shown.len(), 1, "{:?}", answer.shown);
+    assert!(
+        answer.shown[0].contains("only the classes of the workspace are listed"),
+        "{}",
+        answer.shown[0]
+    );
+
+    // The item of the built-in type is the name at the cursor, with no file
+    // of its own; its subtypes are the workspace classes that name it.
+    let item = prepared(&mut session, &user, ERR_USE, "AppError", 0);
+    assert_eq!(item["name"], json!("Progress.Lang.AppError"));
+    assert_eq!(item["kind"], json!(CLASS));
+    assert_eq!(item["uri"], json!(file_uri(&user)));
+    let answer = subtypes(&mut session, &item);
+    let (marker, found) = without_marker(&answer.result);
+    assert!(marker.is_some(), "only workspace classes are listed");
+    assert_eq!(
+        found,
+        vec![node(
+            "app.MyErr",
+            CLASS,
+            "INHERITS",
+            &ws.path("app/MyErr.cls")
+        )]
+    );
+}
+
+#[test]
+fn the_name_of_a_built_in_type_in_a_header_is_the_item_asked_about() {
+    let ws = small(&[("app/MyErr.cls", MY_ERR)]);
+    let my_err = ws.path("app/MyErr.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&my_err, MY_ERR);
+    let item = prepared(&mut session, &my_err, MY_ERR, "AppError", 0);
+    assert_eq!(item["name"], json!("Progress.Lang.AppError"));
+    assert_eq!(item["uri"], json!(file_uri(&my_err)));
+    assert_eq!(item["selectionRange"], range(MY_ERR, "AppError", 0));
+}
+
+#[test]
+fn a_method_of_a_built_in_class_has_no_implementations_that_oxabl_lists() {
+    let ws = small(&[("use.p", ERR_USE)]);
+    let user = ws.path("use.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&user, ERR_USE);
+    let (found, warnings) = implementation(&mut session, &user, ERR_USE, "ToString", 0);
+    assert_eq!(found, Vec::<Value>::new());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("no class or method of the workspace at the cursor"),
+        "{}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn a_cursor_on_no_method_is_not_an_answer_about_overrides() {
+    let ws = small(&[("use.p", ERR_USE)]);
+    let user = ws.path("use.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&user, ERR_USE);
+
+    // On a variable, on a call through a type that does not resolve, and on
+    // a call of a built-in method.
+    for needle in ["e AS", "Foo", "ToString"] {
+        let answer = ask(
+            &mut session,
+            "oxabl/superMethod",
+            position(&user, ERR_USE, needle, 0),
+        );
+        assert_eq!(answer.result["locations"], json!([]), "{needle}");
+        assert_eq!(answer.result["gaps"], json!([]), "{needle}");
+        let reason = answer.result["notAMethod"].as_str().unwrap_or_else(|| {
+            panic!("`{needle}` gave no reason: {}", answer.result);
+        });
+        assert!(reason.contains("no method at the cursor"), "{reason}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Smaller answers
+// ---------------------------------------------------------------------------
+
+const CYCLE_X: &str = "CLASS app.X INHERITS app.Y:\n\
+    \x20   METHOD PUBLIC VOID M():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const CYCLE_Y: &str = "CLASS app.Y INHERITS app.X:\n\
+    \x20   METHOD PUBLIC VOID M():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn a_class_in_an_inheritance_cycle_is_not_its_own_implementation() {
+    let ws = small(&[("app/X.cls", CYCLE_X), ("app/Y.cls", CYCLE_Y)]);
+    let x = ws.path("app/X.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&x, CYCLE_X);
+    let (found, _) = implementation(&mut session, &x, CYCLE_X, "M()", 0);
+    assert_eq!(
+        found,
+        vec![name_in(&ws.path("app/Y.cls"), CYCLE_Y, "VOID M(", "M")]
+    );
+}
+
+const FRESH: &str = "CLASS app.Fresh INHERITS app.Shape:\n\
+    END CLASS.\n";
+
+#[test]
+fn a_class_that_is_not_saved_yet_is_a_subtype() {
+    let ws = Workspace::standard();
+    let shape = ws.path("app/Shape.cls");
+    let fresh = ws.path("app/Fresh.cls");
+    assert!(!fresh.exists());
+    let mut session = Session::start(&ws.root);
+    session.open(&shape, SHAPE);
+    session.open(&fresh, FRESH);
+
+    let item = prepared(&mut session, &shape, SHAPE, "app.Shape", 0);
+    let answer = subtypes(&mut session, &item);
+    let (marker, found) = without_marker(&answer.result);
+    assert_eq!(marker, None);
+    let names: Vec<&str> = found.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, ["app.Fresh", "app.Plain", "app.Polygon"]);
+}
+
+#[test]
+fn a_class_with_no_parent_shows_progress_lang_object() {
+    let ws = Workspace::standard();
+    let unrelated = ws.path("app/Unrelated.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&unrelated, UNRELATED);
+
+    let item = prepared(&mut session, &unrelated, UNRELATED, "app.Unrelated", 0);
+    let answer = supertypes(&mut session, &item);
+    let (marker, found) = without_marker(&answer.result);
+    assert_eq!(marker, None, "{}", answer.result);
+    assert_eq!(
+        found,
+        vec![node(
+            "Progress.Lang.Object",
+            CLASS,
+            "INHERITS (built-in type, no source file)",
+            &unrelated
+        )]
+    );
+
+    // And the class is below it.
+    let object = answer.result[0].clone();
+    let answer = subtypes(&mut session, &object);
+    let (marker, found) = without_marker(&answer.result);
+    assert!(marker.is_some(), "only workspace classes are listed");
+    let names: Vec<&str> = found.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"app.Unrelated"), "{names:?}");
+    assert!(names.contains(&"app.Shape"), "{names:?}");
+    assert!(!names.contains(&"app.Polygon"), "has a parent: {names:?}");
+}
+
+// ---------------------------------------------------------------------------
+// The header resolves as go to definition does
+// ---------------------------------------------------------------------------
+
+/// What a supertype name stands for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Means {
+    /// A class of the workspace: go to definition finds its file.
+    Class,
+    /// A built-in type: no file, and an item with a name and no place of its own.
+    Builtin,
+    /// A name that does not resolve.
+    Nothing,
+}
+
+#[test]
+fn a_supertype_name_means_what_go_to_definition_says_it_means() {
+    // (file, text, the written name at the cursor, what it means)
+    let cases: [(&str, &str, &str, Means); 8] = [
+        (
+            "par/A.cls",
+            "CLASS par.A INHERITS app.Shape:\nEND CLASS.\n",
+            "app.Shape:",
+            Means::Class,
+        ),
+        (
+            "par/B.cls",
+            "USING app.Shape.\nCLASS par.B INHERITS Shape:\nEND CLASS.\n",
+            "Shape:",
+            Means::Class,
+        ),
+        (
+            "par/C.cls",
+            "USING app.*.\nCLASS par.C INHERITS Shape:\nEND CLASS.\n",
+            "Shape:",
+            Means::Class,
+        ),
+        (
+            "par/D.cls",
+            "CLASS par.D INHERITS Progress.Lang.AppError:\nEND CLASS.\n",
+            "AppError:",
+            Means::Builtin,
+        ),
+        (
+            "par/E.cls",
+            "USING Progress.Lang.*.\nCLASS par.E INHERITS AppError:\nEND CLASS.\n",
+            "AppError:",
+            Means::Builtin,
+        ),
+        (
+            "par/F.cls",
+            "CLASS par.F INHERITS AppError:\nEND CLASS.\n",
+            "AppError:",
+            Means::Builtin,
+        ),
+        (
+            "par/G.cls",
+            "USING app.*.\nCLASS par.G INHERITS Gone:\nEND CLASS.\n",
+            "Gone:",
+            Means::Nothing,
+        ),
+        (
+            "par/H.cls",
+            "CLASS par.H INHERITS APP.shape:\nEND CLASS.\n",
+            "shape:",
+            Means::Nothing,
+        ),
+    ];
+    let mut files: Vec<(&str, &str)> = vec![("oxabl.toml", CONFIG), ("app/Shape.cls", SHAPE)];
+    files.extend(cases.iter().map(|(file, text, ..)| (*file, *text)));
+    let ws = Workspace::new(&files);
+    let mut session = Session::start(&ws.root);
+    for (file, text, needle, means) in cases {
+        let path = ws.path(file);
+        session.open(&path, text);
+        let defined = ask(
+            &mut session,
+            "textDocument/definition",
+            position(&path, text, needle, 0),
+        );
+        let defined = locations(&defined.result);
+        let class_name = text
+            .lines()
+            .find_map(|line| line.strip_prefix("CLASS "))
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap();
+        let item = prepared(&mut session, &path, text, class_name, 0);
+        let answer = supertypes(&mut session, &item);
+        let found = nodes(&answer.result);
+        assert_eq!(found.len(), 1, "{file}: {:?}", answer.result);
+        let found = &found[0];
+        match means {
+            Means::Class => {
+                assert_eq!(defined.len(), 1, "{file}: go to definition: {defined:?}");
+                assert_eq!(found.uri, defined[0]["uri"].as_str().unwrap(), "{file}");
+                assert_eq!(found.kind, CLASS, "{file}");
+            }
+            Means::Builtin => {
+                assert_eq!(defined, Vec::<Value>::new(), "{file}");
+                assert_eq!(found.name, "Progress.Lang.AppError", "{file}");
+                assert!(found.detail.contains("built-in type"), "{file}: {found:?}");
+            }
+            Means::Nothing => {
+                assert_eq!(defined, Vec::<Value>::new(), "{file}");
+                assert_eq!(found.kind, NULL, "{file}: {found:?}");
+                assert!(found.detail.starts_with("unresolved"), "{file}: {found:?}");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cancel
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_request_that_is_cancelled_stops_the_index_between_two_files() {
+    let held = |name: &str| {
+        format!(
+            "/* OXABL-TEST-HOLD:daemon.hierarchy-index@1500 */\n\
+             CLASS app.{name} INHERITS app.Base:\nEND CLASS.\n"
+        )
+    };
+    let (h1, h2, h3) = (held("H1"), held("H2"), held("H3"));
+    let base = "CLASS app.Base:\nEND CLASS.\n";
+    let ws = small(&[
+        ("app/Base.cls", base),
+        ("app/H1.cls", &h1),
+        ("app/H2.cls", &h2),
+        ("app/H3.cls", &h3),
+    ]);
+    let base_path = ws.path("app/Base.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&base_path, base);
+    let item = prepared(&mut session, &base_path, base, "app.Base", 0);
+
+    let id = session.next_request_id();
+    let started = std::time::Instant::now();
+    session.send(json!({
+        "jsonrpc": "2.0", "id": id, "method": "typeHierarchy/subtypes", "params": {"item": item}
+    }));
+    std::thread::sleep(Duration::from_millis(800));
+    session.send(json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}}));
+    let answer = session.wait_for(|message| message["id"] == json!(id));
+    let elapsed = started.elapsed();
+    assert_eq!(answer["error"]["code"], json!(-32800), "{answer}");
+    // One file was held when the cancel came; the two others were not read.
+    assert!(
+        elapsed >= Duration::from_millis(1400) && elapsed < Duration::from_millis(3200),
+        "{elapsed:?}"
+    );
 }

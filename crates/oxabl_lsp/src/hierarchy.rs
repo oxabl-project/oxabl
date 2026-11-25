@@ -23,7 +23,7 @@ use oxabl_daemon::canonical_path;
 use oxabl_daemon::hierarchy::{
     Form, HierarchyAnswer, HierarchyQuery, ItemKind, TypeItem, TypeKey, answer_hierarchy,
 };
-use oxabl_pipeline::Gap;
+use oxabl_pipeline::{Gap, Span};
 use serde::{Deserialize, Serialize};
 
 use crate::Server;
@@ -41,6 +41,9 @@ struct ItemData {
     name: String,
     form: String,
     reason: Option<String>,
+    /// The start and end of the name of a built-in type in `path`.
+    #[serde(default)]
+    anchor: Option<(u32, u32)>,
 }
 
 /// The `data` of the item that says an answer is incomplete.
@@ -61,6 +64,7 @@ fn to_data(key: &TypeKey) -> ItemData {
         name: key.name.clone(),
         form: form.to_string(),
         reason,
+        anchor: key.anchor.map(|at| (at.start, at.end)),
     }
 }
 
@@ -76,6 +80,7 @@ fn from_data(data: ItemData) -> Option<TypeKey> {
         path: data.path,
         name: data.name,
         form,
+        anchor: data.anchor.map(|(start, end)| Span { start, end }),
     })
 }
 
@@ -191,6 +196,8 @@ impl Server<'_> {
     /// overrides or implements, in the nearest supertypes that declare one,
     /// and the reasons the list can be short. The gaps are in the answer, not
     /// a warning, because the client shows them with the locations.
+    /// `notAMethod` is the reason when the cursor is on no method that oxabl
+    /// reads: the empty list then says nothing about overrides.
     pub(crate) fn handle_super_method(&mut self, req: Request) -> anyhow::Result<()> {
         let params: TextDocumentPositionParams = match serde_json::from_value(req.params) {
             Ok(params) => params,
@@ -214,10 +221,11 @@ impl Server<'_> {
                     .into_iter()
                     .map(|gap| gap.reason)
                     .collect();
-                Ok((
-                    serde_json::json!({ "locations": found, "gaps": gaps }),
-                    dropped,
-                ))
+                let mut body = serde_json::json!({ "locations": found, "gaps": gaps });
+                if let Some(reason) = &answer.not_a_method {
+                    body["notAMethod"] = serde_json::Value::String(reason.clone());
+                }
+                Ok((body, dropped))
             },
         )
     }

@@ -173,6 +173,10 @@ pub mod panic_sites {
     /// The language server's semantic tokens while the analysis holds its
     /// snapshot, for [`hold_if_injected`](super::hold_if_injected).
     pub const SEMANTIC_SNAPSHOT: &str = "lsp.semantic-snapshot";
+    /// The reverse inheritance index, once for each class file it reads, for
+    /// [`hold_if_injected`](super::hold_if_injected). The marker is in the
+    /// class file, as for [`LSP_INDEX`].
+    pub const HIERARCHY_INDEX: &str = "daemon.hierarchy-index";
 }
 
 /// The marker that holds a site for [`HOLD_TIME`], for a test that needs a

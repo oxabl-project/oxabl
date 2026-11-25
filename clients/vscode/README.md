@@ -120,7 +120,9 @@ you also get, with no setup:
   implements in the nearest supertype, or lists several in a peek view. An
   empty answer with a reason (a parent that oxabl cannot resolve, a method of
   `Progress.Lang.Object`) says that oxabl does not know, not that nothing is
-  overridden.
+  overridden. A method that overrides a class method and implements an
+  interface method goes to both. On a name that is no method that oxabl reads,
+  the command says so.
 - **Type hierarchy** (**Peek Type Hierarchy** in the Command Palette and the
   editor menu). Shows the supertypes and the subtypes of a class, interface or
   enum, one level at a time. A supertype that oxabl cannot

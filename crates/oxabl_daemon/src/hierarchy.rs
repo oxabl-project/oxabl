@@ -5,7 +5,10 @@
 //! class or method at the cursor. The rest reads class files: the facts of
 //! each file are memoized per file by the daemon, so a request reads again
 //! only a file that changed, and it builds the reverse inheritance index
-//! ([`SubtypeIndex`]) from them. Open buffers are read over the disk.
+//! ([`SubtypeIndex`]) from them. Open buffers are read over the disk, and an
+//! open class file that is not saved yet counts as a class of the workspace.
+//! Each class header is resolved with the search paths of its own file, as go
+//! to definition does.
 //!
 //! An answer that can be short says why in [`HierarchyAnswer::gaps`]. A
 //! supertype that oxabl cannot resolve is an item of its own, never left out.
@@ -16,15 +19,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use oxabl_index::hierarchy::{
-    ClassNode, Relation, SubtypeIndex, SuperKey, Supertype, SupertypeRef, Unresolved, builtin_type,
-    methods_named, overridable, overrides_below, simple_name, super_methods, supertypes_of,
+    ClassNode, Declaring, Relation, SubtypeIndex, SuperKey, Supertype, SupertypeRef, Unresolved,
+    builtin_type, methods_named, overridable, overrides_below, simple_name, super_methods,
+    supertypes_of,
 };
 use oxabl_pipeline::{ClassDecl, Gap, MethodAt, MethodsAt, Span, Target, class_decl};
 use oxabl_semantic::{ClassDescriptor, ClassKind, IndexName, MemberDescriptor};
 
 use crate::SessionHost;
 use crate::db::{HierarchyUnit, with_hierarchy};
-use crate::references::{ReferenceError, analyse, graph_or_cancel};
+use crate::references::{GraphAnswer, ReferenceError, analyse, graph_or_cancel};
+use crate::session::canonical_path;
 
 /// The most class files the reverse index reads. A workspace with more is
 /// cut, and the answer says so.
@@ -53,6 +58,9 @@ pub struct TypeKey {
     /// The qualified name.
     pub name: String,
     pub form: Form,
+    /// For a built-in type, where `path` writes the name that the item stands
+    /// for. Its supertypes are placed there.
+    pub anchor: Option<Span>,
 }
 
 /// What a hierarchy request asks.
@@ -108,6 +116,9 @@ pub struct HierarchyAnswer {
     pub locations: Vec<Target>,
     /// Why the answer can miss something. Empty for a complete answer.
     pub gaps: Vec<Gap>,
+    /// For a request about a method: why the cursor is on none that oxabl
+    /// reads. Such an answer says nothing about overrides.
+    pub not_a_method: Option<String>,
     pub texts: HashMap<PathBuf, Arc<str>>,
 }
 
@@ -161,6 +172,8 @@ struct Cursor {
     types: Vec<oxabl_pipeline::TypeAt>,
     enclosing: Option<oxabl_pipeline::TypeAt>,
     methods: MethodsAt,
+    /// A built-in type named at the cursor, and where the file writes it.
+    builtin: Option<(&'static str, Span)>,
 }
 
 fn cursor(
@@ -176,6 +189,7 @@ fn cursor(
             types: unit.navigation.types_at(&file, offset),
             enclosing: unit.navigation.enclosing_type(&file, offset),
             methods: unit.navigation.methods_at(&file, offset),
+            builtin: unit.navigation.builtin_type_at(&file, offset),
         }
     })
     .ok_or(ReferenceError::Modified)?
@@ -190,13 +204,24 @@ fn prepare(
     offset: u32,
 ) -> Result<HierarchyAnswer, ReferenceError> {
     let cursor = cursor(host, session_root, root, file, offset)?;
-    let found = if cursor.types.is_empty() {
-        cursor.enclosing.into_iter().collect()
-    } else {
+    let builtin = cursor.builtin;
+    let found = if !cursor.types.is_empty() {
         cursor.types
+    } else if builtin.is_some() {
+        Vec::new()
+    } else {
+        cursor.enclosing.into_iter().collect()
     };
     with_snapshot(host, session_root, |unit| {
         let mut answer = HierarchyAnswer::default();
+        if found.is_empty()
+            && let Some((name, at)) = builtin
+        {
+            match builtin_item(unit, root, file, name, at, &mut answer.texts) {
+                Some(item) => answer.items.push(item),
+                None => answer.gaps.push(Gap::of_referent(unreadable(file))),
+            }
+        }
         for found in &found {
             match class_item(unit, root, &found.path, None, &mut answer.texts) {
                 Some(item) => answer.items.push(item),
@@ -204,6 +229,35 @@ fn prepare(
             }
         }
         answer
+    })
+}
+
+/// The item of the built-in type `name`, which `file` writes at `at`.
+fn builtin_item(
+    unit: &HierarchyUnit<'_>,
+    root: &Path,
+    file: &Path,
+    name: &str,
+    at: Span,
+    texts: &mut HashMap<PathBuf, Arc<str>>,
+) -> Option<TypeItem> {
+    let known = builtin_type(name)?;
+    if !texts.contains_key(file) {
+        texts.insert(file.to_path_buf(), unit.read(file)?);
+    }
+    Some(TypeItem {
+        key: TypeKey {
+            root: root.to_path_buf(),
+            path: file.to_path_buf(),
+            name: known.name.to_string(),
+            form: Form::Builtin,
+            anchor: Some(at),
+        },
+        kind: item_kind(known.kind),
+        detail: Some("built-in type, no source file".to_string()),
+        path: file.to_path_buf(),
+        span: at,
+        selection: at,
     })
 }
 
@@ -219,7 +273,12 @@ fn supertypes(
             Form::Class => {
                 let facts = unit.facts(&key.path);
                 match facts.class(&IndexName::new(&key.name)) {
-                    Some(class) if facts.parsed => supertypes_of(&class.descriptor, unit.index()),
+                    Some(class) if facts.parsed => {
+                        let mut named =
+                            supertypes_of(&class.descriptor, &*unit.resolver(&key.path));
+                        implicit_object(&class.descriptor, &mut named);
+                        named
+                    }
                     _ => {
                         answer.gaps.push(Gap::of_referent(format!(
                             "the header of `{}` cannot be read, so its supertypes are not known",
@@ -261,7 +320,7 @@ fn supertypes(
                 }
             },
         };
-        let Some(anchor) = place_class(unit, &key.path, &mut answer.texts) else {
+        let Some(anchor) = place_anchor(unit, key, &mut answer.texts) else {
             answer.gaps.push(Gap::of_referent(unreadable(&key.path)));
             return answer;
         };
@@ -283,7 +342,7 @@ fn supertypes(
 fn supertype_item(
     unit: &HierarchyUnit<'_>,
     from: &TypeKey,
-    anchor: &ClassDecl,
+    anchor: &Anchor,
     supertype: &SupertypeRef,
     texts: &mut HashMap<PathBuf, Arc<str>>,
 ) -> Option<TypeItem> {
@@ -294,6 +353,7 @@ fn supertype_item(
             path: from.path.clone(),
             name: name.to_string(),
             form,
+            anchor: from.anchor,
         },
         kind,
         detail,
@@ -336,6 +396,64 @@ fn supertype_item(
     }
 }
 
+/// Where the item of a type that has no file is placed: the class that names
+/// it, or for a built-in type that the cursor named, the name there.
+struct Anchor {
+    span: Span,
+    selection: Span,
+}
+
+fn place_anchor(
+    unit: &HierarchyUnit<'_>,
+    key: &TypeKey,
+    texts: &mut HashMap<PathBuf, Arc<str>>,
+) -> Option<Anchor> {
+    if let Some(at) = key.anchor {
+        if !texts.contains_key(&key.path) {
+            texts.insert(key.path.clone(), unit.read(&key.path)?);
+        }
+        return Some(Anchor {
+            span: at,
+            selection: at,
+        });
+    }
+    place_class(unit, &key.path, texts).map(|decl| Anchor {
+        span: decl.span,
+        selection: decl.selection,
+    })
+}
+
+/// Every class inherits `Progress.Lang.Object` when its header names no
+/// parent: add it as the parent.
+fn implicit_object(class: &ClassDescriptor, named: &mut Vec<SupertypeRef>) {
+    if class.kind != ClassKind::Class
+        || named
+            .iter()
+            .any(|supertype| supertype.relation == Relation::Inherits)
+    {
+        return;
+    }
+    if let Some(object) = builtin_type(OBJECT) {
+        named.insert(
+            0,
+            SupertypeRef {
+                written: IndexName::new(object.name),
+                relation: Relation::Inherits,
+                resolved: Supertype::Builtin {
+                    name: object.name,
+                    kind: object.kind,
+                },
+            },
+        );
+    }
+}
+
+const OBJECT: &str = "Progress.Lang.Object";
+
+fn is_object(name: &str) -> bool {
+    name.eq_ignore_ascii_case(OBJECT)
+}
+
 fn subtypes(
     host: &SessionHost,
     session_root: &Path,
@@ -348,7 +466,10 @@ fn subtypes(
     let (files, mut gaps) = class_files(host, session_root, cancel)?;
     let mut answer = with_snapshot(host, session_root, |unit| {
         let mut answer = HierarchyAnswer::default();
-        let index = unit.subtype_index(&files);
+        let files = with_open_classes(unit, files, session_root);
+        let index = unit
+            .subtype_index(&files, &|| cancel.load(Ordering::Relaxed))
+            .ok_or(ReferenceError::Cancelled)?;
         let target = match key.form {
             Form::Builtin => {
                 gaps.push(Gap::of_referent(format!(
@@ -369,7 +490,19 @@ fn subtypes(
                 SuperKey::Class(IndexName::new(&key.name), facts.file)
             }
         };
-        for (node, relation) in index.direct_subtypes(&target) {
+        let mut direct: Vec<(&ClassNode, Relation)> = index.direct_subtypes(&target);
+        if key.form == Form::Builtin && is_object(&key.name) {
+            // A class with no parent in its header extends `Progress.Lang.Object`.
+            direct.extend(index.nodes().iter().filter_map(|node| {
+                let no_parent = node.kind == ClassKind::Class
+                    && !node
+                        .supertypes
+                        .iter()
+                        .any(|up| up.relation == Relation::Inherits);
+                no_parent.then_some((node, Relation::Inherits))
+            }));
+        }
+        for (node, relation) in direct {
             match node_item(unit, &key.root, node, Some(relation), &mut answer.texts) {
                 Some(item) => answer.items.push(item),
                 None => answer.gaps.push(Gap::of_referent(unreadable(&node.path))),
@@ -378,8 +511,8 @@ fn subtypes(
         answer
             .gaps
             .extend(index_gaps(&index, &[IndexName::new(&key.name)]));
-        answer
-    })?;
+        Ok(answer)
+    })??;
     gaps.append(&mut answer.gaps);
     answer.gaps = gaps;
     Ok(answer)
@@ -400,32 +533,73 @@ fn implementation(
             gaps: vec![Gap::of_referent(reason)],
             ..HierarchyAnswer::default()
         }),
-        MethodsAt::None if cursor.types.is_empty() => Ok(HierarchyAnswer::default()),
-        MethodsAt::None => implementations_of_types(host, session_root, &cursor.types, cancel),
+        MethodsAt::None if !cursor.types.is_empty() => {
+            let subjects = cursor.types.iter().map(Subject::Class).collect();
+            implementations_below(host, session_root, subjects, cancel)
+        }
+        MethodsAt::None => match cursor.builtin {
+            Some((name, _)) => {
+                implementations_below(host, session_root, vec![Subject::Builtin(name)], cancel)
+            }
+            None => Ok(HierarchyAnswer {
+                gaps: vec![Gap::of_referent(
+                    "oxabl finds no class or method of the workspace at the cursor: a built-in \
+                     member and a name that does not resolve have no implementations that it \
+                     lists"
+                        .to_string(),
+                )],
+                ..HierarchyAnswer::default()
+            }),
+        },
     }
 }
 
-/// The classes that extend or implement each of `types`.
-fn implementations_of_types(
+/// A class or interface whose implementations are asked for.
+enum Subject<'a> {
+    Class(&'a oxabl_pipeline::TypeAt),
+    Builtin(&'static str),
+}
+
+/// The classes that extend or implement each of `subjects`.
+fn implementations_below(
     host: &SessionHost,
     session_root: &Path,
-    types: &[oxabl_pipeline::TypeAt],
+    subjects: Vec<Subject<'_>>,
     cancel: &AtomicBool,
 ) -> Result<HierarchyAnswer, ReferenceError> {
     let (files, mut gaps) = class_files(host, session_root, cancel)?;
     let mut answer = with_snapshot(host, session_root, |unit| {
         let mut answer = HierarchyAnswer::default();
-        let index = unit.subtype_index(&files);
+        let files = with_open_classes(unit, files, session_root);
+        let index = unit
+            .subtype_index(&files, &|| cancel.load(Ordering::Relaxed))
+            .ok_or(ReferenceError::Cancelled)?;
         let mut visited: Vec<IndexName> = Vec::new();
-        for found in types {
-            let facts = unit.facts(&found.path);
-            let Some(class) = facts.classes.first().filter(|_| facts.parsed) else {
-                answer.gaps.push(Gap::of_referent(unreadable(&found.path)));
-                continue;
+        for subject in &subjects {
+            let below: Vec<&ClassNode> = match subject {
+                Subject::Class(found) => {
+                    let facts = unit.facts(&found.path);
+                    let Some(class) = facts.classes.first().filter(|_| facts.parsed) else {
+                        answer.gaps.push(Gap::of_referent(unreadable(&found.path)));
+                        continue;
+                    };
+                    visited.push(class.descriptor.name.clone());
+                    index.all_subtypes(&SuperKey::Class(class.descriptor.name.clone(), facts.file))
+                }
+                Subject::Builtin(name) => {
+                    answer.gaps.push(Gap::of_referent(format!(
+                        "only the classes of the workspace are listed: the built-in types that \
+                         extend `{name}` are not"
+                    )));
+                    visited.push(IndexName::new(name));
+                    if is_object(name) {
+                        index.nodes().iter().collect()
+                    } else {
+                        index.all_subtypes(&SuperKey::Builtin(IndexName::new(name)))
+                    }
+                }
             };
-            visited.push(class.descriptor.name.clone());
-            let target = SuperKey::Class(class.descriptor.name.clone(), facts.file);
-            for node in index.all_subtypes(&target) {
+            for node in below {
                 visited.push(node.name.clone());
                 if node.kind != ClassKind::Class {
                     continue;
@@ -440,8 +614,8 @@ fn implementations_of_types(
             }
         }
         answer.gaps.extend(index_gaps(&index, &visited));
-        answer
-    })?;
+        Ok(answer)
+    })??;
     gaps.append(&mut answer.gaps);
     answer.gaps = gaps;
     sort_locations(&mut answer.locations);
@@ -464,7 +638,7 @@ fn implementations_of_method(
             answer
                 .gaps
                 .push(Gap::of_referent(unreadable(&method.class_path)));
-            return answer;
+            return Ok(answer);
         };
         let (wanted, mut notes) = wanted_methods(&class.members, method);
         answer.gaps.extend(notes.drain(..).map(Gap::of_referent));
@@ -474,11 +648,23 @@ fn implementations_of_method(
             .collect();
         if wanted.is_empty() {
             // A private or static method has no override.
-            return answer;
+            return Ok(answer);
         }
-        let index = unit.subtype_index(&files);
+        let files = with_open_classes(unit, files, session_root);
+        let index = unit
+            .subtype_index(&files, &|| cancel.load(Ordering::Relaxed))
+            .ok_or(ReferenceError::Cancelled)?;
         let target = SuperKey::Class(class.descriptor.name.clone(), facts.file);
-        let below = overrides_below(&index, &target, &wanted);
+        let resolver = unit.resolver(&method.class_path);
+        let wanted_in = Declaring::new(&class.descriptor.imports, &*resolver);
+        let below = overrides_below(
+            &index,
+            unit,
+            &target,
+            class.descriptor.kind == ClassKind::Interface,
+            &wanted,
+            &wanted_in,
+        );
         let mut visited = vec![class.descriptor.name.clone()];
         visited.extend(
             index
@@ -519,8 +705,8 @@ fn implementations_of_method(
             }
         }
         answer.gaps.extend(index_gaps(&index, &visited));
-        answer
-    })?;
+        Ok(answer)
+    })??;
     gaps.append(&mut answer.gaps);
     answer.gaps = gaps;
     sort_locations(&mut answer.locations);
@@ -543,7 +729,16 @@ fn super_method(
                 ..HierarchyAnswer::default()
             });
         }
-        MethodsAt::None => return Ok(HierarchyAnswer::default()),
+        MethodsAt::None => {
+            return Ok(HierarchyAnswer {
+                not_a_method: Some(
+                    "oxabl finds no method at the cursor: the name is not one that it \
+                     resolves to a method of a class"
+                        .to_string(),
+                ),
+                ..HierarchyAnswer::default()
+            });
+        }
     };
     with_snapshot(host, session_root, |unit| {
         let mut answer = HierarchyAnswer::default();
@@ -563,7 +758,7 @@ fn super_method(
         if wanted.is_empty() {
             return answer;
         }
-        let found = super_methods(unit.index(), &class.descriptor, &wanted);
+        let found = super_methods(unit, &method.class_path, &class.descriptor, &wanted);
         answer
             .gaps
             .extend(found.gaps.into_iter().map(Gap::of_referent));
@@ -666,17 +861,29 @@ fn class_files(
     session_root: &Path,
     cancel: &AtomicBool,
 ) -> Result<(Vec<PathBuf>, Vec<Gap>), ReferenceError> {
-    let cancelled = || {
-        if cancel.load(Ordering::Relaxed) {
-            Err(ReferenceError::Cancelled)
-        } else {
-            Ok(())
-        }
-    };
-    cancelled()?;
+    check_cancel(cancel)?;
+    let graph = graph_or_cancel(host, session_root, cancel)?;
+    class_files_of(graph, cancel)
+}
+
+fn check_cancel(cancel: &AtomicBool) -> Result<(), ReferenceError> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(ReferenceError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+/// The class files a workspace pass tracked, and why the list can be short:
+/// the pass is not current, a file could not be analysed, the pass failed, or
+/// the list was cut.
+fn class_files_of(
+    graph: GraphAnswer,
+    cancel: &AtomicBool,
+) -> Result<(Vec<PathBuf>, Vec<Gap>), ReferenceError> {
     let mut gaps = Vec::new();
     let mut files = Vec::new();
-    match graph_or_cancel(host, session_root, cancel)? {
+    match graph {
         Ok(Ok(graph)) => {
             gaps.extend(graph.gaps.into_iter().map(Gap::of_referent));
             let unanalysed = graph.graph.unanalysed().len();
@@ -700,7 +907,7 @@ fn class_files(
             "the classes of the workspace are not searched: {error}"
         ))),
     }
-    cancelled()?;
+    check_cancel(cancel)?;
     if files.len() > MAX_CLASSES {
         gaps.push(Gap::of_referent(format!(
             "the workspace has {} class files and the index reads the first {MAX_CLASSES}",
@@ -709,6 +916,28 @@ fn class_files(
         files.truncate(MAX_CLASSES);
     }
     Ok((files, gaps))
+}
+
+/// `files`, and the open buffers that hold a class file of the workspace and
+/// are not among them: a class not saved yet is a subtype too.
+fn with_open_classes(
+    unit: &HierarchyUnit<'_>,
+    mut files: Vec<PathBuf>,
+    session_root: &Path,
+) -> Vec<PathBuf> {
+    let mut known: Option<std::collections::HashSet<PathBuf>> = None;
+    for open in unit.open_class_files() {
+        let open_canonical = canonical_path(&open);
+        if !open_canonical.starts_with(session_root) {
+            continue;
+        }
+        let known =
+            known.get_or_insert_with(|| files.iter().map(|path| canonical_path(path)).collect());
+        if known.insert(open_canonical) {
+            files.push(open);
+        }
+    }
+    files
 }
 
 fn is_class_file(path: &Path) -> bool {
@@ -835,6 +1064,7 @@ fn class_item(
             path: path.to_path_buf(),
             name: descriptor.name.as_written().to_string(),
             form: Form::Class,
+            anchor: None,
         },
         kind: item_kind(descriptor.kind),
         detail,
@@ -859,6 +1089,7 @@ fn node_item(
             path: node.path.clone(),
             name: node.name.as_written().to_string(),
             form: Form::Class,
+            anchor: None,
         },
         kind: item_kind(node.kind),
         detail: relation.map(|relation| relation.keyword().to_string()),
@@ -873,4 +1104,62 @@ fn sort_locations(locations: &mut Vec<Target>) {
         (&a.path, a.span.map(|s| s.start)).cmp(&(&b.path, b.span.map(|s| s.start)))
     });
     locations.dedup();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use oxabl_pipeline::{LintPipeline, PipelineConfig, ReverseGraph};
+    use oxabl_workspace::InMemoryFileSystem;
+
+    use super::*;
+    use crate::methods::ReferenceGraph;
+
+    fn graph_with(gaps: &[&str]) -> GraphAnswer {
+        let config = PipelineConfig::default();
+        let fs = InMemoryFileSystem::new();
+        let empty = ReverseGraph::build(&LintPipeline::new(&config, &fs), &[]);
+        Ok(Ok(ReferenceGraph {
+            graph: Arc::new(empty),
+            gaps: gaps.iter().map(|gap| gap.to_string()).collect(),
+        }))
+    }
+
+    fn reasons(gaps: &[Gap]) -> Vec<&str> {
+        gaps.iter().map(|gap| gap.reason.as_str()).collect()
+    }
+
+    #[test]
+    fn a_pass_that_is_not_current_is_a_gap_of_the_answer() {
+        let cancel = AtomicBool::new(false);
+        let (_, gaps) = class_files_of(
+            graph_with(&["the workspace index is not ready: 1 of 2 files are indexed"]),
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(
+            reasons(&gaps),
+            ["the workspace index is not ready: 1 of 2 files are indexed"]
+        );
+    }
+
+    #[test]
+    fn a_pass_that_cannot_run_is_a_gap_and_not_an_empty_workspace() {
+        let cancel = AtomicBool::new(false);
+        let (files, gaps) =
+            class_files_of(Ok(Err("no include path".to_string())), &cancel).unwrap();
+        assert!(files.is_empty());
+        assert_eq!(
+            reasons(&gaps),
+            ["the classes of the workspace are not searched: no include path"]
+        );
+    }
+
+    #[test]
+    fn a_current_pass_has_no_gap() {
+        let cancel = AtomicBool::new(false);
+        let (_, gaps) = class_files_of(graph_with(&[]), &cancel).unwrap();
+        assert!(gaps.is_empty());
+    }
 }

@@ -96,12 +96,14 @@
 //! database with no concurrent writer; anything `pub` would take on the
 //! obligation, which is why neither is.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use oxabl_analyze::CollectedDiagnostics;
-use oxabl_index::hierarchy::{ClassFile, SubtypeIndex};
+use oxabl_index::hierarchy::{ClassFile, ClassSource, LookupMemo, SubtypeIndex};
 use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, IncludeContext, index_file_at, program_signatures_at};
 use oxabl_pipeline::{
@@ -1673,15 +1675,34 @@ pub fn with_navigation<T>(
 /// index id.
 pub struct HierarchyUnit<'a> {
     snapshot: &'a AnalysisDatabase,
-    index: SnapshotIndex<'a>,
     fs: OverlayFs,
+    /// One resolver for each search base: the base of a class file is its
+    /// package root, so class files of different packages can differ.
+    resolvers: RefCell<HashMap<Option<PathBuf>, Rc<LookupMemo<SnapshotIndex<'a>>>>>,
 }
 
-impl HierarchyUnit<'_> {
-    /// The index that resolves a class name to its file, for any file: none
-    /// is the analysed one.
-    pub fn index(&self) -> &dyn WorkspaceIndex {
-        &self.index
+impl<'a> HierarchyUnit<'a> {
+    /// The index that resolves the names the class file `path` writes, with
+    /// the search paths the file has: the same answer as go to definition.
+    pub fn resolver(&self, path: &Path) -> Rc<dyn WorkspaceIndex + 'a> {
+        let config = self.snapshot.config();
+        let base = if config.pipeline.root_relative_include_paths.is_empty() {
+            None
+        } else {
+            let text = self.read(path);
+            config
+                .pipeline
+                .search_base(Some(path), text.as_deref().unwrap_or(""))
+        };
+        let mut resolvers = self.resolvers.borrow_mut();
+        let found = resolvers.entry(base.clone()).or_insert_with(|| {
+            Rc::new(LookupMemo::new(SnapshotIndex::new(
+                self.snapshot,
+                None,
+                base.as_deref(),
+            )))
+        });
+        Rc::clone(found) as Rc<dyn WorkspaceIndex + 'a>
     }
 
     /// The facts of the class file `path`. An open buffer gives its own text;
@@ -1725,16 +1746,64 @@ impl HierarchyUnit<'_> {
         self.fs.read(path).ok()
     }
 
+    /// The open buffers that hold a class file, by the path the editor gave.
+    pub fn open_class_files(&self) -> Vec<PathBuf> {
+        self.fs
+            .overlay
+            .keys()
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("cls"))
+            })
+            .cloned()
+            .collect()
+    }
+
     /// The reverse inheritance index of `files`, class files of the
-    /// workspace.
-    pub fn subtype_index(&self, files: &[PathBuf]) -> SubtypeIndex {
-        SubtypeIndex::build(
-            files.iter().map(|path| ClassFile {
-                path: path.clone(),
-                facts: self.facts(path),
+    /// workspace. `None` when `cancelled` says so, checked before each file.
+    pub fn subtype_index(
+        &self,
+        files: &[PathBuf],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<SubtypeIndex> {
+        let stopped = Cell::new(false);
+        let built = SubtypeIndex::build(
+            files.iter().map_while(|path| {
+                if cancelled() {
+                    stopped.set(true);
+                    return None;
+                }
+                if oxabl_common::INJECTION_ENABLED
+                    && let Some(text) = self.read(path)
+                {
+                    oxabl_common::hold_if_injected(
+                        oxabl_common::panic_sites::HIERARCHY_INDEX,
+                        &text,
+                    );
+                }
+                Some(ClassFile {
+                    path: path.clone(),
+                    facts: self.facts(path),
+                })
             }),
-            &self.index,
-        )
+            &|path| self.resolver(path),
+        );
+        (!stopped.get()).then_some(built)
+    }
+}
+
+impl ClassSource for HierarchyUnit<'_> {
+    fn path_of(&self, file: IndexedFileId) -> Option<PathBuf> {
+        HierarchyUnit::path_of(self, file)
+    }
+
+    fn resolver(&self, path: &Path) -> Rc<dyn WorkspaceIndex + '_> {
+        HierarchyUnit::resolver(self, path)
+    }
+
+    fn facts(&self, path: &Path) -> Arc<FileFacts> {
+        HierarchyUnit::facts(self, path)
     }
 }
 
@@ -1749,11 +1818,11 @@ pub fn with_hierarchy<T>(
         let config = snapshot.config();
         let unit = HierarchyUnit {
             snapshot,
-            index: SnapshotIndex::new(snapshot, None, None),
             fs: OverlayFs {
                 overlay,
                 inner: Arc::clone(&config.fs),
             },
+            resolvers: RefCell::default(),
         };
         answer(&unit)
     }))

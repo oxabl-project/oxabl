@@ -2,6 +2,8 @@
 export interface SuperMethodAnswer {
   locations: { uri: string; range: unknown }[];
   gaps: string[];
+  /** Set when the cursor is on no method that the server reads: the list says nothing about overrides. */
+  notAMethod?: string;
 }
 
 /** What the command does with an answer. */
@@ -17,6 +19,9 @@ export interface SuperMethodPlan {
  * has one says that oxabl does not know, not that nothing is overridden.
  */
 export function planSuperMethod(answer: SuperMethodAnswer): SuperMethodPlan {
+  if (answer.notAMethod !== undefined) {
+    return { action: "none", message: { level: "info", text: `${answer.notAMethod}.` } };
+  }
   const count = answer.locations.length;
   const gaps = answer.gaps.length > 0 ? ` The list can be short: ${answer.gaps.join("; ")}.` : "";
   if (count === 0) {
@@ -40,5 +45,10 @@ export function isSuperMethodAnswer(value: unknown): value is SuperMethodAnswer 
     return false;
   }
   const answer = value as Partial<SuperMethodAnswer>;
-  return Array.isArray(answer.locations) && Array.isArray(answer.gaps) && answer.gaps.every((gap) => typeof gap === "string");
+  return (
+    Array.isArray(answer.locations) &&
+    Array.isArray(answer.gaps) &&
+    answer.gaps.every((gap) => typeof gap === "string") &&
+    (answer.notAMethod === undefined || typeof answer.notAMethod === "string")
+  );
 }

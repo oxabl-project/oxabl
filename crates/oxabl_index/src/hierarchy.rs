@@ -14,19 +14,22 @@
 //! (`ClassFile`). It does not read files or know a database: the caller gives
 //! the facts, which an incremental cache has memoized per file.
 //!
-//! Built-in Progress types have no source file. [`builtin_type`] is the one
-//! place that says what oxabl knows about them, so a catalog of built-in
-//! classes changes this function and nothing else.
+//! Built-in Progress types have no source file. [`builtin_type`] says what
+//! oxabl knows about their names, kinds and supertypes, and
+//! [`builtin_may_declare`] says whether it knows their methods. These two
+//! functions are the only places that read the built-in tables: a catalog of
+//! built-in classes with members changes them and nothing else.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_semantic::{
-    ClassDescriptor, ClassKind, ClassResolution, IndexAnswer, IndexName, IndexRevision,
-    IndexedFileId, LocateKind, Located, MemberDescriptor, MemberParam, MemberParamShape,
-    MemberType, Signature, SymbolKind, WorkspaceIndex,
+    ClassDescriptor, ClassKind, ClassResolution, ImportContext, IndexAnswer, IndexName,
+    IndexRevision, IndexedFileId, LocateKind, Located, MemberDescriptor, MemberParam,
+    MemberParamShape, MemberType, Signature, SymbolKind, WorkspaceIndex,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -116,6 +119,25 @@ pub fn builtin_type(name: &str) -> Option<BuiltinType> {
         supertypes,
     })
 }
+
+/// Whether the built-in type `type_name`, or a built-in type above it, may
+/// declare a method named `method`. `false` only when oxabl knows the methods
+/// and the name is not among them.
+///
+/// This is the seam for the members of built-in classes: today oxabl knows
+/// only the methods of `Progress.Lang.Object`, and every other built-in type
+/// may declare any method.
+pub fn builtin_may_declare(type_name: &str, method: &IndexName) -> bool {
+    if type_name.eq_ignore_ascii_case("Progress.Lang.Object") {
+        return OBJECT_METHODS
+            .iter()
+            .any(|known| method.as_str().eq_ignore_ascii_case(known));
+    }
+    true
+}
+
+/// The methods every class inherits from `Progress.Lang.Object`.
+const OBJECT_METHODS: &[&str] = &["clone", "equals", "getclass", "tostring"];
 
 /// A supertype name of a class header, resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,6 +248,9 @@ pub struct ClassNode {
     pub members_complete: bool,
     /// The members the class declares itself.
     pub members: Arc<[MemberDescriptor]>,
+    /// The imports of the declaring file, which the class names in its
+    /// parameters are written under.
+    pub imports: Arc<ImportContext>,
     /// The supertypes the header names, resolved. Never leaves one out.
     pub supertypes: Vec<SupertypeRef>,
 }
@@ -252,6 +277,7 @@ pub struct UnresolvedHeader<'a> {
 #[derive(Debug, Default)]
 pub struct SubtypeIndex {
     nodes: Vec<ClassNode>,
+    by_key: FxHashMap<(IndexName, IndexedFileId), usize>,
     direct: FxHashMap<SuperKey, Vec<(usize, Relation)>>,
     /// Supertype names that did not resolve, by the folded last segment of the
     /// name as written: each can be a supertype of any class of that name.
@@ -260,18 +286,37 @@ pub struct SubtypeIndex {
     unreadable: Vec<PathBuf>,
 }
 
+/// What reads the classes of a workspace for the walks of this module.
+///
+/// A name in a class header means what the file that writes it says, so each
+/// file has its own resolver: the search base of a class file depends on its
+/// package.
+pub trait ClassSource {
+    /// The class file the index minted `file` for.
+    fn path_of(&self, file: IndexedFileId) -> Option<PathBuf>;
+    /// The index that resolves the names the class file `path` writes.
+    fn resolver(&self, path: &Path) -> Rc<dyn WorkspaceIndex + '_>;
+    /// The facts of the class file `path`, an open buffer over the disk.
+    fn facts(&self, path: &Path) -> Arc<FileFacts>;
+}
+
 impl SubtypeIndex {
     /// Build the index from the class files of a workspace. Each supertype
-    /// name is resolved through `index`, which answers from the same
-    /// workspace; each distinct class name is looked up once.
-    pub fn build(files: impl IntoIterator<Item = ClassFile>, index: &dyn WorkspaceIndex) -> Self {
-        let index = LookupMemo::new(index);
+    /// name is resolved through `resolver` for the file that writes it.
+    pub fn build<'a>(
+        files: impl IntoIterator<Item = ClassFile>,
+        resolver: &dyn Fn(&Path) -> Rc<dyn WorkspaceIndex + 'a>,
+    ) -> Self {
         let mut built = SubtypeIndex::default();
         for file in files {
             if !file.facts.parsed {
                 built.unreadable.push(file.path);
                 continue;
             }
+            if file.facts.classes.is_empty() {
+                continue;
+            }
+            let index = resolver(&file.path);
             for class in &file.facts.classes {
                 let descriptor = &class.descriptor;
                 built.add(ClassNode {
@@ -281,7 +326,8 @@ impl SubtypeIndex {
                     kind: descriptor.kind,
                     members_complete: descriptor.members_complete,
                     members: Arc::clone(&class.members),
-                    supertypes: supertypes_of(descriptor, &index),
+                    imports: Arc::clone(&descriptor.imports),
+                    supertypes: supertypes_of(descriptor, &*index),
                 });
             }
         }
@@ -291,6 +337,7 @@ impl SubtypeIndex {
 
     fn add(&mut self, node: ClassNode) {
         let at = self.nodes.len();
+        self.by_key.insert((node.name.clone(), node.file), at);
         for (position, supertype) in node.supertypes.iter().enumerate() {
             match &supertype.resolved {
                 Supertype::Class { name, file, .. } => self
@@ -321,9 +368,9 @@ impl SubtypeIndex {
 
     /// The class `name` that `file` declares.
     pub fn class(&self, name: &IndexName, file: IndexedFileId) -> Option<&ClassNode> {
-        self.nodes
-            .iter()
-            .find(|node| node.file == file && node.name == *name)
+        self.by_key
+            .get(&(name.clone(), file))
+            .map(|at| &self.nodes[*at])
     }
 
     /// The classes whose header names `target` as a supertype, each with the
@@ -341,9 +388,14 @@ impl SubtypeIndex {
     }
 
     /// The classes below `target` through any number of headers, nearest
-    /// first, each once. A cycle ends the walk.
+    /// first, each once, never `target` itself. A cycle ends the walk.
     pub fn all_subtypes(&self, target: &SuperKey) -> Vec<&ClassNode> {
         let mut seen: FxHashSet<usize> = FxHashSet::default();
+        if let SuperKey::Class(name, file) = target
+            && let Some(at) = self.by_key.get(&(name.clone(), *file))
+        {
+            seen.insert(*at);
+        }
         let mut found: Vec<&ClassNode> = Vec::new();
         let mut frontier = vec![target.clone()];
         while !frontier.is_empty() {
@@ -418,13 +470,13 @@ impl SubtypeIndex {
 
 /// An index that remembers each class lookup, for the many headers that name
 /// the same base class.
-struct LookupMemo<'a> {
-    inner: &'a dyn WorkspaceIndex,
+pub struct LookupMemo<I> {
+    inner: I,
     classes: RefCell<FxHashMap<OxablAtom, IndexAnswer<Arc<ClassDescriptor>>>>,
 }
 
-impl<'a> LookupMemo<'a> {
-    fn new(inner: &'a dyn WorkspaceIndex) -> Self {
+impl<I: WorkspaceIndex> LookupMemo<I> {
+    pub fn new(inner: I) -> Self {
         LookupMemo {
             inner,
             classes: RefCell::default(),
@@ -432,7 +484,7 @@ impl<'a> LookupMemo<'a> {
     }
 }
 
-impl WorkspaceIndex for LookupMemo<'_> {
+impl<I: WorkspaceIndex> WorkspaceIndex for LookupMemo<I> {
     fn class(&self, name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
         // The spelling, not the folded name: a path derives from it.
         let key = name.as_written_atom().clone();
@@ -487,8 +539,23 @@ pub enum SameSignature {
     Yes,
     No,
     /// oxabl cannot tell: a list it did not read, a table or buffer
-    /// parameter, a class written with another spelling.
+    /// parameter, a class name that does not resolve the same way on both
+    /// sides.
     Unknown,
+}
+
+/// Where a method is declared: the imports and the index that give a class
+/// name in its parameters its meaning.
+#[derive(Clone, Copy)]
+pub struct Declaring<'a> {
+    imports: &'a ImportContext,
+    index: &'a dyn WorkspaceIndex,
+}
+
+impl<'a> Declaring<'a> {
+    pub fn new(imports: &'a ImportContext, index: &'a dyn WorkspaceIndex) -> Self {
+        Declaring { imports, index }
+    }
 }
 
 /// The methods of `members` named `name`, in declaration order. These are the
@@ -505,8 +572,14 @@ pub fn methods_named<'m>(
 
 /// Whether `a` and `b`, two methods of one name, take the same parameters in
 /// the same modes: what makes one an override or an implementation of the
-/// other. Different lists are overloads.
-pub fn same_signature(a: &MemberDescriptor, b: &MemberDescriptor) -> SameSignature {
+/// other. Different lists are overloads. A class-typed parameter means the
+/// class its own declaring file resolves the name to.
+pub fn same_signature(
+    a: &MemberDescriptor,
+    a_in: &Declaring<'_>,
+    b: &MemberDescriptor,
+    b_in: &Declaring<'_>,
+) -> SameSignature {
     let (Some(a), Some(b)) = (&a.params, &b.params) else {
         return SameSignature::Unknown;
     };
@@ -515,7 +588,7 @@ pub fn same_signature(a: &MemberDescriptor, b: &MemberDescriptor) -> SameSignatu
     }
     let mut unknown = false;
     for (a, b) in a.iter().zip(b.iter()) {
-        match same_param(a, b) {
+        match same_param(a, a_in, b, b_in) {
             SameSignature::No => return SameSignature::No,
             SameSignature::Unknown => unknown = true,
             SameSignature::Yes => {}
@@ -528,12 +601,17 @@ pub fn same_signature(a: &MemberDescriptor, b: &MemberDescriptor) -> SameSignatu
     }
 }
 
-fn same_param(a: &MemberParam, b: &MemberParam) -> SameSignature {
+fn same_param(
+    a: &MemberParam,
+    a_in: &Declaring<'_>,
+    b: &MemberParam,
+    b_in: &Declaring<'_>,
+) -> SameSignature {
     if a.mode != b.mode {
         return SameSignature::No;
     }
     match (&a.shape, &b.shape) {
-        (MemberParamShape::Value(a), MemberParamShape::Value(b)) => same_type(a, b),
+        (MemberParamShape::Value(a), MemberParamShape::Value(b)) => same_type(a, a_in, b, b_in),
         (MemberParamShape::Buffer, MemberParamShape::Buffer)
         | (MemberParamShape::Table, MemberParamShape::Table)
         | (MemberParamShape::Dataset, MemberParamShape::Dataset) => SameSignature::Unknown,
@@ -543,7 +621,35 @@ fn same_param(a: &MemberParam, b: &MemberParam) -> SameSignature {
     }
 }
 
-fn same_type(a: &MemberType, b: &MemberType) -> SameSignature {
+/// What a class name in a parameter means.
+enum Named {
+    Is(SuperKey),
+    /// No class has the name.
+    Absent,
+    /// A lookup that oxabl cannot settle.
+    Unclear,
+}
+
+fn resolve_named(name: &IndexName, within: &Declaring<'_>) -> Named {
+    match within
+        .imports
+        .resolve_class(name.as_written(), within.index)
+    {
+        ClassResolution::Class(found) => Named::Is(SuperKey::Class(found.name.clone(), found.file)),
+        ClassResolution::Builtin(known) => Named::Is(SuperKey::Builtin(IndexName::new(known.name))),
+        ClassResolution::NotFound => Named::Absent,
+        ClassResolution::Assembly | ClassResolution::Unusable | ClassResolution::Unknowable => {
+            Named::Unclear
+        }
+    }
+}
+
+fn same_type(
+    a: &MemberType,
+    a_in: &Declaring<'_>,
+    b: &MemberType,
+    b_in: &Declaring<'_>,
+) -> SameSignature {
     match (a, b) {
         // `LIKE` and a type an `&IF` chooses give `Unknown`: not comparable.
         (MemberType::Portable(a), MemberType::Portable(b)) => {
@@ -556,13 +662,19 @@ fn same_type(a: &MemberType, b: &MemberType) -> SameSignature {
             }
         }
         (MemberType::Named(a), MemberType::Named(b)) => {
-            if a == b {
-                SameSignature::Yes
-            } else if simple_name(a.as_str()) == simple_name(b.as_str()) {
-                // `Person` and `app.Person` can be one class.
-                SameSignature::Unknown
-            } else {
-                SameSignature::No
+            match (resolve_named(a, a_in), resolve_named(b, b_in)) {
+                (Named::Is(a), Named::Is(b)) => {
+                    if a == b {
+                        SameSignature::Yes
+                    } else {
+                        SameSignature::No
+                    }
+                }
+                // The same unresolved name under the same imports is one name.
+                (Named::Absent, Named::Absent) if a == b && a_in.imports == b_in.imports => {
+                    SameSignature::Yes
+                }
+                _ => SameSignature::Unknown,
             }
         }
         (MemberType::Untyped, MemberType::Untyped) => SameSignature::Unknown,
@@ -580,7 +692,12 @@ pub fn overridable(member: &MemberDescriptor) -> bool {
 
 /// The overloads in `declared` that `wanted` can mean: their positions, and
 /// whether every one of them is certain.
-fn matching(declared: &[&MemberDescriptor], wanted: &[&MemberDescriptor]) -> (Vec<usize>, bool) {
+fn matching(
+    declared: &[&MemberDescriptor],
+    declared_in: &Declaring<'_>,
+    wanted: &[&MemberDescriptor],
+    wanted_in: &Declaring<'_>,
+) -> (Vec<usize>, bool) {
     let mut ordinals = Vec::new();
     let mut certain = true;
     for (ordinal, method) in declared.iter().enumerate() {
@@ -590,7 +707,7 @@ fn matching(declared: &[&MemberDescriptor], wanted: &[&MemberDescriptor]) -> (Ve
         let mut yes = false;
         let mut unknown = false;
         for wanted in wanted {
-            match same_signature(wanted, method) {
+            match same_signature(wanted, wanted_in, method, declared_in) {
                 SameSignature::Yes => yes = true,
                 SameSignature::Unknown => unknown = true,
                 SameSignature::No => {}
@@ -602,6 +719,60 @@ fn matching(declared: &[&MemberDescriptor], wanted: &[&MemberDescriptor]) -> (Ve
         }
     }
     (ordinals, certain)
+}
+
+/// What a class declares that `wanted` can mean.
+struct Declared {
+    ordinals: Vec<usize>,
+    total: usize,
+    certain: bool,
+}
+
+fn declared_in_node(
+    node: &ClassNode,
+    source: &dyn ClassSource,
+    name: &IndexName,
+    wanted: &[&MemberDescriptor],
+    wanted_in: &Declaring<'_>,
+) -> Declared {
+    let declared = methods_named(&node.members, name);
+    if declared.is_empty() {
+        return Declared {
+            ordinals: Vec::new(),
+            total: 0,
+            certain: true,
+        };
+    }
+    let resolver = source.resolver(&node.path);
+    let within = Declaring::new(&node.imports, &*resolver);
+    let (ordinals, certain) = matching(&declared, &within, wanted, wanted_in);
+    Declared {
+        ordinals,
+        total: declared.len(),
+        certain,
+    }
+}
+
+fn uncertain_gap(class: &IndexName, name: &IndexName) -> String {
+    format!(
+        "`{}` declares `{}` with parameters oxabl cannot compare: it may be an overload",
+        class.as_written(),
+        name.as_written()
+    )
+}
+
+fn incomplete_gap(class: &IndexName, name: &IndexName) -> String {
+    format!(
+        "`{}` has members that oxabl cannot read (an include or an &IF): it may declare `{}`",
+        class.as_written(),
+        name.as_written()
+    )
+}
+
+/// Keep the first of each gap, in order.
+fn dedupe(gaps: &mut Vec<String>) {
+    let mut seen: FxHashSet<String> = FxHashSet::default();
+    gaps.retain(|gap| seen.insert(gap.clone()));
 }
 
 /// One class that declares a method of the same name and parameters as a
@@ -627,12 +798,20 @@ pub struct Overrides<'a> {
 }
 
 /// The classes below `target` that override or implement one of `wanted`.
+///
+/// With `implements` (the method is an interface method), a class that
+/// declares nothing of the name still implements it through the method it
+/// inherits: the nearest declaration up its parent chain counts, and the
+/// class that declares it can lie outside the subtypes of `target`.
 pub fn overrides_below<'a>(
     index: &'a SubtypeIndex,
+    source: &dyn ClassSource,
     target: &SuperKey,
+    implements: bool,
     wanted: &[&MemberDescriptor],
+    wanted_in: &Declaring<'_>,
 ) -> Overrides<'a> {
-    let mut found = Vec::new();
+    let mut found: Vec<MethodMatch<'a>> = Vec::new();
     let mut gaps = Vec::new();
     let Some(name) = wanted.first().map(|method| method.name.clone()) else {
         return Overrides { found, gaps };
@@ -642,32 +821,94 @@ pub fn overrides_below<'a>(
         if class.kind == ClassKind::Interface {
             continue;
         }
-        let declared = methods_named(&class.members, &name);
-        let (ordinals, certain) = matching(&declared, wanted);
-        if !ordinals.is_empty() {
-            if !certain {
-                gaps.push(format!(
-                    "`{}` declares `{}` with parameters oxabl cannot compare: it may be an \
-                     overload",
-                    class.name.as_written(),
-                    name.as_written()
-                ));
+        let mut at = class;
+        let mut walked: FxHashSet<(IndexName, IndexedFileId)> = FxHashSet::default();
+        loop {
+            let declared = declared_in_node(at, source, &name, wanted, wanted_in);
+            if !declared.ordinals.is_empty() {
+                if !declared.certain {
+                    gaps.push(uncertain_gap(&at.name, &name));
+                }
+                if !found
+                    .iter()
+                    .any(|known| known.class.name == at.name && known.class.file == at.file)
+                {
+                    found.push(MethodMatch {
+                        class: at,
+                        ordinals: declared.ordinals,
+                        total: declared.total,
+                        certain: declared.certain,
+                    });
+                }
+                break;
             }
-            found.push(MethodMatch {
-                class,
-                ordinals,
-                total: declared.len(),
-                certain,
-            });
-        } else if !class.members_complete {
-            gaps.push(format!(
-                "`{}` has members that oxabl cannot read (an include or an &IF): it may \
-                 declare `{}`",
-                class.name.as_written(),
-                name.as_written()
-            ));
+            if !at.members_complete {
+                gaps.push(incomplete_gap(&at.name, &name));
+            }
+            if !implements {
+                break;
+            }
+            let Some(parent) = at
+                .supertypes
+                .iter()
+                .find(|up| up.relation == Relation::Inherits)
+            else {
+                break;
+            };
+            match &parent.resolved {
+                Supertype::Class {
+                    name: parent_name,
+                    file,
+                    ..
+                } => {
+                    if !walked.insert((parent_name.clone(), *file)) {
+                        break;
+                    }
+                    match index.class(parent_name, *file) {
+                        Some(node) => at = node,
+                        None => {
+                            gaps.push(format!(
+                                "`{}` extends `{}`, which the index did not read: it may \
+                                 declare `{}`",
+                                at.name.as_written(),
+                                parent_name.as_written(),
+                                name.as_written()
+                            ));
+                            break;
+                        }
+                    }
+                }
+                Supertype::Builtin { name: builtin, .. } => {
+                    if builtin_may_declare(builtin, &name) {
+                        gaps.push(format!(
+                            "`{}` extends the built-in type `{builtin}`: oxabl does not know \
+                             its methods",
+                            at.name.as_written()
+                        ));
+                    }
+                    break;
+                }
+                Supertype::DotNet => {
+                    gaps.push(format!(
+                        "`{}` extends a .NET type: oxabl does not read assemblies",
+                        at.name.as_written()
+                    ));
+                    break;
+                }
+                Supertype::Unresolved(why) => {
+                    gaps.push(format!(
+                        "`{}` extends `{}`, which oxabl cannot resolve ({}): it may declare `{}`",
+                        at.name.as_written(),
+                        parent.written.as_written(),
+                        why.describe(),
+                        name.as_written()
+                    ));
+                    break;
+                }
+            }
         }
     }
+    dedupe(&mut gaps);
     Overrides { found, gaps }
 }
 
@@ -684,130 +925,202 @@ pub struct SuperMatch {
     pub certain: bool,
 }
 
-/// The methods a method of `start` overrides or implements, in the nearest
-/// supertypes that declare one.
+/// The methods a method of `start` overrides or implements.
 pub struct SuperMethods {
     pub found: Vec<SuperMatch>,
     /// Why the answer can be short, one sentence each.
     pub gaps: Vec<String>,
 }
 
-/// Walk the supertypes of `start`, nearest level first, and return the
-/// declarations like one of `wanted` at the first level that has any. A
-/// supertype that does not resolve, or whose members oxabl cannot read, is a
-/// gap when it lies at or before that level, or when nothing is found.
-pub fn super_methods(
-    index: &dyn WorkspaceIndex,
-    start: &ClassDescriptor,
-    wanted: &[&MemberDescriptor],
-) -> SuperMethods {
-    let mut found: Vec<SuperMatch> = Vec::new();
-    let mut gaps: Vec<String> = Vec::new();
-    let Some(name) = wanted.first().map(|method| method.name.clone()) else {
-        return SuperMethods { found, gaps };
-    };
-    let mut seen: FxHashSet<(IndexName, IndexedFileId)> = FxHashSet::default();
-    seen.insert((start.name.clone(), start.file));
-    let mut level = supertypes_of(start, index)
-        .into_iter()
-        .map(|supertype| (start.name.clone(), supertype))
-        .collect::<Vec<_>>();
-    while !level.is_empty() {
-        let mut next = Vec::new();
-        for (child, supertype) in level {
-            match supertype.resolved {
-                Supertype::Class {
-                    name: class,
-                    file,
-                    kind,
-                } => {
-                    if !seen.insert((class.clone(), file)) {
-                        continue;
-                    }
-                    let IndexAnswer::Found(descriptor) = index.class(&class) else {
-                        gaps.push(format!(
-                            "`{}` cannot be read: the method may be there",
-                            class.as_written()
-                        ));
-                        continue;
-                    };
-                    let IndexAnswer::Found(members) = index.class_members(&class) else {
-                        gaps.push(format!(
-                            "the members of `{}` cannot be read",
-                            class.as_written()
-                        ));
-                        continue;
-                    };
-                    let declared = methods_named(&members, &name);
-                    let (ordinals, certain) = matching(&declared, wanted);
-                    if ordinals.is_empty() {
-                        if !descriptor.members_complete {
-                            gaps.push(format!(
-                                "`{}` has members that oxabl cannot read (an include or an \
-                                 &IF): it may declare `{}`",
-                                class.as_written(),
-                                name.as_written()
-                            ));
-                        }
-                        if kind != ClassKind::Enum {
-                            next.extend(
-                                supertypes_of(&descriptor, index)
-                                    .into_iter()
-                                    .map(|up| (class.clone(), up)),
-                            );
-                        }
-                    } else {
-                        if !certain {
-                            gaps.push(format!(
-                                "`{}` declares `{}` with parameters oxabl cannot compare: it \
-                                 may be an overload",
-                                class.as_written(),
-                                name.as_written()
-                            ));
-                        }
-                        found.push(SuperMatch {
-                            class,
-                            file,
-                            ordinals,
-                            total: declared.len(),
-                            certain,
-                        });
-                    }
+/// A supertype to look at, with the class that names it.
+type Up = (IndexName, SupertypeRef);
+
+enum Examined {
+    /// The supertype declares the method.
+    Matched,
+    /// The walk cannot go on from here; a gap says why when it matters.
+    Stopped,
+    /// The supertype does not declare it: its own supertypes are next.
+    Missed(Vec<Up>),
+}
+
+struct SuperWalk<'a> {
+    source: &'a dyn ClassSource,
+    name: IndexName,
+    wanted: &'a [&'a MemberDescriptor],
+    wanted_in: Declaring<'a>,
+    seen: FxHashSet<(IndexName, IndexedFileId)>,
+    found: Vec<SuperMatch>,
+    gaps: Vec<String>,
+}
+
+impl SuperWalk<'_> {
+    fn examine(&mut self, child: &IndexName, supertype: &SupertypeRef) -> Examined {
+        match &supertype.resolved {
+            Supertype::Class {
+                name: class,
+                file,
+                kind,
+            } => {
+                if !self.seen.insert((class.clone(), *file)) {
+                    return Examined::Stopped;
                 }
-                Supertype::Builtin { name: builtin, .. } => gaps.push(format!(
-                    "`{}` names the built-in type `{builtin}`: oxabl does not know its methods",
-                    child.as_written()
-                )),
-                Supertype::DotNet => gaps.push(format!(
+                let Some(path) = self.source.path_of(*file) else {
+                    self.gaps.push(format!(
+                        "the file of `{}` is not known: the method may be there",
+                        class.as_written()
+                    ));
+                    return Examined::Stopped;
+                };
+                let facts = self.source.facts(&path);
+                let Some(read) = facts.class(class).filter(|_| facts.parsed) else {
+                    self.gaps.push(format!(
+                        "`{}` cannot be read: the method may be there",
+                        class.as_written()
+                    ));
+                    return Examined::Stopped;
+                };
+                let resolver = self.source.resolver(&path);
+                let within = Declaring::new(&read.descriptor.imports, &*resolver);
+                let declared = methods_named(&read.members, &self.name);
+                let (ordinals, certain) =
+                    matching(&declared, &within, self.wanted, &self.wanted_in);
+                if !ordinals.is_empty() {
+                    if !certain {
+                        self.gaps.push(uncertain_gap(class, &self.name));
+                    }
+                    self.found.push(SuperMatch {
+                        class: class.clone(),
+                        file: *file,
+                        ordinals,
+                        total: declared.len(),
+                        certain,
+                    });
+                    return Examined::Matched;
+                }
+                if !read.descriptor.members_complete {
+                    self.gaps.push(incomplete_gap(class, &self.name));
+                }
+                if *kind == ClassKind::Enum {
+                    return Examined::Missed(Vec::new());
+                }
+                Examined::Missed(
+                    supertypes_of(&read.descriptor, &*resolver)
+                        .into_iter()
+                        .map(|up| (class.clone(), up))
+                        .collect(),
+                )
+            }
+            Supertype::Builtin { name: builtin, .. } => {
+                if builtin_may_declare(builtin, &self.name) {
+                    self.gaps.push(format!(
+                        "`{}` names the built-in type `{builtin}`: oxabl does not know its \
+                         methods",
+                        child.as_written()
+                    ));
+                }
+                Examined::Stopped
+            }
+            Supertype::DotNet => {
+                self.gaps.push(format!(
                     "`{}` names a .NET type: oxabl does not read assemblies",
                     child.as_written()
-                )),
-                Supertype::Unresolved(why) => gaps.push(format!(
+                ));
+                Examined::Stopped
+            }
+            Supertype::Unresolved(why) => {
+                self.gaps.push(format!(
                     "`{}` names `{}`, which oxabl cannot resolve ({}): the method may be there",
                     child.as_written(),
                     supertype.written.as_written(),
                     why.describe()
-                )),
+                ));
+                Examined::Stopped
             }
         }
-        if !found.is_empty() {
-            break;
-        }
-        level = next;
     }
-    if found.is_empty()
-        && start.kind != ClassKind::Interface
-        && OBJECT_METHODS
-            .iter()
-            .any(|known| name.as_str().eq_ignore_ascii_case(known))
+}
+
+/// The methods that a method of `start` (the class file `start_path`)
+/// overrides or implements.
+///
+/// The parent chain and the interfaces are two searches, because a method can
+/// override a class method and implement an interface method at once. The
+/// chain gives the nearest class that declares a method like one of `wanted`;
+/// each interface, those of `start` and those of the classes of the chain
+/// before the match, gives its nearest declaration (an interface extends
+/// others, one branch at a time). A supertype that does not resolve, or whose
+/// members oxabl cannot read, is a gap where a walk reaches it before a match.
+pub fn super_methods(
+    source: &dyn ClassSource,
+    start_path: &Path,
+    start: &ClassDescriptor,
+    wanted: &[&MemberDescriptor],
+) -> SuperMethods {
+    let Some(name) = wanted.first().map(|method| method.name.clone()) else {
+        return SuperMethods {
+            found: Vec::new(),
+            gaps: Vec::new(),
+        };
+    };
+    let resolver = source.resolver(start_path);
+    let mut walk = SuperWalk {
+        source,
+        name: name.clone(),
+        wanted,
+        wanted_in: Declaring::new(&start.imports, &*resolver),
+        seen: FxHashSet::default(),
+        found: Vec::new(),
+        gaps: Vec::new(),
+    };
+    walk.seen.insert((start.name.clone(), start.file));
+    let mut chain: Option<Up> = None;
+    let mut interfaces: Vec<Up> = Vec::new();
+    for up in supertypes_of(start, &*resolver) {
+        let up = (start.name.clone(), up);
+        if start.kind != ClassKind::Interface && up.1.relation == Relation::Inherits {
+            chain = Some(up);
+        } else {
+            interfaces.push(up);
+        }
+    }
+    // A chain that ends on its own ends at `Progress.Lang.Object`.
+    let mut reaches_object = start.kind == ClassKind::Class;
+    while let Some((child, up)) = chain.take() {
+        match walk.examine(&child, &up) {
+            Examined::Matched | Examined::Stopped => {
+                reaches_object = false;
+                break;
+            }
+            Examined::Missed(ups) => {
+                for up in ups {
+                    if up.1.relation == Relation::Inherits {
+                        chain = Some(up);
+                    } else {
+                        interfaces.push(up);
+                    }
+                }
+            }
+        }
+    }
+    let mut at = 0;
+    while at < interfaces.len() {
+        let (child, up) = interfaces[at].clone();
+        at += 1;
+        if let Examined::Missed(ups) = walk.examine(&child, &up) {
+            interfaces.extend(ups);
+        }
+    }
+    if reaches_object && walk.found.is_empty() && builtin_may_declare("Progress.Lang.Object", &name)
     {
-        gaps.push(format!(
+        walk.gaps.push(format!(
             "`{}` can override a method of `Progress.Lang.Object`, which oxabl does not know",
             name.as_written()
         ));
     }
-    SuperMethods { found, gaps }
+    dedupe(&mut walk.gaps);
+    SuperMethods {
+        found: walk.found,
+        gaps: walk.gaps,
+    }
 }
-
-/// The methods every class inherits from `Progress.Lang.Object`.
-const OBJECT_METHODS: &[&str] = &["clone", "equals", "getclass", "tostring"];
