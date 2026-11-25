@@ -1249,3 +1249,111 @@ fn zero_jobs_is_a_usage_error() {
     let run = check([file.to_str().unwrap(), "-j", "0"]);
     assert_eq!(run.code, Some(2), "{}", run.stderr);
 }
+
+/// A parse error at the end of the file, such as a block with no `END.`, has no
+/// byte to point at. It is still reported, at the end of the file, and fails
+/// the gate.
+#[test]
+fn a_parse_error_at_the_end_of_the_file_fails_the_gate() {
+    let (_tmp, file) = project("open.p", "DO:\n    MESSAGE \"x\".\n");
+
+    let run = check([Path::new("--json").as_os_str(), file.as_os_str()]);
+
+    assert_eq!(run.code, Some(1), "stdout:\n{}", run.stdout);
+    let json = run.json();
+    let parse_errors: Vec<_> = json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "PARSE001")
+        .collect();
+    assert_eq!(
+        parse_errors.len(),
+        1,
+        "diagnostics: {}",
+        json["diagnostics"]
+    );
+}
+
+/// The parse errors of `json`, as `(line, column)` of their start.
+fn parse_error_starts(json: &Value) -> Vec<(u64, u64)> {
+    json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "PARSE001")
+        .map(|d| {
+            (
+                d["start"]["line"].as_u64().unwrap(),
+                d["start"]["column"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// When the file ends in an include, the end of the text is inside the
+/// include's bytes. The error is still reported, in the root file, and the
+/// gate fails as it does without the include.
+#[test]
+fn a_parse_error_at_the_end_of_text_after_an_include_fails_the_gate() {
+    for (name, source) in [
+        ("end-include.p", "DO:\n{inc.i}"),
+        (
+            "create-include.p",
+            "CREATE BUTTON h TRIGGERS: ON CHOOSE DO:\n{inc.i}",
+        ),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        write(&tmp.path().join("inc.i"), "MESSAGE \"x\".\n");
+        let file = tmp.path().join(name);
+        write(&file, source);
+
+        let run = check([
+            Path::new("--json").as_os_str(),
+            Path::new("-I").as_os_str(),
+            tmp.path().as_os_str(),
+            file.as_os_str(),
+        ]);
+
+        assert_eq!(run.code, Some(1), "{name}: stdout:\n{}", run.stdout);
+        assert_eq!(
+            parse_error_starts(&run.json()).len(),
+            1,
+            "{name}: diagnostics: {}",
+            run.json()["diagnostics"]
+        );
+    }
+}
+
+/// An include fragment is read on its own, and a block it opens is closed by
+/// the file that includes it: no error at the end of its text.
+#[test]
+fn an_include_fragment_that_opens_a_block_has_no_parse_error() {
+    let (_tmp, file) = project("open.i", "DO:\n    MESSAGE \"x\".\n");
+
+    let run = check([Path::new("--json").as_os_str(), file.as_os_str()]);
+
+    assert!(
+        parse_error_starts(&run.json()).is_empty(),
+        "diagnostics: {}",
+        run.json()["diagnostics"]
+    );
+}
+
+/// A CREATE that fails at the end of the text has its error at the CREATE, not
+/// at the end of a long file.
+#[test]
+fn a_create_that_fails_at_the_end_of_the_text_has_its_error_at_the_create() {
+    let (_tmp, file) = project(
+        "nested.p",
+        "MESSAGE \"a\".\nCREATE BUTTON h TRIGGERS:\n  ON CHOOSE DO:\n    MESSAGE \"x\".\n",
+    );
+
+    let run = check([Path::new("--json").as_os_str(), file.as_os_str()]);
+
+    assert!(
+        parse_error_starts(&run.json()).contains(&(2, 1)),
+        "diagnostics: {}",
+        run.json()["diagnostics"]
+    );
+}

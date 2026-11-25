@@ -1021,11 +1021,16 @@ fn walk_on_action(v: &mut impl Visitor, action: &OnAction) {
     match action {
         OnAction::Block(body) => walk_statement(v, body),
         OnAction::PersistentRun {
+            procedure,
             in_handle,
             arguments,
-            ..
         } => {
-            for expression in in_handle.iter().chain(arguments) {
+            for expression in procedure
+                .expression()
+                .into_iter()
+                .chain(in_handle.iter())
+                .chain(arguments)
+            {
                 walk_expression(v, expression);
             }
         }

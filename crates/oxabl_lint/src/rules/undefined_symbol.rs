@@ -197,8 +197,8 @@ impl Visitor<'_> {
             StatementKind::On { kind } => match kind {
                 OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action {
                     OnAction::Block(body) => self.walk_statement(body),
-                    OnAction::PersistentRun { in_handle, arguments, .. } => {
-                        for a in in_handle.iter().chain(arguments) {
+                    OnAction::PersistentRun { procedure, in_handle, arguments } => {
+                        for a in procedure.expression().into_iter().chain(in_handle.iter()).chain(arguments) {
                             self.walk_expression(a);
                         }
                     }
@@ -505,8 +505,8 @@ impl Visitor<'_> {
                     for t in triggers {
                         match &t.action {
                             OnAction::Block(body) => self.walk_statement(body),
-                            OnAction::PersistentRun { in_handle, arguments, .. } => {
-                                for a in in_handle.iter().chain(arguments) {
+                            OnAction::PersistentRun { procedure, in_handle, arguments } => {
+                                for a in procedure.expression().into_iter().chain(in_handle.iter()).chain(arguments) {
                                     self.walk_expression(a);
                                 }
                             }

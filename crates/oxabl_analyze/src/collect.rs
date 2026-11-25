@@ -883,6 +883,30 @@ impl ExpandedFile {
         })
     }
 
+    /// The empty span at the end of the root buffer. When the expansion ends
+    /// in an include, the end of the root's last bytes: the later of its last
+    /// chunk and its last include site.
+    fn resolve_end(&self) -> FileSpan {
+        let end = if self.chunks.is_empty() {
+            self.text.len() as u32
+        } else {
+            let chunk_end = self
+                .chunks
+                .iter()
+                .rev()
+                .find(|chunk| {
+                    chunk.origin == ChunkOrigin::Root && FileId::new(chunk.file) == self.root
+                })
+                .map_or(0, |chunk| chunk.real_start + chunk.len);
+            let site_end = self.include_regions.iter().map(|r| r.site.end).max();
+            chunk_end.max(site_end.unwrap_or(0))
+        };
+        FileSpan {
+            file: self.root,
+            span: Span { start: end, end },
+        }
+    }
+
     /// `span` in the bytes of the file that holds its start, which maps to
     /// `real_start`. See [`Self::resolve_span`] for the boundary convention.
     fn real_span(&self, span: Span, real_start: u32) -> Span {
@@ -1722,8 +1746,20 @@ pub fn collect_from_expanded_with_summaries(
     out.parse_recovered = !program.errors.is_empty();
 
     for err in program.errors.into_iter().filter(|_| everything) {
+        let at_end = err.span.start as usize >= expanded.text.len();
         let virt = err.into_diagnostic(root);
-        if let Ok(resolved) = resolve_diagnostic(virt, expanded) {
+        let resolved = resolve_diagnostic(virt, expanded).or_else(|mut d| {
+            // An error at the end of the text (a block that is not closed) has
+            // no byte to map: it is reported at the end of the root buffer. An
+            // include fragment is partial by nature and is exempt.
+            if at_end && !source_context.is_include_fragment() {
+                d.span = expanded.resolve_end();
+                Ok(d)
+            } else {
+                Err(d)
+            }
+        });
+        if let Ok(resolved) = resolved {
             out.diagnostics.push(CollectedDiagnostic {
                 diagnostic: resolved,
                 source: DiagnosticSource::Parse,

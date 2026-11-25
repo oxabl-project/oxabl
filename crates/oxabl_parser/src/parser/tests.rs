@@ -3,8 +3,8 @@ use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, CloseKind, CommentKind, CreateTarget,
     CreateTargetKind, DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, DeleteObjectKind,
     ExpressionKind, FindType, FrameField, HandleParamKind, Identifier, IntegerLiteral, Literal,
-    LockType, NodeId, OnAction, OnKind, ParameterDirection, ParameterType, RunTarget,
-    SortDirection, Span, StatementKind, StreamDirection, StreamOperation, StreamTarget,
+    LockType, NodeId, OnAction, OnKind, ParameterDirection, ParameterType, PersistentRunTarget,
+    RunTarget, SortDirection, Span, StatementKind, StreamDirection, StreamOperation, StreamTarget,
     StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral, UsingSource, WhenBranch,
     WidgetQualifier,
 };
@@ -10494,7 +10494,7 @@ fn parse_on_persistent_run() {
                 arguments,
                 ..
             } => {
-                assert_eq!(procedure.name, "myProc");
+                assert!(matches!(&procedure, PersistentRunTarget::Name(n) if n.name == "myProc"));
                 assert!(arguments.is_empty());
             }
             other => panic!("Expected PersistentRun, got {:?}", other),
@@ -14551,14 +14551,16 @@ fn apply_keeps_event_and_target() {
 }
 
 #[test]
-fn unparsable_create_tail_is_skipped_without_swallowing_the_next_statement() {
+fn unparsable_create_tail_is_skipped_with_an_error_and_without_swallowing_the_next_statement() {
     for source in [
         "CREATE BUTTON h ASSIGN LABEL ! = \"x\".",
         "CREATE X-DOCUMENT h BOGUS-CLAUSE.",
         "CREATE WIDGET-POOL \"p\" BOGUS.",
     ] {
         let full = format!("{source}{NEXT_STMT}");
-        let stmts = parse_clean(&full);
+        let program = Parser::new(&tokenize(&full), &full).parse_program();
+        assert_eq!(program.errors.len(), 1, "{source}: {:?}", program.errors);
+        let stmts = program.statements;
         assert_next_stmt_survives(&stmts, &full);
         assert!(
             matches!(stmts[0].kind, StatementKind::Skipped { .. }),
@@ -14725,6 +14727,50 @@ fn buffer_name_stays_usable_as_a_member_name() {
 }
 
 #[test]
+fn on_persistent_run_takes_a_value_target() {
+    for (tail, has_in, args) in [
+        ("PERSISTENT RUN VALUE(cProg).", false, 0),
+        ("PERSISTENT RUN VALUE(cProg) (INPUT 1).", false, 1),
+        ("PERSISTENT RUN VALUE(cDir + \"/x.p\") IN h2.", true, 0),
+        (
+            "PERSISTENT RUN VALUE(x) IN THIS-PROCEDURE (INPUT 1).",
+            true,
+            1,
+        ),
+    ] {
+        for on in [
+            format!("ON CHOOSE OF btn {tail}{NEXT_STMT}"),
+            format!("CREATE BUTTON h TRIGGERS: ON CHOOSE {tail} END TRIGGERS.{NEXT_STMT}"),
+        ] {
+            let stmts = parse_clean(&on);
+            assert_next_stmt_survives(&stmts, &on);
+            let action = match &stmts[0].kind {
+                StatementKind::On {
+                    kind: OnKind::UiEvent { action, .. },
+                } => action,
+                StatementKind::Create {
+                    target: CreateTarget::Handle { triggers, .. },
+                    ..
+                } => &triggers[0].action,
+                other => panic!("{on}: got {other:?}"),
+            };
+            match action {
+                OnAction::PersistentRun {
+                    procedure,
+                    in_handle,
+                    arguments,
+                } => {
+                    assert!(procedure.expression().is_some(), "{on}");
+                    assert_eq!(in_handle.is_some(), has_in, "{on}");
+                    assert_eq!(arguments.len(), args, "{on}");
+                }
+                other => panic!("{on}: got {other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
 fn on_persistent_run_takes_in_handle_and_path_names() {
     for (tail, name, has_in, args) in [
         ("PERSISTENT RUN p IN THIS-PROCEDURE.", "p", true, 0),
@@ -14753,7 +14799,10 @@ fn on_persistent_run_takes_in_handle_and_path_names() {
                         ..
                     },
             } => {
-                assert_eq!(procedure.name, name, "{on}");
+                assert!(
+                    matches!(&procedure, PersistentRunTarget::Name(n) if n.name == name),
+                    "{on}"
+                );
                 assert_eq!(in_handle.is_some(), has_in, "{on}");
                 assert_eq!(arguments.len(), args, "{on}");
             }
@@ -15434,4 +15483,24 @@ fn define_variable_keeps_an_extent_right_after_its_type() {
         };
         assert_eq!(extent, want, "{source}");
     }
+}
+
+/// The unclosed `DO:` of the first CREATE takes the rest of the file into its
+/// trigger block, `USING` included. The CREATE is skipped and the block is read
+/// again; the import must not reach the second CREATE, which comes before it.
+/// The memo of failed CREATEs hides this, so it is off here.
+#[test]
+fn a_using_read_in_a_rewound_create_does_not_reach_an_earlier_create() {
+    let source = "CREATE BUTTON h TRIGGERS: ON CHOOSE DO: END TRIGGERS.\n\
+        CREATE BUTTON hx TRIGGERS: ON CHOOSE DEFINE VARIABLE v AS Method NO-UNDO. END TRIGGERS.\n\
+        USING Foo.Method.\n";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    parser.reread_failed_creates = true;
+    let program = parser.parse_program();
+    assert!(
+        matches!(program.statements[1].kind, StatementKind::Skipped { .. }),
+        "the second CREATE must fail, `Method` is no type there: {:?}",
+        program.statements[1].kind
+    );
 }
