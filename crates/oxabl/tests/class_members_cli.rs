@@ -390,6 +390,96 @@ fn unqualified_and_this_object_calls_agree() {
     );
 }
 
+const MODE_CLASS: &str = r#"CLASS app.Md:
+    METHOD PUBLIC INTEGER F(INPUT p AS DECIMAL):
+        RETURN 0.
+    END METHOD.
+    METHOD PUBLIC CHARACTER F(OUTPUT p AS INTEGER):
+        p = 1.
+        RETURN "".
+    END METHOD.
+END CLASS.
+"#;
+
+/// The compiler counts the mode written at the call: `F(OUTPUT d)` picks the
+/// `OUTPUT INTEGER` overload, `F(d)` the `INPUT DECIMAL` one. Both lines are
+/// correct code.
+#[test]
+fn the_mode_written_at_the_call_takes_part_in_the_pick() {
+    let ws = Workspace::new();
+    ws.write("app/Md.cls", MODE_CLASS);
+    assert_program(
+        &ws,
+        "modes.p",
+        r#"DEFINE VARIABLE o AS app.Md NO-UNDO.
+DEFINE VARIABLE d AS DECIMAL NO-UNDO.
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+o = NEW app.Md().
+c = o:F(OUTPUT d).
+i = o:F(d).
+MESSAGE c i d.
+"#,
+        Vec::new(),
+    );
+}
+
+const STATIC_CLASS: &str = r#"CLASS app.St:
+    METHOD PUBLIC STATIC INTEGER M(i AS INT64):
+        RETURN 0.
+    END METHOD.
+    METHOD PUBLIC CHARACTER M(i AS INTEGER):
+        RETURN "".
+    END METHOD.
+    METHOD PUBLIC STATIC VOID SRun():
+        DEFINE VARIABLE i AS INTEGER NO-UNDO.
+        i = M(1).
+        MESSAGE i.
+    END METHOD.
+END CLASS.
+"#;
+
+/// The compiler picks the instance overload and then rejects the call
+/// (error 14422); it does not keep the static candidates. oxabl gives no type
+/// finding on a call that the compiler rejects.
+#[test]
+fn an_unqualified_call_in_a_static_method_gives_no_type_finding() {
+    let ws = Workspace::new();
+    ws.write("app/St.cls", STATIC_CLASS);
+    assert_findings(&check(&ws, "app/St.cls"), Vec::new());
+}
+
+const ARITHMETIC_CLASS: &str = r#"CLASS app.Ar:
+    METHOD PUBLIC CHARACTER M(p AS INTEGER):
+        RETURN "".
+    END METHOD.
+    METHOD PUBLIC INTEGER M(p AS INT64):
+        RETURN 0.
+    END METHOD.
+END CLASS.
+"#;
+
+/// INTEGER arithmetic is INTEGER for the pick, so `M(i + 1)` picks
+/// `M(INTEGER)`, which returns CHARACTER.
+#[test]
+fn integer_arithmetic_as_an_argument_picks_the_integer_overload() {
+    let ws = Workspace::new();
+    ws.write("app/Ar.cls", ARITHMETIC_CLASS);
+    assert_program(
+        &ws,
+        "arith.p",
+        r#"DEFINE VARIABLE o AS app.Ar NO-UNDO.
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+o = NEW app.Ar().
+c = o:M(i + 1).
+i = o:M(i + 1).
+MESSAGE c i.
+"#,
+        list(&[("i = o:M(i + 1).", mismatch("CHARACTER", "INTEGER"), "i")]),
+    );
+}
+
 const CONFIG_NO_SOURCES: &str = "[workspace]\nname = \"members\"\n";
 
 #[test]
