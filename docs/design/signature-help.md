@@ -274,10 +274,16 @@ The hints share the rules of the database inlay hints (`inlay-hints.md`):
   cancelled the earlier attempt is in it. When the text changed, also while
   the analysis ran, the request answers `ContentModified` and the client asks
   again.
-- A hint of a call depends on a declaration in another open file. When an
-  open file changes and its debounced analysis is due, and another file is
-  open, the server sends `workspace/inlayHint/refresh` (when the hints are on
-  and the client supports it), so the hints of the other files follow.
+
+**Known limit.** A hint of a call depends on a declaration in another file. An
+edit of an open file, or the close of a buffer that has unsaved edits, does not
+make the server send `workspace/inlayHint/refresh`. So the hints in another
+open file can be stale until that file changes or the client asks again (a
+scroll, a new window). The refresh would make the client ask for every visible
+file after each edit, and each request is a new analysis of that file on the one
+worker: with several large files, the hints of the edited file came seconds
+late. A file on disk that changes, the configuration and the settings do send
+the refresh.
 
 The setting is `inlayHints.parameters` (a boolean, off at the start), in the
 initialization options and in `workspace/didChangeConfiguration`. The VS Code

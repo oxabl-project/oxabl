@@ -1063,11 +1063,22 @@ fn reference_workspace() -> Workspace {
          CLASS app.RefCtor:\n{&C}\n\
          \x20   CONSTRUCTOR PUBLIC RefCtor(INPUT z AS INTEGER):\n    END CONSTRUCTOR.\nEND CLASS.\n",
     );
-    // A reference inside a method body declares nothing.
+    // A reference inside a method, accessor or destructor body declares
+    // nothing.
     ws.write(
         "app/RefBody.cls",
         "CLASS app.RefBody:\n    METHOD PUBLIC VOID Go(INPUT z AS INTEGER):\n\
-         \x20       MESSAGE {&OPSYS}.\n    END METHOD.\nEND CLASS.\n",
+         \x20       MESSAGE {&OPSYS}.\n    END METHOD.\n\
+         \x20   DEFINE PUBLIC PROPERTY Name AS CHARACTER NO-UNDO\n\
+         \x20       GET():\n            MESSAGE {&OPSYS}.\n            RETURN \"\".\n        END GET.\n\
+         \x20       SET(INPUT v AS CHARACTER):\n            MESSAGE {&OPSYS}.\n        END SET.\n\
+         \x20   DESTRUCTOR PUBLIC RefBody():\n        MESSAGE {&OPSYS}.\n    END DESTRUCTOR.\n\
+         END CLASS.\n",
+    );
+    ws.write(
+        "c_proc.p",
+        "DEFINE INPUT PARAMETER z AS INTEGER NO-UNDO.\nPROCEDURE other:\n\
+         \x20   MESSAGE {&OPSYS}.\nEND PROCEDURE.\n",
     );
     ws
 }
@@ -1091,7 +1102,14 @@ fn a_preprocessor_reference_that_may_declare_gives_no_signature_and_no_hint() {
             "{marked}"
         );
     }
-    // A reference inside a method body does not hide the method.
+    // A reference in a procedure of a program does not hide its parameters.
+    let case = ws.program(&mut session, "RUN c_proc.p (‸1).\n");
+    assert_eq!(
+        labels(&help(&mut session, &case)),
+        ["c_proc.p(INPUT z AS INTEGER)"]
+    );
+    // A reference inside a method body, a property accessor or a destructor
+    // does not hide the method.
     let case = ws.program(
         &mut session,
         "DEFINE VARIABLE o AS app.RefBody NO-UNDO.\no = NEW app.RefBody().\no:Go(‸1).\n",
@@ -1534,28 +1552,31 @@ fn asks_for_new_hints(session: &Session, within: std::time::Duration) -> bool {
 }
 
 #[test]
-fn an_edit_of_one_open_file_asks_the_client_for_the_hints_of_the_others() {
+fn an_edit_of_one_open_file_sends_no_hint_refresh() {
     let capabilities = json!({
         "textDocument": {"inlayHint": {}},
         "workspace": {"inlayHint": {"refreshSupport": true}}
     });
     let quiet = std::time::Duration::from_millis(1500);
-    let wait = std::time::Duration::from_secs(10);
-    for (options, refreshed) in [
-        (json!({"inlayHints": {"parameters": true}}), true),
-        (json!({"inlayHints": {"parameters": false}}), false),
-    ] {
-        let mut ws = Workspace::new();
-        let mut session =
-            Session::start_with_options(ws.root.path(), capabilities.clone(), options);
-        ws.open(&mut session, "first.p", "MESSAGE 1.\u{2038}\n");
-        let second = ws.open(&mut session, "second.p", "MESSAGE 2.\u{2038}\n");
-        // Everything the opening sets going has settled.
-        while asks_for_new_hints(&session, quiet) {}
-        change_text(&mut session, &second.file, 2, "MESSAGE 3.\n");
-        let asked = asks_for_new_hints(&session, if refreshed { wait } else { quiet });
-        assert_eq!(asked, refreshed, "parameter hints on: {refreshed}");
+    let mut ws = Workspace::new();
+    let mut session = Session::start_with_options(
+        ws.root.path(),
+        capabilities,
+        json!({"inlayHints": {"parameters": true}}),
+    );
+    ws.open(&mut session, "first.p", "MESSAGE 1.\u{2038}\n");
+    let second = ws.open(&mut session, "second.p", "MESSAGE 2.\u{2038}\n");
+    // Everything the opening sets going has settled.
+    while asks_for_new_hints(&session, quiet) {}
+    // Each refresh makes the client ask every visible file again, and each
+    // request is a new analysis on the one worker: an edit must not send one.
+    for version in 2..5 {
+        change_text(&mut session, &second.file, version, "MESSAGE 3.\n");
     }
+    assert!(
+        !asks_for_new_hints(&session, quiet),
+        "an edit sent a refresh"
+    );
 }
 
 #[test]

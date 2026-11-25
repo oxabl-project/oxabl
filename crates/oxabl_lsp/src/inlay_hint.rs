@@ -21,8 +21,8 @@
 //! waits until it is dropped, and a write cancels the analysis that holds it.
 //! The analysis then runs again on a new snapshot, with the open buffers read
 //! again, while the text of the file is the same, and a few times at most. An
-//! edit of an open file asks the client for new hints once it settles, because
-//! a call in another file may read the edited declaration. The hints of the whole file are kept
+//! edit of an open file does not ask the client for new hints: the hints of
+//! other open files may be stale until their next request. The hints of the whole file are kept
 //! per file until its text, its include context, the configuration, the
 //! schema, a file on disk or the kinds change (the parameter-name hints: any
 //! open buffer or file on disk); a request renders only the hints in its
@@ -145,14 +145,6 @@ impl Server<'_> {
     pub(crate) fn refresh_inlay_hints(&mut self) {
         self.refresh_semantic_tokens();
         self.send_inlay_refresh();
-    }
-
-    /// The parameter-name hints of a file read the open buffers of other
-    /// files: ask the client again once their edits settle.
-    pub(crate) fn refresh_parameter_hints(&mut self) {
-        if self.inlay.parameters {
-            self.send_inlay_refresh();
-        }
     }
 
     fn send_inlay_refresh(&mut self) {

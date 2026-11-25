@@ -178,10 +178,9 @@ request returns only the hints in its range.
   write cancels the analysis. The worker then runs it again on a new snapshot,
   with the open buffers read again, while the text of the file is the same, up
   to four times. When the text changed, the request answers `ContentModified`,
-  and the client asks again. After the edit of an open file settles, and while
-  another file is open, the server sends `workspace/inlayHint/refresh` for the
-  parameter-name hints, because a call in another file may read the edited
-  declaration.
+  and the client asks again. An edit of an open file, or the close of a buffer
+  with unsaved edits, sends no refresh, so the parameter-name hints of other
+  open files can be stale (`signature-help.md`, "Known limit").
 - The server keeps the hints of each open file until its text, its include
   context, the configuration, the schema, a file on disk (a watched-file
   event) or the kinds change. In a context it also keeps the files the root's

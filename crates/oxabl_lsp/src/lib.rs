@@ -1268,14 +1268,11 @@ impl<'c> Server<'c> {
         let now = std::time::Instant::now();
         let mut context_due = false;
         let mut include_due = false;
-        let mut buffer_due = false;
         for uri in self.debouncer.take_due(now) {
             let Some(doc) = self.documents.get(&uri) else {
                 continue;
             };
             let version = doc.version;
-            // Another open file may read this one's signatures.
-            buffer_due = buffer_due || self.documents.len() > 1;
             // Another open file reads this one: its tokens change with it.
             include_due = include_due
                 || uri_to_path(&uri).is_some_and(|path| self.include_read_by_another(&path, &uri));
@@ -1325,8 +1322,6 @@ impl<'c> Server<'c> {
         // the client again once the edits settle, not on every keystroke.
         if context_due {
             self.refresh_inlay_hints();
-        } else if buffer_due {
-            self.refresh_parameter_hints();
         }
         // The same for the tokens of a file that reads an include with edits
         // that are not saved.

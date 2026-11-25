@@ -283,7 +283,9 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   turn on `oxabl.inlayHints.parameters`. A call gets hints only when exactly
   one declaration is known, and an argument that already says the name of its
   parameter gets none (the same name, `cName` for `pcName`, or a name that is
-  the end of the other). The signature help follows VS Code's
+  the end of the other). After you edit a function in one file, the hints of
+  a call in another open file can show the old parameter names until that
+  file changes again. The signature help follows VS Code's
   `editor.parameterHints.enabled`.
 - **ABL Schema view.** The Explorer has an **ABL Schema** view of the `.df`
   files that `[workspace.schema]` in `oxabl.toml` names, with no database

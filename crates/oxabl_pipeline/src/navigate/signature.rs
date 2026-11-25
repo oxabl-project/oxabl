@@ -995,7 +995,8 @@ fn program_may_hide_parameters(source: &Source, statements: &[Statement]) -> boo
 }
 
 /// Whether a class may declare members the text does not show: a `{&name}`
-/// reference or `&IF` outside the bodies of its methods and constructors, and
+/// reference or `&IF` outside the bodies of its methods, constructors,
+/// destructor and property accessors, and
 /// when `includes` is set an include. The analysis expands the includes of a
 /// class, and the methods are checked against it; the constructors are read
 /// from the text alone.
@@ -1006,11 +1007,24 @@ fn class_may_hide_members(source: &Source, class: &Statement, includes: bool) ->
     };
     let bodies: Vec<(u32, u32)> = body
         .iter()
-        .filter_map(|member| match &member.kind {
-            StatementKind::Method { body, .. } | StatementKind::Constructor { body, .. } => body
-                .first()
-                .map(|first| (first.span.start, member.span.end)),
-            _ => None,
+        .flat_map(|member| -> Vec<(u32, u32)> {
+            let from_first = |body: &[Statement]| {
+                body.first()
+                    .map(|first| (first.span.start, member.span.end))
+            };
+            match &member.kind {
+                StatementKind::Method { body, .. }
+                | StatementKind::Constructor { body, .. }
+                | StatementKind::Destructor { body } => from_first(body).into_iter().collect(),
+                StatementKind::Property {
+                    get_body, set_body, ..
+                } => [get_body, set_body]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|body| Some((body.first()?.span.start, body.last()?.span.end)))
+                    .collect(),
+                _ => Vec::new(),
+            }
         })
         .collect();
     source.may_expand(class.span.start, class.span.end, &bodies, includes)
