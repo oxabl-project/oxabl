@@ -747,6 +747,38 @@ fn implementations_of_method(
     Ok(answer)
 }
 
+/// Whether the member at byte `offset` of `file` can override or implement a
+/// member of a supertype, so that calls through the supertype reach it. Fail
+/// closed: a method whose supertypes oxabl cannot fully read, and a property of
+/// a class with a parent or an interface, say yes.
+pub fn may_override(
+    host: &SessionHost,
+    session_root: &Path,
+    root: &Path,
+    file: &Path,
+    offset: u32,
+) -> Result<bool, ReferenceError> {
+    let answer = super_method(host, session_root, root, file, offset)?;
+    if answer.not_a_method.is_none() {
+        return Ok(!answer.locations.is_empty() || !answer.gaps.is_empty());
+    }
+    // Not a method: a property. It has no super-member lookup, so a class
+    // with a parent or an interface counts.
+    let Some(class) = cursor(host, session_root, root, file, offset)?.enclosing else {
+        return Ok(true);
+    };
+    with_snapshot(host, session_root, |unit| {
+        let facts = unit.facts(&class.path);
+        facts
+            .classes
+            .first()
+            .filter(|_| facts.parsed)
+            .is_none_or(|class| {
+                class.descriptor.inherits.is_some() || !class.descriptor.implements.is_empty()
+            })
+    })
+}
+
 fn super_method(
     host: &SessionHost,
     session_root: &Path,

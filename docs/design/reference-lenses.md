@@ -84,22 +84,33 @@ and keeps which of these exist:
 | Declaration | Marked when the workspace has | Text |
 | --- | --- | --- |
 | Procedure, function | Always | `calls through a handle are not followed` |
-| Program | A `RUN VALUE` or a `CREATE CALL` | `a RUN VALUE can run it` |
+| Program | A `RUN VALUE`, an `ON ... PERSISTENT RUN VALUE(...)` or a `CREATE CALL` | `a RUN VALUE can run it` |
 | Class, interface | A `DYNAMIC-NEW` | `a DYNAMIC-NEW can create it` |
 | Class, interface | A `DYNAMIC-INVOKE` or a `CREATE CALL` (a static method by class name) | `a DYNAMIC-INVOKE can name it` |
 | Class, interface | A `DYNAMIC-PROPERTY` | `a DYNAMIC-PROPERTY can name it` |
 | Method, property | A `DYNAMIC-INVOKE` or a `CREATE CALL` | `a DYNAMIC-INVOKE can call it` |
 | Method, property | A `DYNAMIC-PROPERTY` | `a DYNAMIC-PROPERTY can name it` |
 | Class, interface, method, property | A `Progress.Lang.Class` call that gives a class or a member by a name (`GetClass`, `GetMethod`, `GetProperty`, `GetConstructor`, `GetEvent`) | `a class reflection call can reach it` |
-| Program, class, interface, method, property | A file that oxabl cannot analyse, or that has an include that does not resolve or cannot be read, or a parse error | `a file oxabl cannot read can reach it` |
+| Method | It overrides a method (`OVERRIDE`, also of a `Progress.Lang.Object` method such as `ToString`) or implements an interface method, or oxabl cannot tell (a supertype that it cannot resolve or read, an overload it cannot match) | `calls through a supertype are not counted` |
+| Property | Its class names a parent or an interface | `calls through a supertype are not counted` |
+| Program, class, interface, method, property | A file that oxabl cannot analyse, or that has an include that does not resolve or cannot be read, a parse error, or text that the preprocessor drops without the facts to decide (an `&IF` on `PROVERSION` with no `proversion` set) | `a file oxabl cannot read can reach it` |
 
 ```text
 2+ references · incomplete: calls through a handle are not followed
 1+ references · used by 1+ files · incomplete: a RUN VALUE can run it
 ```
 
+The search of a member reads the files that name its class or a subclass. It
+does not read the files that name only a supertype, and a call through the
+supertype (a base-class variable, an interface variable, the template method of
+a base class, `STRING(obj)`) reaches an override or an implementation. So the
+server asks the same question as go to super method
+(`oxabl_daemon::hierarchy::may_override`, from `oxabl_index::hierarchy`) for
+each member and marks the count when it finds a super-member or cannot tell.
+A better count would add the places of the super-member to the search.
+
 A workspace with none of these shows exact counts for programs, classes and
-members. A `DYNAMIC-NEW` alone does not mark a member: an object that it makes
+members that override nothing. A `DYNAMIC-NEW` alone does not mark a member: an object that it makes
 is used through a typed variable, and that use is a reference. A file that
 oxabl cannot read can hold any of these calls, so one such file marks every
 count that a dynamic call decides.
@@ -227,7 +238,9 @@ change of a file on disk with and with no watcher event, and a change that
 comes while a search runs, run a new one; an answer that a later request can
 change is not kept); the counts for each kind of call that a search cannot
 follow (a super procedure, `PUBLISH`, a trigger, a callback and a `RUN VALUE`
-for routines; `RUN VALUE` and `CREATE CALL` for programs; the dynamic and
+for routines; `RUN VALUE`, a computed persistent trigger and `CREATE CALL` for
+programs; an override, an implementation and a property of a derived class;
+text that the preprocessor cannot decide; the dynamic and
 reflection calls for classes and members; a file that oxabl cannot read), and
 the exact counts of a workspace that has none; the refresh request after a
 save, a disk change and an edit of another file, and one request for a burst;

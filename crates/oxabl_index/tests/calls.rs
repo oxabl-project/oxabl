@@ -217,6 +217,11 @@ fn dynamic_calls_are_read_by_kind() {
     assert!(dynamic("RUN doWork IN h.\nRUN SUPER.\nRUN VALUE(c) IN h.\n").run_value);
     assert!(dynamic("RUN doWork IN h.\nRUN SUPER.\n").is_empty());
 
+    // A persistent trigger can run a program by a computed name.
+    let trigger = dynamic("DEFINE BUTTON b.\nON CHOOSE OF b PERSISTENT RUN VALUE(c).\n");
+    assert!(trigger.run_value && !trigger.dynamic_new);
+    assert!(dynamic("DEFINE BUTTON b.\nON CHOOSE OF b PERSISTENT RUN helper.\n").is_empty());
+
     let run_value = dynamic("RUN VALUE(c).\n");
     assert!(run_value.run_value && !run_value.dynamic_new && !run_value.reflection);
 

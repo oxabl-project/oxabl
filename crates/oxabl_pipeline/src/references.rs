@@ -339,6 +339,16 @@ pub struct Search {
 }
 
 impl Referent {
+    /// Whether the referent is a member of a class (or of an interface): a
+    /// method or a property that a class can override or implement.
+    pub fn is_member(&self) -> bool {
+        self.reach.iter().any(|reach| match reach {
+            Reach::Member { .. } => true,
+            Reach::Included { kind, .. } => is_member_kind(*kind),
+            _ => false,
+        })
+    }
+
     /// Whether only the analysed unit can name it.
     pub fn is_local(&self) -> bool {
         self.reach.is_empty()

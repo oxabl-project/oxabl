@@ -774,7 +774,8 @@ impl ReverseGraph {
 
     /// Whether the pass can have missed a dynamic call: a file it could not
     /// analyse, or one with an include that did not resolve or could not be
-    /// read, can hold any of them.
+    /// read, a parse error, or text that the preprocessor dropped without the
+    /// facts to decide, can hold any of them.
     pub fn dynamic_calls_unknown(&self) -> bool {
         !self.unanalysed.is_empty()
             || self.degraded.iter().any(|file| {
@@ -783,6 +784,7 @@ impl ReverseGraph {
                         reason,
                         DegradedReason::UnresolvedInclude
                             | DegradedReason::UnreadableInclude
+                            | DegradedReason::PreprocessorLoss
                             | DegradedReason::ParseRecovered
                     )
                 })

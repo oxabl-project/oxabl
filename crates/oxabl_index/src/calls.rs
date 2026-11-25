@@ -19,7 +19,7 @@
 
 use oxabl_ast::{
     DataType, Expression, ExpressionKind, OnAction, OnKind, ParameterDirection, ParameterType,
-    RunTarget, Span, Statement, StatementKind, TypeSource,
+    PersistentRunTarget, RunTarget, Span, Statement, StatementKind, TypeSource,
 };
 use oxabl_lexer::{Kind, Token};
 use oxabl_semantic::{IndexAnswer, IndexName, IndexedFileId, WorkspaceIndex};
@@ -153,7 +153,8 @@ pub struct FileCalls {
 /// files ([`absorb`](Self::absorb)).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DynamicCalls {
-    /// `RUN VALUE(...)`, and `CREATE CALL`: any program.
+    /// `RUN VALUE(...)`, `ON ... PERSISTENT RUN VALUE(...)` and `CREATE CALL`:
+    /// any program.
     pub run_value: bool,
     /// `DYNAMIC-NEW`: any class.
     pub dynamic_new: bool,
@@ -197,6 +198,22 @@ impl FileCalls {
         };
         let mut dynamic = DynamicCalls::default();
         walk(program, &mut |s| {
+            // `ON ... PERSISTENT RUN VALUE(expr)` runs a program by a
+            // computed name.
+            if let StatementKind::On {
+                kind:
+                    OnKind::UiEvent {
+                        action:
+                            OnAction::PersistentRun {
+                                procedure: PersistentRunTarget::Value(_),
+                                ..
+                            },
+                        ..
+                    },
+            } = &s.kind
+            {
+                dynamic.run_value = true;
+            }
             if let Some(site) = run_site(s, tokens, &decls) {
                 if matches!(
                     (&site.target, &s.kind),

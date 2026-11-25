@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use lsp_server::{ErrorCode, Message, Request, Response};
 use lsp_types::{CodeLens, Command, Location, Position, PositionEncodingKind, Range, Uri};
 use oxabl_daemon::canonical_path;
+use oxabl_daemon::hierarchy::may_override;
 use oxabl_daemon::references::{
     Pass, ReferenceAnswer, ReferenceError, ReferenceQuery, answer_references,
 };
@@ -29,6 +30,9 @@ use crate::{Server, uri_to_path};
 /// `position` that anchor the list, and the `locations` the count counts, so
 /// the list is the count and costs no second search.
 pub(crate) const COMMAND: &str = "oxabl.showReferences";
+
+/// What a count shows for a member that overrides or implements another.
+const SUPERTYPE_SHORT: &str = "calls through a supertype are not counted";
 
 /// The longest gap text a title shows, in characters.
 const REASON_LIMIT: usize = 60;
@@ -475,9 +479,32 @@ impl Server<'_> {
                             text,
                         );
                     }
+                    // A member that overrides or implements another is also
+                    // called through its supertype, which the search does not
+                    // read. Any failure to tell counts as an override.
+                    let overrides = match &answered {
+                        Ok(Ok(answer)) if answer.member && data.kind == Kind::Symbol => {
+                            match oxabl_common::catch_panic(|| {
+                                may_override(&host, &session_root, &root, &path, data.offset)
+                            }) {
+                                Ok(Ok(overrides)) => Ok(overrides),
+                                Ok(Err(
+                                    error @ (ReferenceError::Cancelled | ReferenceError::Modified),
+                                )) => Err(error),
+                                _ => Ok(true),
+                            }
+                        }
+                        _ => Ok(false),
+                    };
                     in_flight.finish(&id);
+                    let answered = match (answered, overrides) {
+                        (Ok(Ok(answer)), Ok(overrides)) => Ok(Ok((answer, overrides))),
+                        (Ok(Ok(_)), Err(error)) => Ok(Err(error)),
+                        (Ok(Err(error)), _) => Ok(Err(error)),
+                        (Err(panic), _) => Err(panic),
+                    };
                     let response = match answered {
-                        Ok(Ok(answer)) => {
+                        Ok(Ok((answer, overrides))) => {
                             crate::references::log_standing(
                                 &sender,
                                 &in_flight,
@@ -486,7 +513,7 @@ impl Server<'_> {
                             );
                             let volatile = answer.volatile;
                             let pass = answer.pass.clone();
-                            let title = title(answer, data.kind, &encoding);
+                            let title = title(answer, data.kind, overrides, &encoding);
                             if !volatile
                                 && title.opens
                                 && let Some(made) = generations
@@ -578,7 +605,12 @@ fn unknown(reason: &str) -> Title {
 /// workspace that no search follows and that can reach it
 /// ([`ReferenceAnswer::count_reasons`]). A standing gap holds for every request
 /// of the workspace and is only logged.
-fn title(answer: ReferenceAnswer, kind: Kind, encoding: &PositionEncodingKind) -> Title {
+fn title(
+    answer: ReferenceAnswer,
+    kind: Kind,
+    overrides: bool,
+    encoding: &PositionEncodingKind,
+) -> Title {
     if !answer.resolved {
         return unknown("oxabl does not resolve this name");
     }
@@ -592,14 +624,16 @@ fn title(answer: ReferenceAnswer, kind: Kind, encoding: &PositionEncodingKind) -
         .collect();
     let places = locations(answer, encoding);
     let shown = places.len();
-    // The short texts first: they read well in a title that shows one reason.
-    let mut reasons = count_reasons;
-    reasons.extend(
-        with_dropped(&gaps, wanted - shown)
-            .iter()
-            .filter(|gap| !gap.standing)
-            .map(|gap| gap.reason.clone()),
-    );
+    // The gaps of this answer come first: they can date or cut the search.
+    let mut reasons: Vec<String> = with_dropped(&gaps, wanted - shown)
+        .iter()
+        .filter(|gap| !gap.standing)
+        .map(|gap| gap.reason.clone())
+        .collect();
+    reasons.extend(count_reasons);
+    if overrides {
+        reasons.push(SUPERTYPE_SHORT.to_string());
+    }
     let incomplete = !reasons.is_empty();
     let plus = if incomplete { "+" } else { "" };
     let mut text = format!(

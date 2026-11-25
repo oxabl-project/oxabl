@@ -505,12 +505,10 @@ fn a_searched_file_with_a_parse_error_makes_the_count_incomplete() {
         titles[0].1.contains("+ references") && titles[0].1.contains("incomplete"),
         "{titles:?}"
     );
-    // The damaged file is the reason of the second mark: the file it holds
-    // can run the program, and its own gap names it.
-    assert!(
-        titles[0].1.contains(UNKNOWN_FILE) && titles[0].1.ends_with("(+1 more)"),
-        "{titles:?}"
-    );
+    // The gap of the damaged file comes first and names it; the mark of an
+    // unknown file follows.
+    assert!(titles[0].1.contains("damaged.p"), "{titles:?}");
+    assert!(titles[0].1.contains("(+1 more)"), "{titles:?}");
 }
 
 #[test]
@@ -1380,4 +1378,154 @@ fn an_answer_that_a_later_request_can_change_is_not_kept() {
             started.elapsed()
         );
     }
+}
+
+/// The file of a class, its text, the caller, and the members to check with
+/// the index of their lens.
+type OverrideCase<'a> = (&'a str, &'a str, &'a str, &'a [(&'a str, usize)]);
+
+const SUPERTYPE: &str = "calls through a supertype are not counted";
+
+/// A workspace with the classes of `files`, and a program `use.p` with `text`.
+fn class_workspace(files: &[(&str, &str)], user: &str) -> Workspace {
+    let mut all = vec![("oxabl.toml", CONFIG), ("use.p", user)];
+    all.extend_from_slice(files);
+    Workspace::new(&all)
+}
+
+#[test]
+fn a_member_that_overrides_or_implements_another_never_has_an_exact_count() {
+    const BASE: &str = "CLASS app.Base:\n  METHOD PUBLIC VOID M():\n  END METHOD.\n\
+        END CLASS.\n";
+    const OVER: &str = "CLASS app.Derived INHERITS app.Base:\n\
+        \x20 METHOD PUBLIC OVERRIDE VOID M():\n  END METHOD.\nEND CLASS.\n";
+    const IFOO: &str = "INTERFACE app.IFoo:\n  METHOD PUBLIC VOID Bar().\nEND INTERFACE.\n";
+    const IMPL: &str = "CLASS app.C IMPLEMENTS app.IFoo:\n  METHOD PUBLIC VOID Bar():\n\
+        \x20 END METHOD.\nEND CLASS.\n";
+    const TEMPLATE: &str = "CLASS app.TBase:\n  METHOD PUBLIC VOID Run():\n\
+        \x20   THIS-OBJECT:Hook().\n  END METHOD.\n  METHOD PROTECTED VOID Hook():\n\
+        \x20 END METHOD.\nEND CLASS.\n";
+    const HOOK: &str = "CLASS app.THook INHERITS app.TBase:\n\
+        \x20 METHOD PROTECTED OVERRIDE VOID Hook():\n  END METHOD.\nEND CLASS.\n";
+    const OBJECT: &str = "CLASS app.D:\n  METHOD PUBLIC OVERRIDE CHARACTER ToString():\n\
+        \x20   RETURN \"d\".\n  END METHOD.\n  METHOD PUBLIC OVERRIDE LOGICAL \
+        Equals(INPUT o AS Progress.Lang.Object):\n    RETURN TRUE.\n  END METHOD.\n\
+        END CLASS.\n";
+    // The file, its text, the caller, and the lens of the overriding member:
+    // the class has the lens 0, then its methods.
+    let cases: [OverrideCase; 4] = [
+        (
+            "app/Derived.cls",
+            OVER,
+            "DEFINE INPUT PARAMETER b AS app.Base NO-UNDO.\nb:M().\n",
+            &[("M", 1)],
+        ),
+        (
+            "app/C.cls",
+            IMPL,
+            "DEFINE INPUT PARAMETER f AS app.IFoo NO-UNDO.\nf:Bar().\n",
+            &[("Bar", 1)],
+        ),
+        (
+            "app/THook.cls",
+            HOOK,
+            "DEFINE VARIABLE d AS app.THook NO-UNDO.\nd = NEW app.THook().\nd:Run().\n",
+            &[("Hook", 1)],
+        ),
+        (
+            "app/D.cls",
+            OBJECT,
+            "DEFINE VARIABLE d AS app.D NO-UNDO.\nd = NEW app.D().\nMESSAGE STRING(d).\n",
+            &[("ToString", 1), ("Equals", 2)],
+        ),
+    ];
+    for (file, text, user, members) in cases {
+        let ws = class_workspace(
+            &[
+                ("app/Base.cls", BASE),
+                ("app/IFoo.cls", IFOO),
+                ("app/TBase.cls", TEMPLATE),
+                (file, text),
+            ],
+            user,
+        );
+        let mut session = start(&ws);
+        let titles = titles_of(&mut session, &ws, file, text);
+        for (name, at) in members {
+            assert!(
+                titles[*at].starts_with("0+ references")
+                    && titles[*at].contains(&format!("incomplete: {SUPERTYPE}")),
+                "{file} `{name}` shows `{}` in {titles:?}",
+                titles[*at]
+            );
+        }
+    }
+}
+
+#[test]
+fn a_member_that_overrides_nothing_stays_exact() {
+    const PLAIN: &str = "CLASS app.Plain INHERITS app.Base:\n  METHOD PUBLIC VOID Own():\n\
+        \x20 END METHOD.\n  METHOD PRIVATE VOID Hidden():\n  END METHOD.\nEND CLASS.\n";
+    const BASE: &str = "CLASS app.Base:\n  METHOD PUBLIC VOID M():\n  END METHOD.\n\
+        END CLASS.\n";
+    let ws = class_workspace(
+        &[("app/Base.cls", BASE), ("app/Plain.cls", PLAIN)],
+        "MESSAGE 1.\n",
+    );
+    let mut session = start(&ws);
+    let titles = titles_of(&mut session, &ws, "app/Plain.cls", PLAIN);
+    assert_eq!(titles[1], exact(0), "{titles:?}");
+    assert_eq!(titles[2], exact(0), "{titles:?}");
+}
+
+#[test]
+fn a_property_of_a_class_with_a_parent_is_marked() {
+    const BASE: &str = "CLASS app.Base:\nEND CLASS.\n";
+    const CHILD: &str = "CLASS app.Child INHERITS app.Base:\n\
+        \x20 DEFINE PUBLIC PROPERTY Total AS INTEGER NO-UNDO GET. SET.\nEND CLASS.\n";
+    let ws = class_workspace(
+        &[("app/Base.cls", BASE), ("app/Child.cls", CHILD)],
+        "MESSAGE 1.\n",
+    );
+    let mut session = start(&ws);
+    let titles = titles_of(&mut session, &ws, "app/Child.cls", CHILD);
+    assert_eq!(titles[1], short(0, SUPERTYPE), "{titles:?}");
+    // The class lens itself is not a member.
+    assert_eq!(titles[0], exact(0), "{titles:?}");
+}
+
+#[test]
+fn text_the_preprocessor_cannot_decide_makes_a_program_count_incomplete() {
+    const PROG: &str = "PROCEDURE hello:\nEND PROCEDURE.\n";
+    // No `proversion` is set, so the condition has no value and a branch that
+    // holds the `RUN VALUE` is dropped.
+    const MAIN: &str = "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n\
+        &IF PROVERSION >= \"12\" &THEN\nRUN VALUE(c).\n&ELSE\nMESSAGE 1.\n&ENDIF\n";
+    let ws = Workspace::new(&[("oxabl.toml", CONFIG), ("prog.p", PROG), ("main.p", MAIN)]);
+    let mut session = start(&ws);
+    let titles = titles_of(&mut session, &ws, "prog.p", PROG);
+    assert_eq!(
+        titles[0],
+        format!("0+ references · used by 0+ files · incomplete: {UNKNOWN_FILE}")
+    );
+}
+
+#[test]
+fn a_persistent_trigger_with_a_computed_program_makes_a_program_count_incomplete() {
+    const PROG: &str = "PROCEDURE hello:\nEND PROCEDURE.\n";
+    let ws = Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("prog.p", PROG),
+        (
+            "main.p",
+            "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\nDEFINE BUTTON b.\n\
+             ON CHOOSE OF b PERSISTENT RUN VALUE(c).\n",
+        ),
+    ]);
+    let mut session = start(&ws);
+    let titles = titles_of(&mut session, &ws, "prog.p", PROG);
+    assert_eq!(
+        titles[0],
+        format!("0+ references · used by 0+ files · incomplete: {RUN_VALUE}")
+    );
 }

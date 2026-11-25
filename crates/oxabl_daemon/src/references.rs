@@ -120,6 +120,9 @@ pub struct ReferenceAnswer {
     /// the workspace pass was not ready, failed or was dated. A caller keeps
     /// no such answer.
     pub volatile: bool,
+    /// Whether the referent is a member of a class: a supertype's callers can
+    /// reach it through an override or an implementation.
+    pub member: bool,
     /// The workspace pass the search read, for [`Pass::is_current`]. `None`
     /// when the answer read no pass.
     pub pass: Option<Pass>,
@@ -313,6 +316,7 @@ pub fn answer_references(
     answer.texts = texts;
     answer.resolved = true;
     answer.volatile = volatile;
+    answer.member = referent.is_member();
     answer.pass = pass;
     Ok(answer)
 }
