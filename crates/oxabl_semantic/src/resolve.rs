@@ -45,10 +45,10 @@ use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_rec
 use crate::symbol::RecordSource;
 use crate::{
     AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
-    LocateKind, Located, MemberDescriptor, MemberRecord, MemberType, NamespaceId, NodeIndexVec,
-    ResolvedType, ScopeId, ScopeKind, ScopeTree, Site, SiteTarget, SupertypeRef, Supertypes,
-    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun, WorkspaceIndex, builtins,
-    diagnostics, resolve_span,
+    LocateKind, Located, MemberDescriptor, MemberParam, MemberRecord, MemberType, NamespaceId,
+    NodeIndexVec, ResolvedType, ScopeId, ScopeKind, ScopeTree, Site, SiteTarget, SupertypeRef,
+    Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
+    WorkspaceIndex, builtins, diagnostics, resolve_span,
 };
 
 fn method_signature(parameters: &[Statement]) -> Vec<String> {
@@ -1304,6 +1304,8 @@ impl<'a> Walker<'a> {
     ) -> Option<SymbolId> {
         let atom = fold_atom(&name.name);
         let signature = method_signature(parameters);
+        let param_decls: Option<Arc<[MemberParam]>> =
+            crate::signature::member_params(parameters).map(Into::into);
         let name_span = VirtualSpan::new(name.span.start, name.span.end);
 
         let Some(anchor) = self.tree.get(scope).get_in(NamespaceId::Functions, &atom) else {
@@ -1319,6 +1321,9 @@ impl<'a> Walker<'a> {
             );
             if let Some(sym) = sym {
                 self.symbols.record_method_signature(sym, signature);
+                if let Some(params) = param_decls {
+                    self.symbols.record_method_param_decls(sym, params);
+                }
             }
             return sym;
         };
@@ -1368,6 +1373,9 @@ impl<'a> Walker<'a> {
             table_id: None,
         });
         self.symbols.record_method_signature(sym, signature);
+        if let Some(params) = param_decls {
+            self.symbols.record_method_param_decls(sym, params);
+        }
         self.symbols.record_method_overload(anchor, sym);
         if !self.arm_path.is_empty() {
             self.decl_arms.insert(sym, self.arm_path.clone());
@@ -2522,6 +2530,34 @@ impl<'a> ResolveWalker<'a> {
     /// `External` (cross-file or USING-imported) and stay `Unknown` — the
     /// type-check pass treats `Unknown` as the lattice bottom.
     fn upgrade_class_types(&mut self, program: &[Statement]) {
+        self.upgrade_class_decls(program);
+        self.resolve_local_method_params();
+    }
+
+    /// Resolve the class names of each local method's parameter list in the
+    /// scope that declares the method.
+    fn resolve_local_method_params(&mut self) {
+        for (sym, decls) in self.symbols.methods_with_param_decls() {
+            let symbol = self.symbols.get(sym);
+            let (scope, span) = (symbol.declared_in, symbol.name_span);
+            let params = crate::signature::call_params(&decls, |name| {
+                match self.resolve_type_name(name.as_written(), scope, span) {
+                    TypeLookup::Local(class) | TypeLookup::Indexed(class) => {
+                        ResolvedType::Class(class)
+                    }
+                    TypeLookup::Builtin(_)
+                    | TypeLookup::External
+                    | TypeLookup::NotFound
+                    | TypeLookup::Unusable
+                    | TypeLookup::Unknowable
+                    | TypeLookup::NotLooked => ResolvedType::Unknown,
+                }
+            });
+            self.symbols.record_method_params(sym, params.into());
+        }
+    }
+
+    fn upgrade_class_decls(&mut self, program: &[Statement]) {
         let mut decls: Vec<ClassTypedDecl> = Vec::new();
         self.collect_class_upgrades(program, ScopeId::ROOT, &mut decls);
         for decl in decls {
@@ -2586,6 +2622,27 @@ impl<'a> ResolveWalker<'a> {
                     name, return_type, ..
                 } => return_type.class_name().and_then(|class_name| {
                     self.class_upgrade_in_ns(class_name, scope, NamespaceId::Functions, name)
+                }),
+                // Each declaration of an overload set is its own symbol, found
+                // by its declaration node rather than by its name.
+                StatementKind::Method {
+                    name,
+                    return_type: Some(return_type),
+                    extent: None,
+                    ..
+                } => return_type.class_name().and_then(|class_name| {
+                    let anchor = self
+                        .tree
+                        .get(scope)
+                        .get_in(NamespaceId::Functions, &fold_atom(&name.name))?;
+                    let decl_sym = self
+                        .symbols
+                        .method_overloads(anchor)
+                        .unwrap_or(std::slice::from_ref(&anchor))
+                        .iter()
+                        .copied()
+                        .find(|s| self.symbols.get(*s).declaration == stmt.id)?;
+                    self.class_upgrade_of(class_name, scope, decl_sym, name)
                 }),
                 _ => None,
             };
@@ -2716,6 +2773,16 @@ impl<'a> ResolveWalker<'a> {
     ) -> Option<ClassTypedDecl> {
         let decl_atom = fold_atom(&decl_name.name);
         let decl_sym = self.tree.get(scope).get_in(decl_ns, &decl_atom)?;
+        self.class_upgrade_of(class_name, scope, decl_sym, decl_name)
+    }
+
+    fn class_upgrade_of(
+        &self,
+        class_name: &str,
+        scope: ScopeId,
+        decl_sym: SymbolId,
+        decl_name: &Identifier,
+    ) -> Option<ClassTypedDecl> {
         // Only in play if still Unknown.
         if !matches!(
             self.symbols.get(decl_sym).data_type.as_ref(),
@@ -12117,3 +12184,7 @@ mod block_definition_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "resolve_member_tests.rs"]
+mod member_tests;

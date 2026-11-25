@@ -61,8 +61,8 @@ pub use resolve::{
 pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use sequence::{SequenceOperand, sequence_operand};
 pub use signature::{
-    MemberParam, MemberParamShape, Param, ParamMode, ParamShape, ProgramSignatures, Signature,
-    member_params,
+    CallParam, CallParamKind, MemberParam, MemberParamShape, Param, ParamMode, ParamShape,
+    ProgramSignatures, Signature, member_params,
 };
 pub use symbol::{
     ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags,

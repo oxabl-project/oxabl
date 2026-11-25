@@ -7,6 +7,8 @@
 //! symbol — saves 24 bytes per entry and eliminates one atom-to-string
 //! conversion on the hot path.
 
+use std::sync::Arc;
+
 use bitflags::bitflags;
 use oxabl_ast::NodeId;
 use oxabl_common::VirtualSpan;
@@ -14,7 +16,10 @@ use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::{IndexName, IndexedFileId, NamespaceId, ResolvedType, ScopeId, UnresolvedReason};
+use crate::{
+    CallParam, IndexName, IndexedFileId, MemberParam, NamespaceId, ResolvedType, ScopeId,
+    UnresolvedReason,
+};
 
 /// Dense arena index for a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -506,6 +511,12 @@ struct SymbolSideMaps {
     /// Supertype identities resolved by the resolve pass. The authored names
     /// above remain for diagnostics; assignability consumes these edges.
     resolved_supertypes: FxHashMap<SymbolId, Vec<SymbolId>>,
+    /// The parameter list of each method declaration with a known list, as
+    /// the declare pass reads it. Absent means "not known".
+    method_param_decls: FxHashMap<SymbolId, Arc<[MemberParam]>>,
+    /// The same lists with their class names resolved in this file, for local
+    /// methods and for the candidates of a workspace method.
+    method_params: FxHashMap<SymbolId, Arc<[CallParam]>>,
     /// Classes whose header names a workspace supertype that did not resolve.
     /// The class lattice cannot say what such a class widens to past that point.
     incomplete_chains: FxHashSet<SymbolId>,
@@ -694,6 +705,40 @@ impl SymbolTable {
             .as_deref()
             .and_then(|side| side.resolved_supertypes.get(&sym))
             .map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn record_method_param_decls(&mut self, sym: SymbolId, params: Arc<[MemberParam]>) {
+        self.side_mut().method_param_decls.insert(sym, params);
+    }
+
+    /// The parameter list the declaration of method `sym` shows, or `None`
+    /// when it is not known.
+    pub fn method_param_decls(&self, sym: SymbolId) -> Option<&Arc<[MemberParam]>> {
+        self.side.as_deref()?.method_param_decls.get(&sym)
+    }
+
+    /// Every method declaration with a known parameter list, in id order.
+    pub(crate) fn methods_with_param_decls(&self) -> Vec<(SymbolId, Arc<[MemberParam]>)> {
+        let Some(side) = self.side.as_deref() else {
+            return Vec::new();
+        };
+        let mut out: Vec<_> = side
+            .method_param_decls
+            .iter()
+            .map(|(id, p)| (*id, Arc::clone(p)))
+            .collect();
+        out.sort_unstable_by_key(|(id, _)| id.raw());
+        out
+    }
+
+    pub(crate) fn record_method_params(&mut self, sym: SymbolId, params: Arc<[CallParam]>) {
+        self.side_mut().method_params.insert(sym, params);
+    }
+
+    /// The parameter list of method `sym` with its class names resolved, or
+    /// `None` when it is not known.
+    pub fn method_params(&self, sym: SymbolId) -> Option<&[CallParam]> {
+        self.side.as_deref()?.method_params.get(&sym).map(|p| &**p)
     }
 
     /// Record that `sym`'s header names a supertype that did not resolve, so

@@ -504,3 +504,53 @@ fn member_param(direction: &ParameterDirection, param_type: &ParameterType) -> O
     };
     Some(MemberParam { mode, shape })
 }
+
+/// One parameter of a method, with its class names resolved in the analysed
+/// file. The type-check pass fits the arguments of a call against these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallParam {
+    pub mode: ParamMode,
+    pub kind: CallParamKind,
+}
+
+/// What a method parameter is, in the analysed file's symbol space.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallParamKind {
+    /// A variable. `Unknown` when oxabl does not know the type.
+    Value(ResolvedType),
+    Buffer,
+    Table,
+    TableHandle,
+    Dataset,
+    DatasetHandle,
+}
+
+/// Resolve a portable parameter list. `class` gives the type of a class name
+/// as written; a type that does not survive the boundary gives `Unknown`.
+pub(crate) fn call_params(
+    decls: &[MemberParam],
+    mut class: impl FnMut(&IndexName) -> ResolvedType,
+) -> Vec<CallParam> {
+    decls
+        .iter()
+        .map(|p| CallParam {
+            mode: p.mode,
+            kind: match &p.shape {
+                MemberParamShape::Value(MemberType::Portable(ty)) => {
+                    CallParamKind::Value(ty.as_resolved().clone())
+                }
+                MemberParamShape::Value(MemberType::Named(name)) => {
+                    CallParamKind::Value(class(name))
+                }
+                MemberParamShape::Value(MemberType::Untyped) => {
+                    CallParamKind::Value(ResolvedType::Unknown)
+                }
+                MemberParamShape::Buffer => CallParamKind::Buffer,
+                MemberParamShape::Table => CallParamKind::Table,
+                MemberParamShape::TableHandle => CallParamKind::TableHandle,
+                MemberParamShape::Dataset => CallParamKind::Dataset,
+                MemberParamShape::DatasetHandle => CallParamKind::DatasetHandle,
+            },
+        })
+        .collect()
+}
