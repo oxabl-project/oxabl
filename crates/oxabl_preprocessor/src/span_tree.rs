@@ -345,9 +345,11 @@ pub struct PreprocessedFile {
     pub elided: Vec<ElidedReference>,
     /// Every define and undefine the run carried out, at any depth, in the
     /// order they were met. [`Self::define_offsets`] places them in the
-    /// expanded text.
+    /// expanded text. Empty unless the run recorded them
+    /// ([`crate::Preprocessor::with_define_record`]).
     pub defines: Vec<DefineSite>,
-    /// The arguments of each include expansion that has any.
+    /// The arguments of each include expansion that has any. Empty unless the
+    /// run recorded them ([`crate::Preprocessor::with_define_record`]).
     pub include_arguments: Vec<IncludeArguments>,
     /// Non-fatal diagnostics accumulated during preprocessing.
     ///

@@ -657,7 +657,8 @@ impl ExpandedFile {
     }
 
     /// The defines and undefines the expansion carried out, at any depth, in
-    /// the order they were met.
+    /// the order they were met. Empty unless the expansion recorded them
+    /// ([`ExpandOptions::record_defines`]).
     pub fn defines(&self) -> &[PlacedDefine] {
         &self.defines
     }
@@ -1136,6 +1137,43 @@ pub fn expand_source_tracking(
     predefined: &PreprocessorConfig,
     mode: PreprocessMode,
 ) -> Result<ExpandedFile, Vec<Diagnostic>> {
+    expand_source_recording(
+        root,
+        name,
+        source,
+        fs,
+        include_paths,
+        predefined,
+        ExpandOptions {
+            mode,
+            record_defines: false,
+        },
+    )
+}
+
+/// How [`expand_source_recording`] expands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpandOptions {
+    pub mode: PreprocessMode,
+    /// Record the defines and the include arguments
+    /// ([`ExpandedFile::defines`], [`ExpandedFile::include_arguments`]). Only
+    /// code completion reads them, so only its expansion pays for them.
+    pub record_defines: bool,
+}
+
+/// [`expand_source_tracking`] with [`ExpandOptions`].
+pub fn expand_source_recording(
+    root: FileId,
+    name: Option<&str>,
+    source: &str,
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    predefined: &PreprocessorConfig,
+    ExpandOptions {
+        mode,
+        record_defines,
+    }: ExpandOptions,
+) -> Result<ExpandedFile, Vec<Diagnostic>> {
     if mode == PreprocessMode::Off {
         return Ok(ExpandedFile {
             text: source.to_string(),
@@ -1176,6 +1214,7 @@ pub fn expand_source_tracking(
     let pp = Preprocessor::new(&recorder, include_paths)
         .with_predefined(predefined)
         .with_branch_tracking(mode == PreprocessMode::TrackBranches)
+        .with_define_record(record_defines)
         .with_includer_unknown(name.is_some_and(|name| is_include_fragment(Path::new(name))));
     let processed = match name {
         Some(name) => pp.process_named(root, name, source),

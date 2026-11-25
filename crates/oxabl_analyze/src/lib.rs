@@ -64,14 +64,14 @@
 mod collect;
 
 pub use collect::{
-    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
-    IncludeExpansion, IncludeFinding, IncludeOccurrence, IncludeOrigin, IncludeOriginDiagnostic,
-    IncludeStep, LabelFile, PlacedDefine, PreprocessMode, RuleSelection, analyze_for_navigation,
-    analyze_for_navigation_checked, analyze_from_expanded, analyze_from_expanded_inspecting,
-    collect_diagnostics, collect_from_expanded, collect_from_expanded_selecting,
-    collect_from_expanded_with_source_context, collect_from_expanded_with_summaries,
-    collect_with_model, database_hints_from_expanded, expand_source, expand_source_tracking,
-    expand_source_with, is_loud,
+    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandOptions,
+    ExpandedFile, IncludeExpansion, IncludeFinding, IncludeOccurrence, IncludeOrigin,
+    IncludeOriginDiagnostic, IncludeStep, LabelFile, PlacedDefine, PreprocessMode, RuleSelection,
+    analyze_for_navigation, analyze_for_navigation_checked, analyze_from_expanded,
+    analyze_from_expanded_inspecting, collect_diagnostics, collect_from_expanded,
+    collect_from_expanded_selecting, collect_from_expanded_with_source_context,
+    collect_from_expanded_with_summaries, collect_with_model, database_hints_from_expanded,
+    expand_source, expand_source_recording, expand_source_tracking, expand_source_with, is_loud,
 };
 // Re-exported so a consumer of an expansion need not also depend on the
 // preprocessor just to name the unresolved-include rows the expansion carries.

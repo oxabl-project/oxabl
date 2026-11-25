@@ -93,7 +93,7 @@ fn bench_completion(c: &mut Criterion) {
         ..PipelineConfig::default()
     };
     let path = PathBuf::from("/ws/big.p");
-    let run = LintPipeline::new(&config, &fs);
+    let run = LintPipeline::new(&config, &fs).with_define_record(true);
     let handle = run.with_file(&path);
     // The line after `total = total + 1.` of the procedure in the middle.
     let anchor = "total = total + 1.\n";

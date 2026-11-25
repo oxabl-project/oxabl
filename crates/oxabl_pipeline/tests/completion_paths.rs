@@ -46,7 +46,7 @@ fn ask(fs: &dyn FileSystem, name: &str, marked: &str) -> Option<CompletionList> 
         ..PipelineConfig::default()
     };
     let path = PathBuf::from("/ws").join(name);
-    let run = LintPipeline::new(&config, fs);
+    let run = LintPipeline::new(&config, fs).with_define_record(true);
     let handle = run.with_file(&path);
     let expansion = handle.expand(&text);
     let model = Arc::new(

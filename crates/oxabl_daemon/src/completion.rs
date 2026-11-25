@@ -299,7 +299,7 @@ fn make_own_base(
     id: u64,
     generation: (u64, u32),
 ) -> Option<Base> {
-    let run = config.lint_pipeline();
+    let run = config.lint_pipeline().with_define_record(true);
     let handle = run.with_file(path);
     let expansion = handle.expand(&text);
     let model = handle.navigation_model(&expansion)?;
@@ -448,7 +448,8 @@ fn make_context_base(
     let root_text = fs.read(root).ok()?;
     let run = LintPipeline::new(&config.pipeline, &fs)
         .with_preprocess(config.preprocess)
-        .with_branch_tracking(true);
+        .with_branch_tracking(true)
+        .with_define_record(true);
     let handle = run.with_file(root);
     let expansion = handle.expand(&root_text);
     if !reads(&expansion, path) {

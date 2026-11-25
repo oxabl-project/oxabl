@@ -36,6 +36,8 @@ pub struct Preprocessor<'fs> {
     includer_unknown: bool,
     /// See [`Self::with_branch_tracking`].
     branch_tracking: bool,
+    /// See [`Self::with_define_record`].
+    define_record: bool,
 }
 
 /// A [`PreprocessorConfig`] with the names it defines, which every run starts
@@ -126,7 +128,18 @@ impl<'fs> Preprocessor<'fs> {
             predefined: None,
             includer_unknown: false,
             branch_tracking: false,
+            define_record: false,
         }
+    }
+
+    /// Record each define and undefine the run carries out
+    /// ([`PreprocessedFile::defines`]) and the arguments of each include
+    /// expansion ([`PreprocessedFile::include_arguments`]). Off by default: it
+    /// copies each name and value, and only code completion reads them. Off,
+    /// both lists are empty, which says nothing about the source.
+    pub fn with_define_record(mut self, record: bool) -> Self {
+        self.define_record = record;
+        self
     }
 
     /// Record what is known of each `&IF` branch
@@ -209,6 +222,7 @@ impl<'fs> Preprocessor<'fs> {
             branches: Vec::new(),
             include_files: Vec::new(),
             tracking: self.branch_tracking,
+            define_record: self.define_record,
             knowledge: if self.branch_tracking {
                 Knowledge::new(self.includer_unknown, &predefined.config)
             } else {
@@ -352,6 +366,8 @@ struct ProcessContext<'a> {
     text_losses: Vec<TextLoss>,
     /// References replaced with no text.
     elided: Vec<ElidedReference>,
+    /// See [`Preprocessor::with_define_record`].
+    define_record: bool,
     /// The defines and undefines carried out.
     defines: Vec<DefineSite>,
     /// The arguments of each include expansion that has any.
@@ -1980,9 +1996,8 @@ impl ProcessContext<'_> {
         Some(ref_end)
     }
 
-    /// Record a reference the expansion replaced with no text.
     /// Keep a define or undefine that the run carried out at `[start, end)`
-    /// of `file`.
+    /// of `file`, when the run records them.
     fn note_define_site(
         &mut self,
         name: &str,
@@ -1991,6 +2006,9 @@ impl ProcessContext<'_> {
         file: FileId,
         (start, end): (usize, usize),
     ) {
+        if !self.define_record {
+            return;
+        }
         self.defines.push(DefineSite {
             name: name.to_string(),
             directive,
@@ -2006,6 +2024,7 @@ impl ProcessContext<'_> {
         });
     }
 
+    /// Record a reference the expansion replaced with no text.
     fn elide(&mut self, kind: ElidedKind, site: FileSpan) {
         self.elided.push(ElidedReference {
             kind,
@@ -2496,7 +2515,7 @@ impl ProcessContext<'_> {
             self.include_files.push((include_file_id, path.clone()));
         }
 
-        if args.positional.len() > 1 || !args.named.is_empty() {
+        if self.define_record && (args.positional.len() > 1 || !args.named.is_empty()) {
             self.include_arguments.push(IncludeArguments {
                 file: include_file_id,
                 positional: args.positional[1..].to_vec(),
@@ -5770,7 +5789,12 @@ ELSE
         let include_paths = vec![PathBuf::from("/inc")];
         let source = "&GLOBAL-DEFINE g 1\nA\n{inc.i x &n=v}\nB\n&UNDEFINE g\nC\n\
                       &IF FALSE &THEN\n&GLOBAL-DEFINE never 1\n&ENDIF\n";
+        let plain = Preprocessor::new(&fs, &include_paths)
+            .process(FileId::new(1), source)
+            .unwrap();
+        assert!(plain.defines.is_empty() && plain.include_arguments.is_empty());
         let result = Preprocessor::new(&fs, &include_paths)
+            .with_define_record(true)
             .process(FileId::new(1), source)
             .unwrap();
         let text = result.to_text();
