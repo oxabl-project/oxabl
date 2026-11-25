@@ -145,6 +145,12 @@ impl<F: FileSystem + ?Sized> FileSystem for ObservingFileSystem<F> {
         self.find_ignoring_case_listing(dir, relative, &mut Vec::new())
     }
 
+    fn list_dir(&self, dir: &Path) -> Option<Vec<crate::DirEntry>> {
+        let listed = self.inner.list_dir(dir);
+        self.record(|o| o.add_listed(dir));
+        listed
+    }
+
     fn find_ignoring_case_listing(
         &self,
         dir: &Path,

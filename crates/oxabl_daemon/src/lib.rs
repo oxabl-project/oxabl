@@ -41,6 +41,7 @@
 //! cancelled request re-arms; a genuine panic fails one request and is never
 //! retried.
 
+pub mod completion;
 pub mod db;
 pub mod dispatch;
 pub mod handshake;

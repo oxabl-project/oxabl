@@ -351,7 +351,7 @@ impl IndexHandle {
     /// Snapshotted out from under the lock so the caller can run tracked queries
     /// without holding it — a query may unwind on cancellation, and unwinding
     /// through a held write guard is what poisons the lock.
-    fn registered(&self) -> Vec<(IndexedFile, IndexedFileId)> {
+    pub(crate) fn registered(&self) -> Vec<(IndexedFile, IndexedFileId)> {
         self.registry()
             .by_path
             .values()
@@ -796,7 +796,7 @@ fn find_path(
 /// cross-file name, only on the executions that were going to happen anyway,
 /// while the part that is actually expensive — parsing and declaring the
 /// referenced file — sits behind [`indexed_facts`] (R12).
-struct SnapshotIndex<'db> {
+pub(crate) struct SnapshotIndex<'db> {
     db: &'db dyn AblDatabase,
     /// The analysed buffer's own path, lexically normalized, or `None` when the
     /// document has no `file:` path.
@@ -807,7 +807,11 @@ struct SnapshotIndex<'db> {
 }
 
 impl<'db> SnapshotIndex<'db> {
-    fn new(db: &'db dyn AblDatabase, analysed: Option<&Path>, base: Option<&Path>) -> Self {
+    pub(crate) fn new(
+        db: &'db dyn AblDatabase,
+        analysed: Option<&Path>,
+        base: Option<&Path>,
+    ) -> Self {
         SnapshotIndex {
             db,
             analysed: analysed.map(search::normalize_lexically),
@@ -969,7 +973,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
 /// loud root-origin preprocessor errors on its fatal-failure arm rather than
 /// making the caller handle an `Err` before it can ask a question.
 #[salsa::tracked(returns(clone), lru = 16)]
-fn expanded_text(db: &dyn AblDatabase, buffer: Buffer) -> Expansion {
+pub(crate) fn expanded_text(db: &dyn AblDatabase, buffer: Buffer) -> Expansion {
     // The file's name is part of the expansion: `{&FILE-NAME}` expands to it, and
     // the edge set reads the same name.
     let run = db.config().lint_pipeline();
@@ -1102,7 +1106,7 @@ fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> Co
 /// revision, so each cursor move after the first costs a pass over the sites and
 /// no analysis. `no_eq`: a recomputed model is never compared.
 #[salsa::tracked(returns(clone), no_eq, lru = 16)]
-fn navigation_model(
+pub(crate) fn navigation_model(
     db: &dyn AblDatabase,
     buffer: Buffer,
     schema: SchemaHandle,
@@ -1948,7 +1952,7 @@ fn cached_navigation(
 
 /// `file` as the expansion of `root` spells it, so a path that reaches it
 /// through a symbolic link or a `.` segment still names it.
-fn spelled_as_expanded(expansion: &Expansion, root: &Path, file: &Path) -> PathBuf {
+pub(crate) fn spelled_as_expanded(expansion: &Expansion, root: &Path, file: &Path) -> PathBuf {
     let wanted = crate::session::canonical_path(file);
     if crate::session::canonical_path(root) == wanted {
         return root.to_path_buf();
@@ -1963,9 +1967,9 @@ fn spelled_as_expanded(expansion: &Expansion, root: &Path, file: &Path) -> PathB
 }
 
 /// Open buffers over a file system, keyed by canonical path.
-struct OverlayFs {
-    overlay: HashMap<PathBuf, Arc<str>>,
-    inner: Arc<dyn FileSystem>,
+pub(crate) struct OverlayFs {
+    pub(crate) overlay: HashMap<PathBuf, Arc<str>>,
+    pub(crate) inner: Arc<dyn FileSystem>,
 }
 
 impl FileSystem for OverlayFs {
@@ -1982,6 +1986,11 @@ impl FileSystem for OverlayFs {
 
     fn exists(&self, path: &Path) -> bool {
         self.overlay.contains_key(path) || self.inner.exists(path)
+    }
+
+    /// The disk's entries: an open buffer is a file on disk or not at all.
+    fn list_dir(&self, dir: &Path) -> Option<Vec<oxabl_workspace::DirEntry>> {
+        self.inner.list_dir(dir)
     }
 }
 

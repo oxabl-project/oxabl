@@ -236,6 +236,11 @@ impl<F: FileSystem + ?Sized> FileSystem for CachedFileSystem<F> {
         self.ignoring_case(dir, relative).found.clone()
     }
 
+    /// Not cached: a listing answers what the disk holds now.
+    fn list_dir(&self, dir: &Path) -> Option<Vec<crate::DirEntry>> {
+        self.inner.list_dir(dir)
+    }
+
     fn find_ignoring_case_listing(
         &self,
         dir: &Path,

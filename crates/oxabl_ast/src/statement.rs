@@ -694,6 +694,9 @@ pub enum StatementKind {
         /// GET accessor: None = no getter, Some(vec![]) = auto-getter (`GET.`),
         /// Some(body) = computed getter (`GET: body END GET.`).
         get_body: Option<Vec<Statement>>,
+        /// The text of the GET accessor, from `GET` to the period after its
+        /// `END` (or after `GET.`). `None` when there is no getter.
+        get_span: Option<Span>,
         /// SET accessor: None = no setter, Some(vec![]) = auto-setter (`SET.`),
         /// Some(body) = computed setter (`SET: body END SET.`).
         set_body: Option<Vec<Statement>>,
@@ -701,6 +704,9 @@ pub enum StatementKind {
         /// Empty when the setter has no parenthesized parameter list. Each
         /// entry is a `DefineParameter` statement (same shape as METHOD params).
         set_parameters: Vec<Statement>,
+        /// The text of the SET accessor, from `SET` to the period after its
+        /// `END` (or after `SET.`). `None` when there is no setter.
+        set_span: Option<Span>,
     },
 
     /// CONSTRUCTOR definition inside a CLASS.

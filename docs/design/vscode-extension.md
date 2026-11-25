@@ -351,30 +351,37 @@ because a contributed file has one keyword case. So the snippets need no
   suggest widget in a project with and a project without `Lowercase`, with no
   `oxabl` binary.
 
-Not done yet: server snippets with the real tables and fields of the `.df`.
-The server has no completion provider yet. They belong to code completion,
-which gives one list for snippets and other items.
+When the language server runs, it serves the same snippets in its own
+completion list (see [completion.md](completion.md), "Snippets and completion
+in one list"). `cargo run -p oxabl_codegen -- snippets` writes the server's
+table (`crates/oxabl_pipeline/src/completion/snippets.rs`) from
+`snippets/abl.json`, and the CI job `Grammar drift` fails when the committed
+table is not the generated one. So a change of `abl.json` needs the codegen
+run in the same change.
 
 ### Hand-off to the server's completion
 
 The provider of the extension uses the selector `"abl"`. The language client
 uses `{ scheme: "file", language: "abl" }`, which VS Code scores higher. VS
 Code asks the providers in groups, from the highest score down, and stops at
-the first group that returns an item. So when the server returns one item, VS
-Code does not ask the snippet provider at all, and the snippets show only
-where the server has no item. Do not rely on VS Code to merge the two lists.
+the first group that returns an item. Do not rely on VS Code to merge the two
+lists.
 
-When the server gets a `completionProvider` (the code completion work):
-
-- The server serves the static snippets too. It has the resolved
-  `StyleGuide`, so it needs no TOML reader.
-- The extension drops its snippet provider when
-  `client.initializeResult.capabilities.completionProvider` is set. It keeps
-  the provider where no server runs.
-- The same change adds a test that fails when both lists exist at the same
-  time.
-- The same change removes `keywordCaseOf` and the shared table
-  `test/keyword-case.json`, or keeps them only for the case with no server.
+- The server serves the static snippets too, at a statement start where their
+  body is valid. It has the resolved `StyleGuide`, so it needs no TOML reader.
+- The extension's provider gives no item while the client runs
+  (`client.isRunning()`) and
+  `client.initializeResult.capabilities.completionProvider` is set
+  (`registerSnippets` takes a `serverCompletes` test). A client that stopped
+  keeps its initialize result, so the running test is needed: after a crash or
+  during a restart, the extension offers the snippets again. Where no server runs,
+  or the server is older and has no completion provider, the extension offers
+  the snippets as before. A server newer than the extension, with an extension
+  older than this hand-off, shows each snippet twice; the two are released
+  apart, and the extension updates itself. `keywordCaseOf` and `test/keyword-case.json` stay
+  for that case only.
+- The end-to-end scenario `completion` fails when the suggest widget shows
+  `trycatch` twice.
 
 ## Releases
 

@@ -17,14 +17,18 @@ async function readIfPresent(file: string): Promise<string | undefined> {
 }
 
 /**
- * Offer the snippets of `snippets/abl.json` as completion items in ABL files.
- * They need no language server. The keywords follow `keyword_case` of the
- * nearest `oxabl.toml`, and are upper case where it names none. Each file that
- * the search reads is kept until an `oxabl.toml` is created, changed or deleted.
+ * Offer the snippets of `snippets/abl.json` as completion items in ABL files
+ * where no language server completes. A server that advertises a completion
+ * provider serves the same snippets in its own list, so this provider gives
+ * nothing while `serverCompletes` is true: VS Code does not merge the lists of
+ * two providers. The keywords follow `keyword_case` of the nearest
+ * `oxabl.toml`, and are upper case where it names none. Each file that the
+ * search reads is kept until an `oxabl.toml` is created, changed or deleted.
  */
 export async function registerSnippets(
   extensionPath: string,
   log: vscode.LogOutputChannel,
+  serverCompletes: () => boolean,
 ): Promise<vscode.Disposable | undefined> {
   let snippets: Snippet[];
   try {
@@ -37,6 +41,9 @@ export async function registerSnippets(
   const watcher = vscode.workspace.createFileSystemWatcher("**/oxabl.toml");
   const provider = vscode.languages.registerCompletionItemProvider("abl", {
     async provideCompletionItems(document, _position, token) {
+      if (serverCompletes()) {
+        return [];
+      }
       const keywordCase =
         document.uri.scheme === "file"
           ? await keywordCaseFor(

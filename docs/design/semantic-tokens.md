@@ -87,7 +87,7 @@ even when it has the name of its table. Document highlights use the same rule.
 | Modifier | A name that |
 | --- | --- |
 | `declaration` | is the place where its symbol is declared. `FOR EACH table` declares nothing. |
-| `static` | is a method, property or event of a class that the declaration marks `STATIC` |
+| `static` | is a method, property, event or data member (`DEFINE ... STATIC VARIABLE`) of a class that the declaration marks `STATIC`, at its declaration and at each use |
 
 The issue also names three more. They are not given yet:
 

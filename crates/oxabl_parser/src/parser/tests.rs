@@ -7309,6 +7309,8 @@ fn parse_property_auto_get_set() {
             get_body,
             set_body,
             set_parameters,
+            get_span: _,
+            set_span: _,
         } => {
             assert_eq!(access, AccessModifier::Public);
             assert!(!is_static);
@@ -15502,5 +15504,111 @@ fn a_using_read_in_a_rewound_create_does_not_reach_an_earlier_create() {
         matches!(program.statements[1].kind, StatementKind::Skipped { .. }),
         "the second CREATE must fail, `Method` is no type there: {:?}",
         program.statements[1].kind
+    );
+}
+
+// ---- blocks the end of the text closes -------------------------------------
+
+/// The kinds of the statements in `unclosed_blocks`, outermost last.
+fn unclosed_kinds(source: &str) -> Vec<&'static str> {
+    fn walk(stmts: &[Statement], ids: &[NodeId], out: &mut Vec<(NodeId, &'static str)>) {
+        for stmt in stmts {
+            let (name, body): (&'static str, &[Statement]) = match &stmt.kind {
+                StatementKind::Procedure { body, .. } => ("PROCEDURE", body),
+                StatementKind::Function { body, .. } => ("FUNCTION", body),
+                StatementKind::Class { body, .. } => ("CLASS", body),
+                StatementKind::Method { body, .. } => ("METHOD", body),
+                StatementKind::Do { body, .. } => ("DO", body),
+                _ => ("other", &[]),
+            };
+            if ids.contains(&stmt.id) {
+                out.push((stmt.id, name));
+            }
+            walk(body, ids, out);
+        }
+    }
+    let program = parse_with_errors(source);
+    let mut found = Vec::new();
+    walk(&program.statements, &program.unclosed_blocks, &mut found);
+    assert_eq!(
+        found.len(),
+        program.unclosed_blocks.len(),
+        "every unclosed block is a block statement of the tree"
+    );
+    let mut kinds: Vec<_> = program
+        .unclosed_blocks
+        .iter()
+        .map(|id| found.iter().find(|(f, _)| f == id).unwrap().1)
+        .collect();
+    kinds.reverse();
+    kinds
+}
+
+#[test]
+fn a_procedure_without_end_at_the_end_of_the_text_is_unclosed() {
+    assert_eq!(
+        unclosed_kinds("PROCEDURE p:\n    DEFINE VARIABLE x AS INTEGER NO-UNDO.\n    "),
+        vec!["PROCEDURE"]
+    );
+}
+
+#[test]
+fn a_closed_procedure_is_not_unclosed() {
+    assert!(unclosed_kinds("PROCEDURE p:\n    MESSAGE 1.\nEND PROCEDURE.\n").is_empty());
+    assert!(unclosed_kinds("PROCEDURE p:\nEND.").is_empty());
+}
+
+#[test]
+fn nested_unclosed_blocks_are_each_unclosed() {
+    assert_eq!(
+        unclosed_kinds("PROCEDURE p:\n    DO:\n        MESSAGE 1.\n"),
+        vec!["PROCEDURE", "DO"]
+    );
+    assert_eq!(
+        unclosed_kinds("PROCEDURE p:\n    DO:\n        MESSAGE 1.\n    END.\n"),
+        vec!["PROCEDURE"]
+    );
+    assert_eq!(
+        unclosed_kinds("CLASS c:\n    METHOD PUBLIC VOID m():\n        x = 1.\n"),
+        vec!["CLASS", "METHOD"]
+    );
+    assert_eq!(
+        unclosed_kinds("FUNCTION f RETURNS INTEGER ():\n    RETURN 1.\n"),
+        vec!["FUNCTION"]
+    );
+}
+
+#[test]
+fn a_property_records_the_text_of_each_accessor() {
+    let spans = |source: &str| {
+        let program = parse_with_errors(source);
+        let StatementKind::Property {
+            get_span, set_span, ..
+        } = &program.statements[0].kind
+        else {
+            panic!("a property: {:?}", program.statements[0].kind);
+        };
+        let text = |span: &Option<Span>| {
+            span.map(|span| source[span.start as usize..span.end as usize].to_string())
+        };
+        (text(get_span), text(set_span))
+    };
+    let head = "DEFINE PUBLIC PROPERTY P AS INTEGER NO-UNDO\n";
+    assert_eq!(
+        spans(&format!("{head}GET. SET.")),
+        (Some("GET.".into()), Some("SET.".into()))
+    );
+    assert_eq!(
+        spans(&format!(
+            "{head}GET():\nDO:\nEND.\nRETURN 1.\nEND.\nSET(INPUT v AS INTEGER):\nEND SET."
+        )),
+        (
+            Some("GET():\nDO:\nEND.\nRETURN 1.\nEND.".into()),
+            Some("SET(INPUT v AS INTEGER):\nEND SET.".into())
+        )
+    );
+    assert_eq!(
+        spans(&format!("{head}PROTECTED GET():\nRETURN 1.\nEND GET.")),
+        (Some("GET():\nRETURN 1.\nEND GET.".into()), None)
     );
 }

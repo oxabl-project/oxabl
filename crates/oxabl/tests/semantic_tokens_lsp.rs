@@ -437,6 +437,43 @@ fn class_members_have_their_kinds() {
     );
 }
 
+const COUNTER: &str = "CLASS app.Counter:
+    DEFINE PRIVATE STATIC VARIABLE xTotal AS INTEGER NO-UNDO.
+    DEFINE PRIVATE VARIABLE xMine AS INTEGER NO-UNDO.
+    METHOD PUBLIC VOID Add():
+        xTotal = xTotal + xMine.
+    END METHOD.
+END CLASS.
+";
+
+/// A data member that the declaration marks `STATIC` has the `static`
+/// modifier, at its declaration and at each use, as a static property has.
+#[test]
+fn a_static_data_member_is_static() {
+    let ws = Workspace::new();
+    let class = ws.path("app/Counter.cls");
+    std::fs::write(&class, COUNTER).unwrap();
+    let mut session = Session::start_with(&ws.root, capabilities());
+    session.open(&class, COUNTER);
+    let got = summary(&full(&mut session, &class, COUNTER));
+    let ds = &["declaration", "static"][..];
+    let d = &["declaration"][..];
+    let s = &["static"][..];
+    let none = &[][..];
+    assert_eq!(
+        got,
+        vec![
+            token(0, "app.Counter", "class", d),
+            token(1, "xTotal", "variable", ds),
+            token(2, "xMine", "variable", d),
+            token(3, "Add", "method", d),
+            token(4, "xTotal", "variable", s),
+            token(4, "xTotal", "variable", s),
+            token(4, "xMine", "variable", none),
+        ]
+    );
+}
+
 #[test]
 fn an_include_is_its_own_file() {
     let ws = Workspace::new();

@@ -44,6 +44,26 @@ The client turns the tokens off with `semanticTokens.enable` (a boolean) in its 
 options or in `workspace/didChangeConfiguration` (`settings.oxabl.semanticTokens`). A request
 whose document changed answers `ContentModified`. See `docs/design/semantic-tokens.md`.
 
+## Completion
+
+The server answers `textDocument/completion` and `completionItem/resolve` for every client
+(trigger characters `:`, `.`, `{`, `&` and `/`). At a statement start the list holds the
+statements that are valid in the scope at the cursor, the snippets of the VS Code extension
+where their body is valid (only for a client with `snippetSupport`), and the names in scope.
+After `DEFINE` it holds the modifiers that may still come and what `DEFINE` defines. In an
+expression it holds the names in scope and the built-in functions, with the names whose type
+fits an assignment first. Keywords are in the case of `keyword_case`; `Preserve` follows the
+typed word, then the nearest keyword before it, then upper case. Where oxabl does not know the
+context (a comment, a string, right after a statement end, a keyword option in the middle of a
+statement) the answer is `null`. A list that can miss items has `isIncomplete: true`: a stale
+analysis, a parse error before the statement, an include analysed alone, a cut list.
+
+A request never waits for an analysis once the document has one: it reads the newest analysis
+and maps the cursor into it, and a newer analysis is made in the background. A request that a
+newer one replaced before it started, or that the client cancelled, answers `RequestCanceled`.
+Resolve adds Markdown documentation: the keyword's page, or the hover of a name's declaration.
+See `docs/design/completion.md`.
+
 ## Database inlay hints
 
 Files whose configuration has `diagnostics` on get inlay hints: the index oxabl expects a

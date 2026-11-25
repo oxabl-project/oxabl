@@ -671,6 +671,29 @@ impl ExpandedFile {
             .map(|chunk| chunk.virt_start + (real - chunk.real_start))
     }
 
+    /// Every place in the **expanded** buffer of a byte of file `file`, in
+    /// expansion order. Empty for a byte the expansion did not keep (text in an
+    /// `&IF` branch that was not taken). An include that the unit reads twice
+    /// has one id per expansion: ask for each.
+    pub fn expanded_offsets(&self, file: FileId, real: u32) -> Vec<u32> {
+        if self.chunks.is_empty() {
+            return if file == self.root {
+                vec![real]
+            } else {
+                Vec::new()
+            };
+        }
+        self.chunks
+            .iter()
+            .filter(|chunk| {
+                chunk.file == file.raw()
+                    && real >= chunk.real_start
+                    && real < chunk.real_start + chunk.len
+            })
+            .map(|chunk| chunk.virt_start + (real - chunk.real_start))
+            .collect()
+    }
+
     /// The path of an include expansion's file id. `None` for the root and for
     /// an id this expansion did not read.
     pub fn file_path(&self, file: FileId) -> Option<&Path> {
@@ -2110,7 +2133,8 @@ fn analyze_expanded(
     let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema)
         .with_index(index)
         .with_source_context(source_context)
-        .with_sites(record_sites);
+        .with_sites(record_sites)
+        .with_unclosed_blocks(&program.unclosed_blocks);
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file_untyped(&program.statements, &ctx);
     let recovered = program
@@ -2602,6 +2626,40 @@ mod tests {
                 pair[1]
             );
         }
+    }
+
+    #[test]
+    fn an_include_read_twice_has_a_place_in_each_expansion() {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert(std::path::PathBuf::from("./use.i"), "x = 1.\n");
+        let expanded = expand_source(
+            ROOT,
+            "PROCEDURE a:\n{use.i}\nEND.\nPROCEDURE b:\n{use.i}\nEND.\n",
+            &fs,
+            &[std::path::PathBuf::from(".")],
+            true,
+        )
+        .expect("the fixture expands");
+        let ids: Vec<FileId> = expanded
+            .include_expansions()
+            .iter()
+            .filter_map(|expansion| expansion.file)
+            .collect();
+        assert_eq!(ids.len(), 2, "one id per expansion");
+        let places: Vec<u32> = ids
+            .iter()
+            .flat_map(|id| expanded.expanded_offsets(*id, 0))
+            .collect();
+        assert_eq!(places.len(), 2, "{places:?}");
+        assert_ne!(places[0], places[1]);
+        for place in &places {
+            assert_eq!(
+                &expanded.text[*place as usize..*place as usize + 6],
+                "x = 1."
+            );
+        }
+        assert_eq!(expanded.expanded_offset(ids[0], 0), Some(places[0]));
+        assert!(expanded.expanded_offsets(ids[0], 500).is_empty());
     }
 
     #[test]

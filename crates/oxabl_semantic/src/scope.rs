@@ -9,6 +9,7 @@
 //! [`NamespaceId`](crate::NamespaceId)).
 
 use oxabl_ast::NodeId;
+use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -190,15 +191,25 @@ pub struct Scope {
     /// Per-namespace bindings. Indexed by
     /// [`NamespaceId::index`](crate::NamespaceId::index).
     pub bindings: [BindingMap; NUM_NAMESPACES],
+    /// The text the scope covers: the span of its owner statement, which holds
+    /// the body and the `END` of a block. The file scope covers all text, and
+    /// a block that the end of the text closed runs to `u32::MAX`.
+    pub span: VirtualSpan,
 }
 
 impl Scope {
-    fn new(kind: ScopeKind, parent: Option<ScopeId>, owner_node: NodeId) -> Self {
+    fn new(
+        kind: ScopeKind,
+        parent: Option<ScopeId>,
+        owner_node: NodeId,
+        span: VirtualSpan,
+    ) -> Self {
         Scope {
             kind,
             parent,
             owner_node,
             bindings: std::array::from_fn(|_| BindingMap::default()),
+            span,
         }
     }
 
@@ -222,15 +233,39 @@ impl ScopeTree {
     /// already created.
     pub fn new() -> Self {
         ScopeTree {
-            scopes: vec![Scope::new(ScopeKind::File, None, NodeId::PROGRAM)],
+            scopes: vec![Scope::new(
+                ScopeKind::File,
+                None,
+                NodeId::PROGRAM,
+                VirtualSpan::new(0, u32::MAX),
+            )],
         }
     }
 
-    /// Push a new scope under `parent` and return its id.
-    pub fn push(&mut self, kind: ScopeKind, parent: ScopeId, owner_node: NodeId) -> ScopeId {
+    /// Push a new scope under `parent` that covers `span`, and return its id.
+    pub fn push(
+        &mut self,
+        kind: ScopeKind,
+        parent: ScopeId,
+        owner_node: NodeId,
+        span: VirtualSpan,
+    ) -> ScopeId {
         let id = ScopeId(self.scopes.len() as u32);
-        self.scopes.push(Scope::new(kind, Some(parent), owner_node));
+        self.scopes
+            .push(Scope::new(kind, Some(parent), owner_node, span));
         id
+    }
+
+    /// The innermost scope whose span holds `offset`. A scope is pushed after
+    /// its parent and siblings do not overlap, so the holder with the highest
+    /// id is the innermost one.
+    pub fn innermost_at(&self, offset: u32) -> ScopeId {
+        self.scopes
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, scope)| scope.span.start <= offset && offset < scope.span.end)
+            .map_or(ScopeId::ROOT, |(id, _)| ScopeId(id as u32))
     }
 
     pub fn get(&self, id: ScopeId) -> &Scope {
@@ -322,8 +357,18 @@ mod tests {
     #[test]
     fn push_produces_dense_ids() {
         let mut tree = ScopeTree::new();
-        let a = tree.push(ScopeKind::Procedure, ScopeId::ROOT, NodeId::from_u32(10));
-        let b = tree.push(ScopeKind::Block, a, NodeId::from_u32(11));
+        let a = tree.push(
+            ScopeKind::Procedure,
+            ScopeId::ROOT,
+            NodeId::from_u32(10),
+            VirtualSpan::new(0, 0),
+        );
+        let b = tree.push(
+            ScopeKind::Block,
+            a,
+            NodeId::from_u32(11),
+            VirtualSpan::new(0, 0),
+        );
         assert_eq!(a.raw(), 1);
         assert_eq!(b.raw(), 2);
         assert_eq!(tree.get(b).parent, Some(a));
@@ -332,8 +377,18 @@ mod tests {
     #[test]
     fn ancestors_walks_parents() {
         let mut tree = ScopeTree::new();
-        let a = tree.push(ScopeKind::Procedure, ScopeId::ROOT, NodeId::from_u32(1));
-        let b = tree.push(ScopeKind::Block, a, NodeId::from_u32(2));
+        let a = tree.push(
+            ScopeKind::Procedure,
+            ScopeId::ROOT,
+            NodeId::from_u32(1),
+            VirtualSpan::new(0, 0),
+        );
+        let b = tree.push(
+            ScopeKind::Block,
+            a,
+            NodeId::from_u32(2),
+            VirtualSpan::new(0, 0),
+        );
         let chain: Vec<_> = tree.ancestors(b).map(|s| s.raw()).collect();
         assert_eq!(chain, vec![2, 1, 0]);
     }
@@ -368,8 +423,18 @@ mod tests {
     #[test]
     fn resolve_walks_parents_shadow_aware() {
         let mut tree = ScopeTree::new();
-        let a = tree.push(ScopeKind::Procedure, ScopeId::ROOT, NodeId::from_u32(1));
-        let b = tree.push(ScopeKind::Block, a, NodeId::from_u32(2));
+        let a = tree.push(
+            ScopeKind::Procedure,
+            ScopeId::ROOT,
+            NodeId::from_u32(1),
+            VirtualSpan::new(0, 0),
+        );
+        let b = tree.push(
+            ScopeKind::Block,
+            a,
+            NodeId::from_u32(2),
+            VirtualSpan::new(0, 0),
+        );
         tree.get_mut(ScopeId::ROOT).bindings[NamespaceId::Values.index()]
             .insert(atom("outer"), SymbolId::new(1));
         tree.get_mut(a).bindings[NamespaceId::Values.index()]
@@ -394,10 +459,30 @@ mod tests {
     #[test]
     fn var_binding_scope_hoists_through_blocks() {
         let mut tree = ScopeTree::new();
-        let proc = tree.push(ScopeKind::Procedure, ScopeId::ROOT, NodeId::from_u32(1));
-        let outer = tree.push(ScopeKind::Block, proc, NodeId::from_u32(2));
-        let inner = tree.push(ScopeKind::Block, outer, NodeId::from_u32(3));
-        let catch = tree.push(ScopeKind::Catch, inner, NodeId::from_u32(4));
+        let proc = tree.push(
+            ScopeKind::Procedure,
+            ScopeId::ROOT,
+            NodeId::from_u32(1),
+            VirtualSpan::new(0, 0),
+        );
+        let outer = tree.push(
+            ScopeKind::Block,
+            proc,
+            NodeId::from_u32(2),
+            VirtualSpan::new(0, 0),
+        );
+        let inner = tree.push(
+            ScopeKind::Block,
+            outer,
+            NodeId::from_u32(3),
+            VirtualSpan::new(0, 0),
+        );
+        let catch = tree.push(
+            ScopeKind::Catch,
+            inner,
+            NodeId::from_u32(4),
+            VirtualSpan::new(0, 0),
+        );
         // From any depth of blocks/catch, a variable binds at the routine.
         assert_eq!(tree.var_binding_scope(inner), proc);
         assert_eq!(tree.var_binding_scope(catch), proc);
@@ -411,10 +496,55 @@ mod tests {
     fn var_binding_scope_stops_at_trigger_boundary() {
         // A trigger block is a genuine boundary — variables do not hoist out.
         let mut tree = ScopeTree::new();
-        let proc = tree.push(ScopeKind::Procedure, ScopeId::ROOT, NodeId::from_u32(1));
-        let trig = tree.push(ScopeKind::Trigger, proc, NodeId::from_u32(2));
-        let blk = tree.push(ScopeKind::Block, trig, NodeId::from_u32(3));
+        let proc = tree.push(
+            ScopeKind::Procedure,
+            ScopeId::ROOT,
+            NodeId::from_u32(1),
+            VirtualSpan::new(0, 0),
+        );
+        let trig = tree.push(
+            ScopeKind::Trigger,
+            proc,
+            NodeId::from_u32(2),
+            VirtualSpan::new(0, 0),
+        );
+        let blk = tree.push(
+            ScopeKind::Block,
+            trig,
+            NodeId::from_u32(3),
+            VirtualSpan::new(0, 0),
+        );
         assert_eq!(tree.var_binding_scope(blk), trig);
+    }
+
+    #[test]
+    fn innermost_at_finds_the_deepest_holder() {
+        let mut tree = ScopeTree::new();
+        let span = VirtualSpan::new;
+        let proc = tree.push(
+            ScopeKind::Procedure,
+            ScopeId::ROOT,
+            NodeId::from_u32(1),
+            span(10, 100),
+        );
+        let outer = tree.push(ScopeKind::Block, proc, NodeId::from_u32(2), span(20, 80));
+        let inner = tree.push(ScopeKind::Block, outer, NodeId::from_u32(3), span(30, 40));
+        let after = tree.push(ScopeKind::Block, outer, NodeId::from_u32(4), span(50, 60));
+        let open = tree.push(
+            ScopeKind::Procedure,
+            ScopeId::ROOT,
+            NodeId::from_u32(5),
+            span(120, u32::MAX),
+        );
+        assert_eq!(tree.innermost_at(5), ScopeId::ROOT);
+        assert_eq!(tree.innermost_at(10), proc);
+        assert_eq!(tree.innermost_at(25), outer);
+        assert_eq!(tree.innermost_at(35), inner);
+        assert_eq!(tree.innermost_at(40), outer, "the end is outside the span");
+        assert_eq!(tree.innermost_at(55), after);
+        assert_eq!(tree.innermost_at(90), proc);
+        assert_eq!(tree.innermost_at(110), ScopeId::ROOT);
+        assert_eq!(tree.innermost_at(5000), open);
     }
 
     // Keep a smoke-test that the Schema dep compiles through the crate tree.

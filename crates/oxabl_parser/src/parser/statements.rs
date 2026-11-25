@@ -3852,6 +3852,7 @@ impl Parser<'_> {
                 message: "Expected END at end of PROCEDURE body".to_string(),
                 span: self.current_span(),
             });
+            self.note_unclosed();
         }
 
         Ok(self.stmt(StatementKind::Procedure {
@@ -6501,6 +6502,7 @@ impl Parser<'_> {
 
         // Parse body until END CLASS
         let mut body = Vec::new();
+        let mut closed = false;
         while !self.at_end() {
             if self.check(Kind::End) {
                 self.advance(); // consume END
@@ -6512,9 +6514,13 @@ impl Parser<'_> {
                 if self.check(Kind::Period) {
                     self.advance();
                 }
+                closed = true;
                 break;
             }
             self.parse_block_statement_recovering(&mut body);
+        }
+        if !closed {
+            self.note_unclosed();
         }
 
         Ok(self.stmt(StatementKind::Class {
@@ -6556,6 +6562,7 @@ impl Parser<'_> {
         // Parse body until END INTERFACE
         let outer_in_interface = std::mem::replace(&mut self.in_interface, true);
         let mut body = Vec::new();
+        let mut closed = false;
         while !self.at_end() {
             if self.check(Kind::End) {
                 self.advance(); // consume END
@@ -6565,9 +6572,13 @@ impl Parser<'_> {
                 if let Err(err) = self.expect_period("Expected '.' after END INTERFACE") {
                     self.record_error(err);
                 }
+                closed = true;
                 break;
             }
             self.parse_block_statement_recovering(&mut body);
+        }
+        if !closed {
+            self.note_unclosed();
         }
         self.in_interface = outer_in_interface;
 
@@ -6719,6 +6730,7 @@ impl Parser<'_> {
         }
 
         let mut body = Vec::new();
+        let mut closed = false;
         while !self.at_end() {
             if self.check(Kind::End) {
                 self.advance(); // consume END
@@ -6728,9 +6740,13 @@ impl Parser<'_> {
                 if let Err(err) = self.expect_period("Expected '.' after END METHOD") {
                     self.record_error(err);
                 }
+                closed = true;
                 break;
             }
             self.parse_block_statement_recovering(&mut body);
+        }
+        if !closed {
+            self.note_unclosed();
         }
 
         Ok(self.stmt(StatementKind::Method {
@@ -6810,6 +6826,7 @@ impl Parser<'_> {
         {
             self.advance(); // consume access modifier
         }
+        let get_start = self.current_span().start;
         let get_body = if self.check(Kind::Get) {
             self.advance(); // consume GET
             // Optional parameter list: GET() or GET(INPUT p AS TYPE)
@@ -6834,6 +6851,7 @@ impl Parser<'_> {
             } else if self.check(Kind::Colon) {
                 self.advance(); // computed getter: GET:
                 let mut body = Vec::new();
+                let mut closed = false;
                 while !self.at_end() {
                     if self.check(Kind::End) {
                         self.advance(); // consume END
@@ -6843,9 +6861,13 @@ impl Parser<'_> {
                         if let Err(err) = self.expect_period("Expected '.' after END GET") {
                             self.record_error(err);
                         }
+                        closed = true;
                         break;
                     }
                     self.parse_block_statement_recovering(&mut body);
+                }
+                if !closed {
+                    self.note_unclosed();
                 }
                 Some(body)
             } else {
@@ -6857,6 +6879,10 @@ impl Parser<'_> {
         } else {
             None
         };
+        let get_span = get_body.as_ref().map(|_| Span {
+            start: get_start,
+            end: self.prev_end(),
+        });
 
         // Parse SET accessor (with optional leading access modifier, e.g. "private set.")
         if matches!(
@@ -6871,6 +6897,7 @@ impl Parser<'_> {
             self.advance(); // consume access modifier
         }
         let mut set_parameters = Vec::new();
+        let set_start = self.current_span().start;
         let set_body = if self.check(Kind::Set) {
             self.advance(); // consume SET
             // Optional parameter list: SET (INPUT p AS TYPE)
@@ -6883,6 +6910,7 @@ impl Parser<'_> {
             } else if self.check(Kind::Colon) {
                 self.advance(); // computed setter: SET:
                 let mut body = Vec::new();
+                let mut closed = false;
                 while !self.at_end() {
                     if self.check(Kind::End) {
                         self.advance(); // consume END
@@ -6892,9 +6920,13 @@ impl Parser<'_> {
                         if let Err(err) = self.expect_period("Expected '.' after END SET") {
                             self.record_error(err);
                         }
+                        closed = true;
                         break;
                     }
                     self.parse_block_statement_recovering(&mut body);
+                }
+                if !closed {
+                    self.note_unclosed();
                 }
                 Some(body)
             } else {
@@ -6907,6 +6939,10 @@ impl Parser<'_> {
             None
         };
 
+        let set_span = set_body.as_ref().map(|_| Span {
+            start: set_start,
+            end: self.prev_end(),
+        });
         Ok(self.stmt(StatementKind::Property {
             access,
             is_static,
@@ -6917,6 +6953,8 @@ impl Parser<'_> {
             get_body,
             set_body,
             set_parameters,
+            get_span,
+            set_span,
         }))
     }
 
@@ -6956,6 +6994,7 @@ impl Parser<'_> {
         }
 
         let mut body = Vec::new();
+        let mut closed = false;
         while !self.at_end() {
             if self.check(Kind::End) {
                 self.advance(); // consume END
@@ -6966,9 +7005,13 @@ impl Parser<'_> {
                 if let Err(err) = self.expect_period("Expected '.' after END CONSTRUCTOR") {
                     self.record_error(err);
                 }
+                closed = true;
                 break;
             }
             self.parse_block_statement_recovering(&mut body);
+        }
+        if !closed {
+            self.note_unclosed();
         }
 
         Ok(self.stmt(StatementKind::Constructor {
@@ -7009,6 +7052,7 @@ impl Parser<'_> {
         self.expect_kind(Kind::Colon, "Expected ':' after DESTRUCTOR header")?;
 
         let mut body = Vec::new();
+        let mut closed = false;
         while !self.at_end() {
             if self.check(Kind::End) {
                 self.advance(); // consume END
@@ -7019,9 +7063,13 @@ impl Parser<'_> {
                 if let Err(err) = self.expect_period("Expected '.' after END DESTRUCTOR") {
                     self.record_error(err);
                 }
+                closed = true;
                 break;
             }
             self.parse_block_statement_recovering(&mut body);
+        }
+        if !closed {
+            self.note_unclosed();
         }
 
         Ok(self.stmt(StatementKind::Destructor { body }))

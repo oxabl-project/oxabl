@@ -312,7 +312,7 @@ impl Navigation<'_, '_> {
         }
     }
 
-    fn symbol_hover(&self, sym: SymbolId) -> Option<String> {
+    pub(crate) fn symbol_hover(&self, sym: SymbolId) -> Option<String> {
         let symbols = &self.model.semantic.symbols;
         let symbol = symbols.get(sym);
         if let Some(file) = symbols.program_file(sym) {
@@ -932,7 +932,7 @@ fn find_doc(kind: DocKind, name: &str) -> Option<&'static KeywordDoc> {
     })
 }
 
-fn doc_markdown(doc: &KeywordDoc) -> String {
+pub(crate) fn doc_markdown(doc: &KeywordDoc) -> String {
     let what = match doc.kind {
         DocKind::Statement => "An ABL statement.",
         DocKind::Function => "An ABL built-in function.",

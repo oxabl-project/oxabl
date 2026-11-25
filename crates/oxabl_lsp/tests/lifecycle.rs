@@ -91,8 +91,11 @@ fn handshake_advertises_only_incremental_sync_and_push_diagnostics() {
         caps.implementation_provider,
         Some(lsp_types::ImplementationProviderCapability::Simple(true))
     );
+    // Completion is advertised, with resolve and its trigger characters.
+    let completion = caps.completion_provider.expect("completion is advertised");
+    assert_eq!(completion.resolve_provider, Some(true));
+    assert!(completion.trigger_characters.is_some());
     // No other feature advertised.
-    assert!(caps.completion_provider.is_none());
     assert!(caps.rename_provider.is_none());
 
     // Clean shutdown.

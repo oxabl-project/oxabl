@@ -8,11 +8,11 @@
 //! definition (`definition_provider`), hover (`hover_provider`), document highlights
 //! (`document_highlight_provider`), document links (`document_link_provider`), find
 //! references (`references_provider`), the call hierarchy
-//! (`call_hierarchy_provider`) and go to implementation (`implementation_provider`). The
-//! type hierarchy has no field in `lsp_types`: the handshake adds `typeHierarchyProvider`. Push
-//! diagnostics require no
+//! (`call_hierarchy_provider`), go to implementation (`implementation_provider`) and
+//! completion (`completion_provider`). The type hierarchy has no field in `lsp_types`: the
+//! handshake adds `typeHierarchyProvider`. Push diagnostics require no
 //! capability field — the server simply sends the notification — so we
-//! deliberately leave every other capability (completion, pull
+//! deliberately leave every other capability (pull
 //! diagnostics, *range* formatting, …) unset so clients don't offer features we
 //! don't have. The handshake adds effect code lenses only for supporting clients
 //! whose workspace enables strict database rules. Dynamic clients register per file.
@@ -48,7 +48,7 @@ pub fn negotiate_position_encoding(caps: &ClientCapabilities) -> PositionEncodin
 /// Build the v1 [`ServerCapabilities`]: incremental sync with open/close, the
 /// negotiated position encoding, whole-document formatting (R1), document symbols,
 /// folding, selection, workspace symbols, go to definition, hover, document highlights,
-/// document links, find references and the call hierarchy.
+/// document links, find references, the call hierarchy and completion.
 /// Nothing else is advertised — range formatting in particular stays unset (the engine
 /// only formats whole files; see the plan's Scope Boundaries).
 pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities {
@@ -80,6 +80,7 @@ pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities
         references_provider: Some(OneOf::Left(true)),
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
+        completion_provider: Some(crate::completion::capability()),
         // Explicitly leave every other capability unset so clients don't offer
         // features v1 doesn't implement (R2).
         ..Default::default()
@@ -172,7 +173,17 @@ mod tests {
         // client that supports them.
         assert!(caps.inlay_hint_provider.is_none());
         assert!(caps.semantic_tokens_provider.is_none());
-        assert!(caps.completion_provider.is_none());
+        let completion = caps.completion_provider.expect("completion is advertised");
+        assert_eq!(completion.resolve_provider, Some(true));
+        assert_eq!(
+            completion.trigger_characters,
+            Some(
+                vec![":", ".", "{", "&", "/"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            )
+        );
         assert_eq!(caps.definition_provider, Some(OneOf::Left(true)));
         assert_eq!(caps.document_highlight_provider, Some(OneOf::Left(true)));
         assert_eq!(
