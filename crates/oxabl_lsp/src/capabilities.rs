@@ -13,7 +13,7 @@
 //! hierarchy has no field in `lsp_types`: the handshake adds `typeHierarchyProvider`. Push
 //! diagnostics require no capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (pull
-//! diagnostics, *range* formatting, …) unset so clients don't offer features we
+//! diagnostics, …) unset so clients don't offer features we
 //! don't have. The handshake adds effect code lenses only for supporting clients
 //! whose workspace enables strict database rules. Dynamic clients register per file.
 //! It adds semantic tokens (full, delta and range) for every client that
@@ -50,8 +50,8 @@ pub fn negotiate_position_encoding(caps: &ClientCapabilities) -> PositionEncodin
 /// negotiated position encoding, whole-document formatting (R1), document symbols,
 /// folding, selection, workspace symbols, go to definition, hover, document highlights,
 /// document links, find references, the call hierarchy and completion.
-/// Nothing else is advertised — range formatting in particular stays unset (the engine
-/// only formats whole files; see the plan's Scope Boundaries).
+/// Range formatting is advertised too; `initialize` adds its `rangesSupport` flag,
+/// which `lsp_types` has no field for. Nothing else is advertised.
 pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities {
     ServerCapabilities {
         position_encoding: Some(encoding),
@@ -62,10 +62,9 @@ pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities
                 ..Default::default()
             },
         )),
-        // Advertise "Format Document" (R1). Range formatting is deliberately
-        // left unset (`document_range_formatting_provider`): the formatter has
-        // no region concept and bails whole-file.
+        // Advertise "Format Document" (R1) and "Format Selection".
         document_formatting_provider: Some(OneOf::Left(true)),
+        document_range_formatting_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
@@ -157,8 +156,11 @@ mod tests {
         }
         // Whole-document formatting is advertised (R1)…
         assert_eq!(caps.document_formatting_provider, Some(OneOf::Left(true)));
-        // …but range formatting is not (whole-file engine, no region concept).
-        assert!(caps.document_range_formatting_provider.is_none());
+        // …and so is range formatting.
+        assert_eq!(
+            caps.document_range_formatting_provider,
+            Some(OneOf::Left(true))
+        );
         assert_eq!(caps.document_symbol_provider, Some(OneOf::Left(true)));
         assert_eq!(
             caps.folding_range_provider,

@@ -83,13 +83,7 @@ pub(crate) fn normalize(buf: &mut LineBuf, style: &StyleGuide) {
             let after_opener = out.last().is_some_and(|p| is_block_opener(&p.content));
             let before_end = is_block_end(&lines[j].content);
             let allowed = if after_opener || before_end { 0 } else { max };
-            for _ in 0..run_len.min(allowed) {
-                out.push(Line {
-                    indent: 0,
-                    content: String::new(),
-                    protected: false,
-                });
-            }
+            out.extend(lines[i..i + run_len.min(allowed)].iter().cloned());
             i = j;
         } else {
             out.push(lines[i].clone());

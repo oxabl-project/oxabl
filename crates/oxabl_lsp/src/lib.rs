@@ -3,7 +3,7 @@
 //!
 //! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
-//! `textDocument/formatting`, `textDocument/documentSymbol`, `textDocument/foldingRange`,
+//! `textDocument/formatting`, `textDocument/rangeFormatting`, `textDocument/documentSymbol`, `textDocument/foldingRange`,
 //! `textDocument/selectionRange`, `workspace/symbol`,
 //! `textDocument/definition`, `textDocument/hover`, `textDocument/documentHighlight` and
 //! `textDocument/documentLink` (see `docs/design/navigation.md`), `textDocument/semanticTokens`
@@ -45,6 +45,7 @@ mod includer_context;
 mod inlay_hint;
 mod navigation;
 pub mod position;
+mod range_formatting;
 mod references;
 mod schema;
 mod semantic_tokens;
@@ -67,10 +68,11 @@ use lsp_types::notification::{
 use lsp_types::request::{
     CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare, Completion,
     DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest,
-    Formatting, GotoDefinition, GotoImplementation, HoverRequest, InlayHintRequest, References,
-    Request as _, ResolveCompletionItem, SelectionRangeRequest, SemanticTokensFullDeltaRequest,
-    SemanticTokensFullRequest, SemanticTokensRangeRequest, SignatureHelpRequest,
-    TypeHierarchyPrepare, TypeHierarchySubtypes, TypeHierarchySupertypes, WorkspaceSymbolRequest,
+    Formatting, GotoDefinition, GotoImplementation, HoverRequest, InlayHintRequest,
+    RangeFormatting, References, Request as _, ResolveCompletionItem, SelectionRangeRequest,
+    SemanticTokensFullDeltaRequest, SemanticTokensFullRequest, SemanticTokensRangeRequest,
+    SignatureHelpRequest, TypeHierarchyPrepare, TypeHierarchySubtypes, TypeHierarchySupertypes,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -915,6 +917,8 @@ fn finish_handshake(
     result["capabilities"]["inactiveRegionsProvider"] = serde_json::Value::Bool(true);
     // `lsp_types` has no field for it.
     result["capabilities"]["typeHierarchyProvider"] = serde_json::Value::Bool(true);
+    // The options type has no `rangesSupport` field either.
+    result["capabilities"]["documentRangeFormattingProvider"] = range_formatting::capability();
     connection
         .initialize_finish(id, result)
         .context("LSP initialize_finish")?;
@@ -1162,6 +1166,10 @@ impl<'c> Server<'c> {
                                 self.handle_semantic_tokens_range(req)?;
                             } else if req.method == Formatting::METHOD {
                                 self.handle_formatting(req)?;
+                            } else if req.method == RangeFormatting::METHOD {
+                                self.handle_range_formatting(req, false)?;
+                            } else if req.method == range_formatting::RANGES_METHOD {
+                                self.handle_range_formatting(req, true)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
                                 self.handle_document_symbol(req)?;
                             } else if req.method == FoldingRangeRequest::METHOD {
