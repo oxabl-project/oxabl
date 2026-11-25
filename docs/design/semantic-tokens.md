@@ -61,10 +61,10 @@ position in `SemanticKind::ALL` is the number that the client sees.
 | --- | --- | --- |
 | `variable` | a variable, stream, frame or widget | yes |
 | `parameter` | a parameter of a procedure, function, method or event | yes |
-| `property` | a property of a class | yes |
+| `property` | a property of a class, also of a built-in type, and a member of a built-in enum | yes |
 | `function` | an internal procedure or a user-defined function | yes |
-| `method` | a method of a class, declared there or inherited | yes |
-| `class` | a class in a type position, `NEW`, `CAST`, `INHERITS`, `IMPLEMENTS` or `USING`, or the class that a class file declares | yes |
+| `method` | a method of a class, declared there or inherited, also a method of a built-in type | yes |
+| `class` | a class (a built-in class too) in a type position, `NEW`, `CAST`, `INHERITS`, `IMPLEMENTS` or `USING`, or the class that a class file declares | yes |
 | `interface` | an interface, in the same places | yes |
 | `event` | an event of a class | yes |
 | `table` | a database table, its default buffer, or the buffer that `FOR EACH table` opens | no |

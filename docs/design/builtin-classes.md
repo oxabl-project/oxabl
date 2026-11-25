@@ -274,13 +274,21 @@ A bare name in a file whose imports oxabl did not read whole
 
 ### A user class with the name of a built-in type
 
-| Case | Answer | Why |
+The compiler facts below were measured with OpenEdge 12.8.9 (`COMPILE`, the
+PROPATH is the probe folder). oxabl follows them.
+
+| Case | Answer | Compiler fact |
 | --- | --- | --- |
 | A class of the analysed file named like a built-in type (`CLASS AppError`) | The local class | The scope tree is step 1, as today. |
 | A workspace file with the qualified name of an `OpenEdge.*` or `Ccs.*` type (`OpenEdge/Core/String.cls`) | The workspace class, with its members | These types are ABL classes in procedure libraries on the PROPATH (`$DLC/src/OpenEdge.Core.pl`). The first PROPATH entry that has the class wins, and the workspace entries come first. |
-| A workspace file with the qualified name of a `Progress.*` type | The workspace class for navigation, the type `Unknown` | The AVM supplies `Progress.*` itself. oxabl does not know which one the compiler binds. A probe of the real-AVM suite can settle it later (see "Open facts"). |
+| A workspace file with the qualified name of a `Progress.*` type (`Progress/Lang/AppError.cls`) | The built-in type, with its members. The workspace file is ignored. | `NEW Progress.Lang.AppError()` then `e:Foo()` (a method of the workspace file) fails with error 12927 in class `Progress.Lang.AppError`, and `e:AddMessage("x", 1)` compiles. |
 | A bare name that a workspace class supplies through an earlier candidate (`USING acme.*.` and `acme/AppError.cls`) | The workspace class | The earlier candidate wins, as today. |
-| A bare name that a workspace class in the unnamed package supplies (`AppError.cls` at a path root) and that `Progress.Lang` also has, through the implicit import or a `USING Progress.Lang.*` | The class that oxabl finds first for navigation, the type `Unknown`, whichever oxabl finds first | oxabl tries a wildcard `USING` before the unnamed package, and the unnamed package before the implicit import. The order of the compiler is not verified (see "Open facts"). One more probe (the index for the bare name, or the catalog for `Progress.Lang.<name>`) finds the other answer. |
+| A bare name that a class in the unnamed package supplies (`AppError.cls` at a path root), with no `USING` | The workspace class | The unnamed package comes before the implicit `USING Progress.Lang.*`: `e:Bar()` (a method of the workspace file) compiles and `e:AddMessage("x", 1)` fails with 12927 in class `AppError`. |
+| The same bare name with an explicit `USING Progress.Lang.*.` | The built-in type | An explicit wildcard `USING` comes before the unnamed package: `e:Bar()` fails with 12927. |
+
+So a `Progress.*` candidate is never asked of the workspace index: the search
+takes the built-in type at that candidate. An `OpenEdge.*` or `Ccs.*`
+candidate asks the index first.
 
 ## Members
 
@@ -325,8 +333,9 @@ The name rule in `method_set_open` (`clone`, `equals`, `getclass`, `tostring`)
 is removed. `obj:ToString()` is `CHARACTER` on every class with a complete
 surface, also when the class overrides it.
 
-An interface reference gets these members too. If the compiler refuses them on
-an interface, oxabl types a call that does not compile, which adds no finding.
+An interface reference gets these members too. This is a compiler fact
+(OpenEdge 12.8.9): with `INTERFACE IFoo` and `DEFINE VARIABLE i AS IFoo`,
+`i:ToString()`, `i:GetClass():TypeName` and `i:Equals(i)` compile.
 
 ### Enums
 
@@ -640,16 +649,16 @@ Benches (AGENTS.md, "Benchmarks"):
 
 ## Open facts
 
-These facts about the compiler are not verified. The design fails closed on
-each one. A probe in the real-AVM suite
-(`crates/oxabl/tests/build_openedge/class_binding.rs` has the harness) can
-settle each one later:
+None. The three facts that this design first left open are compiler facts
+now (OpenEdge 12.8.9, `COMPILE`), stated in "A user class with the name of a
+built-in type" and "`Progress.Lang.Object` on every surface":
 
-- Which class the compiler binds when a workspace file has the qualified name of
-  a `Progress.*` type.
-- Whether a class in the unnamed package comes before the implicit
-  `USING Progress.Lang.*` for a bare name.
-- Whether an interface reference accepts the members of `Progress.Lang.Object`.
+- A workspace file with the qualified name of a `Progress.*` type is ignored:
+  the compiler binds the built-in type.
+- A class in the unnamed package comes before the implicit
+  `USING Progress.Lang.*`, and an explicit wildcard `USING` comes before the
+  unnamed package.
+- An interface reference has the members of `Progress.Lang.Object`.
 
 ## Measurement on real code
 
@@ -658,6 +667,53 @@ references to built-in types in 6 files: 6 to the JSON object model, 2 to
 `Progress.Lang.Error`, 2 to an `OpenEdge.Web` class. That sample is too small
 to measure false positives, so this design relies on the catalog checks above
 and on the opt-in group for the new rules.
+
+## Implementation notes
+
+What the implementation decided differently from the sections above:
+
+- **The sure flag.** `TypeLookup::Builtin` carries `Option<SymbolId>` in place
+  of `sure: bool`: the symbol is there when the answer is sure and the type is
+  not generic. A `Progress.*` candidate is never sure-or-not by the index: it
+  is the built-in type (the compiler facts). So no `shadows_builtin` set is
+  needed; a workspace class that wins is typed like any workspace class.
+- **The catalog of a type row.** A row keeps `inherits` and `implements` as
+  documented (after the overrides) for the hover, and the resolved rows of
+  its supertypes for the walk. Each row is one line of a brace-delimited
+  macro call (`classes!`, `members!`, `params!`, `enum_names!` in
+  `builtin.rs`), which rustfmt leaves as it is.
+- **Overrides file.** Each entry has a `checked_against` page and one of
+  `inherits`, `drop_member`, `add_member`, `replace_member`. The three changes
+  of the design are five entries (a drop and an add for each error class).
+  A `inherits` entry on a type that documents a supertype is stale.
+- **A property with no type** in the catalog keeps the property, with the type
+  `Unknown`; it is not damaged. The counts are the planner's: 1248 types,
+  1200 `members_trusted`, 1065 complete, 36 of 108 `Progress.*` complete.
+- **`CATCH e AS Cls`.** The error variable gets the type of its class (a
+  workspace or built-in class), and its type name is a navigation site.
+- **Workspace enums.** A workspace `ENUM` gets `Progress.Lang.Enum` as a
+  supertype, both in the surface walk and in the lattice. The index does not
+  say whether it is a `FLAGS` enum, so its chain is incomplete past that level:
+  a widening to `Progress.Lang.FlagsEnum` is not known, never a finding.
+- **`LINT0001` softening.** A class with a built-in ancestor other than
+  `Progress.Lang.Object` softens a bare name that no level has
+  (`CrossFileState::builtin_ancestors`): the catalog does not say which
+  members are protected.
+- **`CL006` facts** are read by the rule through
+  `oxabl_semantic::builtin_call_misfit`, from the same overload sets and
+  `overload::no_fit` that the pick uses, not stored as a side list. `CL007`
+  facts are a side list (`SymbolTable::unknown_members`), recorded where the
+  member lookup misses.
+- **The surface API.** `surface(origin, index, catalog, role)` answers for a
+  workspace class and a built-in type. A class of the analysed file needs its
+  `Semantic`: `local_surface(sem, origin, index, role)`. A member of a
+  workspace class has the folded name that the index keeps. One
+  `SurfaceMember` is one overload. `BuiltinMemberRef::doc()` gives the
+  documentation (`MemberDoc { title, url, summary }`, `summary` is `None`
+  until #473). `BuiltinCatalog::classes_in(package)` lists a package.
+  The role type is `SurfaceRole` (`Reach` is the lattice's answer type).
+- **Hover of an override.** `obj:ToString()` on a workspace class that
+  overrides it shows that class's declaration, as for any workspace method.
 
 ## Tests
 

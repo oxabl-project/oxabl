@@ -111,8 +111,9 @@ the last call; see "Overloads".
   than oxabl read (an `{include}` before the class header).
 - A handle (`HANDLE`, `COM-HANDLE`, a system handle such as `SESSION`). Its
   attributes and methods are not class members.
-- A built-in class (`Progress.*`, `OpenEdge.*`) and a .NET class. See
-  "Out of scope".
+- A .NET class. A built-in class (`Progress.*`, `OpenEdge.*`, `Ccs.*`) has
+  members since #154, except where its catalog entry is not complete: see
+  `docs/design/builtin-classes.md`.
 - `DYNAMIC-NEW`, `DYNAMIC-CAST`, `DYNAMIC-INVOKE`, `DYNAMIC-PROPERTY`,
   `GET-CLASS`, and `TYPE-OF`.
 - A generic type (`List<Thing>`), a class-typed `EXTENT` (`AS Thing EXTENT 3`)
@@ -186,8 +187,9 @@ candidates, because the compiler does not remove them.
 An enum member is a static property whose type is the enum itself:
 `Shade:Dark` has the type `Class(Shade)`. The index gives it
 `MemberType::Named(<the enum name>)`. A method of an enum
-(`Shade:Dark:GetValue()`) comes from `Progress.Lang.Enum`, which this work
-does not model, so it is `Unknown`.
+(`Shade:Dark:GetValue()`) comes from `Progress.Lang.Enum`, the built-in
+supertype of every workspace enum (`docs/design/builtin-classes.md`, "Enums"):
+`GetValue()` is `INT64`.
 
 ### When a surface is not complete
 
@@ -197,8 +199,9 @@ A property or data member that oxabl finds still has its type (see "The
 surface of a class"). A surface is not complete when:
 
 1. **An `INHERITS` ancestor was not read**: no file supplies it, its file does
-   not parse, the index declined to choose between two files, or it is a
-   built-in class (`INHERITS Progress.Lang.AppError`). The walk already
+   not parse, or the index declined to choose between two files. A built-in
+   ancestor is read from the catalog; it counts only when its header is not
+   known (`docs/design/builtin-classes.md`). The walk already
    records this as an opaque surface (`CrossFileState::opaque_surfaces`). An
    unread `IMPLEMENTS` interface of a concrete class does not count: the class
    or one of its read ancestors declares the methods of its interfaces. For an
@@ -215,10 +218,11 @@ surface of a class"). A surface is not complete when:
    `CLASS b INHERITS a` does not compile. The walk stops on its visited set,
    as today, and every member of a class on the cycle has the type `Unknown`,
    properties too.
-4. **The method name is a method of `Progress.Lang.Object`** (`Clone`,
-   `Equals`, `GetClass`, `ToString`). Every class inherits these, and oxabl
-   does not model their signatures until #154. So `obj:ToString()` is
-   `Unknown`, also when the class overrides it.
+4. **A built-in level is not complete**: a damaged member, a generic level,
+   or an unknown header (`docs/design/builtin-classes.md`, "Completeness of a
+   surface with built-in levels"). The name rule for the methods of
+   `Progress.Lang.Object` is gone: every surface ends with that level, so
+   `obj:ToString()` is `CHARACTER`.
 
 ### Includes that hold part of a class
 
@@ -474,7 +478,7 @@ State the numbers in the pull request.
 
 | Work | Issue | Seam |
 | --- | --- | --- |
-| Members of built-in classes (`Progress.Lang.*`, `OpenEdge.*`), including the four methods of `Progress.Lang.Object` and the methods of `Progress.Lang.Enum` | #154 | The surface walk treats a built-in ancestor as opaque. #154 gives it members through the same candidate list, and then removes the opaque mark and the `Progress.Lang.Object` name rule. |
+| Members of built-in classes | #154 | Done: `docs/design/builtin-classes.md`. A built-in level is read from the static catalog through the same candidate list. |
 | .NET types | #465 | A `FROM ASSEMBLY` import already gives `TypeLookup::External`; a .NET receiver stays `Unknown`. |
 | Completion after `obj:` | #436 | The receiver function gives the class and the role; the surface gives the reachable members. |
 | Signature help, parameter inlay hints | #438 (done: `signature-help.md`) | `oxabl_semantic::reachable_overloads` returns the candidates and the picked one; `call_candidates` gives the set. |

@@ -58,6 +58,7 @@ cargo run -p oxabl_codegen -- builtins # Writes builtins.rs (built-in function r
 cargo run -p oxabl_codegen -- grammar  # Writes the VS Code extension's TextMate grammar
 cargo run -p oxabl_codegen -- keyword-docs # Writes keyword_docs.rs (hover's statement and function docs)
 cargo run -p oxabl_codegen -- snippets # Writes completion/snippets.rs (the server's snippets, from clients/vscode/snippets/abl.json)
+cargo run -p oxabl_codegen -- builtin-class-table # Writes builtin_classes.rs (the catalog of built-in types and members)
 
 # Show statistics without writing files
 cargo run -p oxabl_codegen -- summary
@@ -124,7 +125,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 - Real-AVM suite - `crates/oxabl/tests/build_openedge.rs` and `build_openedge_scratch.rs` (with `build_openedge/`, `common/openedge/` and `fixtures/openedge/`): the opt-in tests of `oxabl build` against OpenEdge. Every test is `#[ignore]` and fails, never skips, without its `OXABL_OPENEDGE_*` variables; the variables and the commands are in `docs/overview.md`, "Testing against a real AVM". CI builds them and runs none
 - `crates/oxabl_nulls` - Unknown values per unit: buffers a failed `FIND ... NO-ERROR` may leave without a record and the field references that read them, and local variables that may hold `?` with the uses they reach
 
-- `crates/oxabl_semantic` - The declare, resolve and type-check passes: scopes, symbols, references and types per file. The resolve pass finds the class of a receiver (`obj:Name`, `THIS-OBJECT`, `SUPER`, `CAST`, a type name, a chain) and its member, through the scope tree or the workspace index; the type-check pass types the member and picks the method overload from the argument types (`overload.rs`). An unknown fact gives `Unknown`. See `docs/design/class-members.md`
+- `crates/oxabl_semantic` - The declare, resolve and type-check passes: scopes, symbols, references and types per file. The resolve pass finds the class of a receiver (`obj:Name`, `THIS-OBJECT`, `SUPER`, `CAST`, a type name, a chain) and its member, through the scope tree or the workspace index; the type-check pass types the member and picks the method overload from the argument types (`overload.rs`). An unknown fact gives `Unknown`. See `docs/design/class-members.md`. The catalog of built-in types (`Progress.*`, `OpenEdge.*`, `Ccs.*`) is `builtin.rs` over the generated `builtin_classes.rs`; a built-in level of a surface is read from it with no index, and `surface.rs` gives the members of a class of any origin to completion and other clients. See `docs/design/builtin-classes.md`
 
 (Not exhaustive — the workspace also holds `oxabl_preprocessor`, `oxabl_schema`, `oxabl_lint`, `oxabl_analyze`, `oxabl_formatter`, `oxabl_style`, `oxabl_workspace`, `oxabl_lsp`, and `oxabl_wasm`; see the status section below.)
 
@@ -163,6 +164,8 @@ Generates:
 - `Kind` enum with categorized token types
 - Atom list for `string_cache_codegen`
 - `match_keyword()` function handling abbreviations and case-insensitive matching
+
+`builtin-class-table` compiles `resources/progress_builtin_classes.json` (the scrape of the Progress documentation, `builtin-classes`) and `resources/progress_builtin_overrides.toml` (checked fixes; an entry that matches nothing fails the codegen) through a normaliser (`builtin_normalise.rs`) into the flat static tables of `crates/oxabl_semantic/src/builtin_classes.rs`. The test `generated_table_matches_checked_in_catalog` fails when the committed file is not the generated one. See `docs/design/builtin-classes.md`.
 
 ## CI & Release Process
 
