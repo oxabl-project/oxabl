@@ -102,6 +102,11 @@ Both `Statement` and `Expression` carry a stable `NodeId` as of Phase 1
   it names nothing at parse time. **`Identifier` is deliberately id-free** — giving every
   identifier a NodeId would inflate the id space and the per-keystroke `NodeIndexVec`
   allocations to buy a uniformity no consumer needs.
+- **A property's accessor spans are inline fields.** `StatementKind::Property` carries
+  `get_span` and `set_span`: each covers `GET` or `SET` up to the period after its own `END`
+  (or after `GET.`/`SET.`), with no access modifier, in expanded-text offsets. Like
+  `name_span`, they take part in the derived `PartialEq`, so two parses of a property that
+  differ only in whitespace are not equal.
 - **Exception to the "ids are excluded from `PartialEq`" rule.** `StatementKind` and `RunTarget`
   derive `PartialEq`, so the `id` and `name_span` fields inside those two variants *are* compared.
   Whole-value equality against a hand-built target therefore does not hold; compare the

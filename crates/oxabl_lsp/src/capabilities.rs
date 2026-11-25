@@ -8,10 +8,9 @@
 //! definition (`definition_provider`), hover (`hover_provider`), document highlights
 //! (`document_highlight_provider`), document links (`document_link_provider`), find
 //! references (`references_provider`), the call hierarchy
-//! (`call_hierarchy_provider`), go to implementation (`implementation_provider`) and completion
-//! (`completion_provider`). The
-//! type hierarchy has no field in `lsp_types`: the handshake adds `typeHierarchyProvider`. Push
-//! diagnostics require no
+//! (`call_hierarchy_provider`), go to implementation (`implementation_provider`) and
+//! completion (`completion_provider`). The type hierarchy has no field in `lsp_types`: the
+//! handshake adds `typeHierarchyProvider`. Push diagnostics require no
 //! capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (pull
 //! diagnostics, *range* formatting, …) unset so clients don't offer features we
