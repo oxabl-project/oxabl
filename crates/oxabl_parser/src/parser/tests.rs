@@ -11079,7 +11079,7 @@ fn parse_create_widget_assign_triggers_block() {
     // CREATE widget ASSIGN ... TRIGGERS: ... END TRIGGERS. inside a DO block.
     // TRIGGERS lexes as Kind::Triggers, not Kind::Identifier — the block-end
     // detection must use Kind::Triggers, not string comparison.
-    let source = "if x eq 0 then\ndo:\n   create sub-menu head-ptr\n      assign parent = app-menu\n             label  = x-menu.\nend.\nelse\ndo:\n   create menu-item head-ptr\n   assign parent = app-menu\n          label  = x-menu\n          sensitive = true\n   triggers:\n    on choose\n        persistent run value (\"lib/data-util.w\") (y).\n    end triggers.\nend.\n";
+    let source = "if x eq 0 then\ndo:\n   create sub-menu head-ptr\n      assign parent = app-menu\n             label  = x-menu.\nend.\nelse\ndo:\n   create menu-item head-ptr\n   assign parent = app-menu\n          label  = x-menu\n          sensitive = true\n   triggers:\n    on choose\n        persistent run lib/data-util.w (y).\n    end triggers.\nend.\n";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let result = parser.parse_program();
@@ -14532,14 +14532,16 @@ fn apply_keeps_event_and_target() {
 }
 
 #[test]
-fn unparsable_create_tail_is_skipped_without_swallowing_the_next_statement() {
+fn unparsable_create_tail_is_skipped_with_an_error_and_without_swallowing_the_next_statement() {
     for source in [
         "CREATE BUTTON h ASSIGN LABEL ! = \"x\".",
         "CREATE X-DOCUMENT h BOGUS-CLAUSE.",
         "CREATE WIDGET-POOL \"p\" BOGUS.",
     ] {
         let full = format!("{source}{NEXT_STMT}");
-        let stmts = parse_clean(&full);
+        let program = Parser::new(&tokenize(&full), &full).parse_program();
+        assert_eq!(program.errors.len(), 1, "{source}: {:?}", program.errors);
+        let stmts = program.statements;
         assert_next_stmt_survives(&stmts, &full);
         assert!(
             matches!(stmts[0].kind, StatementKind::Skipped { .. }),

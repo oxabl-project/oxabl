@@ -7147,30 +7147,30 @@ impl Parser<'_> {
         let memo = !self.reread_failed_creates;
         #[cfg(not(test))]
         let memo = true;
-        if memo && self.failed_creates.contains(&resume.0) {
-            return Ok(self.recover_create_as_skipped(resume));
+        if memo && let Some(error) = self.failed_creates.get(&resume.0).cloned() {
+            return Ok(self.recover_create_as_skipped(resume, error));
         }
 
         if self.check(Kind::WidgetPool) {
             return Ok(self
                 .parse_create_widget_pool()
-                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+                .unwrap_or_else(|error| self.recover_create_as_skipped(resume, error)));
         }
         if let Some(kind) = self.match_create_target_kind() {
             self.advance(); // consume the type keyword
             return Ok(self
                 .parse_create_handle(kind, None)
-                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+                .unwrap_or_else(|error| self.recover_create_as_skipped(resume, error)));
         }
         if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
             return Ok(self
                 .parse_create_computed_type()
-                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+                .unwrap_or_else(|error| self.recover_create_as_skipped(resume, error)));
         }
         if self.check(Kind::StringLiteral) {
             return Ok(self
                 .parse_create_automation()
-                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+                .unwrap_or_else(|error| self.recover_create_as_skipped(resume, error)));
         }
         if !Self::can_be_identifier(self.peek().kind) {
             // Forms with no handle or record name to model. Skip to end.
@@ -7202,7 +7202,8 @@ impl Parser<'_> {
     }
 
     /// Skip the rest of a CREATE whose tail did not parse, so the statement
-    /// after it is not swallowed. The names in it are still harvested.
+    /// after it is not swallowed, and record why it did not parse. The names in
+    /// it are still harvested.
     ///
     /// A failed `TRIGGERS:` block has parsed statements of its own, which moved
     /// the harvest anchor, so the CREATE's own anchor is put back first. It
@@ -7211,10 +7212,12 @@ impl Parser<'_> {
     fn recover_create_as_skipped(
         &mut self,
         (resume, error_count, anchor, import_count): (usize, usize, usize, usize),
+        error: ParseError,
     ) -> Statement {
         self.errors.truncate(error_count);
         self.imported_classes.truncate(import_count);
-        self.failed_creates.insert(resume);
+        self.failed_creates.insert(resume, error.clone());
+        self.record_error(error);
         self.stmt_start_token = anchor;
         self.current = resume;
         let (_, hi) = self.skip_to_statement_end_triggers_aware();

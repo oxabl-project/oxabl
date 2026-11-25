@@ -148,3 +148,70 @@ fn a_using_read_in_a_rewound_create_does_not_reach_an_earlier_statement() {
         "the import comes after the second CREATE, so `Method` is no type there:\n{text}"
     );
 }
+
+fn check_source(name: &str, source: &str) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(name);
+    std::fs::write(&path, source).unwrap();
+    text(&check(&path))
+}
+
+/// A CREATE that oxabl cannot parse is skipped, but the file says so: it has a
+/// parse error and the formatter leaves it alone.
+#[test]
+fn a_create_that_does_not_parse_is_a_parse_error() {
+    let sources = [
+        // The `DO:` has no `END.`.
+        "CREATE BUTTON h TRIGGERS: ON CHOOSE DO: END TRIGGERS.\n",
+        "CREATE BUTTON h ASSIGN LABEL ! = \"x\".\n",
+        "CREATE X-DOCUMENT h BOGUS-CLAUSE.\n",
+        "CREATE WIDGET-POOL \"p\" BOGUS.\n",
+        "CREATE \"Excel.Application\" h BOGUS.\n",
+        "CREATE VALUE(cClass) h BOGUS.\n",
+    ];
+    for source in sources {
+        let text = check_source("bad.p", source);
+        assert_eq!(
+            text.matches("error[PARSE001]").count(),
+            1,
+            "expected one parse error for {source:?}:\n{text}"
+        );
+        assert!(
+            text.contains("file has parse errors"),
+            "a file with a parse error is not formatted ({source:?}):\n{text}"
+        );
+    }
+}
+
+/// A failed CREATE inside the trigger block of an earlier failed CREATE is read
+/// again after the skip of that one, and reports its own error then.
+#[test]
+fn a_failed_create_read_again_keeps_its_parse_error() {
+    let text = check_source(
+        "again.p",
+        "CREATE BUTTON a TRIGGERS: ON CHOOSE DO: END TRIGGERS.\n\
+         CREATE BUTTON b ASSIGN LABEL ! = \"x\".\n",
+    );
+    assert_eq!(
+        text.matches("error[PARSE001]").count(),
+        2,
+        "expected an error for each failed CREATE:\n{text}"
+    );
+}
+
+/// Forms oxabl does not model are skipped on purpose: they are valid ABL.
+#[test]
+fn a_valid_create_that_oxabl_does_not_model_is_no_parse_error() {
+    let sources = [
+        "CREATE ALIAS dbalias FOR DATABASE mydb.\n",
+        "CREATE SERVER hServer.\n",
+        "CREATE WIDGET-POOL.\n",
+    ];
+    for source in sources {
+        let text = check_source("valid.p", source);
+        assert!(
+            !text.contains("PARSE001") && !text.contains("parse errors"),
+            "{source:?} is valid ABL:\n{text}"
+        );
+    }
+}

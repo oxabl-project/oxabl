@@ -1249,3 +1249,28 @@ fn zero_jobs_is_a_usage_error() {
     let run = check([file.to_str().unwrap(), "-j", "0"]);
     assert_eq!(run.code, Some(2), "{}", run.stderr);
 }
+
+/// A parse error at the end of the file, such as a block with no `END.`, has no
+/// byte to point at. It is still reported, at the end of the file, and fails
+/// the gate.
+#[test]
+fn a_parse_error_at_the_end_of_the_file_fails_the_gate() {
+    let (_tmp, file) = project("open.p", "DO:\n    MESSAGE \"x\".\n");
+
+    let run = check([Path::new("--json").as_os_str(), file.as_os_str()]);
+
+    assert_eq!(run.code, Some(1), "stdout:\n{}", run.stdout);
+    let json = run.json();
+    let parse_errors: Vec<_> = json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "PARSE001")
+        .collect();
+    assert_eq!(
+        parse_errors.len(),
+        1,
+        "diagnostics: {}",
+        json["diagnostics"]
+    );
+}

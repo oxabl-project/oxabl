@@ -883,6 +883,25 @@ impl ExpandedFile {
         })
     }
 
+    /// The empty span at the end of the root buffer, or `None` when the
+    /// expansion ends in an include.
+    fn resolve_end(&self) -> Option<FileSpan> {
+        let Some(last) = self.text.len().checked_sub(1) else {
+            return Some(FileSpan {
+                file: self.root,
+                span: Span { start: 0, end: 0 },
+            });
+        };
+        let (file, real) = self.resolve(last as u32)?;
+        (file == self.root).then_some(FileSpan {
+            file,
+            span: Span {
+                start: real + 1,
+                end: real + 1,
+            },
+        })
+    }
+
     /// `span` in the bytes of the file that holds its start, which maps to
     /// `real_start`. See [`Self::resolve_span`] for the boundary convention.
     fn real_span(&self, span: Span, real_start: u32) -> Span {
@@ -1722,8 +1741,20 @@ pub fn collect_from_expanded_with_summaries(
     out.parse_recovered = !program.errors.is_empty();
 
     for err in program.errors.into_iter().filter(|_| everything) {
+        let at_end = err.span.start as usize >= expanded.text.len();
         let virt = err.into_diagnostic(root);
-        if let Ok(resolved) = resolve_diagnostic(virt, expanded) {
+        let resolved = resolve_diagnostic(virt, expanded).or_else(|mut d| {
+            // An error at the end of the text (a block that is not closed) has
+            // no byte to map: it is reported at the end of the root buffer.
+            match expanded.resolve_end().filter(|_| at_end) {
+                Some(end) => {
+                    d.span = end;
+                    Ok(d)
+                }
+                None => Err(d),
+            }
+        });
+        if let Ok(resolved) = resolved {
             out.diagnostics.push(CollectedDiagnostic {
                 diagnostic: resolved,
                 source: DiagnosticSource::Parse,

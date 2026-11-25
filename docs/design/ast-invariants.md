@@ -277,7 +277,10 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   `ASSIGN` pairs, the `TRIGGERS` phrase and the COM `CONNECT` clause. `CREATE`/`DELETE
   WIDGET-POOL`, `RELEASE OBJECT` and `APPLY` have their own variants.
   **Invariant:** a `CREATE` whose tail does not parse falls back to `Skipped` from the first
-  token after `CREATE`, so it never swallows the next statement. A widget `TRIGGERS` body is a
+  token after `CREATE`, so it never swallows the next statement. The parse error stays in the
+  file, so the file has a `PARSE001` and the formatter leaves it alone. A `CREATE` form that oxabl does not try to
+  model (`CREATE ALIAS`, a type keyword it does not know) is valid ABL and is skipped with no
+  error. A widget `TRIGGERS` body is a
   deferred trigger: semantic walks it in a `Trigger` scope, `oxabl_flow` does not inline it.
   `APPLY` operands are read without a miss diagnostic, because a bare name there is usually a
   static widget or frame, not a symbol.
