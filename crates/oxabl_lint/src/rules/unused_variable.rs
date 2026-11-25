@@ -337,6 +337,7 @@ mod tests {
             name: id("I"),
             inherits: vec![],
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: false,
@@ -364,6 +365,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: true,
@@ -386,6 +388,7 @@ mod tests {
             name: id("I"),
             inherits: vec![],
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: false,
@@ -411,6 +414,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: false,

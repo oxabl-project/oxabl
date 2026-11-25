@@ -15,12 +15,20 @@
 //! identifier inherits its resolved symbol's type; binary/unary operators
 //! consult the tables in [`crate::operators`]; unresolved references
 //! default to `Unknown` so cascading diagnostics are suppressed.
+//!
+//! A member through a receiver (`obj:Name`) has the type of the member the
+//! resolve pass found. A method call (`obj:Greet(1)`, or `Greet(1)` inside the
+//! class) has the type of the overload its argument types pick
+//! ([`crate::overload`]). A reference the resolve pass marked as untyped
+//! (`SymbolTable::is_untyped_member`) is `Unknown`. See
+//! `docs/design/class-members.md`.
 
 use oxabl_ast::{
     AssignPair, CreateTarget, Expression, ExpressionKind, Literal, OnAction, OnKind, RunTarget,
     Statement, StatementKind, StreamOperation, SubscribeTarget,
 };
 use oxabl_common::Diagnostic;
+use smallvec::SmallVec;
 
 use crate::{
     AnalysisContext, NodeIndexVec, PrimitiveTy, Resolution, ResolvedType, ScopeId, ScopeKind,
@@ -600,7 +608,11 @@ impl<'a> CheckWalker<'a> {
         let ty = match &expr.kind {
             ExpressionKind::Literal(l) => literal_type(l),
 
-            ExpressionKind::Identifier(_) => self.type_from_reference(expr),
+            ExpressionKind::Identifier(_) => match self.symbols.expr_class(expr.id) {
+                // `THIS-OBJECT` in a class body.
+                Some(class) => ResolvedType::Class(class),
+                None => self.type_from_reference(expr),
+            },
 
             ExpressionKind::Add(l, r)
             | ExpressionKind::Minus(l, r)
@@ -641,26 +653,40 @@ impl<'a> CheckWalker<'a> {
             }
 
             ExpressionKind::FunctionCall { arguments, .. } => {
-                for a in arguments {
-                    self.check_expression(a, scope);
+                let args = self.check_arguments(arguments, scope);
+                if let Some(class) = self.symbols.expr_class(expr.id) {
+                    // `CAST(x, Cls)`.
+                    ResolvedType::Class(class)
+                } else if let Some(Resolution::Resolved(sym)) = self.references.get(expr.id)
+                    && self.symbols.is_method(*sym)
+                {
+                    // A method called inside its class: the same pick as
+                    // `THIS-OBJECT:Name(...)`.
+                    self.method_call_type(expr, *sym, &args)
+                } else {
+                    // The call's return type comes from the resolved symbol,
+                    // populated by resolve. If unresolved, Unknown.
+                    self.type_from_reference(expr)
                 }
-                // The call's return type comes from the resolved symbol,
-                // populated by resolve. If unresolved, Unknown.
-                self.type_from_reference(expr)
             }
             ExpressionKind::MethodCall {
                 object, arguments, ..
             } => {
                 self.check_expression(object, scope);
-                for a in arguments {
-                    self.check_expression(a, scope);
+                let args = self.check_arguments(arguments, scope);
+                match self.references.get(expr.id) {
+                    Some(Resolution::Resolved(sym)) => self.method_call_type(expr, *sym, &args),
+                    // A receiver whose class oxabl does not know.
+                    _ => ResolvedType::Unknown,
                 }
-                // v1: method return types are cross-class — Unknown.
-                ResolvedType::Unknown
             }
             ExpressionKind::MemberAccess { object, .. } => {
                 self.check_expression(object, scope);
-                ResolvedType::Unknown
+                if self.symbols.is_untyped_member(expr.id) {
+                    ResolvedType::Unknown
+                } else {
+                    self.type_from_reference(expr)
+                }
             }
             ExpressionKind::ArrayAccess { array, index } => {
                 let at = self.check_expression(array, scope);
@@ -715,6 +741,32 @@ impl<'a> CheckWalker<'a> {
 
         self.types.insert(expr.id, ty.clone());
         ty
+    }
+
+    /// Check each argument and collect its type.
+    fn check_arguments(
+        &mut self,
+        arguments: &[Expression],
+        scope: ScopeId,
+    ) -> SmallVec<[ResolvedType; 4]> {
+        arguments
+            .iter()
+            .map(|a| self.check_expression(a, scope))
+            .collect()
+    }
+
+    /// The type of a call of the method overload set `anchor`: the pick over
+    /// its candidates, or `Unknown` when the resolve pass marked the call.
+    fn method_call_type(
+        &self,
+        expr: &Expression,
+        anchor: crate::SymbolId,
+        args: &[ResolvedType],
+    ) -> ResolvedType {
+        if self.symbols.is_untyped_member(expr.id) {
+            return ResolvedType::Unknown;
+        }
+        crate::overload::call_type(self.symbols, anchor, args)
     }
 
     fn type_from_reference(&self, expr: &Expression) -> ResolvedType {
@@ -1389,9 +1441,9 @@ mod tests {
     }
 
     #[test]
-    fn check_method_call_type_is_unknown_v1() {
-        // v1 intentionally does not type cross-class method calls; returns
-        // Unknown so LINT0004 skips silently.
+    fn check_method_call_of_an_undeclared_method_is_unknown() {
+        // `Foo` declares no `doIt`: the call resolves to nothing and has no
+        // type, so LINT0004 skips it.
         let obj = id_expr("svc");
         let mc = expr_n(ExpressionKind::MethodCall {
             object: Box::new(obj),

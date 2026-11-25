@@ -45,10 +45,10 @@ use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_rec
 use crate::symbol::RecordSource;
 use crate::{
     AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
-    LocateKind, Located, MemberDescriptor, MemberRecord, MemberType, NamespaceId, NodeIndexVec,
-    ResolvedType, ScopeId, ScopeKind, ScopeTree, Site, SiteTarget, SupertypeRef, Supertypes,
-    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun, WorkspaceIndex, builtins,
-    diagnostics, resolve_span,
+    LocateKind, Located, MemberDescriptor, MemberParam, MemberRecord, MemberType, NamespaceId,
+    NodeIndexVec, ResolvedType, ScopeId, ScopeKind, ScopeTree, Site, SiteTarget, SupertypeRef,
+    Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
+    WorkspaceIndex, builtins, diagnostics, resolve_span,
 };
 
 fn method_signature(parameters: &[Statement]) -> Vec<String> {
@@ -438,6 +438,7 @@ impl<'a> Walker<'a> {
                 is_static,
                 name,
                 data_type,
+                extent,
                 no_undo,
                 get_body,
                 set_body,
@@ -452,7 +453,7 @@ impl<'a> Walker<'a> {
                     name,
                     NamespaceId::Values,
                     SymbolKind::Property,
-                    Some(ResolvedType::from_data_type(data_type)),
+                    Some(ResolvedType::from_declared(data_type, *extent)),
                     flags,
                     None,
                 );
@@ -667,6 +668,7 @@ impl<'a> Walker<'a> {
                 is_abstract,
                 is_override,
                 return_type,
+                extent,
                 name,
                 parameters,
                 body,
@@ -675,7 +677,9 @@ impl<'a> Walker<'a> {
                     | flag_if(*is_static, SymbolFlags::STATIC)
                     | flag_if(*is_abstract, SymbolFlags::ABSTRACT)
                     | flag_if(*is_override, SymbolFlags::OVERRIDE);
-                let ret = return_type.as_ref().map(ResolvedType::from_data_type);
+                let ret = return_type
+                    .as_ref()
+                    .map(|dt| ResolvedType::from_declared(dt, *extent));
                 self.declare_method(stmt, scope, name, parameters, ret, flags);
                 let method_scope = self.tree.push(ScopeKind::Method, scope, stmt.id);
                 self.walk_block(parameters, method_scope);
@@ -685,6 +689,7 @@ impl<'a> Walker<'a> {
                 access,
                 parameters,
                 body,
+                ..
             } => {
                 let cs = self.tree.push(ScopeKind::Constructor, scope, stmt.id);
                 let _ = access;
@@ -1300,6 +1305,8 @@ impl<'a> Walker<'a> {
     ) -> Option<SymbolId> {
         let atom = fold_atom(&name.name);
         let signature = method_signature(parameters);
+        let param_decls: Option<Arc<[MemberParam]>> =
+            crate::signature::member_params(parameters).map(Into::into);
         let name_span = VirtualSpan::new(name.span.start, name.span.end);
 
         let Some(anchor) = self.tree.get(scope).get_in(NamespaceId::Functions, &atom) else {
@@ -1315,6 +1322,9 @@ impl<'a> Walker<'a> {
             );
             if let Some(sym) = sym {
                 self.symbols.record_method_signature(sym, signature);
+                if let Some(params) = param_decls {
+                    self.symbols.record_method_param_decls(sym, params);
+                }
             }
             return sym;
         };
@@ -1364,6 +1374,9 @@ impl<'a> Walker<'a> {
             table_id: None,
         });
         self.symbols.record_method_signature(sym, signature);
+        if let Some(params) = param_decls {
+            self.symbols.record_method_param_decls(sym, params);
+        }
         self.symbols.record_method_overload(anchor, sym);
         if !self.arm_path.is_empty() {
             self.decl_arms.insert(sym, self.arm_path.clone());
@@ -1611,6 +1624,9 @@ struct ResolveWalker<'a> {
     /// word, and it is assigned on the ordinary class-walk path rather than from
     /// behind an index gate, so boxing it would buy nothing and cost a branch.
     current_class: Option<SymbolId>,
+    /// The walk is inside a `STATIC` method, constructor or property
+    /// accessor, which may reach only static members.
+    in_static: bool,
     /// Everything cross-file resolution needs, and **nothing a single-file run
     /// touches** — behind one `Option<Box<…>>` so a run with no index attached
     /// pays one word for the whole apparatus.
@@ -1657,6 +1673,19 @@ struct CrossFileState {
     /// unqualified. An `IMPLEMENTS` gap does not count, since a class declares
     /// its interfaces' members itself.
     opaque_surfaces: FxHashSet<SymbolId>,
+    /// Classes whose surface has a level whose member list the index says is
+    /// not whole: another compile may declare more methods.
+    partial_surfaces: FxHashSet<SymbolId>,
+    /// Classes of this file whose body an include did not arrive in.
+    partial_local_classes: FxHashSet<SymbolId>,
+    /// Classes on an inheritance cycle, which does not compile.
+    cyclic_classes: FxHashSet<SymbolId>,
+    /// Classes with any supertype whose members were not read, an interface
+    /// or a shipped class included.
+    unread_supertypes: FxHashSet<SymbolId>,
+    /// The body scope of each class the member lookup asked about; `None` for
+    /// a class synthesized from the index.
+    class_scopes: FxHashMap<SymbolId, Option<ScopeId>>,
     /// References recorded `NotInScope` inside a class with an opaque surface.
     /// Softened to `External` after the walk, so the receiver path still sees
     /// `NotInScope` and can try the name as a type first.
@@ -1806,6 +1835,19 @@ enum MemberRole {
     Outside,
 }
 
+/// How a receiver reaches its class, which decides the members it reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiverRole {
+    /// A value of the class: a variable, `NEW`, `CAST`, a member or a call.
+    Instance,
+    /// The class's type name: a static `Cls:Member`.
+    TypeName,
+    /// `THIS-OBJECT` in the class body.
+    ThisObject,
+    /// `SUPER` in the class body: only what the class inherits.
+    Super,
+}
+
 /// One class-typed declaration found by the pre-pass, and what to do about it.
 enum ClassTypedDecl {
     /// The named class is declared in this file: upgrade the declaration's
@@ -1847,19 +1889,29 @@ struct InheritedMember {
     /// a call never resolves to an inherited property, nor a bare read to an
     /// inherited method.
     namespace: NamespaceId,
-    /// The type every reachable descriptor for this name agrees on, or
-    /// [`ResolvedType::Unknown`] when they disagree — see the fold in
-    /// [`ResolveWalker::walk_member_surface`]. Never erased merely because a
-    /// name is declared more than once up the chain, which is an `OVERRIDE` or
-    /// an interface contract far more often than an overload.
-    data_type: Option<ResolvedType>,
-    flags: SymbolFlags,
+    /// One entry for a property or a data member: the nearest declaration. For
+    /// a method, every declaration of the name on the surface, nearest first,
+    /// one for each parameter list (an `OVERRIDE` and the method it overrides
+    /// count once).
+    candidates: Vec<InheritedCandidate>,
     /// The table a buffer member is `FOR`, resolved when the symbol is minted.
     record: Option<MemberRecord>,
-    /// `None` until the first reference names this member.
+    /// `None` until the first reference names this member. For a method, the
+    /// symbol of the first candidate, which anchors the overload set.
     symbol: Option<SymbolId>,
-    /// The file of the nearest class in the walk that declares it.
+}
+
+/// One declaration of an inherited member, as the walk found it.
+struct InheritedCandidate {
+    /// The declared type as the declaring file wrote it.
+    ty: MemberType,
+    params: Option<Arc<[MemberParam]>>,
+    flags: SymbolFlags,
+    /// The file of the class that declares it.
     file: IndexedFileId,
+    /// The imports of the declaring file, under which a class name in `ty` or
+    /// `params` is written.
+    imports: Arc<ImportContext>,
 }
 
 impl<'a> ResolveWalker<'a> {
@@ -1887,6 +1939,7 @@ impl<'a> ResolveWalker<'a> {
             synth_buffers: FxHashMap::default(),
             synth_sequences: None,
             current_class: None,
+            in_static: false,
             // Deliberately not created here, not even when an index *is*
             // attached: the first cross-file write creates it, so the cost is
             // paid by the run that has something to put in it.
@@ -1972,12 +2025,14 @@ impl<'a> ResolveWalker<'a> {
                             resolved.push(parent);
                         }
                     }
-                    TypeLookup::Builtin(_)
-                    | TypeLookup::External
-                    | TypeLookup::NotFound
-                    | TypeLookup::Unusable
-                    | TypeLookup::Unknowable
-                    | TypeLookup::NotLooked => {}
+                    // A built-in or .NET class never inherits a workspace class.
+                    TypeLookup::Builtin(_) | TypeLookup::External => {}
+                    TypeLookup::NotFound | TypeLookup::Unusable | TypeLookup::Unknowable => {
+                        self.symbols.record_incomplete_chain(class)
+                    }
+                    // No index: nothing was searched, and a single-file
+                    // analysis keeps its answer.
+                    TypeLookup::NotLooked => {}
                 }
             }
             self.symbols.record_resolved_supertypes(class, resolved);
@@ -2495,12 +2550,13 @@ impl<'a> ResolveWalker<'a> {
                             resolved.push(parent);
                         }
                     }
-                    TypeLookup::Builtin(_)
-                    | TypeLookup::External
-                    | TypeLookup::NotFound
-                    | TypeLookup::Unusable
-                    | TypeLookup::Unknowable
-                    | TypeLookup::NotLooked => {}
+                    TypeLookup::Builtin(_) | TypeLookup::External => {}
+                    TypeLookup::NotFound | TypeLookup::Unusable | TypeLookup::Unknowable => {
+                        self.symbols.record_incomplete_chain(sym)
+                    }
+                    // No index: nothing was searched, and a single-file
+                    // analysis keeps its answer.
+                    TypeLookup::NotLooked => {}
                 }
             }
             self.symbols.record_resolved_supertypes(sym, resolved);
@@ -2515,6 +2571,34 @@ impl<'a> ResolveWalker<'a> {
     /// `External` (cross-file or USING-imported) and stay `Unknown` — the
     /// type-check pass treats `Unknown` as the lattice bottom.
     fn upgrade_class_types(&mut self, program: &[Statement]) {
+        self.upgrade_class_decls(program);
+        self.resolve_local_method_params();
+    }
+
+    /// Resolve the class names of each local method's parameter list in the
+    /// scope that declares the method.
+    fn resolve_local_method_params(&mut self) {
+        for (sym, decls) in self.symbols.methods_with_param_decls() {
+            let symbol = self.symbols.get(sym);
+            let (scope, span) = (symbol.declared_in, symbol.name_span);
+            let params = crate::signature::call_params(&decls, |name| {
+                match self.resolve_type_name(name.as_written(), scope, span) {
+                    TypeLookup::Local(class) | TypeLookup::Indexed(class) => {
+                        ResolvedType::Class(class)
+                    }
+                    TypeLookup::Builtin(_)
+                    | TypeLookup::External
+                    | TypeLookup::NotFound
+                    | TypeLookup::Unusable
+                    | TypeLookup::Unknowable
+                    | TypeLookup::NotLooked => ResolvedType::Unknown,
+                }
+            });
+            self.symbols.record_method_params(sym, params.into());
+        }
+    }
+
+    fn upgrade_class_decls(&mut self, program: &[Statement]) {
         let mut decls: Vec<ClassTypedDecl> = Vec::new();
         self.collect_class_upgrades(program, ScopeId::ROOT, &mut decls);
         for decl in decls {
@@ -2568,7 +2652,10 @@ impl<'a> ResolveWalker<'a> {
                     ..
                 }
                 | StatementKind::Property {
-                    name, data_type, ..
+                    name,
+                    data_type,
+                    extent: None,
+                    ..
                 } => data_type
                     .class_name()
                     .and_then(|class_name| self.class_upgrade(class_name, scope, name)),
@@ -2576,6 +2663,27 @@ impl<'a> ResolveWalker<'a> {
                     name, return_type, ..
                 } => return_type.class_name().and_then(|class_name| {
                     self.class_upgrade_in_ns(class_name, scope, NamespaceId::Functions, name)
+                }),
+                // Each declaration of an overload set is its own symbol, found
+                // by its declaration node rather than by its name.
+                StatementKind::Method {
+                    name,
+                    return_type: Some(return_type),
+                    extent: None,
+                    ..
+                } => return_type.class_name().and_then(|class_name| {
+                    let anchor = self
+                        .tree
+                        .get(scope)
+                        .get_in(NamespaceId::Functions, &fold_atom(&name.name))?;
+                    let decl_sym = self
+                        .symbols
+                        .method_overloads(anchor)
+                        .unwrap_or(std::slice::from_ref(&anchor))
+                        .iter()
+                        .copied()
+                        .find(|s| self.symbols.get(*s).declaration == stmt.id)?;
+                    self.class_upgrade_of(class_name, scope, decl_sym, name)
                 }),
                 _ => None,
             };
@@ -2706,6 +2814,16 @@ impl<'a> ResolveWalker<'a> {
     ) -> Option<ClassTypedDecl> {
         let decl_atom = fold_atom(&decl_name.name);
         let decl_sym = self.tree.get(scope).get_in(decl_ns, &decl_atom)?;
+        self.class_upgrade_of(class_name, scope, decl_sym, decl_name)
+    }
+
+    fn class_upgrade_of(
+        &self,
+        class_name: &str,
+        scope: ScopeId,
+        decl_sym: SymbolId,
+        decl_name: &Identifier,
+    ) -> Option<ClassTypedDecl> {
         // Only in play if still Unknown.
         if !matches!(
             self.symbols.get(decl_sym).data_type.as_ref(),
@@ -2879,9 +2997,11 @@ impl<'a> ResolveWalker<'a> {
                 get_body,
                 set_body,
                 set_parameters,
+                is_static,
                 ..
             } => {
                 self.note_data_type(data_type, scope, identifier_span(name));
+                let outer = std::mem::replace(&mut self.in_static, *is_static);
                 if let Some(body) = get_body
                     && let Some(gs) = self.find_child_scope(scope, stmt.id, ScopeKind::PropertyGet)
                 {
@@ -2893,6 +3013,7 @@ impl<'a> ResolveWalker<'a> {
                         self.walk_block(body, ss);
                     }
                 }
+                self.in_static = outer;
             }
 
             // ---- Scope-opening declarations ------------------------------
@@ -2946,6 +3067,17 @@ impl<'a> ResolveWalker<'a> {
                     self.current_class =
                         self.tree
                             .resolve(scope, NamespaceId::Types, &fold_atom(&name.name));
+                    // An include that did not arrive in the body may declare
+                    // more members.
+                    if let Some(class) = self.current_class
+                        && self
+                            .ctx
+                            .elided_includes
+                            .iter()
+                            .any(|&at| stmt.span.start <= at && at < stmt.span.end)
+                    {
+                        self.cross_file_mut().partial_local_classes.insert(class);
+                    }
                     self.walk_block(body, cs);
                     self.current_class = outer;
                 }
@@ -2960,22 +3092,30 @@ impl<'a> ResolveWalker<'a> {
                 return_type,
                 parameters,
                 body,
+                is_static,
                 ..
             } => {
                 if let Some(rt) = return_type {
                     self.note_data_type(rt, scope, identifier_span(name));
                 }
                 if let Some(ms) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
+                    let outer = std::mem::replace(&mut self.in_static, *is_static);
                     self.walk_block(parameters, ms);
                     self.walk_block(body, ms);
+                    self.in_static = outer;
                 }
             }
             StatementKind::Constructor {
-                parameters, body, ..
+                parameters,
+                body,
+                is_static,
+                ..
             } => {
                 if let Some(cs) = self.find_child_scope(scope, stmt.id, ScopeKind::Constructor) {
+                    let outer = std::mem::replace(&mut self.in_static, *is_static);
                     self.walk_block(parameters, cs);
                     self.walk_block(body, cs);
+                    self.in_static = outer;
                 }
             }
             StatementKind::Destructor { body } => {
@@ -3849,6 +3989,14 @@ impl<'a> ResolveWalker<'a> {
                     &[NamespaceId::Values, NamespaceId::Buffers],
                     mode,
                 );
+                // `THIS-OBJECT` in a class body is a value of that class.
+                if id.name.eq_ignore_ascii_case("this-object")
+                    && let Some(class) = self.current_class
+                    && let Some(Resolution::Resolved(sym)) = self.references.get(expr.id)
+                    && self.symbols.get(*sym).kind == SymbolKind::BuiltIn
+                {
+                    self.symbols.record_expr_class(expr.id, class);
+                }
             }
 
             ExpressionKind::Add(l, r)
@@ -3964,6 +4112,18 @@ impl<'a> ResolveWalker<'a> {
                         }
                     }
                 }
+                // `CAST(x, Cls)` is a value of `Cls`.
+                if name.name.eq_ignore_ascii_case("cast")
+                    && let Some((operand, _)) = &type_name
+                    && let Some(Resolution::Resolved(class)) = self.references.get(*operand)
+                    && matches!(
+                        self.symbols.get(*class).kind,
+                        SymbolKind::Class | SymbolKind::Interface
+                    )
+                {
+                    self.symbols.record_expr_class(expr.id, *class);
+                }
+                self.note_method_call(expr.id, name);
                 // The operand of `AVAILABLE` and its siblings is a record.
                 if is_record_operand_function(&name.name)
                     && !matches!(self.references.get(expr.id), Some(Resolution::Resolved(_)))
@@ -4722,18 +4882,20 @@ impl<'a> ResolveWalker<'a> {
     }
 
     /// Resolve a member named through a receiver (`obj:method()`, `obj:prop`)
-    /// against the receiver's class, when that class came from the workspace.
+    /// against the receiver's class, and record what the type-check pass needs
+    /// to type it.
     ///
-    /// Records a reference entry on the *composite* expression's node id, which
-    /// nothing writes to today — so with no index attached this is a no-op and
-    /// the file's `references` table is byte-for-byte what it was.
+    /// The receiver class and role come from [`Self::receiver_class`]. A class
+    /// of the analysed file offers its own members from its body scope, then
+    /// what it inherits; a workspace class offers its surface from the index.
+    /// A member the role cannot reach, or that no level declares, records
+    /// [`UnresolvedReason::PresentButUnusable`], which no rule reports.
     ///
-    /// Deliberately does **not** write the member's type into the `types` side
-    /// table. `check_pass` types every `MethodCall` and `MemberAccess` as
-    /// `Unknown`, and making a real type flow out of one would feed
-    /// `type-mismatch-assignment` on shapes it is silent about today. The
-    /// member's declared type is on the resolved symbol, where a consumer that
-    /// wants it can read it without the type checker being changed underneath.
+    /// A member that resolves but whose type oxabl does not know (a static
+    /// member through an instance or the reverse, a class on an inheritance
+    /// cycle, a method whose candidates may be incomplete) is marked with
+    /// [`SymbolTable::mark_untyped_member`]: navigation still answers, and the
+    /// type-check pass gives `Unknown`.
     fn resolve_member_reference(
         &mut self,
         object: &Expression,
@@ -4742,73 +4904,353 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
         mode: AccessMode,
     ) {
-        if !self.ctx.index_loaded {
-            return;
-        }
-        let Some(class) = self.receiver_indexed_class(object) else {
+        let Some((class, role)) = self.receiver_class(object) else {
             return;
         };
         let atom = fold_atom(&member.name);
-        match self.lookup_inherited(class, &atom, namespaces, member) {
-            InheritedLookup::Member(sym) => {
-                self.references.insert(expr_id, Resolution::Resolved(sym));
-                self.bump_count(sym, mode);
-            }
-            // Two different facts, one answer: the class declares the name but
-            // not accessibly (`Inaccessible`), or offers nothing by that name in
-            // this namespace at all (`Absent`). Either way the class *was*
-            // located and consulted, so the honest answer is that the lookup
-            // failed against a class that exists — never `NotInScope`, which
-            // would claim there is no such symbol and is what LINT0001 renders,
-            // and never `AbsentFromWorkspace`, which is the reason LINT0001 now
-            // reports.
-            InheritedLookup::Inaccessible | InheritedLookup::Absent => {
-                self.references.insert(
-                    expr_id,
-                    Resolution::Unresolved {
-                        name: atom,
-                        reason: UnresolvedReason::PresentButUnusable,
-                    },
-                );
-            }
+        let Some(sym) = self.lookup_member(class, role, &atom, namespaces, member) else {
+            self.references.insert(
+                expr_id,
+                Resolution::Unresolved {
+                    name: atom,
+                    reason: UnresolvedReason::PresentButUnusable,
+                },
+            );
+            return;
+        };
+        self.references.insert(expr_id, Resolution::Resolved(sym));
+        self.bump_count(sym, mode);
+        let method = namespaces.contains(&NamespaceId::Functions);
+        let wants_static = role == ReceiverRole::TypeName;
+        let static_mismatch = crate::overload::candidates_of(self.symbols, sym)
+            .iter()
+            .any(|&c| self.symbols.get(c).flags.contains(SymbolFlags::STATIC) != wants_static);
+        if static_mismatch
+            || self.class_on_cycle(class)
+            || (method && self.method_set_open(class, &atom))
+        {
+            self.symbols.mark_untyped_member(expr_id);
         }
     }
 
-    /// The workspace class a receiver expression evaluates to, if any.
+    /// The member `atom` of `class` that `role` reaches, or `None`.
     ///
-    /// Two shapes qualify, and both are already recorded in `references` by the
-    /// time this runs:
-    ///
-    /// * the receiver resolved *to* an indexed class symbol — a type name used
-    ///   as a receiver, or a `NEW` of one;
-    /// * the receiver resolved to a declaration whose `AS CLASS` named an
-    ///   indexed class — read off the declaration's own
-    ///   `ResolvedType::Class`, which is where that link now lives.
-    ///
-    /// A locally declared class is deliberately not handled: its members live in
-    /// the scope tree, not the index, and resolving them is a different job that
-    /// does not resolve today either.
-    fn receiver_indexed_class(&self, object: &Expression) -> Option<SymbolId> {
-        let Some(Resolution::Resolved(sym)) = self.references.get(object.id) else {
-            return None;
+    /// For a method of a class of the analysed file, the inherited
+    /// declarations of the name are recorded beside the class's own overload
+    /// set ([`SymbolTable::inherited_candidates`]), so the pick sees both.
+    fn lookup_member(
+        &mut self,
+        class: SymbolId,
+        role: ReceiverRole,
+        atom: &OxablAtom,
+        namespaces: &[NamespaceId],
+        use_site: &Identifier,
+    ) -> Option<SymbolId> {
+        let local = self.class_body_scope(class);
+        // A member of another class of this file, or of a workspace class
+        // reached from outside: only `PUBLIC` members.
+        let outside = Some(class) != self.current_class;
+        let public = |symbols: &SymbolTable, sym: SymbolId| {
+            !outside || symbols.get(sym).flags.contains(SymbolFlags::PUBLIC)
         };
-        // No cross-file state means nothing was ever synthesized from an index,
-        // so no receiver can be an indexed class — the same answer both maps
-        // would give when empty.
-        let cf = self.cross_file()?;
-        if cf.indexed_class_of.contains_key(sym) {
-            return Some(*sym);
-        }
-        // A declaration typed as a class: qualify only when that class came from
-        // the index, which `indexed_class_of` is the record of. A locally
-        // declared class's members live in the scope tree, and resolving them is
-        // a different job that does not work today either.
-        match self.symbols.get(*sym).data_type {
-            Some(ResolvedType::Class(class)) if cf.indexed_class_of.contains_key(&class) => {
-                Some(class)
+        let own = match (local, role) {
+            (
+                Some(scope),
+                ReceiverRole::Instance | ReceiverRole::TypeName | ReceiverRole::ThisObject,
+            ) => namespaces
+                .iter()
+                .find_map(|&ns| self.tree.get(scope).get_in(ns, atom))
+                .filter(|&sym| public(self.symbols, sym)),
+            _ => None,
+        };
+        if let Some(own) = own {
+            if namespaces.contains(&NamespaceId::Functions) {
+                self.gather_inherited(class, own, atom, use_site, local.is_some() && outside);
             }
+            return Some(own);
+        }
+        match self.lookup_inherited(class, atom, namespaces, use_site) {
+            InheritedLookup::Member(sym) if local.is_none() || public(self.symbols, sym) => {
+                Some(sym)
+            }
+            InheritedLookup::Member(_)
+            | InheritedLookup::Inaccessible
+            | InheritedLookup::Absent => None,
+        }
+    }
+
+    /// Record the inherited declarations of the name of the local method
+    /// `own` beside its own overload set. Nothing is minted when every
+    /// inherited declaration has the parameter list of an own one: those are
+    /// the methods the own ones override, and nothing reaches them.
+    fn gather_inherited(
+        &mut self,
+        class: SymbolId,
+        own: SymbolId,
+        atom: &OxablAtom,
+        use_site: &Identifier,
+        public_only: bool,
+    ) {
+        if !self.ctx.index_loaded || self.symbols.has_inherited_candidates(own) {
+            return;
+        }
+        self.walk_member_surface(class);
+        let own_decls: SmallVec<[Option<Arc<[MemberParam]>>; 8]> =
+            crate::overload::candidates_of(self.symbols, own)
+                .iter()
+                .map(|&o| self.symbols.method_param_decls(o).cloned())
+                .collect();
+        let shadowed = self
+            .cross_file()
+            .and_then(|cf| cf.inherited.get(&(class, atom.clone())))
+            .is_none_or(|member| {
+                member.namespace != NamespaceId::Functions
+                    || member
+                        .candidates
+                        .iter()
+                        .all(|c| c.params.is_some() && own_decls.contains(&c.params))
+            });
+        if shadowed {
+            return;
+        }
+        if let InheritedLookup::Member(inherited) =
+            self.lookup_inherited(class, atom, &[NamespaceId::Functions], use_site)
+            && (!public_only
+                || self
+                    .symbols
+                    .get(inherited)
+                    .flags
+                    .contains(SymbolFlags::PUBLIC))
+        {
+            self.merge_inherited_candidates(own, inherited);
+        }
+    }
+
+    /// Record the inherited declarations of a local method's name beside its
+    /// own overload set, once. A declaration with the parameter list of an own
+    /// one is the method it overrides, and is left out.
+    fn merge_inherited_candidates(&mut self, own: SymbolId, inherited: SymbolId) {
+        if self.symbols.has_inherited_candidates(own) {
+            return;
+        }
+        let own_set = crate::overload::candidates_of(self.symbols, own);
+        let extra: Vec<SymbolId> = crate::overload::candidates_of(self.symbols, inherited)
+            .into_iter()
+            .filter(|&c| {
+                let Some(params) = self.symbols.method_params(c) else {
+                    return true;
+                };
+                !own_set
+                    .iter()
+                    .any(|&o| self.symbols.method_params(o) == Some(params))
+            })
+            .collect();
+        self.symbols.record_inherited_candidates(own, extra);
+    }
+
+    /// An unqualified call of a method inside its class (`Score(1)`): gather
+    /// the declarations the class inherits beside its own, so the call and
+    /// `THIS-OBJECT:Score(1)` read one set, and mark the call when its
+    /// candidates may be incomplete. Inside a static member the compiler
+    /// picks from every candidate and then refuses an instance one, so a set
+    /// with an instance candidate gives no type there.
+    fn note_method_call(&mut self, expr_id: NodeId, name: &Identifier) {
+        let Some(class) = self.current_class else {
+            return;
+        };
+        let Some(Resolution::Resolved(sym)) = self.references.get(expr_id) else {
+            return;
+        };
+        let sym = *sym;
+        if !self.symbols.is_method(sym) {
+            return;
+        }
+        let atom = fold_atom(&name.name);
+        if !self.symbols.get(sym).flags.contains(SymbolFlags::INHERITED) {
+            self.gather_inherited(class, sym, &atom, name, false);
+        }
+        let instance_in_static = self.in_static
+            && crate::overload::candidates_of(self.symbols, sym)
+                .iter()
+                .any(|&c| !self.symbols.get(c).flags.contains(SymbolFlags::STATIC));
+        if instance_in_static || self.class_on_cycle(class) || self.method_set_open(class, &atom) {
+            self.symbols.mark_untyped_member(expr_id);
+        }
+    }
+
+    /// The class a receiver expression evaluates to, and how it reaches it.
+    ///
+    /// Reads only what the walk already recorded for the receiver node, so the
+    /// receiver is always walked first. `None` when oxabl does not know the
+    /// class: a handle, an unresolved name, a built-in class, a dynamic form.
+    fn receiver_class(&mut self, object: &Expression) -> Option<(SymbolId, ReceiverRole)> {
+        let resolved = match self.references.get(object.id) {
+            Some(Resolution::Resolved(sym)) => Some(*sym),
+            _ => None,
+        };
+        let is_class = |symbols: &SymbolTable, sym: SymbolId| {
+            matches!(
+                symbols.get(sym).kind,
+                SymbolKind::Class | SymbolKind::Interface
+            )
+        };
+        let class_type = |symbols: &SymbolTable, sym: SymbolId| match symbols.get(sym).data_type {
+            Some(ResolvedType::Class(class)) => Some(class),
+            _ => None,
+        };
+        match &object.kind {
+            ExpressionKind::New { .. } => resolved
+                .filter(|&sym| is_class(self.symbols, sym))
+                .map(|sym| (sym, ReceiverRole::Instance)),
+            ExpressionKind::FunctionCall { .. } => self
+                .symbols
+                .expr_class(object.id)
+                .map(|class| (class, ReceiverRole::Instance)),
+            ExpressionKind::MemberAccess { .. } => {
+                let sym = resolved?;
+                if self.symbols.is_untyped_member(object.id) {
+                    return None;
+                }
+                class_type(self.symbols, sym).map(|class| (class, ReceiverRole::Instance))
+            }
+            ExpressionKind::MethodCall { arguments, .. } => {
+                let sym = resolved?;
+                if self.symbols.is_untyped_member(object.id) {
+                    return None;
+                }
+                // The argument types are not known yet: only a pick that the
+                // count alone, or an agreement of the candidates, settles.
+                let args = vec![ResolvedType::Unknown; arguments.len()];
+                match crate::overload::call_type(self.symbols, sym, &args) {
+                    ResolvedType::Class(class) => Some((class, ReceiverRole::Instance)),
+                    _ => None,
+                }
+            }
+            ExpressionKind::Identifier(id) => {
+                if let Some(class) = self.symbols.expr_class(object.id) {
+                    return Some((class, ReceiverRole::ThisObject));
+                }
+                if id.name.eq_ignore_ascii_case("super") {
+                    return self.super_receiver(resolved);
+                }
+                match resolved {
+                    Some(sym) if is_class(self.symbols, sym) => Some((sym, ReceiverRole::TypeName)),
+                    Some(sym) => class_type(self.symbols, sym).map(|c| (c, ReceiverRole::Instance)),
+                    None => self.local_type_receiver(&id.name),
+                }
+            }
+            ExpressionKind::FieldAccess { .. } => match resolved {
+                Some(sym) if is_class(self.symbols, sym) => Some((sym, ReceiverRole::TypeName)),
+                Some(sym) => class_type(self.symbols, sym).map(|c| (c, ReceiverRole::Instance)),
+                None => None,
+            },
             _ => None,
         }
+    }
+
+    /// `SUPER` as a receiver: the class of the body, whose lookup starts at
+    /// its parent. `None` outside a class body and in a class with no
+    /// `INHERITS`.
+    fn super_receiver(&self, resolved: Option<SymbolId>) -> Option<(SymbolId, ReceiverRole)> {
+        let builtin = resolved.is_some_and(|sym| self.symbols.get(sym).kind == SymbolKind::BuiltIn);
+        let class = self.current_class.filter(|_| builtin)?;
+        self.symbols
+            .supertypes(class)
+            .and_then(|s| s.inherits.as_ref())
+            .map(|_| (class, ReceiverRole::Super))
+    }
+
+    /// A bare receiver name that resolved to nothing in the value namespaces
+    /// and names a class of this file: a static `Cls:Member`.
+    fn local_type_receiver(&self, raw: &str) -> Option<(SymbolId, ReceiverRole)> {
+        self.tree
+            .resolve(ScopeId::ROOT, NamespaceId::Types, &fold_atom(raw))
+            .map(|sym| (sym, ReceiverRole::TypeName))
+    }
+
+    /// The body scope of a class or interface declared in this file, or
+    /// `None` for a class synthesized from the index.
+    fn class_body_scope(&mut self, class: SymbolId) -> Option<ScopeId> {
+        if let Some(found) = self.cross_file().and_then(|cf| cf.class_scopes.get(&class)) {
+            return *found;
+        }
+        let declaration = self.symbols.get(class).declaration;
+        let scope = (declaration != NodeId::DUMMY)
+            .then(|| {
+                self.tree
+                    .iter()
+                    .find(|(_, s)| {
+                        s.owner_node == declaration
+                            && matches!(s.kind, ScopeKind::Class | ScopeKind::Interface)
+                    })
+                    .map(|(id, _)| id)
+            })
+            .flatten();
+        self.cross_file_mut().class_scopes.insert(class, scope);
+        scope
+    }
+
+    /// Whether every member of `class` has the type `Unknown`, because its
+    /// inheritance chain is a cycle and does not compile.
+    fn class_on_cycle(&mut self, class: SymbolId) -> bool {
+        if !self.ctx.index_loaded {
+            return false;
+        }
+        self.walk_member_surface(class);
+        self.cross_file()
+            .is_some_and(|cf| cf.cyclic_classes.contains(&class))
+    }
+
+    /// Whether the method `atom` of `class` may have candidates oxabl did not
+    /// see, so that a call may reach a declaration it does not know.
+    fn method_set_open(&mut self, class: SymbolId, atom: &OxablAtom) -> bool {
+        // Every class inherits these from `Progress.Lang.Object`, whose
+        // signatures oxabl does not model.
+        if matches!(atom.as_ref(), "clone" | "equals" | "getclass" | "tostring") {
+            return true;
+        }
+        let symbol = self.symbols.get(class);
+        let needs_interfaces =
+            symbol.kind == SymbolKind::Interface || symbol.flags.contains(SymbolFlags::ABSTRACT);
+        let local = self.class_body_scope(class).is_some();
+        if local
+            && (self.ctx.source_context.is_include_fragment()
+                || self
+                    .cross_file()
+                    .is_some_and(|cf| cf.partial_local_classes.contains(&class)))
+        {
+            return true;
+        }
+        if !self.ctx.index_loaded {
+            return local && self.local_supertypes_unread(class, needs_interfaces);
+        }
+        self.walk_member_surface(class);
+        let Some(cf) = self.cross_file() else {
+            return false;
+        };
+        cf.opaque_surfaces.contains(&class)
+            || cf.partial_surfaces.contains(&class)
+            || cf.cyclic_classes.contains(&class)
+            || (needs_interfaces && cf.unread_supertypes.contains(&class))
+    }
+
+    /// With no index: whether a supertype of the local `class` is not
+    /// declared in this file. Interfaces count only for an interface or an
+    /// abstract class, which need not declare their interfaces' methods.
+    fn local_supertypes_unread(&self, class: SymbolId, interfaces: bool) -> bool {
+        if self.inherits_unread_parent(class) {
+            return true;
+        }
+        if !interfaces {
+            return false;
+        }
+        self.symbols.supertypes(class).is_some_and(|supers| {
+            supers.implements.iter().any(|s| {
+                self.tree
+                    .resolve(ScopeId::ROOT, NamespaceId::Types, s.name.as_atom())
+                    .is_none()
+            })
+        })
     }
 
     /// A receiver identifier that resolved to nothing local may still be a
@@ -5173,16 +5615,10 @@ impl<'a> ResolveWalker<'a> {
                     self.try_dotted_receiver_type(expr, scope);
                 }
             }
-            ExpressionKind::MemberAccess { object, .. } => {
-                self.walk_receiver(object, scope);
-            }
-            ExpressionKind::MethodCall {
-                object, arguments, ..
-            } => {
-                self.walk_receiver(object, scope);
-                for a in arguments {
-                    self.walk_expression(a, scope, AccessMode::Read);
-                }
+            // A link of a chain resolves as a member of its own receiver, so
+            // the next link knows its class.
+            ExpressionKind::MemberAccess { .. } | ExpressionKind::MethodCall { .. } => {
+                self.walk_expression(expr, scope, AccessMode::Read);
             }
             ExpressionKind::ArrayAccess { array, index } => {
                 self.walk_receiver_link(array, scope, false);
@@ -6298,7 +6734,7 @@ impl<'a> ResolveWalker<'a> {
         // Copied out of the map rather than borrowed across the insert below,
         // which needs `&mut self.symbols`. Scoped in a block for the same reason:
         // the borrow of the cross-file state must end before that insert.
-        let (kind, namespace, data_type, flags, record, file) = {
+        let (kind, namespace, record) = {
             let Some(member) = cf.inherited.get(&key) else {
                 // Probed only in the namespaces the reference site is looking in,
                 // so an inaccessible member cannot soften a reference that was
@@ -6321,47 +6757,98 @@ impl<'a> ResolveWalker<'a> {
             if let Some(sym) = member.symbol {
                 return InheritedLookup::Member(sym);
             }
-            (
-                member.kind,
-                member.namespace,
-                // Already folded across every reachable descriptor for this
-                // name, so an overload set that disagrees is `Unknown` here and
-                // one that agrees keeps its type.
-                member.data_type.clone(),
-                member.flags,
-                member.record.clone(),
-                member.file,
-            )
+            (member.kind, member.namespace, member.record.clone())
         };
+        // Taken out of the map while the symbols are minted, which needs
+        // `&mut self`; the entry is known to exist.
+        let candidates = std::mem::take(
+            &mut self
+                .cross_file_mut()
+                .inherited
+                .get_mut(&key)
+                .expect("the entry was read above")
+                .candidates,
+        );
         let table_id = record.and_then(|_| self.inherited_buffer_table(class, atom));
         // The declared type goes onto the symbol, exactly as a local
-        // declaration's would.
-        //
-        // It used to be parked in a side map, so that attaching an index could be
-        // merged on evidence that it changed no diagnostic: `Symbol::data_type`
-        // feeds the type lattice through two readers that take it at face value —
-        // `check.rs::type_from_reference`'s fallback arm and
-        // `type_mismatch_assignment::target_type`, which reads `data_type`
-        // directly — and either one turns an inherited `LONGCHAR` assigned into an
-        // `INTEGER` from silence into a finding. That is now the *intent*: the
-        // type is the one the declaring file wrote, and a cross-file resolution
-        // being shape-identical to a local one is what lets every consumer read
-        // one type channel instead of two.
-        let sym = self.symbols.insert(Symbol {
-            data_type,
-            flags: flags | SymbolFlags::INHERITED,
-            table_id,
-            ..Symbol::synthesized(atom.clone(), namespace, kind, identifier_span(use_site))
-        });
-        if self.ctx.record_sites {
-            self.symbols.record_member_file(sym, file);
+        // declaration's would. For a method, each candidate is its own symbol
+        // with its own type and parameter list, linked as an overload set
+        // under the nearest one; the type-check pass picks among them.
+        let mut anchor: Option<SymbolId> = None;
+        for candidate in &candidates {
+            let data_type = self.inherited_member_type(&candidate.ty, &candidate.imports, use_site);
+            let sym = self.symbols.insert(Symbol {
+                data_type,
+                flags: candidate.flags | SymbolFlags::INHERITED,
+                table_id,
+                ..Symbol::synthesized(atom.clone(), namespace, kind, identifier_span(use_site))
+            });
+            if self.ctx.record_sites {
+                self.symbols.record_member_file(sym, candidate.file);
+            }
+            if kind == SymbolKind::Function
+                && let Some(decls) = &candidate.params
+            {
+                let imports = Arc::clone(&candidate.imports);
+                let params = crate::signature::call_params(decls, |name| {
+                    self.class_type_in_imports(name, &imports, use_site)
+                });
+                self.symbols.record_method_params(sym, params.into());
+            }
+            match anchor {
+                None => anchor = Some(sym),
+                Some(first) => self.symbols.record_method_overload(first, sym),
+            }
         }
-        // Re-acquired rather than held across the insert above. The entry is
-        // known to exist — the read that got us here found it.
+        let sym = anchor.expect("an inherited member has at least one candidate");
+        // Put back for the readers of the surface, with the anchor recorded.
         if let Some(member) = self.cross_file_mut().inherited.get_mut(&key) {
+            member.candidates = candidates;
             member.symbol = Some(sym);
         }
         InheritedLookup::Member(sym)
+    }
+
+    /// The type of an inherited member as the declaring file wrote it, in this
+    /// file's symbol space. A class name is read through the declaring file's
+    /// imports; a name that does not resolve gives `Unknown`.
+    fn inherited_member_type(
+        &mut self,
+        ty: &MemberType,
+        imports: &ImportContext,
+        use_site: &Identifier,
+    ) -> Option<ResolvedType> {
+        match ty {
+            MemberType::Portable(ty) => Some(ty.as_resolved().clone()),
+            MemberType::Named(name) => Some(self.class_type_in_imports(name, imports, use_site)),
+            // `VOID`, or a form naming no type: no type at all.
+            MemberType::Untyped => None,
+        }
+    }
+
+    /// The class a name written under `imports` (another file's) means, as a
+    /// type: `Class` when it resolves to a class of this file or of the
+    /// workspace, else `Unknown`. A bare name of a file that may import more
+    /// than the index read stays `Unknown`.
+    fn class_type_in_imports(
+        &mut self,
+        name: &IndexName,
+        imports: &ImportContext,
+        use_site: &Identifier,
+    ) -> ResolvedType {
+        let raw = name.as_written();
+        if !raw.contains('.') && imports.has_unseen_imports() {
+            return ResolvedType::Unknown;
+        }
+        match self.search_in_imports(raw, imports, true, identifier_span(use_site)) {
+            TypeLookup::Local(class) | TypeLookup::Indexed(class) => ResolvedType::Class(class),
+            TypeLookup::Builtin(_)
+            | TypeLookup::External
+            | TypeLookup::NotFound
+            | TypeLookup::Unusable
+            | TypeLookup::Unknowable
+            | TypeLookup::NotLooked => ResolvedType::Unknown,
+        }
     }
 
     /// The schema table the inherited buffer `name` reads, so that its fields and
@@ -6455,6 +6942,7 @@ impl<'a> ResolveWalker<'a> {
                 return;
             }
             SupertypeLookup::Assembly => {
+                self.cross_file_mut().unread_supertypes.insert(class);
                 if superclass {
                     self.cross_file_mut().opaque_surfaces.insert(class);
                 }
@@ -6464,6 +6952,9 @@ impl<'a> ResolveWalker<'a> {
                 root_object,
                 shipped,
             } => {
+                if !root_object {
+                    self.cross_file_mut().unread_supertypes.insert(class);
+                }
                 // `Progress.Lang.Object` is every class's root, written or not, so
                 // naming it hides nothing an unwritten root does not.
                 if superclass && !root_object {
@@ -6559,7 +7050,15 @@ impl<'a> ResolveWalker<'a> {
             }
         };
 
+        // The names on the `INHERITS` chain: one that comes back is a cycle.
+        let mut chain: FxHashSet<IndexName> = FxHashSet::default();
+        if role == MemberRole::Subclass {
+            chain.insert(IndexName::new(&self.symbols.get(class).name));
+        }
         while let Some((name, superclass)) = queue.pop_front() {
+            if superclass && !chain.insert(name.clone()) {
+                self.cross_file_mut().cyclic_classes.insert(class);
+            }
             if !visited.insert(name.clone()) {
                 continue;
             }
@@ -6570,7 +7069,7 @@ impl<'a> ResolveWalker<'a> {
             // absent-parent case looks exactly like a parent that resolved and
             // contributed nothing. The analyze envelope's dependency-state
             // section is what reads it.
-            let declaring = match index.class(&name) {
+            let (declaring, imports) = match index.class(&name) {
                 IndexAnswer::Found(descriptor) => {
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Linked(descriptor.file));
@@ -6587,7 +7086,10 @@ impl<'a> ResolveWalker<'a> {
                             &mut queue,
                         );
                     }
-                    descriptor.file
+                    if !descriptor.members_complete {
+                        self.cross_file_mut().partial_surfaces.insert(class);
+                    }
+                    (descriptor.file, Arc::clone(&descriptor.imports))
                 }
                 // A supertype no file on the paths declares, or one that cannot
                 // be known statically, contributes nothing — and no diagnostic:
@@ -6596,6 +7098,7 @@ impl<'a> ResolveWalker<'a> {
                 // A shipped class is not the workspace's to supply, so its miss
                 // is no gap in it either.
                 IndexAnswer::NotFound => {
+                    self.cross_file_mut().unread_supertypes.insert(class);
                     if superclass {
                         self.cross_file_mut().opaque_surfaces.insert(class);
                     }
@@ -6613,6 +7116,7 @@ impl<'a> ResolveWalker<'a> {
                 // missing file.
                 IndexAnswer::Unusable => {
                     let cf = self.cross_file_mut();
+                    cf.unread_supertypes.insert(class);
                     cf.incomplete_surfaces.insert(class);
                     if superclass {
                         cf.opaque_surfaces.insert(class);
@@ -6627,6 +7131,7 @@ impl<'a> ResolveWalker<'a> {
                 }
                 IndexAnswer::Unknowable => {
                     let cf = self.cross_file_mut();
+                    cf.unread_supertypes.insert(class);
                     cf.incomplete_surfaces.insert(class);
                     if superclass {
                         cf.opaque_surfaces.insert(class);
@@ -6677,64 +7182,53 @@ impl<'a> ResolveWalker<'a> {
                             ));
                             continue;
                         }
-                        let data_type = match &member.ty {
-                            MemberType::Portable(ty) => Some(ty.as_resolved().clone()),
-                            // A class-typed member. `ResolvedType::Class` carries
-                            // a `SymbolId` in *this* file's table and no symbol
-                            // for a cross-file class exists yet — minting one is
-                            // `USING`/`NEW` resolution's job — so the type stays
-                            // `Unknown`. That is the lattice bottom, and exactly
-                            // what a locally declared class-typed variable gets
-                            // today when its class is declared elsewhere. It also
-                            // avoids a second chain walk per member.
-                            MemberType::Named(_) => Some(ResolvedType::Unknown),
-                            // `VOID`, or a form naming no type: no type at all.
-                            MemberType::Untyped => None,
+                        let candidate = InheritedCandidate {
+                            ty: member.ty.clone(),
+                            params: member.params.clone(),
+                            flags: access_flag(member.access)
+                                | flag_if(member.is_static, SymbolFlags::STATIC),
+                            file: declaring,
+                            imports: Arc::clone(&imports),
                         };
-                        self.cross_file_mut()
+                        match self
+                            .cross_file_mut()
                             .inherited
                             .entry((class, member.name.as_atom().clone()))
-                            .and_modify(|existing| {
+                        {
+                            // The surface is walked breadth-first over the
+                            // whole ancestor chain, so one name arrives more
+                            // than once for an `OVERRIDE` and for a class that
+                            // inherits an interface's contract as well as for
+                            // a genuine overload. A declaration with the
+                            // parameter list of a nearer one is the same
+                            // method; ABL requires an `OVERRIDE` to keep the
+                            // return type, so the nearer one has the right type.
+                            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                let existing = entry.get_mut();
                                 if existing.kind == SymbolKind::Function
                                     && member.kind == SymbolKind::Function
-                                    && existing.data_type != data_type
+                                    && !existing
+                                        .candidates
+                                        .iter()
+                                        .any(|c| c.params.is_some() && c.params == candidate.params)
                                 {
-                                    // The surface is walked breadth-first over
-                                    // the *whole* ancestor chain, so one name
-                                    // arrives more than once for an `OVERRIDE`
-                                    // and for a class that inherits an
-                                    // interface's contract as well as for a
-                                    // genuine overload. Erasing the type on any
-                                    // repeat unjudged most real OO-ABL: ABL
-                                    // requires an `OVERRIDE` to keep the
-                                    // overridden return type, so the repeats
-                                    // agree and the answer is the one the
-                                    // nearest declaration already gave.
-                                    //
-                                    // Only a real disagreement is unknowable.
-                                    // Overload *selection* is not modelled — no
-                                    // argument list is matched against a
-                                    // signature — so when the candidates return
-                                    // different types the call goes to the
-                                    // lattice bottom and the assignment is left
-                                    // unjudged rather than judged by whichever
-                                    // descriptor the walk happened to see first.
-                                    existing.data_type = Some(ResolvedType::Unknown);
+                                    existing.candidates.push(candidate);
                                 }
-                            })
-                            .or_insert(InheritedMember {
-                                kind: member.kind,
-                                namespace,
-                                data_type,
-                                flags: access_flag(member.access)
-                                    | flag_if(member.is_static, SymbolFlags::STATIC),
-                                record: member.record.clone(),
-                                symbol: None,
-                                file: declaring,
-                            });
+                            }
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                entry.insert(InheritedMember {
+                                    kind: member.kind,
+                                    namespace,
+                                    candidates: vec![candidate],
+                                    record: member.record.clone(),
+                                    symbol: None,
+                                });
+                            }
+                        }
                     }
                 }
                 IndexAnswer::NotFound | IndexAnswer::Unusable | IndexAnswer::Unknowable => {
+                    self.cross_file_mut().unread_supertypes.insert(class);
                     if superclass {
                         self.cross_file_mut().opaque_surfaces.insert(class);
                     }
@@ -8039,6 +8533,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: false,
@@ -8063,6 +8558,7 @@ mod tests {
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Constructor {
                 access: AccessModifier::Public,
+                is_static: false,
                 parameters: vec![],
                 body: vec![],
             })],
@@ -8087,6 +8583,7 @@ mod tests {
     #[test]
     fn property_declares_symbol_and_accessor_scopes() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::Property {
+            extent: None,
             access: AccessModifier::Public,
             is_static: false,
             name: id("Name"),
@@ -8105,6 +8602,7 @@ mod tests {
     #[test]
     fn property_auto_getter_only_still_opens_get_scope() {
         let (tree, _symbols, _) = run(vec![stmt(StatementKind::Property {
+            extent: None,
             access: AccessModifier::Public,
             is_static: false,
             name: id("X"),
@@ -8595,6 +9093,7 @@ mod tests {
             use_widget_pool: false,
             body: vec![
                 stmt(StatementKind::Method {
+                    extent: None,
                     access: AccessModifier::Private,
                     is_static: true,
                     is_abstract: false,
@@ -8605,6 +9104,7 @@ mod tests {
                     body: vec![],
                 }),
                 stmt(StatementKind::Method {
+                    extent: None,
                     access: AccessModifier::Public,
                     is_static: false,
                     is_abstract: false,
@@ -8633,6 +9133,7 @@ mod tests {
             use_widget_pool: false,
             body: vec![
                 stmt(StatementKind::Method {
+                    extent: None,
                     access: AccessModifier::Public,
                     is_static: false,
                     is_abstract: false,
@@ -8647,6 +9148,7 @@ mod tests {
                     body: vec![],
                 }),
                 stmt(StatementKind::Method {
+                    extent: None,
                     access: AccessModifier::Private,
                     is_static: true,
                     is_abstract: false,
@@ -8995,6 +9497,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: false,
@@ -9037,6 +9540,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: true,
@@ -9068,6 +9572,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: false,
                 is_abstract: false,
@@ -9099,6 +9604,7 @@ mod tests {
             is_final: false,
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Property {
+                extent: None,
                 access: AccessModifier::Public,
                 is_static: true,
                 name: id("Count"),
@@ -10916,6 +11422,7 @@ mod tests {
     #[test]
     fn resolve_types_side_table_contains_property_type() {
         let pdecl = stmt_n(StatementKind::Property {
+            extent: None,
             access: AccessModifier::Public,
             is_static: false,
             name: id("Name"),
@@ -11122,6 +11629,7 @@ mod tests {
         let body_use = id_expr("arg");
         let use_id = body_use.id;
         let method = stmt_n(StatementKind::Method {
+            extent: None,
             access: AccessModifier::Public,
             is_static: false,
             is_abstract: false,
@@ -11564,6 +12072,8 @@ mod tests {
             }
             IndexAnswer::Found(std::sync::Arc::new(ClassDescriptor {
                 name: name.clone(),
+                members_complete: true,
+                is_abstract: false,
                 file: IndexedFileId::new(1),
                 kind: ClassKind::Class,
                 inherits: None,
@@ -12103,3 +12613,7 @@ mod block_definition_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "resolve_member_tests.rs"]
+mod member_tests;

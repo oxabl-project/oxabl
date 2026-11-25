@@ -6943,6 +6943,7 @@ fn parse_method_public_void_no_params() {
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
         StatementKind::Method {
+            extent: _,
             access,
             is_static,
             is_abstract,
@@ -7299,6 +7300,7 @@ fn parse_property_auto_get_set() {
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
         StatementKind::Property {
+            extent: _,
             access,
             is_static,
             name,
@@ -7380,15 +7382,32 @@ fn parse_constructor_with_params() {
     match stmt.kind {
         StatementKind::Constructor {
             access,
+            is_static,
             parameters,
             body,
         } => {
             assert_eq!(access, AccessModifier::Public);
+            assert!(!is_static);
             assert_eq!(parameters.len(), 1);
             assert_eq!(body.len(), 1);
         }
         _ => panic!("Expected Constructor statement"),
     }
+}
+
+#[test]
+fn parse_static_constructor() {
+    let source = "CONSTRUCTOR STATIC MyClass(): END CONSTRUCTOR.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    assert!(matches!(
+        stmt.kind,
+        StatementKind::Constructor {
+            is_static: true,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -15408,6 +15427,62 @@ fn the_query_lob_bench_fixture_holds_no_skipped_statement() {
         .filter(|text| !text.starts_with("define query") && !text.starts_with("open query"))
         .collect();
     assert!(skipped.is_empty(), "{skipped:#?}");
+}
+
+#[test]
+fn property_and_method_keep_their_extent_clause() {
+    let cases = [
+        (
+            "DEFINE PUBLIC PROPERTY Tags AS CHARACTER EXTENT 3 NO-UNDO GET. SET.",
+            Some(ParameterExtent::Fixed(3)),
+        ),
+        (
+            "DEFINE PUBLIC PROPERTY Tags AS CHARACTER EXTENT NO-UNDO GET. SET.",
+            Some(ParameterExtent::Indeterminate),
+        ),
+        (
+            "DEFINE PUBLIC PROPERTY Tags AS CHARACTER NO-UNDO GET. SET.",
+            None,
+        ),
+        (
+            "METHOD PUBLIC CHARACTER EXTENT 3 Names(): END METHOD.",
+            Some(ParameterExtent::Fixed(3)),
+        ),
+        (
+            "METHOD PUBLIC CHARACTER EXTENT Names(): END METHOD.",
+            Some(ParameterExtent::Indeterminate),
+        ),
+        ("METHOD PUBLIC CHARACTER Names(): END METHOD.", None),
+        ("METHOD PUBLIC VOID Names(): END METHOD.", None),
+    ];
+    for (source, want) in cases {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().unwrap();
+        let extent = match stmt.kind {
+            StatementKind::Property { extent, .. } | StatementKind::Method { extent, .. } => extent,
+            other => panic!("{source}: unexpected {other:?}"),
+        };
+        assert_eq!(extent, want, "{source}");
+    }
+}
+
+#[test]
+fn define_variable_keeps_an_extent_right_after_its_type() {
+    for (source, want) in [
+        ("DEFINE VARIABLE a AS CHARACTER EXTENT 3 NO-UNDO.", Some(3)),
+        ("DEFINE VARIABLE a AS CHARACTER EXTENT NO-UNDO.", Some(0)),
+        ("DEFINE VARIABLE a AS CHARACTER NO-UNDO EXTENT 2.", Some(2)),
+        ("DEFINE VARIABLE a AS CHARACTER NO-UNDO.", None),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().unwrap();
+        let StatementKind::VariableDeclaration { extent, .. } = stmt.kind else {
+            panic!("{source}: not a variable declaration");
+        };
+        assert_eq!(extent, want, "{source}");
+    }
 }
 
 /// The unclosed `DO:` of the first CREATE takes the rest of the file into its

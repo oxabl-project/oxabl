@@ -1352,7 +1352,6 @@ impl Parser<'_> {
         // parse optional no-undo, initial, and extent
         let mut no_undo = false;
         let mut initial_value = None;
-        let mut extent = None;
 
         // Some coding styles write NO-UNDO before AS/LIKE; consume it here so
         // parse_type_source() sees the type-source keyword next.
@@ -1361,8 +1360,15 @@ impl Parser<'_> {
             no_undo = true;
         }
 
-        // parse type source (AS type | LIKE field)
-        let type_source = self.parse_type_source()?;
+        // parse type source (AS type | LIKE field), with an `EXTENT` right
+        // after the type. `0` is a dynamic extent, as is a size the parser
+        // cannot read.
+        let (type_source, type_extent) = self.parse_type_source_with_extent()?;
+        let mut extent = type_extent.map(|e| match e {
+            oxabl_ast::ParameterExtent::Fixed(n) => n,
+            oxabl_ast::ParameterExtent::Indeterminate
+            | oxabl_ast::ParameterExtent::Unresolved(_) => 0,
+        });
 
         loop {
             match self.peek().kind {
@@ -6633,15 +6639,12 @@ impl Parser<'_> {
             self.advance();
             None
         } else {
-            let dt = self.parse_data_type()?;
-            // Consume optional EXTENT [n] on the return type (e.g. "CHARACTER EXTENT 5")
-            if self.check(Kind::Extent) {
-                self.advance();
-                if self.check(Kind::IntegerLiteral) {
-                    self.advance();
-                }
-            }
-            Some(dt)
+            Some(self.parse_data_type()?)
+        };
+        let extent = if return_type.is_some() {
+            self.parse_extent_clause()
+        } else {
+            None
         };
 
         // Parse method name
@@ -6659,6 +6662,7 @@ impl Parser<'_> {
                 is_abstract,
                 is_override,
                 return_type,
+                extent,
                 name,
                 parameters,
                 body: Vec::new(),
@@ -6681,6 +6685,7 @@ impl Parser<'_> {
                 is_abstract,
                 is_override,
                 return_type,
+                extent,
                 name,
                 parameters,
                 body: Vec::new(),
@@ -6696,6 +6701,7 @@ impl Parser<'_> {
                 is_abstract,
                 is_override,
                 return_type,
+                extent,
                 name,
                 parameters,
                 body: Vec::new(),
@@ -6733,6 +6739,7 @@ impl Parser<'_> {
             is_abstract,
             is_override,
             return_type,
+            extent,
             name,
             parameters,
             body,
@@ -6761,14 +6768,7 @@ impl Parser<'_> {
         let name = self.parse_identifier()?;
         self.expect_kind(Kind::KwAs, "Expected AS after property name")?;
         let data_type = self.parse_data_type()?;
-
-        // Consume optional EXTENT [n] on the property type (e.g. "AS LONGCHAR EXTENT 2")
-        if self.check(Kind::Extent) {
-            self.advance();
-            if self.check(Kind::IntegerLiteral) {
-                self.advance();
-            }
-        }
+        let extent = self.parse_extent_clause();
 
         // Consume NO-UNDO and INITIAL [n] in any order (properties can have both)
         let mut no_undo = false;
@@ -6912,6 +6912,7 @@ impl Parser<'_> {
             is_static,
             name,
             data_type,
+            extent,
             no_undo,
             get_body,
             set_body,
@@ -6933,8 +6934,9 @@ impl Parser<'_> {
             .parse_access_modifier()
             .unwrap_or(AccessModifier::Public);
 
-        // Skip optional STATIC keyword (e.g. CONSTRUCTOR STATIC classname():)
-        if self.check(Kind::KwStatic) {
+        // CONSTRUCTOR STATIC classname():
+        let is_static = self.check(Kind::KwStatic);
+        if is_static {
             self.advance();
         }
 
@@ -6971,6 +6973,7 @@ impl Parser<'_> {
 
         Ok(self.stmt(StatementKind::Constructor {
             access,
+            is_static,
             parameters,
             body,
         }))

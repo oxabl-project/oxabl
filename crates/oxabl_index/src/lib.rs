@@ -85,7 +85,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use oxabl_ast::{AccessModifier, BufferTarget, DataType, Statement, StatementKind, TypeSource};
+use oxabl_ast::{
+    AccessModifier, BufferTarget, DataType, ParameterExtent, Statement, StatementKind, TypeSource,
+};
 use oxabl_common::FileId;
 use oxabl_lexer::{Kind, Token};
 use oxabl_parser::Parser;
@@ -93,8 +95,8 @@ use oxabl_preprocessor::{PreprocessedFile, Preprocessor, SpanNode};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, ClassDescriptor, ClassKind, ImportContext, IndexName, IndexedFileId,
-    MemberDescriptor, MemberRecord, MemberType, ProgramSignatures, ResolvedType, ScopeId,
-    SymbolFlags, SymbolKind, declare_pass,
+    MemberDescriptor, MemberParamShape, MemberRecord, MemberType, ProgramSignatures, ResolvedType,
+    ScopeId, SymbolFlags, SymbolKind, declare_pass, member_params,
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
@@ -496,15 +498,16 @@ fn include_before_header(tokens: &[Token], statements: &[Statement]) -> bool {
 /// indexed, which is the conservative direction (a missing fact, not a wrong
 /// one).
 ///
-/// A class that names no supertype carries no imports, so an edit to the file's
-/// `USING` list leaves its descriptor, and every answer keyed on it, unchanged.
+/// A class that names no supertype and no class-typed member or parameter
+/// carries no imports, so an edit to the file's `USING` list leaves its
+/// descriptor, and every answer keyed on it, unchanged.
 fn declared_classes(
     file: IndexedFileId,
     statements: &[Statement],
     imports: &Arc<ImportContext>,
 ) -> Vec<ClassFacts> {
-    let imports_for = |has_supertype: bool| {
-        if has_supertype {
+    let imports_for = |has_supertype: bool, members: &[MemberDescriptor]| {
+        if has_supertype || members.iter().any(names_a_class) {
             Arc::clone(imports)
         } else {
             Arc::default()
@@ -517,9 +520,11 @@ fn declared_classes(
             inherits,
             implements,
             body,
+            is_abstract,
             ..
         } = &stmt.kind
         {
+            let members = declared_members(body);
             classes.push(ClassFacts {
                 descriptor: Arc::new(ClassDescriptor {
                     name: IndexName::new(&name.name),
@@ -530,9 +535,11 @@ fn declared_classes(
                         .iter()
                         .map(|id| IndexName::new(&id.name))
                         .collect(),
-                    imports: imports_for(inherits.is_some() || !implements.is_empty()),
+                    imports: imports_for(inherits.is_some() || !implements.is_empty(), &members),
+                    members_complete: !hides_members(body),
+                    is_abstract: *is_abstract,
                 }),
-                members: declared_members(body),
+                members,
             });
         } else if let StatementKind::Interface {
             name,
@@ -540,6 +547,7 @@ fn declared_classes(
             body,
         } = &stmt.kind
         {
+            let members = declared_members(body);
             classes.push(ClassFacts {
                 descriptor: Arc::new(ClassDescriptor {
                     name: IndexName::new(&name.name),
@@ -554,13 +562,64 @@ fn declared_classes(
                     // members.
                     inherits: None,
                     implements: inherits.iter().map(|id| IndexName::new(&id.name)).collect(),
-                    imports: imports_for(!inherits.is_empty()),
+                    imports: imports_for(!inherits.is_empty(), &members),
+                    members_complete: !hides_members(body),
+                    is_abstract: false,
                 }),
-                members: declared_members(body),
+                members,
             });
         }
     }
     classes
+}
+
+/// Whether a member or one of its parameters names a class, which the
+/// declaring file's imports give a meaning.
+fn names_a_class(member: &MemberDescriptor) -> bool {
+    matches!(member.ty, MemberType::Named(_))
+        || member.params.as_deref().is_some_and(|params| {
+            params
+                .iter()
+                .any(|p| matches!(p.shape, MemberParamShape::Value(MemberType::Named(_))))
+        })
+}
+
+/// Whether a class body may declare more members than its statements show: it
+/// names an `{include}` at member level, or holds an `&IF` around a member
+/// declaration. The facts of an expanded text hold neither.
+fn hides_members(body: &[Statement]) -> bool {
+    fn declares(stmt: &Statement) -> bool {
+        match &stmt.kind {
+            StatementKind::Block(inner) | StatementKind::VariableDeclarationList(inner) => {
+                inner.iter().any(declares)
+            }
+            StatementKind::PreprocIf(branches) => branches
+                .then_branch
+                .iter()
+                .chain(branches.elseif_branches.iter().flat_map(|(_, b)| b))
+                .chain(branches.else_branch.iter().flatten())
+                .any(declares),
+            StatementKind::IncludeReference { .. }
+            | StatementKind::IncludeArgReference { .. }
+            | StatementKind::Method { .. }
+            | StatementKind::Property { .. }
+            | StatementKind::VariableDeclaration { .. }
+            | StatementKind::DefineTempTable { .. }
+            | StatementKind::DefineBuffer { .. }
+            | StatementKind::DefineDataset { .. }
+            | StatementKind::DefineDataSource { .. }
+            | StatementKind::DefineEvent { .. } => true,
+            _ => false,
+        }
+    }
+    body.iter().any(|stmt| match &stmt.kind {
+        StatementKind::IncludeReference { .. } | StatementKind::IncludeArgReference { .. } => true,
+        StatementKind::PreprocIf(_) => declares(stmt),
+        StatementKind::Block(inner) | StatementKind::VariableDeclarationList(inner) => {
+            hides_members(inner)
+        }
+        _ => false,
+    })
 }
 
 /// Project the `ENUM` declarations at file level.
@@ -600,11 +659,12 @@ fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<Cl
         }
         let mut members = Vec::new();
         let mut well_formed = true;
+        let own_type = IndexName::new(&name);
         while i < tokens.len() && !(tokens[i].kind == Kind::End) {
             if tokens[i].kind == Kind::Define
                 && tokens.get(i + 1).is_some_and(|t| t.kind == Kind::KwEnum)
             {
-                let (names, next) = enum_members(&tokens[i + 2..], source);
+                let (names, next) = enum_members(&tokens[i + 2..], source, &own_type);
                 well_formed &= names.is_some();
                 members.extend(names.unwrap_or_default());
                 i += 2 + next;
@@ -620,6 +680,8 @@ fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<Cl
                 inherits: None,
                 implements: Vec::new(),
                 imports: Arc::default(),
+                members_complete: well_formed,
+                is_abstract: false,
             }),
             members: if well_formed {
                 members.into()
@@ -634,7 +696,12 @@ fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<Cl
 /// The member names of one `DEFINE ENUM` list, and how many tokens it spans.
 ///
 /// `None` when the list is not `name [= value] [, ...]` with `|`-joined values.
-fn enum_members(tokens: &[Token], source: &str) -> (Option<Vec<MemberDescriptor>>, usize) {
+/// Each member is a static property whose type is the enum itself.
+fn enum_members(
+    tokens: &[Token],
+    source: &str,
+    own_type: &IndexName,
+) -> (Option<Vec<MemberDescriptor>>, usize) {
     let text = |t: &Token| &source[t.start..t.end];
     let mut members = Vec::new();
     let mut i = 0;
@@ -650,10 +717,11 @@ fn enum_members(tokens: &[Token], source: &str) -> (Option<Vec<MemberDescriptor>
                 members.push(MemberDescriptor {
                     name: IndexName::new(text(token)),
                     kind: SymbolKind::Property,
-                    ty: MemberType::Untyped,
+                    ty: MemberType::Named(own_type.clone()),
                     access: AccessModifier::Public,
                     is_static: true,
                     record: None,
+                    params: None,
                 });
                 i += 1;
                 if tokens.get(i).is_some_and(|t| t.kind == Kind::Equals) {
@@ -699,6 +767,7 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
         access: access.unwrap_or(AccessModifier::Private),
         is_static,
         record: None,
+        params: None,
     };
     for stmt in body {
         match &stmt.kind {
@@ -706,7 +775,9 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                 access,
                 is_static,
                 return_type,
+                extent,
                 name,
+                parameters,
                 ..
             } => members.push(MemberDescriptor {
                 name: IndexName::new(&name.name),
@@ -718,24 +789,27 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                 // is a different fact from naming one the index cannot carry.
                 ty: return_type
                     .as_ref()
-                    .map_or(MemberType::Untyped, member_type),
+                    .map_or(MemberType::Untyped, |dt| member_type(dt, *extent)),
                 access: *access,
                 is_static: *is_static,
                 record: None,
+                params: member_params(parameters).map(Into::into),
             }),
             StatementKind::Property {
                 access,
                 is_static,
                 name,
                 data_type,
+                extent,
                 ..
             } => members.push(MemberDescriptor {
                 name: IndexName::new(&name.name),
                 kind: SymbolKind::Property,
-                ty: member_type(data_type),
+                ty: member_type(data_type, *extent),
                 access: *access,
                 is_static: *is_static,
                 record: None,
+                params: None,
             }),
             StatementKind::VariableDeclaration {
                 name,
@@ -746,14 +820,9 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                 ..
             } => {
                 let ty = match type_source {
-                    TypeSource::Explicit(declared) => match (declared.class_name(), extent) {
-                        (Some(_), _) | (None, None) => member_type(declared),
-                        (None, Some(n)) => MemberType::portable(ResolvedType::Array {
-                            element: Box::new(ResolvedType::from_data_type(declared)),
-                            extent: if *n == 0 { None } else { Some(*n) },
-                        })
-                        .unwrap_or(MemberType::Untyped),
-                    },
+                    TypeSource::Explicit(declared) => {
+                        member_type(declared, extent.map(ParameterExtent::Fixed))
+                    }
                     TypeSource::Like { .. } => MemberType::Untyped,
                 };
                 members.push(data(name, SymbolKind::Variable, ty, *access, *is_static));
@@ -847,7 +916,15 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
 /// [`ResolvedType::from_data_type`], so an indexed member's type and a local
 /// declaration's type are computed by one conversion rather than two that could
 /// disagree.
-fn member_type(declared: &DataType) -> MemberType {
+///
+/// With an `EXTENT` clause the type is an array, through
+/// [`ResolvedType::from_declared`]: a class-typed array carries `Unknown`, as
+/// it does for a local declaration.
+fn member_type(declared: &DataType, extent: Option<ParameterExtent>) -> MemberType {
+    if extent.is_some() {
+        return MemberType::portable(ResolvedType::from_declared(declared, extent))
+            .unwrap_or(MemberType::Untyped);
+    }
     if let Some(name) = declared.class_name() {
         return MemberType::Named(IndexName::new(name));
     }
@@ -863,7 +940,7 @@ fn member_type(declared: &DataType) -> MemberType {
 mod tests {
     use super::*;
     use oxabl_ast::AccessModifier;
-    use oxabl_semantic::{PortableType, PrimitiveTy};
+    use oxabl_semantic::{ParamMode, PortableType, PrimitiveTy};
 
     const FILE: IndexedFileId = IndexedFileId::new(7);
 
@@ -896,6 +973,13 @@ mod tests {
         let names: Vec<_> = class.members.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, ["light", "dark", "both", "none"]);
         assert!(class.members.iter().all(|m| m.is_static));
+        assert!(
+            class
+                .members
+                .iter()
+                .all(|m| m.ty == MemberType::Named(IndexName::new("orders.Shade"))),
+            "an enum member has the type of its enum"
+        );
     }
 
     #[test]
@@ -1015,6 +1099,68 @@ mod tests {
         );
     }
 
+    fn members_complete(facts: &FileFacts, class: &str) -> bool {
+        facts
+            .class(&IndexName::new(class))
+            .expect("the class is indexed")
+            .descriptor
+            .members_complete
+    }
+
+    #[test]
+    fn a_member_list_is_complete_only_when_no_include_or_if_may_add_to_it() {
+        let (read, _) = index_through(
+            "CLASS orders.built:
+{body.i}
+END CLASS.
+",
+            &[BODY],
+        );
+        assert!(
+            members_complete(&read, "orders.built"),
+            "the include was read"
+        );
+
+        let (missing, _) = index_through(
+            "CLASS orders.built:
+{gone.i}
+END CLASS.
+",
+            &[],
+        );
+        assert!(!members_complete(&missing, "orders.built"));
+
+        let conditional = index_file(
+            FILE,
+            "CLASS orders.built:
+&IF DEFINED(web) &THEN
+             METHOD PUBLIC INTEGER extra():
+    RETURN 0.
+END METHOD.
+&ENDIF
+END CLASS.
+",
+        );
+        assert!(!members_complete(&conditional, "orders.built"));
+
+        let in_a_body = index_file(
+            FILE,
+            "CLASS orders.built:
+METHOD PUBLIC INTEGER calc():
+             &IF DEFINED(web) &THEN
+    RETURN 1.
+&ENDIF
+    RETURN 0.
+END METHOD.
+END CLASS.
+",
+        );
+        assert!(
+            members_complete(&in_a_body, "orders.built"),
+            "an &IF inside a method body declares no member"
+        );
+    }
+
     #[test]
     fn a_file_that_answers_as_written_reads_no_include() {
         let (facts, read) = index_through("{body.i}\nPROCEDURE p:\nEND PROCEDURE.\n", &[BODY]);
@@ -1092,6 +1238,109 @@ mod tests {
             class.members[0].ty,
             MemberType::Named(IndexName::new("orders.calc-base")),
         );
+    }
+
+    #[test]
+    fn an_extent_on_a_property_or_a_return_type_gives_an_array_member() {
+        let facts = index_file(
+            FILE,
+            r#"CLASS orders.tags:
+                   DEFINE PUBLIC PROPERTY fixed AS CHARACTER EXTENT 3 NO-UNDO GET. SET.
+                   DEFINE PUBLIC PROPERTY open AS INTEGER EXTENT NO-UNDO GET. SET.
+                   DEFINE PUBLIC PROPERTY owners AS orders.owner EXTENT 2 NO-UNDO GET. SET.
+                   METHOD PUBLIC DECIMAL EXTENT 4 totals():
+                   END METHOD.
+               END CLASS."#,
+        );
+        let class = facts.class(&IndexName::new("orders.tags")).unwrap();
+        let array = |element: PrimitiveTy, extent| {
+            portable(ResolvedType::Array {
+                element: Box::new(ResolvedType::Primitive(element)),
+                extent,
+            })
+        };
+        assert_eq!(class.members[0].ty, array(PrimitiveTy::Character, Some(3)));
+        assert_eq!(class.members[1].ty, array(PrimitiveTy::Integer, None));
+        assert_eq!(
+            class.members[2].ty,
+            portable(ResolvedType::Unknown),
+            "a class-typed array is not modelled"
+        );
+        assert_eq!(class.members[3].ty, array(PrimitiveTy::Decimal, Some(4)));
+    }
+
+    #[test]
+    fn a_method_carries_its_parameter_list() {
+        let facts = index_file(
+            FILE,
+            r#"CLASS orders.calc:
+                   METHOD PUBLIC INTEGER score(INPUT a AS INTEGER, OUTPUT b AS orders.item,
+                       INPUT-OUTPUT c AS CHARACTER EXTENT 2, INPUT d LIKE e,
+                       BUFFER bf FOR customer, INPUT TABLE FOR tt, INPUT DATASET-HANDLE h):
+                   END METHOD.
+                   METHOD PUBLIC VOID none():
+                   END METHOD.
+                   DEFINE PUBLIC PROPERTY label AS CHARACTER NO-UNDO GET.
+               END CLASS."#,
+        );
+        let class = facts.class(&IndexName::new("orders.calc")).unwrap();
+        let params = class.members[0].params.as_deref().expect("a known list");
+        let value = |ty| MemberParamShape::Value(ty);
+        let shapes: Vec<_> = params.iter().map(|p| (p.mode, p.shape.clone())).collect();
+        assert_eq!(
+            shapes,
+            [
+                (
+                    ParamMode::Input,
+                    value(portable(ResolvedType::Primitive(PrimitiveTy::Integer)))
+                ),
+                (
+                    ParamMode::Output,
+                    value(MemberType::Named(IndexName::new("orders.item")))
+                ),
+                (
+                    ParamMode::InputOutput,
+                    value(portable(ResolvedType::Array {
+                        element: Box::new(ResolvedType::Primitive(PrimitiveTy::Character)),
+                        extent: Some(2),
+                    }))
+                ),
+                (ParamMode::Input, value(portable(ResolvedType::Unknown))),
+                (ParamMode::Input, MemberParamShape::Buffer),
+                (ParamMode::Input, MemberParamShape::Table),
+                (ParamMode::Input, MemberParamShape::DatasetHandle),
+            ]
+        );
+        assert_eq!(class.members[1].params.as_deref(), Some(&[][..]));
+        assert_eq!(class.members[2].params, None, "a property has no list");
+    }
+
+    #[test]
+    fn a_class_with_a_class_typed_member_keeps_its_imports() {
+        let facts = index_file(
+            FILE,
+            "USING orders.*.
+CLASS orders.calc:
+             DEFINE PUBLIC PROPERTY owner AS item NO-UNDO GET.
+END CLASS.
+",
+        );
+        let class = facts.class(&IndexName::new("orders.calc")).unwrap();
+        assert!(
+            !class.descriptor.imports.is_empty(),
+            "the member type is written under the file's imports"
+        );
+
+        let plain = index_file(
+            FILE,
+            "USING orders.*.
+CLASS orders.calc:
+             DEFINE PUBLIC PROPERTY label AS CHARACTER NO-UNDO GET.
+END CLASS.
+",
+        );
+        let class = plain.class(&IndexName::new("orders.calc")).unwrap();
+        assert!(class.descriptor.imports.is_empty());
     }
 
     #[test]

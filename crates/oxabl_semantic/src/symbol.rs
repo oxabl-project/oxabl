@@ -7,6 +7,8 @@
 //! symbol — saves 24 bytes per entry and eliminates one atom-to-string
 //! conversion on the hot path.
 
+use std::sync::Arc;
+
 use bitflags::bitflags;
 use oxabl_ast::NodeId;
 use oxabl_common::VirtualSpan;
@@ -14,7 +16,10 @@ use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::{IndexName, IndexedFileId, NamespaceId, ResolvedType, ScopeId, UnresolvedReason};
+use crate::{
+    CallParam, IndexName, IndexedFileId, MemberParam, NamespaceId, ResolvedType, ScopeId,
+    UnresolvedReason,
+};
 
 /// Dense arena index for a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -506,6 +511,26 @@ struct SymbolSideMaps {
     /// Supertype identities resolved by the resolve pass. The authored names
     /// above remain for diagnostics; assignability consumes these edges.
     resolved_supertypes: FxHashMap<SymbolId, Vec<SymbolId>>,
+    /// The parameter list of each method declaration with a known list, as
+    /// the declare pass reads it. Absent means "not known".
+    method_param_decls: FxHashMap<SymbolId, Arc<[MemberParam]>>,
+    /// The same lists with their class names resolved in this file, for local
+    /// methods and for the candidates of a workspace method.
+    method_params: FxHashMap<SymbolId, Arc<[CallParam]>>,
+    /// For a method of a class of the analysed file, the declarations of its
+    /// name that the class inherits, apart from its own overload set.
+    inherited_candidates: FxHashMap<SymbolId, Vec<SymbolId>>,
+    /// Member references (`obj:Name`, `obj:Call()`, a method call inside its
+    /// class) that resolved but whose type oxabl does not know: the member is
+    /// static through an instance or the reverse, the class is on an
+    /// inheritance cycle, or the method's candidates may be incomplete.
+    untyped_members: FxHashSet<NodeId>,
+    /// The class an expression evaluates to when no symbol carries it:
+    /// `THIS-OBJECT` in a class body and `CAST(x, Cls)`.
+    expr_classes: FxHashMap<NodeId, SymbolId>,
+    /// Classes whose header names a workspace supertype that did not resolve.
+    /// The class lattice cannot say what such a class widens to past that point.
+    incomplete_chains: FxHashSet<SymbolId>,
     /// The indexed file that supplies each synthesized external-program symbol —
     /// the file a literal `RUN` target resolved to.
     ///
@@ -691,6 +716,104 @@ impl SymbolTable {
             .as_deref()
             .and_then(|side| side.resolved_supertypes.get(&sym))
             .map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn record_method_param_decls(&mut self, sym: SymbolId, params: Arc<[MemberParam]>) {
+        self.side_mut().method_param_decls.insert(sym, params);
+    }
+
+    /// The parameter list the declaration of method `sym` shows, or `None`
+    /// when it is not known.
+    pub fn method_param_decls(&self, sym: SymbolId) -> Option<&Arc<[MemberParam]>> {
+        self.side.as_deref()?.method_param_decls.get(&sym)
+    }
+
+    /// Every method declaration with a known parameter list, in id order.
+    pub(crate) fn methods_with_param_decls(&self) -> Vec<(SymbolId, Arc<[MemberParam]>)> {
+        let Some(side) = self.side.as_deref() else {
+            return Vec::new();
+        };
+        let mut out: Vec<_> = side
+            .method_param_decls
+            .iter()
+            .map(|(id, p)| (*id, Arc::clone(p)))
+            .collect();
+        out.sort_unstable_by_key(|(id, _)| id.raw());
+        out
+    }
+
+    pub(crate) fn record_method_params(&mut self, sym: SymbolId, params: Arc<[CallParam]>) {
+        self.side_mut().method_params.insert(sym, params);
+    }
+
+    /// The parameter list of method `sym` with its class names resolved, or
+    /// `None` when it is not known.
+    pub fn method_params(&self, sym: SymbolId) -> Option<&[CallParam]> {
+        self.side.as_deref()?.method_params.get(&sym).map(|p| &**p)
+    }
+
+    pub(crate) fn record_inherited_candidates(&mut self, anchor: SymbolId, members: Vec<SymbolId>) {
+        if !members.is_empty() {
+            self.side_mut().inherited_candidates.insert(anchor, members);
+        }
+    }
+
+    /// The inherited declarations of the name of the local method `anchor`,
+    /// which the overload pick reads with its own overload set.
+    pub fn inherited_candidates(&self, anchor: SymbolId) -> &[SymbolId] {
+        self.side
+            .as_deref()
+            .and_then(|side| side.inherited_candidates.get(&anchor))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn has_inherited_candidates(&self, anchor: SymbolId) -> bool {
+        self.side
+            .as_deref()
+            .is_some_and(|side| side.inherited_candidates.contains_key(&anchor))
+    }
+
+    pub(crate) fn mark_untyped_member(&mut self, node: NodeId) {
+        self.side_mut().untyped_members.insert(node);
+    }
+
+    /// Whether the member reference at `node` resolved with a type oxabl does
+    /// not know.
+    pub fn is_untyped_member(&self, node: NodeId) -> bool {
+        self.side
+            .as_deref()
+            .is_some_and(|side| side.untyped_members.contains(&node))
+    }
+
+    pub(crate) fn record_expr_class(&mut self, node: NodeId, class: SymbolId) {
+        self.side_mut().expr_classes.insert(node, class);
+    }
+
+    /// The class the expression at `node` evaluates to, when only the
+    /// expression carries it (`THIS-OBJECT`, `CAST`).
+    pub fn expr_class(&self, node: NodeId) -> Option<SymbolId> {
+        self.side.as_deref()?.expr_classes.get(&node).copied()
+    }
+
+    /// Whether `sym` is a class method: a local `METHOD` or an inherited one.
+    pub fn is_method(&self, sym: SymbolId) -> bool {
+        let symbol = self.get(sym);
+        symbol.kind == SymbolKind::Function
+            && (self.method_signature(sym).is_some()
+                || symbol.flags.contains(SymbolFlags::INHERITED))
+    }
+
+    /// Record that `sym`'s header names a supertype that did not resolve, so
+    /// its inheritance chain is not known past that class.
+    pub(crate) fn record_incomplete_chain(&mut self, sym: SymbolId) {
+        self.side_mut().incomplete_chains.insert(sym);
+    }
+
+    /// Whether `sym`'s header names a supertype that did not resolve.
+    pub fn has_incomplete_chain(&self, sym: SymbolId) -> bool {
+        self.side
+            .as_deref()
+            .is_some_and(|side| side.incomplete_chains.contains(&sym))
     }
 
     pub(crate) fn record_method_signature(&mut self, sym: SymbolId, signature: Vec<String>) {

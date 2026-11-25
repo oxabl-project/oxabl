@@ -29,6 +29,7 @@ mod index_vec;
 mod inherited;
 mod namespace;
 mod operators;
+mod overload;
 mod resolve;
 mod scope;
 mod sequence;
@@ -40,7 +41,7 @@ pub use builtin_classes::{BuiltinClass, builtin_class};
 pub use builtins::SYSTEM_HANDLES;
 pub use check::check_pass;
 pub use coercion::{
-    ClassLattice, assignable, assignable_strict, is_narrowing_warning, widen_primitive,
+    ClassLattice, Reach, assignable, assignable_strict, is_narrowing_warning, widen_primitive,
 };
 pub use diagnostics::{SEM0001, SEM0002, SEM0003};
 pub use index::{
@@ -60,7 +61,10 @@ pub use resolve::{
 };
 pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use sequence::{SequenceOperand, sequence_operand};
-pub use signature::{Param, ParamMode, ParamShape, ProgramSignatures, Signature};
+pub use signature::{
+    CallParam, CallParamKind, MemberParam, MemberParamShape, Param, ParamMode, ParamShape,
+    ProgramSignatures, Signature, member_params,
+};
 pub use symbol::{
     ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags,
     SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
@@ -396,6 +400,8 @@ mod tests {
             if name == &IndexName::new("app.thing") {
                 IndexAnswer::Found(Arc::new(ClassDescriptor {
                     name: name.clone(),
+                    members_complete: true,
+                    is_abstract: false,
                     file: IndexedFileId::new(3),
                     kind: ClassKind::Class,
                     inherits: None,

@@ -867,6 +867,7 @@ mod tests {
         use oxabl_ast::AccessModifier;
         let body_use = id_expr("ghost");
         let method = stmt_n(StatementKind::Method {
+            extent: None,
             access: AccessModifier::Public,
             is_static: false,
             is_abstract: false,

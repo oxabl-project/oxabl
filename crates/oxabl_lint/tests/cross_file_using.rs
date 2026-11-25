@@ -19,9 +19,8 @@
 //!    finding" it also asserts a sibling shape where the finding genuinely does
 //!    fire, so the assertion cannot pass by the rule being inert. The suite used
 //!    to require that *no* new finding ever arrived; a cross-file class is a real
-//!    type now, so the two class-typed mismatch shapes are enumerated as findings
-//!    while the `:`-qualified member shapes stay silent — deliberately, and
-//!    pinned as such.
+//!    type now, so the two class-typed mismatch shapes are enumerated as findings,
+//!    and so are the `:`-qualified member shapes, which have the member's type.
 
 mod support;
 
@@ -486,9 +485,8 @@ fn twenty_references_to_one_member_synthesize_it_once() {
 fn a_cross_file_class_is_judged_in_both_assignment_directions() {
     // The three shapes the old firewall was written to hold back, each a genuine
     // mistake `type-mismatch-assignment` reports the moment a cross-file class
-    // becomes a real `ResolvedType::Class`. Two of them now fire; the third does
-    // not, and the split is the deferred `:`-qualified boundary rather than
-    // anything about classes.
+    // becomes a real `ResolvedType::Class`. All three fire; the third is a
+    // `:`-qualified method call, which has the method's return type.
     //
     // Both directions matter because the rule reads the target's type and the
     // value's type from different places — `target_type` off the symbol,
@@ -525,17 +523,23 @@ fn a_cross_file_class_is_judged_in_both_assignment_directions() {
     }
 
     // The third shape: a method return read through `:`-qualified access. The
-    // member resolves and carries its declared type, but `check.rs` types the
-    // *call expression* as `Unknown` without consulting it, so there is nothing
-    // for the rule to compare. Deliberate, and scoped out of this phase.
+    // call has the member's declared type, so the rule compares it.
     let colon_qualified = "USING myapp.cache.\n\
          DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
          DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
          v-count = v-cache:fetch-label().\n";
-    assert!(
-        lint0004_with_index(colon_qualified, &WORKSPACE).is_empty(),
-        "a `:`-qualified member call is not typed yet"
+    let found = lint0004_with_index(colon_qualified, &WORKSPACE);
+    assert_eq!(
+        found.len(),
+        1,
+        "a `:`-qualified member call is typed: {found:?}"
     );
+    assert!(
+        found[0].message.contains("CHARACTER"),
+        "{}",
+        found[0].message
+    );
+    assert!(lint0004_without_index(colon_qualified).is_empty());
 }
 
 #[test]
@@ -564,12 +568,10 @@ fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
     // Every `USING` / `NEW` / member-access fixture in this file, swept at once
     // across all six lint rules plus the semantic pass. It used to assert that
     // attaching an index added nothing anywhere; the enumeration below is what it
-    // adds now, and the shape of the answer is worth reading twice: a *class*
-    // reaching the lattice produces findings, and a *member* reached through
-    // `:`-qualified access still does not, because `check.rs` types every
-    // `MethodCall` and `MemberAccess` as `Unknown` regardless of what it resolved
-    // to. That asymmetry is the deferred boundary, visible here as the mismatched
-    // member fixtures staying silent while the two class-typed ones fire.
+    // adds now: a *class* reaching the lattice produces findings, and so does a
+    // *member* reached through `:`-qualified access, which has its declared
+    // type. An instance member through the type name (`cache:fetch-label()`)
+    // stays silent: oxabl does not say what the compiler accepts there.
     let mismatched = [
         // A `CHARACTER`-returning method on an imported instance, into an INTEGER.
         instance_source("v-count = v-cache:fetch-label()."),
@@ -654,6 +656,15 @@ fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
     // Four shapes gain a finding, in two families. A cross-file *class* reaching
     // the type lattice gives the two LINT0004s; a class name no configured path
     // supplies gives the two LINT0001s — an import of one, and a `NEW` of one.
+    let colon_judged = [
+        instance_source("v-count = v-cache:fetch-label()."),
+        "USING myapp.cache.\n\
+         DEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n\
+         v-count = NEW cache():fetch-label().\n"
+            .to_string(),
+        instance_source("v-label = v-cache:entry-count."),
+        instance_source("v-cache:entry-count = v-label."),
+    ];
     let judged: [(&str, &str); 4] = [
         (
             "USING myapp.absent-thing.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n",
@@ -681,9 +692,10 @@ fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
             gained.push((source.as_str(), added));
         }
     }
-    let expected: Vec<(&str, Vec<&str>)> = judged
+    let expected: Vec<(&str, Vec<&str>)> = colon_judged
         .iter()
-        .map(|(source, code)| (*source, vec![*code]))
+        .map(|source| (source.as_str(), vec![LINT0004]))
+        .chain(judged.iter().map(|(source, code)| (*source, vec![*code])))
         .collect();
     assert_eq!(
         gained, expected,
@@ -692,19 +704,11 @@ fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
 }
 
 #[test]
-fn a_mismatch_through_a_colon_qualified_member_stays_silent_at_the_call_site() {
+fn a_mismatch_through_a_colon_qualified_member_is_reported_at_the_call_site() {
     // Every ingredient is present and cross-file — the member resolves, its
     // declared `CHARACTER` is on the symbol, the target is a genuinely
-    // incompatible `INTEGER` — and LINT0004 still says nothing. The reason is no
-    // longer that the type is parked off the symbol; it is on `data_type` now.
-    // It is that `check.rs` types every `MethodCall` as `Unknown` without
-    // consulting the symbol it resolved to, so the *expression*, not the symbol,
-    // is what the rule cannot judge.
-    //
-    // That boundary is deliberate and scoped out of this phase: `:`-qualified
-    // access is the ordinary OO-ABL spelling and therefore the larger half of the
-    // population, which deserves its own evidence rather than being folded into
-    // this one. Pinned here so the day it opens, this test is what says so.
+    // incompatible `INTEGER` — and the type-check pass types the call with the
+    // member's type, so LINT0004 reports it.
     let source = instance_source("v-count = v-cache:fetch-label().");
     let (_stmts, sem) = with_index(&source, &WORKSPACE);
 
@@ -719,7 +723,7 @@ fn a_mismatch_through_a_colon_qualified_member_stays_silent_at_the_call_site() {
         Some(ResolvedType::Primitive(PrimitiveTy::Integer)),
         "and the target is a genuinely incompatible INTEGER"
     );
-    assert!(lint0004_with_index(&source, &WORKSPACE).is_empty());
+    assert_eq!(lint0004_with_index(&source, &WORKSPACE).len(), 1);
 }
 
 // ---------------------------------------------------------------------------

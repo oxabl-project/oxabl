@@ -24,6 +24,9 @@
 //!   `AbsentFromWorkspace`, `PresentButUnusable`, `Unknowable`) — there is no
 //!   symbol behind it, so no verdict is possible. A cross-file reference that
 //!   *resolved* is judged like any other now: its type is on the symbol.
+//! - A member or a method call through a receiver whose type oxabl does not
+//!   know (`docs/design/class-members.md`): the type-check pass gives it
+//!   `Unknown`. One it knows is judged like any other value or target.
 
 use oxabl_ast::{
     AssignPair, Expression, ExpressionKind, Literal, Statement, StatementKind, TypeSource,

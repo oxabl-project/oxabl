@@ -661,6 +661,8 @@ pub enum StatementKind {
         is_override: bool,
         /// Return type (None = VOID).
         return_type: Option<DataType>,
+        /// `EXTENT [n]` after the return type; `None` for a scalar.
+        extent: Option<ParameterExtent>,
         /// Method name.
         name: Identifier,
         /// Parameters (reuses DefineParameter Statement variant).
@@ -685,6 +687,8 @@ pub enum StatementKind {
         name: Identifier,
         /// Property data type.
         data_type: DataType,
+        /// `EXTENT [n]` after the type; `None` for a scalar.
+        extent: Option<ParameterExtent>,
         /// Whether NO-UNDO was specified.
         no_undo: bool,
         /// GET accessor: None = no getter, Some(vec![]) = auto-getter (`GET.`),
@@ -705,6 +709,8 @@ pub enum StatementKind {
     Constructor {
         /// Access modifier.
         access: AccessModifier,
+        /// `CONSTRUCTOR STATIC`: the static constructor of the class.
+        is_static: bool,
         /// Parameters (reuses DefineParameter Statement variant).
         parameters: Vec<Statement>,
         /// Constructor body.

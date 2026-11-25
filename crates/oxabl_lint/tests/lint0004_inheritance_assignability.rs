@@ -4,16 +4,11 @@
 //! (`oxabl_semantic::assignable`), which now consults the class lattice the
 //! symbol table records instead of comparing class symbols by identity.
 //!
-//! **Read the split before adding a scenario here.** Only the *in-file* cases
-//! exercise the lattice end to end. A cross-file class is still typed
-//! `ResolvedType::Unknown` by the firewall in `oxabl_semantic::check` — kept on
-//! purpose, because lifting it would turn cross-file types into new (correct)
-//! findings and this phase's contract is zero drift — so a cross-file scenario
-//! goes silent whether the walk works or not. Those scenarios below therefore
-//! assert the silence *and* the reason for it, so that the day the firewall lifts
-//! the reason assertion fails loudly instead of the test quietly becoming inert.
-//! The walk itself is asserted directly, against a hand-built lattice, in
-//! `oxabl_semantic::coercion`'s unit tests.
+//! The in-file cases exercise the lattice end to end with no index. The
+//! cross-file cases run against a `BatchIndex`: a workspace class is a real
+//! `ResolvedType::Class`, and a member through a receiver has its declared
+//! type (`docs/design/class-members.md`). The walk itself is asserted directly,
+//! against a hand-built lattice, in `oxabl_semantic::coercion`'s unit tests.
 
 use std::path::PathBuf;
 
@@ -121,7 +116,7 @@ fn an_unresolved_overload_set_does_not_lend_a_call_an_arbitrary_return_type() {
         END METHOD.
         METHOD PUBLIC VOID exercise():
             DEFINE VARIABLE target AS LOGICAL NO-UNDO.
-            target = label(1).
+            target = label(?).
         END METHOD.
     END CLASS."#;
     let (_stmts, sem, diags) = lint(source);
@@ -132,7 +127,20 @@ fn an_unresolved_overload_set_does_not_lend_a_call_an_arbitrary_return_type() {
     );
     assert!(
         diags.is_empty(),
-        "until overload selection exists, the call type must be unknown: {diags:?}"
+        "`?` fits both overloads, which disagree, so the call type is unknown: {diags:?}"
+    );
+
+    // An argument that picks one overload gives the call its return type.
+    let (_, _, picked) = lint(&source.replace("label(?)", "label(1)"));
+    assert_eq!(
+        picked.len(),
+        1,
+        "the INTEGER overload is picked: {picked:?}"
+    );
+    assert!(
+        picked[0].message.contains("INTEGER"),
+        "{}",
+        picked[0].message
     );
 
     let control = source.replace(
@@ -572,4 +580,33 @@ v-count = NEW orders.base().
     let (_stmts, _sem, diags) = lint_with_index(source, &workspace);
     assert_eq!(diags.len(), 1, "one mismatch: {diags:?}");
     assert!(lint(source).2.is_empty(), "and nothing without an index");
+}
+
+// ---------------------------------------------------------------------------
+// A chain that stops at a workspace class no file supplies
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_chain_through_a_missing_workspace_class_is_not_judged() {
+    // `app.Middle` may inherit `app.Top`: the chain is not known past
+    // `app.Bottom`, so the assignment is not judged.
+    let source = r#"DEFINE VARIABLE oTop AS CLASS app.Top NO-UNDO.
+oTop = NEW app.Bottom().
+"#;
+    let workspace = [
+        ("/src/app/Top.cls", "CLASS app.Top: END CLASS."),
+        (
+            "/src/app/Bottom.cls",
+            "CLASS app.Bottom INHERITS app.Middle: END CLASS.",
+        ),
+    ];
+    let (_stmts, _sem, diags) = lint_with_index(source, &workspace);
+    assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+
+    // When `app.Middle` exists and does not inherit `app.Top`, the whole chain
+    // is known and the mismatch stands.
+    let mut complete = workspace.to_vec();
+    complete.push(("/src/app/Middle.cls", "CLASS app.Middle: END CLASS."));
+    let (_stmts, _sem, diags) = lint_with_index(source, &complete);
+    assert_eq!(diags.len(), 1, "one mismatch: {diags:?}");
 }
