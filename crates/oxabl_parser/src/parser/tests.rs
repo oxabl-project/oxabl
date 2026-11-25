@@ -15360,3 +15360,23 @@ fn the_query_lob_bench_fixture_holds_no_skipped_statement() {
         .collect();
     assert!(skipped.is_empty(), "{skipped:#?}");
 }
+
+/// The unclosed `DO:` of the first CREATE takes the rest of the file into its
+/// trigger block, `USING` included. The CREATE is skipped and the block is read
+/// again; the import must not reach the second CREATE, which comes before it.
+/// The memo of failed CREATEs hides this, so it is off here.
+#[test]
+fn a_using_read_in_a_rewound_create_does_not_reach_an_earlier_create() {
+    let source = "CREATE BUTTON h TRIGGERS: ON CHOOSE DO: END TRIGGERS.\n\
+        CREATE BUTTON hx TRIGGERS: ON CHOOSE DEFINE VARIABLE v AS Method NO-UNDO. END TRIGGERS.\n\
+        USING Foo.Method.\n";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    parser.reread_failed_creates = true;
+    let program = parser.parse_program();
+    assert!(
+        matches!(program.statements[1].kind, StatementKind::Skipped { .. }),
+        "the second CREATE must fail, `Method` is no type there: {:?}",
+        program.statements[1].kind
+    );
+}

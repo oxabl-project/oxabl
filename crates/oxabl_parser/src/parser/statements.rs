@@ -7143,7 +7143,11 @@ impl Parser<'_> {
         // The same tokens fail the same way again. Only a CREATE that met the
         // nesting limit can parse when tried again less deep, and the file
         // reports that limit (`limit_error`).
-        if self.failed_creates.contains(&resume.0) {
+        #[cfg(test)]
+        let memo = !self.reread_failed_creates;
+        #[cfg(not(test))]
+        let memo = true;
+        if memo && self.failed_creates.contains(&resume.0) {
             return Ok(self.recover_create_as_skipped(resume));
         }
 

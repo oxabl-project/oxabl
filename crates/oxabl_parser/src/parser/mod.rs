@@ -223,6 +223,10 @@ pub struct Parser<'a> {
     /// trigger blocks hold the CREATEs after it, so without this the work
     /// doubled with each nested CREATE.
     failed_creates: HashSet<usize>,
+    /// Test builds only: read a failed CREATE again instead of taking it from
+    /// `failed_creates`, so a test sees what the memo hides.
+    #[cfg(test)]
+    reread_failed_creates: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -253,6 +257,8 @@ impl<'a> Parser<'a> {
             in_interface: false,
             dropped: Vec::new(),
             failed_creates: HashSet::new(),
+            #[cfg(test)]
+            reread_failed_creates: false,
         }
     }
 
