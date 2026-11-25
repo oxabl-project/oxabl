@@ -2291,3 +2291,207 @@ fn like_parameters_written_alike_name_one_field_unless_a_temp_table_can_hide_it(
         "{warnings:?}"
     );
 }
+
+const LIKE_M: &str = "M(INPUT p LIKE item.code)";
+
+/// `app.LB` declares `M` with a `LIKE` parameter.
+const LIKE_LB: &str = "CLASS app.LB:\n\
+    \x20   METHOD PUBLIC VOID M(INPUT p LIKE item.code):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// An interface with the same `M`.
+const LIKE_LI: &str = "INTERFACE app.LI:\n\
+    \x20   METHOD PUBLIC VOID M(INPUT p LIKE item.code).\n\
+    END INTERFACE.\n";
+
+/// A class whose header is `header`, with `body` before an override of `M`
+/// written as in `app.LB`.
+fn like_class(header: &str, body: &str) -> String {
+    format!(
+        "CLASS {header}:\n{body}\
+         \x20   METHOD PUBLIC OVERRIDE VOID {LIKE_M}:\n\
+         \x20   END METHOD.\n\
+         END CLASS.\n"
+    )
+}
+
+/// The super methods of `M` in `file`, and the classes the gaps say oxabl
+/// cannot compare.
+fn like_super(ws: &Workspace, file: &str, text: &str) -> (Vec<Value>, Vec<String>) {
+    let path = ws.path(file);
+    let mut session = Session::start(&ws.root);
+    session.open(&path, text);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&path, text, LIKE_M, 0),
+    );
+    let gaps = answer.result["gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|gap| gap.as_str().unwrap().to_string())
+        .filter(|gap| gap.contains(CANNOT_COMPARE))
+        .collect();
+    (locations(&answer.result["locations"]), gaps)
+}
+
+#[test]
+fn a_like_parameter_is_not_compared_when_a_temp_table_or_buffer_can_name_its_table() {
+    let tt = "    DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER.\n";
+    let buffer = "    DEFINE PRIVATE BUFFER item FOR customer.\n";
+    let compared = |gaps: &[String]| -> Vec<String> {
+        gaps.iter()
+            .map(|gap| gap.split('`').nth(1).unwrap_or_default().to_string())
+            .collect()
+    };
+    // The control: nothing can name `item`, so both read the database table.
+    let derived = like_class("app.LD INHERITS app.LB", "");
+    let ws = small(&[("app/LB.cls", LIKE_LB), ("app/LD.cls", &derived)]);
+    let (found, gaps) = like_super(&ws, "app/LD.cls", &derived);
+    assert_eq!(found.len(), 1);
+    assert_eq!(gaps, Vec::<String>::new(), "the control");
+
+    // In the subclass: a buffer, a temp-table, members an include hides.
+    for (what, body) in [
+        ("a buffer", buffer.to_string()),
+        ("a temp-table", tt.to_string()),
+        ("an unread include", "    {tt.i}\n".to_string()),
+    ] {
+        let derived = like_class("app.LD INHERITS app.LB", &body);
+        let ws = small(&[("app/LB.cls", LIKE_LB), ("app/LD.cls", &derived)]);
+        let (found, gaps) = like_super(&ws, "app/LD.cls", &derived);
+        assert_eq!(found.len(), 1, "{what}");
+        assert_eq!(compared(&gaps), ["app.LB"], "{what}");
+    }
+
+    // In the base itself.
+    let base = LIKE_LB.replace("CLASS app.LB:\n", &format!("CLASS app.LB:\n{tt}"));
+    let derived = like_class("app.LD INHERITS app.LB", "");
+    let ws = small(&[("app/LB.cls", &base), ("app/LD.cls", &derived)]);
+    let (_, gaps) = like_super(&ws, "app/LD.cls", &derived);
+    assert_eq!(compared(&gaps), ["app.LB"], "in the base");
+
+    // Another `EXTENT`.
+    let derived = like_class("app.LD INHERITS app.LB", "")
+        .replace("LIKE item.code)", "LIKE item.code EXTENT 2)");
+    let ws = small(&[("app/LB.cls", LIKE_LB), ("app/LD.cls", &derived)]);
+    let path = ws.path("app/LD.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, &derived);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&path, &derived, "M(", 0),
+    );
+    assert_eq!(answer.result["locations"].as_array().unwrap().len(), 1);
+    assert!(
+        answer.result["gaps"][0]
+            .as_str()
+            .unwrap()
+            .contains(CANNOT_COMPARE),
+        "another extent: {}",
+        answer.result
+    );
+}
+
+#[test]
+fn an_interface_like_parameter_is_compared_with_every_type_above_the_class() {
+    let tt = "    DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER.\n";
+    let compared = |gaps: &[String]| -> Vec<String> {
+        let mut names: Vec<String> = gaps
+            .iter()
+            .map(|gap| gap.split('`').nth(1).unwrap_or_default().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+    // A temp-table above the matched parent: the class sees it and the
+    // interface does not.
+    let grand = format!("CLASS app.LG:\n{tt}END CLASS.\n");
+    let parent = LIKE_LB.replace("CLASS app.LB:", "CLASS app.LB INHERITS app.LG:");
+    let class = like_class("app.LC INHERITS app.LB IMPLEMENTS app.LI", "");
+    let ws = small(&[
+        ("app/LG.cls", &grand),
+        ("app/LB.cls", &parent),
+        ("app/LI.cls", LIKE_LI),
+        ("app/LC.cls", &class),
+    ]);
+    let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+    assert_eq!(found.len(), 2);
+    assert!(compared(&gaps).contains(&"app.LI".to_string()), "{gaps:?}");
+    // The other direction agrees.
+    let li = ws.path("app/LI.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&li, LIKE_LI);
+    let (found, warnings) = implementation(&mut session, &li, LIKE_LI, "M(", 0);
+    assert_eq!(found.len(), 1);
+    assert!(
+        warnings.iter().any(|w| w.contains("`app.LC` declares `M`")),
+        "{warnings:?}"
+    );
+
+    // A temp-table of an interface that the matched interface extends.
+    let top = format!("INTERFACE app.LTop:\n{tt}END INTERFACE.\n");
+    let iface = LIKE_LI.replace("INTERFACE app.LI:", "INTERFACE app.LI INHERITS app.LTop:");
+    let class = like_class("app.LC IMPLEMENTS app.LI", "").replace("OVERRIDE ", "");
+    let ws = small(&[
+        ("app/LTop.cls", &top),
+        ("app/LI.cls", &iface),
+        ("app/LC.cls", &class),
+    ]);
+    let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+    assert_eq!(found.len(), 1);
+    assert_eq!(compared(&gaps), ["app.LI"], "a super-interface");
+
+    // A parent that does not resolve can hold a temp-table.
+    let class = like_class("app.LC INHERITS app.Gone IMPLEMENTS app.LI", "");
+    let ws = small(&[("app/LI.cls", LIKE_LI), ("app/LC.cls", &class)]);
+    let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+    assert_eq!(found.len(), 1);
+    assert_eq!(compared(&gaps), ["app.LI"], "an unresolved parent");
+
+    // With nothing that can name `item`, the interface match is certain.
+    let class = like_class("app.LC IMPLEMENTS app.LI", "").replace("OVERRIDE ", "");
+    let ws = small(&[("app/LI.cls", LIKE_LI), ("app/LC.cls", &class)]);
+    let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+    assert_eq!(found.len(), 1);
+    assert_eq!(gaps, Vec::<String>::new(), "the control");
+}
+
+const PLACE_BASE: &str = "CLASS app.PB:\n\
+    \x20   METHOD PUBLIC VOID N(INPUT a AS INTEGER):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// The file names no include, so its facts are read as written, and the
+/// outline does not read the method.
+const PLACE_DERIVED: &str = "&SCOPED-DEFINE T INTEGER\n\
+    CLASS app.PD INHERITS app.PB:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID N(INPUT a AS {&T}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn a_method_oxabl_cannot_place_shows_its_class() {
+    let ws = small(&[("app/PB.cls", PLACE_BASE), ("app/PD.cls", PLACE_DERIVED)]);
+    let base = ws.path("app/PB.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&base, PLACE_BASE);
+    let (found, warnings) = implementation(&mut session, &base, PLACE_BASE, "N(", 0);
+    assert_eq!(
+        found,
+        vec![location(&ws.path("app/PD.cls"), PLACE_DERIVED, "app.PD", 0)]
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("oxabl cannot place `N` in `app.PD`")),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings.iter().any(|w| w.contains("each is shown")),
+        "{warnings:?}"
+    );
+}

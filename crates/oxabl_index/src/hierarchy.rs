@@ -915,12 +915,18 @@ pub fn overrides_below<'a>(
     let Some(name) = wanted.first().map(|method| method.name.clone()) else {
         return Overrides { found, gaps };
     };
+    let like = has_like(wanted);
     for class in index.all_subtypes(target) {
         // An interface that extends another declares no body.
         if class.kind == ClassKind::Interface {
             continue;
         }
-        let records = chain_records(index, class);
+        // Each class above `class` is above the declaration it matches too.
+        let records = if like {
+            closure_records(index, class)
+        } else {
+            RecordNames::unknown()
+        };
         let mut at = class;
         let mut walked: FxHashSet<(IndexName, IndexedFileId)> = FxHashSet::default();
         loop {
@@ -1021,32 +1027,79 @@ pub fn overrides_below<'a>(
     Overrides { found, gaps }
 }
 
-/// The temp-tables and buffers of `class` and of every class up its parent
-/// chain: each class that can lie between it and a supertype that declares a
-/// method. A parent that the index does not hold makes them not known.
-fn chain_records(index: &SubtypeIndex, class: &ClassNode) -> RecordNames {
+/// Whether a method of `wanted` has a `LIKE` parameter: only then do the
+/// temp-tables and buffers of the classes matter.
+pub fn has_like(wanted: &[&MemberDescriptor]) -> bool {
+    wanted.iter().any(|method| {
+        method.params.as_deref().is_some_and(|params| {
+            params
+                .iter()
+                .any(|p| matches!(p.shape, MemberParamShape::Like { .. }))
+        })
+    })
+}
+
+/// The temp-tables and buffers of `class` and of every class and interface
+/// above it, through any number of headers. Each of them can give a name to
+/// the table of a `LIKE` in a list of `class`. A supertype that the index does
+/// not hold, or that does not resolve, makes them not known.
+pub fn closure_records(index: &SubtypeIndex, class: &ClassNode) -> RecordNames {
     let mut records = RecordNames::of(&class.members, class.members_complete);
-    let mut walked: FxHashSet<(&IndexName, IndexedFileId)> = FxHashSet::default();
-    walked.insert((&class.name, class.file));
-    let mut at = class;
-    while let Some(parent) = at
-        .supertypes
-        .iter()
-        .find(|up| up.relation == Relation::Inherits && at.kind != ClassKind::Interface)
-    {
-        match &parent.resolved {
-            Supertype::Class { name, file, .. } => {
-                if !walked.insert((name, *file)) {
-                    break;
+    let mut seen: FxHashSet<(&IndexName, IndexedFileId)> = FxHashSet::default();
+    seen.insert((&class.name, class.file));
+    let mut todo = vec![class];
+    while let Some(at) = todo.pop() {
+        for up in &at.supertypes {
+            match &up.resolved {
+                Supertype::Class { name, file, .. } => {
+                    if !seen.insert((name, *file)) {
+                        continue;
+                    }
+                    let Some(node) = index.class(name, *file) else {
+                        return RecordNames::unknown();
+                    };
+                    records.add(&node.members, node.members_complete);
+                    todo.push(node);
                 }
-                let Some(node) = index.class(name, *file) else {
+                // A built-in or .NET type has no temp-table that ABL code names.
+                Supertype::Builtin { .. } | Supertype::DotNet => {}
+                Supertype::Unresolved(_) => return RecordNames::unknown(),
+            }
+        }
+    }
+    records
+}
+
+/// [`closure_records`] for the class `start` of the file `start_path`, read
+/// through `source`: a class or interface that cannot be read makes them not
+/// known.
+fn source_closure_records(
+    source: &dyn ClassSource,
+    start_path: &Path,
+    start: &ClassDescriptor,
+    start_members: &[MemberDescriptor],
+) -> RecordNames {
+    let mut records = RecordNames::of(start_members, start.members_complete);
+    let mut seen: FxHashSet<(IndexName, IndexedFileId)> = FxHashSet::default();
+    seen.insert((start.name.clone(), start.file));
+    let mut todo = supertypes_of(start, &*source.resolver(start_path));
+    while let Some(up) = todo.pop() {
+        match up.resolved {
+            Supertype::Class { name, file, .. } => {
+                if !seen.insert((name.clone(), file)) {
+                    continue;
+                }
+                let Some(path) = source.path_of(file) else {
                     return RecordNames::unknown();
                 };
-                records.add(&node.members, node.members_complete);
-                at = node;
+                let facts = source.facts(&path);
+                let Some(read) = facts.class(&name).filter(|_| facts.parsed) else {
+                    return RecordNames::unknown();
+                };
+                records.add(&read.members, read.descriptor.members_complete);
+                todo.extend(supertypes_of(&read.descriptor, &*source.resolver(&path)));
             }
-            // A built-in or .NET parent has no temp-table that ABL code names.
-            Supertype::Builtin { .. } | Supertype::DotNet => break,
+            Supertype::Builtin { .. } | Supertype::DotNet => {}
             Supertype::Unresolved(_) => return RecordNames::unknown(),
         }
     }
@@ -1090,9 +1143,9 @@ struct SuperWalk<'a> {
     name: IndexName,
     wanted: &'a [&'a MemberDescriptor],
     wanted_in: Declaring<'a>,
-    /// The temp-tables and buffers of every class the walk read, the start
-    /// included.
-    records: RecordNames,
+    /// The temp-tables and buffers of the start and of every type above it:
+    /// each type the walk reads is one of them.
+    records: &'a RecordNames,
     seen: FxHashSet<(IndexName, IndexedFileId)>,
     found: Vec<SuperMatch>,
     gaps: Vec<String>,
@@ -1110,7 +1163,6 @@ impl SuperWalk<'_> {
                     return Examined::Stopped;
                 }
                 let Some(path) = self.source.path_of(*file) else {
-                    self.records.known = false;
                     self.gaps.push(format!(
                         "the file of `{}` is not known: the method may be there",
                         class.as_written()
@@ -1119,7 +1171,6 @@ impl SuperWalk<'_> {
                 };
                 let facts = self.source.facts(&path);
                 let Some(read) = facts.class(class).filter(|_| facts.parsed) else {
-                    self.records.known = false;
                     self.gaps.push(format!(
                         "`{}` cannot be read: the method may be there",
                         class.as_written()
@@ -1127,9 +1178,7 @@ impl SuperWalk<'_> {
                     return Examined::Stopped;
                 };
                 let resolver = self.source.resolver(&path);
-                self.records
-                    .add(&read.members, read.descriptor.members_complete);
-                let within = Declaring::new(&read.descriptor.imports, &*resolver, &self.records);
+                let within = Declaring::new(&read.descriptor.imports, &*resolver, self.records);
                 let declared = methods_named(&read.members, &self.name);
                 let (ordinals, certain) =
                     matching(&declared, &within, self.wanted, &self.wanted_in);
@@ -1177,7 +1226,6 @@ impl SuperWalk<'_> {
                 Examined::Stopped
             }
             Supertype::Unresolved(why) => {
-                self.records.known = false;
                 self.gaps.push(format!(
                     "`{}` names `{}`, which oxabl cannot resolve ({}): the method may be there",
                     child.as_written(),
@@ -1214,13 +1262,20 @@ pub fn super_methods(
         };
     };
     let resolver = source.resolver(start_path);
-    let start_records = RecordNames::of(start_members, start.members_complete);
+    // The whole closure, not only what the walk reads before a match: an
+    // interface does not see a temp-table above the matched parent, and the
+    // start does.
+    let records = if has_like(wanted) {
+        source_closure_records(source, start_path, start, start_members)
+    } else {
+        RecordNames::unknown()
+    };
     let mut walk = SuperWalk {
         source,
         name: name.clone(),
         wanted,
-        wanted_in: Declaring::new(&start.imports, &*resolver, &start_records),
-        records: start_records.clone(),
+        wanted_in: Declaring::new(&start.imports, &*resolver, &records),
+        records: &records,
         seen: FxHashSet::default(),
         found: Vec::new(),
         gaps: Vec::new(),

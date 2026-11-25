@@ -20,8 +20,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use oxabl_index::hierarchy::{
     ClassNode, Declaring, RecordNames, Relation, SubtypeIndex, SuperKey, Supertype, SupertypeRef,
-    Unresolved, builtin_type, methods_named, overridable, overrides_below, simple_name,
-    super_methods, supertypes_of,
+    Unresolved, builtin_type, closure_records, has_like, methods_named, overridable,
+    overrides_below, simple_name, super_methods, supertypes_of,
 };
 use oxabl_pipeline::{
     ClassDecl, Gap, MethodAt, MethodsAt, Span, Target, class_decl, class_name_span,
@@ -689,7 +689,10 @@ fn implementations_of_method(
             .ok_or(ReferenceError::Cancelled)?;
         let target = SuperKey::Class(class.descriptor.name.clone(), facts.file);
         let resolver = unit.resolver(&method.class_path);
-        let records = RecordNames::of(&class.members, class.descriptor.members_complete);
+        let records = match index.class(&class.descriptor.name, facts.file) {
+            Some(node) if has_like(&wanted) => closure_records(&index, node),
+            _ => RecordNames::unknown(),
+        };
         let wanted_in = Declaring::new(&class.descriptor.imports, &*resolver, &records);
         let below = overrides_below(
             &index,
@@ -714,19 +717,14 @@ fn implementations_of_method(
             match method_spans(
                 unit,
                 &found.class.path,
+                &found.class.name,
                 &method.name,
                 &found.ordinals,
                 found.total,
                 &mut answer.texts,
             ) {
-                Some((spans, exact)) => {
-                    if !exact {
-                        answer.gaps.push(Gap::of_referent(format!(
-                            "the overloads of `{}` in `{}` could not be told apart: each is shown",
-                            method.name,
-                            found.class.name.as_written()
-                        )));
-                    }
+                Some((spans, gap)) => {
+                    answer.gaps.extend(gap.map(Gap::of_referent));
                     answer
                         .locations
                         .extend(spans.into_iter().map(|span| Target {
@@ -846,19 +844,14 @@ fn super_method(
             match method_spans(
                 unit,
                 &path,
+                &matched.class,
                 &method.name,
                 &matched.ordinals,
                 matched.total,
                 &mut answer.texts,
             ) {
-                Some((spans, exact)) => {
-                    if !exact {
-                        answer.gaps.push(Gap::of_referent(format!(
-                            "the overloads of `{}` in `{}` could not be told apart: each is shown",
-                            method.name,
-                            matched.class.as_written()
-                        )));
-                    }
+                Some((spans, gap)) => {
+                    answer.gaps.extend(gap.map(Gap::of_referent));
                     answer
                         .locations
                         .extend(spans.into_iter().map(|span| Target {
@@ -902,18 +895,19 @@ fn wanted_methods<'m>(
     }
 }
 
-/// The name spans of the methods `ordinals` of `name` in the class file
-/// `path`, and whether they are exact. When the file writes another number
-/// of methods of the name than the facts list, every method of the name is
-/// shown and the answer is not exact.
+/// The name spans of the methods `ordinals` of `name` of the class `class`
+/// in the class file `path`, and why they are not exact. When the file writes
+/// another number of methods of the name than the facts list, every method of
+/// the name is shown; when it writes none that oxabl reads, the class name is.
 fn method_spans(
     unit: &HierarchyUnit<'_>,
     path: &Path,
+    class: &IndexName,
     name: &str,
     ordinals: &[usize],
     total: usize,
     texts: &mut HashMap<PathBuf, Arc<str>>,
-) -> Option<(Vec<Span>, bool)> {
+) -> Option<(Vec<Span>, Option<String>)> {
     let decl = place_class(unit, path, texts)?;
     let all: Vec<Span> = decl.methods_named(name).map(|m| m.selection).collect();
     if all.len() == total {
@@ -921,9 +915,24 @@ fn method_spans(
             .iter()
             .filter_map(|at| all.get(*at).copied())
             .collect();
-        Some((picked, true))
+        Some((picked, None))
+    } else if all.is_empty() {
+        Some((
+            vec![decl.selection],
+            Some(format!(
+                "oxabl cannot place `{name}` in `{}` (an include or a preprocessor name writes \
+                 it): the class is shown",
+                class.as_written()
+            )),
+        ))
     } else {
-        Some((all, false))
+        Some((
+            all,
+            Some(format!(
+                "the overloads of `{name}` in `{}` could not be told apart: each is shown",
+                class.as_written()
+            )),
+        ))
     }
 }
 
