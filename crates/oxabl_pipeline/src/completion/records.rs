@@ -375,6 +375,45 @@ impl Engine<'_, '_, '_, '_> {
         })
     }
 
+    /// Whether `record` has a field named `name`. `None` when oxabl does not
+    /// know: a `LIKE` it cannot follow.
+    fn has_field(&self, record: Record, name: &str, depth: usize) -> Option<bool> {
+        match record {
+            Record::Table(id) => Some(self.schema().get_by_id(id)?.field(name).is_some()),
+            Record::TempTable(temp_table) => {
+                let (base, _) = self.based()?;
+                let semantic = &base.navigation.model.semantic;
+                let symbols = &semantic.symbols;
+                if symbols.get(temp_table).declaration == NodeId::DUMMY {
+                    return None;
+                }
+                if symbols.temp_table_fields(temp_table).is_some_and(|scope| {
+                    semantic
+                        .scope_tree
+                        .get(scope)
+                        .get_in(NamespaceId::Values, &fold_atom(name))
+                        .is_some()
+                }) {
+                    return Some(true);
+                }
+                match symbols.temp_table_like(temp_table) {
+                    Some(RecordSource::Schema(id)) => {
+                        self.has_field(Record::Table(id), name, depth)
+                    }
+                    Some(RecordSource::TempTable(source)) if depth < MAX_LIKE_CHAIN => {
+                        self.has_field(Record::TempTable(source), name, depth + 1)
+                    }
+                    Some(RecordSource::TempTable(_)) => None,
+                    None => (!declares_like(
+                        &base.navigation.expanded.text,
+                        symbols.get(temp_table).name_span.end,
+                    ))
+                    .then_some(false),
+                }
+            }
+        }
+    }
+
     /// The type of field `name` of `record`.
     fn field_type(&self, record: Record, name: &str, depth: usize) -> Option<ResolvedType> {
         match record {
@@ -439,42 +478,27 @@ impl Engine<'_, '_, '_, '_> {
             incomplete |= fields_incomplete;
             lists.push((*name, *record, fields));
         }
-        // The fields of each other record the cursor can reach; `None` for a
-        // record whose fields are not all known, which can have any name.
-        let mut reach: Vec<(Option<Record>, Option<HashSet<String>>)> = Vec::new();
-        let mut add = |record: Option<Record>, engine: &Self| {
-            let Some(record) = record else {
-                reach.push((None, None));
-                return;
-            };
-            if reach.iter().any(|(known, _)| *known == Some(record)) {
-                return;
+        // The other records the cursor can reach; `None` for a buffer whose
+        // record is not known, which can have any field.
+        let mut reach: Vec<Option<Record>> = Vec::new();
+        for record in lists
+            .iter()
+            .map(|(_, record, _)| Some(*record))
+            .chain(self.records_in_reach())
+        {
+            if !reach.contains(&record) {
+                reach.push(record);
             }
-            let names = engine
-                .fields(record, None)
-                .and_then(|(fields, incomplete)| {
-                    (!incomplete).then(|| {
-                        fields
-                            .iter()
-                            .map(|field| field.label.to_ascii_lowercase())
-                            .collect()
-                    })
-                });
-            reach.push((Some(record), names));
-        };
-        for (_, record, _) in &lists {
-            add(Some(*record), self);
-        }
-        for record in self.records_in_reach() {
-            add(record, self);
         }
         let mut seen = HashSet::new();
         for (name, record, fields) in lists {
             for field in fields {
                 let key = field.label.to_ascii_lowercase();
-                let shared = reach.iter().any(|(other, names)| {
-                    *other != Some(record)
-                        && names.as_ref().is_none_or(|names| names.contains(&key))
+                let shared = reach.iter().any(|other| match other {
+                    None => true,
+                    Some(other) => {
+                        *other != record && self.has_field(*other, &field.label, 0) != Some(false)
+                    }
                 });
                 let fit = field.fit.min(fit::STATEMENT_FIELD);
                 if shared {
@@ -692,6 +716,19 @@ fn declares_like(text: &str, name_end: u32) -> bool {
     let mut to = (from + 4096).min(text.len());
     while !text.is_char_boundary(to) {
         to -= 1;
+    }
+    // The statement ends at its first `.` before whitespace; most have no
+    // `LIKE`, and need no lexing.
+    let bytes = &text.as_bytes()[from..to];
+    let end = bytes
+        .windows(2)
+        .position(|w| w[0] == b'.' && w[1].is_ascii_whitespace())
+        .map_or(bytes.len(), |at| at + 1);
+    if !bytes[..end]
+        .windows(4)
+        .any(|w| w.eq_ignore_ascii_case(b"like"))
+    {
+        return false;
     }
     oxabl_lexer::tokenize(&text[from..to])
         .iter()
