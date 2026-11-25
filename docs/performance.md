@@ -250,6 +250,10 @@ the mean of 10 samples.
 | `conformance -j 1 big.p` | 0.03 s | 59 MB | 41.1 MB | 74,854 | 160 M | 43.4% | 46.2% |
 | `explain lsp_bench.p` | 0.01 s | 20 MB | 7.0 MB | 25,058 | 46.3 M | 17.1% | 20.1% |
 
+On the `erp` workspace (7,000 roots, 16 cores, a loaded machine), `oxabl check
+src` took 23.3 s with a peak RSS of 1,523 MB, a heap peak of 1.34 GB and 417
+million allocation calls; `oxabl format --check src` took 1.6 s and 275 MB.
+
 `check big.p` spends 98% of its instructions in `SourceMap::new`, called for
 each label of each finding when the findings are reported
 (`LabelPlaces::rows` in `crates/oxabl/src/main.rs`). The in-process benches do
