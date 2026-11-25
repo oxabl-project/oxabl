@@ -449,6 +449,76 @@ fn an_unqualified_call_in_a_static_method_gives_no_type_finding() {
     assert_findings(&check(&ws, "app/St.cls"), Vec::new());
 }
 
+/// `app.St` with the overloads of `STATIC_CLASS` and `member` in place of
+/// `SRun`; `member` holds the call `i = M(1).`.
+fn static_context_class(member: &str) -> String {
+    format!(
+        r#"CLASS app.St:
+    METHOD PUBLIC STATIC INTEGER M(i AS INT64):
+        RETURN 0.
+    END METHOD.
+    METHOD PUBLIC CHARACTER M(i AS INTEGER):
+        RETURN "".
+    END METHOD.
+{member}END CLASS.
+"#
+    )
+}
+
+const STATIC_CONSTRUCTOR: &str = r#"    CONSTRUCTOR STATIC St():
+        DEFINE VARIABLE i AS INTEGER NO-UNDO.
+        i = M(1).
+        MESSAGE i.
+    END CONSTRUCTOR.
+"#;
+
+const STATIC_PROPERTY: &str = r#"    DEFINE PUBLIC STATIC PROPERTY P AS INTEGER NO-UNDO
+    GET():
+        DEFINE VARIABLE i AS INTEGER NO-UNDO.
+        i = M(1).
+        MESSAGE i.
+        RETURN 0.
+    END GET.
+"#;
+
+const INSTANCE_PROPERTY: &str = r#"    DEFINE PUBLIC PROPERTY P AS INTEGER NO-UNDO
+    GET():
+        DEFINE VARIABLE i AS INTEGER NO-UNDO.
+        i = M(1).
+        MESSAGE i.
+        RETURN 0.
+    END GET.
+"#;
+
+/// Same call as in a static method: the compiler rejects it (error 14422), so
+/// oxabl gives no type finding in a static constructor.
+#[test]
+fn an_unqualified_call_in_a_static_constructor_gives_no_type_finding() {
+    let ws = Workspace::new();
+    ws.write("app/St.cls", &static_context_class(STATIC_CONSTRUCTOR));
+    assert_findings(&check(&ws, "app/St.cls"), Vec::new());
+}
+
+/// Same call in the `GET` of a static property: no type finding.
+#[test]
+fn an_unqualified_call_in_a_static_property_getter_gives_no_type_finding() {
+    let ws = Workspace::new();
+    ws.write("app/St.cls", &static_context_class(STATIC_PROPERTY));
+    assert_findings(&check(&ws, "app/St.cls"), Vec::new());
+}
+
+/// Control: in the `GET` of an instance property the call is legal and picks
+/// the instance overload, which returns CHARACTER.
+#[test]
+fn an_unqualified_call_in_an_instance_property_getter_is_typed() {
+    let ws = Workspace::new();
+    ws.write("app/St.cls", &static_context_class(INSTANCE_PROPERTY));
+    assert_findings(
+        &check(&ws, "app/St.cls"),
+        list(&[("i = M(1).", mismatch("CHARACTER", "INTEGER"), "i")]),
+    );
+}
+
 const ARITHMETIC_CLASS: &str = r#"CLASS app.Ar:
     METHOD PUBLIC CHARACTER M(p AS INTEGER):
         RETURN "".
