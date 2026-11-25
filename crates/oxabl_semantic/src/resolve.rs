@@ -33,8 +33,8 @@ use oxabl_ast::{
     TypeArguments, TypeSource, UsingSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
-use oxabl_lexer::is_builtin_function;
 use oxabl_lexer::oxabl_atom::OxablAtom;
+use oxabl_lexer::{Kind, is_builtin_function};
 use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
@@ -345,6 +345,54 @@ impl<'a> Walker<'a> {
         VirtualSpan::new(stmt.span.start, end)
     }
 
+    /// The text of the `GET` and of the `SET` accessor of the property `stmt`,
+    /// so the two scopes do not overlap. The getter runs from `GET` to the
+    /// period after `END GET` (or after `GET.`); the setter from `SET` to the
+    /// end of the statement. An accessor whose keyword is not found covers
+    /// the whole statement.
+    fn accessor_spans(&self, stmt: &Statement) -> (VirtualSpan, VirtualSpan) {
+        let whole = self.scope_span(stmt);
+        let start = stmt.span.start as usize;
+        let Some(text) = self.ctx.source.get(start..stmt.span.end as usize) else {
+            return (whole, whole);
+        };
+        let tokens: Vec<_> = oxabl_lexer::tokenize(text)
+            .into_iter()
+            .filter(|token| !matches!(token.kind, Kind::Comment | Kind::Eof))
+            .collect();
+        let at = |i: usize| (start + tokens[i].start) as u32;
+        let end_of = |i: usize| (start + tokens[i].end) as u32;
+        let mut getter = None;
+        let mut search_set = 0;
+        if let Some(g) = tokens.iter().position(|token| token.kind == Kind::Get) {
+            let mut end = whole.end;
+            let mut after = tokens.len();
+            if tokens.get(g + 1).is_some_and(|t| t.kind == Kind::Period) {
+                end = end_of(g + 1);
+                after = g + 2;
+            } else if let Some(e) = (g + 1..tokens.len().saturating_sub(1))
+                .find(|&i| tokens[i].kind == Kind::End && tokens[i + 1].kind == Kind::Get)
+            {
+                let last = if tokens.get(e + 2).is_some_and(|t| t.kind == Kind::Period) {
+                    e + 2
+                } else {
+                    e + 1
+                };
+                end = end_of(last);
+                after = last + 1;
+            }
+            getter = Some(VirtualSpan::new(at(g), end));
+            search_set = after;
+        }
+        let setter = tokens
+            .iter()
+            .enumerate()
+            .skip(search_set)
+            .find(|(_, token)| token.kind == Kind::Set)
+            .map(|(i, _)| VirtualSpan::new(at(i), whole.end));
+        (getter.unwrap_or(whole), setter.unwrap_or(whole))
+    }
+
     /// Whether `prior` and a declaration made now sit in different arms of one
     /// `&IF`. Only one such arm is compiled, so they cannot collide.
     fn in_exclusive_arm(&self, prior: SymbolId) -> bool {
@@ -472,34 +520,26 @@ impl<'a> Walker<'a> {
                     flags,
                     None,
                 );
+                let (get_span, set_span) = self.accessor_spans(stmt);
                 if let Some(body) = get_body {
-                    let getter = self.tree.push(
-                        ScopeKind::PropertyGet,
-                        scope,
-                        stmt.id,
-                        self.scope_span(stmt),
-                    );
+                    let getter = self
+                        .tree
+                        .push(ScopeKind::PropertyGet, scope, stmt.id, get_span);
                     self.walk_block(body, getter);
                 }
                 if let Some(body) = set_body {
-                    let setter = self.tree.push(
-                        ScopeKind::PropertySet,
-                        scope,
-                        stmt.id,
-                        self.scope_span(stmt),
-                    );
+                    let setter = self
+                        .tree
+                        .push(ScopeKind::PropertySet, scope, stmt.id, set_span);
                     // SET (INPUT pv AS TYPE) parameters bind in the setter scope
                     // so the body can reference them (#58 item B).
                     self.walk_block(set_parameters, setter);
                     self.walk_block(body, setter);
                 } else if !set_parameters.is_empty() {
                     // Defensive: params without a body still get a scope.
-                    let setter = self.tree.push(
-                        ScopeKind::PropertySet,
-                        scope,
-                        stmt.id,
-                        self.scope_span(stmt),
-                    );
+                    let setter = self
+                        .tree
+                        .push(ScopeKind::PropertySet, scope, stmt.id, set_span);
                     self.walk_block(set_parameters, setter);
                 }
             }

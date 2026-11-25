@@ -60,7 +60,7 @@ document highlights.
 | Crate | What it does for completion |
 | --- | --- |
 | `oxabl_lsp` | The capability, the request and resolve handlers, the gate that drops replaced requests, and the rendering of items, ranges and edits in the position encoding. It does no analysis. |
-| `oxabl_daemon` | The bases of each document (`completion` module), the background refresh, the class listing of the include paths, and `compute_completion` and `compute_resolve` on a worker snapshot. It is the only crate that knows salsa: a fresh base is the memoized `navigation_model` query, which semantic tokens and highlights also read. |
+| `oxabl_daemon` | The bases of each document (`completion` module), the background refresh, the class listing of the include paths, and `compute_completion` and `compute_resolve` on a worker thread. It is the only crate that knows salsa, but completion holds no salsa handle (see "No snapshot"). |
 | `oxabl_pipeline` | The engine (`completion` module): the context finder, the collectors, keyword tables, keyword case, matching, ranking and the limit. It works on a base and the current text, with no salsa. |
 | `oxabl_semantic` | The span of each scope, and the class source with `class_surface`, the members a receiver reaches. |
 | `oxabl_workspace` | `FileSystem::list_dir`, to list the entries of a directory on the include path. |
@@ -86,9 +86,8 @@ cursor into it. Only the lexer runs on the current text (about 2 ms).
 ### Fresh, stale and cold
 
 The daemon keeps, for each open document and include context, the newest base
-it made (`oxabl_daemon::completion::Bases`). A base holds an `Arc` of the
-model that the `navigation_model` query returned, so a fresh base costs no
-memory of its own.
+it made (`oxabl_daemon::completion::Bases`): the model, the expansion, the
+text it read and the configuration it ran under.
 
 | The newest base is | Then |
 | --- | --- |
@@ -96,12 +95,27 @@ memory of its own.
 | Stale | Use it with the cursor mapped (below). Set `isIncomplete: true`. Start a refresh. |
 | Missing (first request after the document opened) | Make a fresh base now, on the request's worker thread. This request can take longer than the budget. |
 
-A refresh runs the `navigation_model` query for the current buffer on a worker
-snapshot and stores the result as the new base. One refresh runs for each
-document at a time. A key that comes during the refresh cancels its snapshot,
-as it does for every other query. Then the next request starts a new refresh.
-A refresh that ends after a newer text has arrived still stores its base,
-because that base is newer than the one it replaces.
+A refresh analyses the current text on a background thread and stores the
+result as the new base. One refresh runs for each document at a time. A
+refresh that ends after a newer text has arrived still stores its base,
+because that base is newer than the one it replaces. A refresh that ends after
+its document closed, or after a configuration change, keeps nothing: it only
+fills a slot that is still there.
+
+### No snapshot
+
+Salsa checks for cancellation only at the boundary of a query. The analysis of
+a unit has no boundary inside it, so a database snapshot held through one
+makes the next `didChange` of any buffer wait until the analysis ends, and the
+server answers nothing in that time. So no base is made under a snapshot, and
+no request takes one. The language server copies what a request needs on its
+main thread (the text of the document from its document store, the
+configuration, the generation and schema revision, and the open buffers for an
+include in a root context), and the daemon makes a base from these with the
+pipeline's own run index (`LintPipeline::navigation_model`), as the inlay
+hints do. A base is therefore not the salsa memo of `navigation_model`: each
+open document keeps its own model, and its includes are read from disk, as
+diagnostics read them.
 
 ### Map the cursor into a stale base
 
@@ -169,10 +183,12 @@ its use.
 - **An include with a selected root context.** The base is the analysis of
   the root, with the open buffers over the disk, as go to definition makes it
   (`with_navigation`). It is not memoized by salsa, so the daemon keeps it in
-  `Bases` under the key of the include and the root, and refreshes it as above
-  when only the include changed. When the text of the root changed, the daemon
-  makes the base again on the request's thread, because only a new expansion
-  says whether the root still reads the include.
+  `Bases` under the key of the include and the root, and refreshes it as above.
+  When the text of the root, or of another open include the base read,
+  changed, the request preprocesses the root again (no analysis) to see that it
+  still reads the include, answers from the old base with `isIncomplete: true`,
+  and starts a refresh. A base of the same include in another root context is
+  dropped when a base is made for the selected one.
   The cursor maps to each place where the root expands the include. When there
   are several, the names are the names visible at every place (same name and
   same kind), so each name is valid in each expansion. When the root no longer
@@ -192,7 +208,6 @@ its use.
 | Data | Kept | Ends |
 | --- | --- | --- |
 | The newest base of each open document and include context | `oxabl_daemon::completion::Bases` | Document closed, configuration or schema changed, include context changed |
-| A fresh base | The `navigation_model` memo (shared) | The next edit |
 | The class listing of the include paths | One per session (`ClassListing`) | A watched `.cls` file created or deleted, a change of `oxabl.toml` or of the include paths, or 60 seconds for directories outside the watched folders |
 | The bases that resolve may read | The two newest bases of each document, by base id | When a newer base replaces them |
 | Keyword tables and snippets | Static data | Never |
@@ -284,7 +299,8 @@ that can start a statement.
 | Class body | `DEFINE`, `METHOD`, `CONSTRUCTOR`, `DESTRUCTOR`, `ON`, `END` |
 | Interface body | `DEFINE`, `METHOD`, `END` |
 | Enum body | `DEFINE`, `END` |
-| A routine body (procedure, function, method, constructor, destructor, property accessor, trigger, `DO`, `FOR`, `REPEAT`, `CATCH`, `FINALLY`) | As the file scope of a procedure file, without `PROCEDURE`, `FUNCTION` and `USING` |
+| A routine body (procedure, function, method, constructor, destructor, property accessor, trigger, `DO`, `FOR`, `REPEAT`, `CATCH`, `FINALLY`) | As the file scope of a procedure file, without `PROCEDURE`, `FUNCTION`, `USING`, `BLOCK-LEVEL` and `ROUTINE-LEVEL` |
+| The statement after `THEN`, `ELSE` or `OTHERWISE` at the file scope of a procedure file | As a routine body: it is the branch of another statement |
 
 The names at a statement start are the values that a statement can begin with
 (an assignment target, a method call, a record for `Customer.Name = ...`):
@@ -307,8 +323,12 @@ index (for example `VARIABLE`, `BUFFER`, `TEMP-TABLE`, `PARAMETER`,
 (`NEW` only first, `GLOBAL` only after `NEW`, an access modifier only in a
 class body, `INPUT` and `OUTPUT` only for `PARAMETER`). The scope kind
 filters the second words: `ENUM` only in an enum body; `PROPERTY` only in a
-class or interface body; `PARAMETER` only in a routine body or the file scope
-of a procedure file.
+class or interface body; `PARAMETER` only in a procedure, a trigger or the
+file scope of a procedure file. A block counts as the routine that holds it.
+In a method, constructor, destructor or property accessor no modifier is
+offered (a class has no shared variable, and a method has no `DEFINE
+PARAMETER`). In a user-defined function `NEW` and `SHARED` are offered, and
+`INPUT`, `OUTPUT`, `RETURN` and `PARAMETER` are not.
 
 ### Values
 
@@ -324,7 +344,12 @@ The names that are valid in an expression at the cursor:
   `FORWARD` before the cursor, are valid everywhere in their scope. The symbol
   table merges a `FORWARD` with the definition, so for a function the engine
   also looks for a `FUNCTION <name>` statement before the window in the
-  current text.
+  current text (only the document's own text: a `FORWARD` in the root before
+  an include is not seen, and the function is then missing).
+- A name the cursor cannot see (declared after it, or in the text a stale base
+  changed) does not hide a name of an outer scope that it can see.
+- In a static method or a static property accessor, only the static members of
+  the class are offered.
 - In a class body: the members that the class inherits, from the class source
   (role `ThisObject`). Until step 5 there are none, and every list in a class
   has `isIncomplete: true`.
@@ -714,14 +739,26 @@ instead of filtering a list it holds as whole.
 ## The language server
 
 **Capability.** `completionProvider` with `triggerCharacters` `:`, `.`, `{`,
-`&`, `/` and `resolveProvider: true`. It is advertised for every client.
+`&`, `/` and `resolveProvider: true`. It is advertised for every client. A
+request that a trigger character made (`context.triggerKind` 2) gets a list
+only in a context that character starts: `:` members, `.` a qualified name,
+`{` include files and arguments, `&` preprocessor names, `/` the path of
+`RUN` or of an include. Any other gets `null`, so a `.` that ends a statement
+or a `/` that starts a comment pops no list.
+
+The daemon finds the context before it reads a base. A position with no
+context, or one whose collector does not exist yet, answers `null` and makes
+no base and starts no refresh. An operator that needs a left operand and has
+none (`/` or `*` at a statement start, the first character of a comment) is
+no context.
 
 **Request.** `textDocument/completion` runs on a worker thread. The requests
 of one document run one at a time. A request that a newer one replaced before
 it started, or that the client cancelled with `$/cancelRequest`, answers
 `RequestCanceled` (-32800) and computes nothing (as `HoverGate` does). A
-request whose snapshot an edit cancelled answers `ContentModified` (-32801).
-A failed analysis answers an error, never an empty list.
+request holds no database snapshot (see "No snapshot"), so an edit neither
+waits for it nor cancels it. A failed analysis answers an error, never an
+empty list.
 
 **Answer.** `null` when there is no context. Otherwise a `CompletionList`
 with `isIncomplete` and `items`, also when `items` is empty.

@@ -55,6 +55,21 @@ pub(crate) enum Context {
     },
 }
 
+impl Context {
+    /// Whether a client that asks because the person typed `trigger` gets a
+    /// list here: each trigger character asks for the contexts it starts.
+    pub(crate) fn takes_trigger(&self, trigger: char) -> bool {
+        match trigger {
+            ':' => *self == Context::Members,
+            '.' => *self == Context::Qualified,
+            '{' => matches!(self, Context::IncludeFiles | Context::IncludeArguments),
+            '&' => *self == Context::PreprocessorNames,
+            '/' => matches!(self, Context::Run | Context::IncludeFiles),
+            _ => true,
+        }
+    }
+}
+
 /// The text around the cursor and what it asks for.
 #[derive(Debug)]
 pub(crate) struct Found {
@@ -67,6 +82,9 @@ pub(crate) struct Found {
     pub window_start: u32,
     /// The window holds tokens and reaches the start of the text.
     pub reaches_start: bool,
+    /// The window starts after `THEN`, `ELSE` or `OTHERWISE`: the statement is
+    /// the branch of another one.
+    pub after_branch: bool,
     /// The index of the first token at or after the word.
     pub before: usize,
     pub context: Context,
@@ -101,6 +119,7 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
         word_end: end as u32,
         window_start,
         reaches_start,
+        after_branch: false,
         before,
         context,
     };
@@ -171,6 +190,7 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
     // The statement window.
     let mut window: Vec<usize> = Vec::new();
     let mut boundary = false;
+    let mut after_branch = false;
     let mut i = before;
     while i > 0 {
         i -= 1;
@@ -187,6 +207,7 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
             }
             Kind::Then | Kind::KwElse | Kind::Otherwise if !in_expression(tokens, i) => {
                 boundary = true;
+                after_branch = true;
                 break;
             }
             kind if is_directive(kind) => {
@@ -215,7 +236,10 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
         return None;
     }
     let context = classify(text, tokens, &window, start)?;
-    Some(found(context, window_start, reaches_start))
+    Some(Found {
+        after_branch: after_branch && window.is_empty(),
+        ..found(context, window_start, reaches_start)
+    })
 }
 
 /// The row of the context table that the window ends with.
@@ -329,6 +353,12 @@ fn classify(text: &str, tokens: &[Token], window: &[usize], word_start: usize) -
         return Some(Context::Types);
     }
 
+    // An operator that needs a left operand and has none: the start of a
+    // comment (`/*`, `//`) or of no statement.
+    if n == 1 && opens_operand(last) && !is_prefix(last) {
+        return None;
+    }
+
     // An expression.
     let values = opens_operand(last)
         || matches!(last, Kind::KwIf | Kind::KwReturn | Kind::When | Kind::Then)
@@ -396,6 +426,14 @@ fn opens_operand(kind: Kind) -> bool {
             | Kind::Not
             | Kind::LeftParen
             | Kind::KwWhere
+    )
+}
+
+/// An operator that can stand before its only operand.
+fn is_prefix(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Minus | Kind::Plus | Kind::Add | Kind::Not | Kind::LeftParen
     )
 }
 
@@ -593,6 +631,30 @@ mod tests {
     }
 
     #[test]
+    fn a_branch_of_then_else_or_otherwise_is_marked() {
+        let after = |source: &str| {
+            let at = source.find('|').expect("a cursor");
+            let text = source.replacen('|', "", 1);
+            let tokens = oxabl_lexer::tokenize(&text);
+            find(&text, &tokens, at as u32).map(|found| found.after_branch)
+        };
+        assert_eq!(after("IF x THEN |"), Some(true));
+        assert_eq!(after("IF x THEN y = 1. ELSE |"), Some(true));
+        assert_eq!(after("x = 1.\n|"), Some(false));
+        assert_eq!(after("IF x THEN DO:\n|"), Some(false));
+    }
+
+    #[test]
+    fn a_trigger_character_asks_for_the_contexts_it_starts() {
+        assert!(Context::Members.takes_trigger(':'));
+        assert!(!Context::StatementStart.takes_trigger('/'));
+        assert!(!(Context::Values { target: None }).takes_trigger('/'));
+        assert!(Context::Run.takes_trigger('/'));
+        assert!(!Context::StatementStart.takes_trigger('.'));
+        assert!(Context::StatementStart.takes_trigger('a'));
+    }
+
+    #[test]
     fn no_context_where_oxabl_does_not_know() {
         assert_eq!(context("/* fi| */"), None);
         assert_eq!(context("// fi|"), None);
@@ -604,5 +666,8 @@ mod tests {
         assert_eq!(context("DO:|\nEND."), None);
         assert_eq!(context("{inc.i} |"), None);
         assert_eq!(context("x = {&y} + |"), None);
+        assert_eq!(context("x = 1.\n/|"), None, "the start of a comment");
+        assert_eq!(context("x = 1.\n*|"), None);
+        assert_eq!(context("x = -|"), Some(Context::Values { target: None }));
     }
 }

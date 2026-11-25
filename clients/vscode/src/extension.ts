@@ -107,7 +107,9 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
   const snippets = await registerSnippets(
     context.extensionPath,
     log,
-    () => client?.initializeResult?.capabilities.completionProvider !== undefined,
+    // A client that stopped (crash limit, restart) keeps its initialize
+    // result: only a running server completes.
+    () => client?.isRunning() === true && client.initializeResult?.capabilities.completionProvider !== undefined,
   );
   if (snippets) {
     context.subscriptions.push(snippets);

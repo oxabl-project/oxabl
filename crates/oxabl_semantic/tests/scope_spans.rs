@@ -42,3 +42,17 @@ fn nested_blocks_give_the_innermost_scope() {
     let source = "CLASS Box:\n    METHOD PUBLIC VOID m():\n    END METHOD.\n    |\nEND CLASS.\n";
     assert_eq!(kind_at(source), ScopeKind::Class);
 }
+
+#[test]
+fn each_property_accessor_holds_its_own_body() {
+    let class = |get: &str, set: &str| {
+        format!(
+            "CLASS Box:\n    DEFINE PUBLIC PROPERTY Size AS INTEGER NO-UNDO\n        GET():\n            {get}\n        END GET.\n        SET(INPUT arg AS INTEGER):\n            {set}\n        END SET.\nEND CLASS.\n"
+        )
+    };
+    assert_eq!(kind_at(&class("x = |1.", "")), ScopeKind::PropertyGet);
+    assert_eq!(kind_at(&class("", "x = |1.")), ScopeKind::PropertySet);
+    // An auto getter before a computed setter.
+    let auto = "CLASS Box:\n    DEFINE PUBLIC PROPERTY Size AS INTEGER NO-UNDO\n        GET.\n        SET(INPUT arg AS INTEGER):\n            x = |1.\n        END SET.\nEND CLASS.\n";
+    assert_eq!(kind_at(auto), ScopeKind::PropertySet);
+}

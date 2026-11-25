@@ -105,6 +105,7 @@ impl Engine<'_, '_, '_, '_> {
         let mut seen: HashSet<(NamespaceId, &str)> = HashSet::new();
         let mut items = Vec::new();
         let mut class_incomplete = false;
+        let statik = in_static_routine(base, scope);
         for (depth, id) in tree.ancestors(scope).enumerate() {
             let held = tree.get(id);
             let members = matches!(held.kind, ScopeKind::Class | ScopeKind::Interface);
@@ -120,10 +121,11 @@ impl Engine<'_, '_, '_, '_> {
                     .collect();
                 bound.sort_unstable_by_key(|(_, sym)| sym.raw());
                 for (name, sym) in bound {
-                    if !seen.insert((*ns, name)) {
+                    if seen.contains(&(*ns, name)) {
                         continue;
                     }
                     let symbol = symbols.get(sym);
+                    // A name the cursor cannot see does not hide an outer one.
                     if symbol.declaration == NodeId::DUMMY
                         || symbol.kind == SymbolKind::BuiltIn
                         || !(members
@@ -133,6 +135,11 @@ impl Engine<'_, '_, '_, '_> {
                             .mapped
                             .is_some_and(|m| m.in_changed(base, symbol.name_span.start))
                     {
+                        continue;
+                    }
+                    seen.insert((*ns, name));
+                    // A static routine reaches only the static members.
+                    if members && statik && !symbol.flags.contains(SymbolFlags::STATIC) {
                         continue;
                     }
                     if let Some(item) =
@@ -408,6 +415,26 @@ impl Engine<'_, '_, '_, '_> {
         }
         items
     }
+}
+
+/// Whether `scope` is in a static method or property accessor.
+fn in_static_routine(base: &CompletionBase<'_, '_, '_>, scope: ScopeId) -> bool {
+    let semantic = &base.navigation.model.semantic;
+    let tree = &semantic.scope_tree;
+    let Some(routine) = tree.ancestors(scope).find(|id| {
+        matches!(
+            tree.get(*id).kind,
+            ScopeKind::Method | ScopeKind::PropertyGet | ScopeKind::PropertySet
+        )
+    }) else {
+        return false;
+    };
+    let owner = tree.get(routine).owner_node;
+    semantic.symbols.iter().any(|(_, symbol)| {
+        symbol.declaration == owner
+            && matches!(symbol.kind, SymbolKind::Function | SymbolKind::Property)
+            && symbol.flags.contains(SymbolFlags::STATIC)
+    })
 }
 
 /// A type oxabl knows: not unknown, not an error.

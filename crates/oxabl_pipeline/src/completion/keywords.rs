@@ -17,9 +17,21 @@ pub(crate) enum Place {
     ClassBody,
     InterfaceBody,
     EnumBody,
-    /// The body of a procedure, function, method, constructor, destructor,
-    /// property accessor, trigger or block.
+    /// The body of an internal procedure, a trigger, or a block of a
+    /// procedure file.
     Routine,
+    /// The body of a user-defined function: no `DEFINE PARAMETER`.
+    Function,
+    /// The body of a method, constructor, destructor or property accessor, or
+    /// a block in one: no shared variable and no `DEFINE PARAMETER`.
+    Member,
+}
+
+impl Place {
+    /// A body of executable statements other than the file scope.
+    pub(crate) fn is_routine(self) -> bool {
+        matches!(self, Place::Routine | Place::Function | Place::Member)
+    }
 }
 
 /// Where a snippet is valid (see `snippets.rs`).
@@ -39,7 +51,7 @@ impl SnippetPlace {
             SnippetPlace::ProcedureFile => place == Place::ProcedureFile,
             SnippetPlace::ClassHeader => place == Place::ClassHeader,
             SnippetPlace::ClassBody => place == Place::ClassBody,
-            SnippetPlace::Statement => matches!(place, Place::ProcedureFile | Place::Routine),
+            SnippetPlace::Statement => place.is_routine() || place == Place::ProcedureFile,
         }
     }
 }
@@ -117,7 +129,9 @@ pub(crate) fn statement_keywords(place: Place) -> Vec<Keyword> {
     let keep = |word: &str| -> bool {
         match place {
             Place::ProcedureFile => !CLASS_ONLY.contains(&word) && word != "END",
-            Place::Routine => !CLASS_ONLY.contains(&word) && !FILE_ONLY.contains(&word),
+            Place::Routine | Place::Function | Place::Member => {
+                !CLASS_ONLY.contains(&word) && !FILE_ONLY.contains(&word)
+            }
             Place::ClassHeader => CLASS_HEADER.contains(&word),
             Place::ClassBody => CLASS_BODY.contains(&word),
             Place::InterfaceBody => INTERFACE_BODY.contains(&word),
@@ -183,8 +197,11 @@ pub(crate) fn define_keywords(place: Place, seen: &[Kind]) -> Option<Vec<Keyword
         Kind::NonSerializable,
     ]);
     let direction = has(DIRECTIONS);
+    let member = place == Place::Member;
     if (in_class && (shared || direction))
         || (!in_class && (access || class_modifiers))
+        || (member && !seen.is_empty())
+        || (place == Place::Function && direction)
         || place == Place::ClassHeader
     {
         return None;
@@ -214,7 +231,7 @@ pub(crate) fn define_keywords(place: Place, seen: &[Kind]) -> Option<Vec<Keyword
         if place == Place::ClassBody && !has(&[Kind::Serializable, Kind::NonSerializable]) {
             words.extend(["SERIALIZABLE", "NON-SERIALIZABLE"]);
         }
-    } else if place != Place::EnumBody {
+    } else if place != Place::EnumBody && !member {
         if seen.is_empty() {
             words.push("NEW");
             if matches!(place, Place::ProcedureFile | Place::Routine) {
@@ -324,5 +341,18 @@ mod tests {
             words(&define_keywords(Place::EnumBody, &[]).unwrap()),
             vec!["ENUM"]
         );
+        let member = define_keywords(Place::Member, &[]).unwrap();
+        let member = words(&member);
+        assert!(member.contains(&"VARIABLE") && member.contains(&"BUFFER"));
+        for word in ["NEW", "SHARED", "INPUT", "RETURN", "PARAMETER", "PROPERTY"] {
+            assert!(!member.contains(&word), "{word} in a method");
+        }
+        assert!(define_keywords(Place::Member, &[Kind::New]).is_none());
+        let function = define_keywords(Place::Function, &[]).unwrap();
+        let function = words(&function);
+        assert!(function.contains(&"VARIABLE") && function.contains(&"NEW"));
+        for word in ["INPUT", "OUTPUT", "PARAMETER"] {
+            assert!(!function.contains(&word), "{word} in a function");
+        }
     }
 }

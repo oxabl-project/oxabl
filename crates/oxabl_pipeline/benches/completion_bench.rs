@@ -106,6 +106,7 @@ fn bench_completion(c: &mut Criterion) {
             path: &path,
             keyword_case: KeywordCase::Uppercase,
             snippets: true,
+            trigger: None,
         };
         let ask = |request: &CompletionRequest<'_>, base_text: &str| {
             let navigation = handle
@@ -115,6 +116,7 @@ fn bench_completion(c: &mut Criterion) {
                 navigation: &navigation,
                 text: base_text,
                 fragment: false,
+                stale: false,
             };
             complete(request, Some(&base)).map_or(0, |list| list.items.len())
         };

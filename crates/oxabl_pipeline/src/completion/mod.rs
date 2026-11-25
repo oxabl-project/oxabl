@@ -50,6 +50,9 @@ pub struct CompletionRequest<'r> {
     pub keyword_case: KeywordCase,
     /// Whether the client takes snippet items.
     pub snippets: bool,
+    /// The character the person typed that made the client ask, when it
+    /// asked for that reason.
+    pub trigger: Option<char>,
 }
 
 /// The analysis completion reads, with the text of the document it was made
@@ -61,6 +64,10 @@ pub struct CompletionBase<'b, 's, 'a> {
     /// The document is an include analysed alone: the names of its includer
     /// are not known.
     pub fragment: bool,
+    /// The base is older than the text of a file it read other than the
+    /// document (the root of an include, or another include): its names can
+    /// be out of date.
+    pub stale: bool,
 }
 
 /// The answer to a [`CompletionRequest`]. Offsets are bytes of the current
@@ -193,6 +200,11 @@ pub fn complete(
     let tokens = oxabl_lexer::tokenize(text);
     let cursor = request.offset.min(text.len() as u32);
     let found = context::find(text, &tokens, cursor)?;
+    if let Some(trigger) = request.trigger
+        && !found.context.takes_trigger(trigger)
+    {
+        return None;
+    }
     let word = &text[found.word_start as usize..cursor as usize];
     let case = Case::of(request.keyword_case, word, text, &tokens, found.before);
     let mapped = match base {
@@ -218,6 +230,44 @@ pub fn complete(
     Some(engine.finish(candidates, incomplete, word, cursor))
 }
 
+/// What makes the items of one context.
+type Collector = fn(&Engine<'_, '_, '_, '_>, &Context) -> Option<(Vec<Candidate>, bool)>;
+
+/// The collector of `context`. `None` when no collector answers it yet: the
+/// answer is `null`, and no base is needed.
+fn collector(context: &Context) -> Option<Collector> {
+    Some(match context {
+        Context::StatementStart => |engine, _| engine.statement_start(),
+        Context::DefineKeywords { .. } => |engine, context| match context {
+            Context::DefineKeywords { modifiers } => engine.define_keywords(modifiers),
+            _ => None,
+        },
+        Context::Values { .. } | Context::Where => |engine, _| engine.names(Wanted::Values),
+        Context::Records(_) => |engine, context| match context {
+            Context::Records(after) => engine.names(Wanted::Records(*after)),
+            _ => None,
+        },
+        // The other contexts have no collector yet.
+        _ => return None,
+    })
+}
+
+/// Whether `request` can have an answer, so the caller needs a base for it.
+/// False when the text at the cursor asks for nothing completion answers, or
+/// when the trigger character does not start the context: then the answer is
+/// `null` whatever the base, and the caller makes none.
+pub fn wants_base(request: &CompletionRequest<'_>) -> bool {
+    let text = request.text;
+    let tokens = oxabl_lexer::tokenize(text);
+    let cursor = request.offset.min(text.len() as u32);
+    context::find(text, &tokens, cursor).is_some_and(|found| {
+        request
+            .trigger
+            .is_none_or(|trigger| found.context.takes_trigger(trigger))
+            && collector(&found.context).is_some()
+    })
+}
+
 /// One request's state, shared by the collectors.
 struct Engine<'e, 'b, 's, 'a> {
     request: &'e CompletionRequest<'e>,
@@ -235,14 +285,7 @@ impl Engine<'_, '_, '_, '_> {
         if self.found.reaches_start && !self.window_may_start_here() {
             return None;
         }
-        match &self.found.context {
-            Context::StatementStart => self.statement_start(),
-            Context::DefineKeywords { modifiers } => self.define_keywords(modifiers),
-            Context::Values { .. } | Context::Where => self.names(Wanted::Values),
-            Context::Records(after) => self.names(Wanted::Records(*after)),
-            // The other contexts have no collector yet.
-            _ => None,
-        }
+        collector(&self.found.context)?(self, &self.found.context)
     }
 
     /// Whether a window that reaches the start of the document starts a
@@ -288,6 +331,7 @@ impl Engine<'_, '_, '_, '_> {
             return true;
         };
         mapped.stale
+            || base.stale
             || base.fragment
             || base.navigation.model.recovered.is_some_and(|recovered| {
                 mapped
@@ -346,9 +390,28 @@ impl Engine<'_, '_, '_, '_> {
     /// Where the statement at the cursor starts, from the scope that holds
     /// it. `None` after the type of a class file, at its file scope.
     fn place(&self) -> Option<Place> {
+        let place = self.scope_place()?;
+        // The branch of `IF ... THEN` or `CASE ... WHEN ... THEN` is not a
+        // statement of the file scope.
+        Some(
+            if self.found.after_branch && place == Place::ProcedureFile {
+                Place::Routine
+            } else {
+                place
+            },
+        )
+    }
+
+    fn scope_place(&self) -> Option<Place> {
         let (base, _) = self.based()?;
         let tree = &base.navigation.model.semantic.scope_tree;
-        let kind = tree.get(self.scope()?).kind;
+        let scope = self.scope()?;
+        let kind = tree.get(scope).kind;
+        // A block is a statement of the routine that holds it.
+        let routine = tree
+            .ancestors(scope)
+            .map(|id| tree.get(id).kind)
+            .find(|kind| !kind.is_var_transparent() && *kind != ScopeKind::Trigger);
         Some(match kind {
             ScopeKind::File => {
                 if !is_class_file(self.request.path) {
@@ -363,7 +426,18 @@ impl Engine<'_, '_, '_, '_> {
             }
             ScopeKind::Class => Place::ClassBody,
             ScopeKind::Interface => Place::InterfaceBody,
-            _ => Place::Routine,
+            _ => match routine {
+                Some(ScopeKind::Function) => Place::Function,
+                Some(
+                    ScopeKind::Method
+                    | ScopeKind::Constructor
+                    | ScopeKind::Destructor
+                    | ScopeKind::PropertyGet
+                    | ScopeKind::PropertySet
+                    | ScopeKind::Class,
+                ) => Place::Member,
+                _ => Place::Routine,
+            },
         })
     }
 

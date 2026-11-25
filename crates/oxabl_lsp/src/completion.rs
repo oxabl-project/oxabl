@@ -9,7 +9,7 @@
 //! The requests of one document run one at a time ([`HoverGate`]). A request
 //! that a newer one replaced before it started, or that the client cancelled
 //! with `$/cancelRequest`, answers `RequestCanceled` and computes nothing. A
-//! request whose snapshot an edit cancelled answers `ContentModified`. A
+//! request holds no database snapshot, so an edit never waits for it. A
 //! failed analysis answers an error, never an empty list.
 
 use std::collections::HashMap;
@@ -98,31 +98,34 @@ impl Server<'_> {
             .or_default()
             .ticket(&req.id);
         let options = self.completion;
-        let Some((snapshot, schema, bases, query)) = self.host.with(|sessions| {
+        let trigger = params
+            .context
+            .and_then(|context| context.trigger_character)
+            .and_then(|trigger| trigger.chars().next());
+        let text: std::sync::Arc<str> = std::sync::Arc::from(rope.to_string());
+        // No database snapshot: the request reads copied inputs only, so it
+        // never makes an edit wait (see `oxabl_daemon::completion`).
+        let Some((bases, query)) = self.host.with(|sessions| {
             let session = sessions.get(&self.session_root)?;
-            let buffer = session.buffer(uri.as_str())?;
             let query = CompletionQuery {
                 key: BaseKey {
                     document: uri.as_str().to_string(),
                     root: root.clone(),
                 },
                 path: path.clone(),
-                buffer,
+                text,
                 offset,
                 snippets: options.snippets,
+                trigger,
                 overlay: if root.is_some() {
                     session.buffer_overlay()
                 } else {
                     HashMap::new()
                 },
-                config_generation: session.config_generation(),
+                config: session.database().config().clone(),
+                generation: (session.config_generation(), session.schema_revision()),
             };
-            Some((
-                session.database().clone(),
-                session.schema_handle(),
-                session.completion_bases(),
-                query,
-            ))
+            Some((session.completion_bases(), query))
         }) else {
             return self.respond(Response::new_err(
                 req.id,
@@ -145,12 +148,9 @@ impl Server<'_> {
                     )));
                     return;
                 };
-                let answered = oxabl_common::catch_panic(|| {
-                    compute_completion(&snapshot, schema, &bases, &query)
-                });
-                drop(snapshot);
+                let answered = oxabl_common::catch_panic(|| compute_completion(&bases, &query));
                 let response = match answered {
-                    Ok(Some(Ok(answer))) => {
+                    Ok(Ok(answer)) => {
                         let value = match answer.list {
                             Some(list) => serde_json::to_value(render(
                                 list,
@@ -170,15 +170,10 @@ impl Server<'_> {
                             ),
                         }
                     }
-                    Ok(Some(Err(reason))) => Response::new_err(
+                    Ok(Err(reason)) => Response::new_err(
                         id,
                         ErrorCode::RequestFailed as i32,
                         format!("oxabl-lsp: no completion: {reason}"),
-                    ),
-                    Ok(None) => Response::new_err(
-                        id,
-                        ErrorCode::ContentModified as i32,
-                        "oxabl-lsp: an edit replaced this analysis".to_string(),
                     ),
                     Err(panic) => Response::new_err(
                         id,
@@ -206,10 +201,10 @@ impl Server<'_> {
         let Some(query) = item.data.as_ref().and_then(resolve_query) else {
             return self.respond(Response::new_ok(req.id, item));
         };
-        let Some((snapshot, bases)) = self.host.with(|sessions| {
-            let session = sessions.get(&self.session_root)?;
-            Some((session.database().clone(), session.completion_bases()))
-        }) else {
+        let Some(bases) = self
+            .host
+            .with(|sessions| Some(sessions.get(&self.session_root)?.completion_bases()))
+        else {
             return self.respond(Response::new_ok(req.id, item));
         };
         let sender = self.connection.sender.clone();
@@ -217,9 +212,7 @@ impl Server<'_> {
         let spawned = oxabl_common::stack::builder()
             .name("oxabl-completion-resolve".to_string())
             .spawn(move || {
-                let documentation =
-                    oxabl_common::catch_panic(|| compute_resolve(&snapshot, &bases, query));
-                drop(snapshot);
+                let documentation = oxabl_common::catch_panic(|| compute_resolve(&bases, query));
                 let response = match documentation {
                     Ok(documentation) => {
                         if let Some(value) = documentation {

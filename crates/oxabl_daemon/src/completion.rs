@@ -6,11 +6,12 @@
 //! is stale it starts one refresh in the background for the next request. The
 //! first request of a document makes its base on the request's thread.
 //!
-//! A fresh base of an open file that is its own root is the memoized
-//! [`navigation_model`](crate::db) query, which semantic tokens and highlights
-//! also read, so it costs no memory of its own. A base of an include in a
-//! selected root context is made from the root with the open buffers over the
-//! disk, as go to definition makes it.
+//! No base is made under a database snapshot. Salsa checks for cancellation
+//! only at query boundaries, and an analysis has none inside it, so a snapshot
+//! held through one makes the next edit of any buffer wait until it ends. A
+//! base is made from copied inputs instead (the text, the configuration, the
+//! open buffers) with the pipeline's own run index, and a request reads it
+//! with no snapshot either.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,16 +20,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use oxabl_pipeline::completion::{
     CompletionBase, CompletionList, CompletionRequest, complete, keyword_documentation,
-    symbol_documentation,
+    symbol_documentation, wants_base,
 };
 use oxabl_pipeline::{Expansion, LintPipeline, Navigation, NavigationModel};
-use oxabl_semantic::IndexedFileId;
 use oxabl_workspace::FileSystem;
 
-use crate::db::{
-    AnalysisDatabase, Buffer, OverlayFs, SchemaHandle, SnapshotIndex, expanded_text,
-    navigation_model, spelled_as_expanded,
-};
+use crate::db::{AnalysisConfig, OverlayFs, spelled_as_expanded};
 use crate::session::canonical_path;
 
 /// The hold-marker site of a refresh, for the tests that show a request does
@@ -59,8 +56,9 @@ pub struct Base {
     overlay: HashMap<PathBuf, Arc<str>>,
     model: Arc<NavigationModel>,
     expansion: Arc<Expansion>,
-    config_generation: u64,
-    schema_revision: u32,
+    /// The configuration the analysis ran under.
+    config: AnalysisConfig,
+    generation: (u64, u32),
 }
 
 /// The newest bases of each document, and the refresh that runs for it.
@@ -89,7 +87,8 @@ impl Bases {
         self.sequence.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// Drop the bases of a closed document.
+    /// Drop the bases of a closed document. A refresh that ends later keeps
+    /// nothing.
     pub fn forget(&self, document: &str) {
         self.slots().retain(|key, _| key.document != document);
     }
@@ -105,26 +104,39 @@ impl Bases {
             .get(key)?
             .newest
             .clone()
-            .filter(|base| (base.config_generation, base.schema_revision) == generation)
+            .filter(|base| base.generation == generation)
     }
 
-    /// Keep `base` as the newest of `key`, unless a newer one is kept.
-    fn store(&self, key: &BaseKey, base: Arc<Base>) {
+    /// Keep `base`, made on the request's thread, as the newest of `key`. The
+    /// bases of the document in another root context go: only the selected
+    /// context asks.
+    fn store_made(&self, key: &BaseKey, base: Arc<Base>) {
         let mut slots = self.slots();
+        slots.retain(|other, _| other.document != key.document || other == key);
         let slot = slots.entry(key.clone()).or_default();
-        match &slot.newest {
-            Some(newest) if newest.id > base.id => {}
-            _ => {
-                slot.previous = slot.newest.replace(base);
-            }
+        Self::keep(slot, base);
+    }
+
+    /// Keep `base`, made by a refresh, unless the slot of `key` is gone (the
+    /// document closed, or the configuration changed) or holds a newer one.
+    fn store_refreshed(&self, key: &BaseKey, base: Arc<Base>) {
+        if let Some(slot) = self.slots().get_mut(key) {
+            Self::keep(slot, base);
         }
     }
 
-    /// Claim the refresh of `key`; false when one runs.
+    fn keep(slot: &mut Slot, base: Arc<Base>) {
+        match &slot.newest {
+            Some(newest) if newest.id > base.id => {}
+            _ => slot.previous = slot.newest.replace(base),
+        }
+    }
+
+    /// Claim the refresh of `key`; false when one runs or the slot is gone.
     fn claim_refresh(&self, key: &BaseKey) -> bool {
-        let mut slots = self.slots();
-        let slot = slots.entry(key.clone()).or_default();
-        !std::mem::replace(&mut slot.refreshing, true)
+        self.slots()
+            .get_mut(key)
+            .is_some_and(|slot| !std::mem::replace(&mut slot.refreshing, true))
     }
 
     fn end_refresh(&self, key: &BaseKey) {
@@ -146,21 +158,26 @@ impl Bases {
     }
 }
 
-/// One completion request, as the client's thread reads it.
+/// One completion request, as the client's thread reads it. It holds no
+/// database handle.
 pub struct CompletionQuery {
     pub key: BaseKey,
     /// The document's path, canonical.
     pub path: PathBuf,
-    /// The open buffer of the document.
-    pub buffer: Buffer,
-    /// The byte of the cursor in the buffer's text.
+    /// The text of the document, as the editor holds it.
+    pub text: Arc<str>,
+    /// The byte of the cursor in `text`.
     pub offset: u32,
     /// The client takes snippet items.
     pub snippets: bool,
-    /// The open buffers, by path, for a document in a selected root.
+    /// The character the person typed that made the client ask.
+    pub trigger: Option<char>,
+    /// The open buffers, by canonical path, for a document in a selected root.
     pub overlay: HashMap<PathBuf, Arc<str>>,
-    /// The session's configuration generation.
-    pub config_generation: u64,
+    /// The session's configuration.
+    pub config: AnalysisConfig,
+    /// The session's configuration generation and schema revision.
+    pub generation: (u64, u32),
 }
 
 /// The answer to a [`CompletionQuery`]: the list, or `None` when oxabl does
@@ -170,123 +187,113 @@ pub struct CompletionAnswer {
     pub base: u64,
 }
 
-/// Answer `query` on a worker snapshot. `None` when a concurrent write
-/// cancelled the read; `Err` when the analysis failed in a way that gives no
-/// answer.
+/// Answer `query`. `Err` when the root of an include cannot be read.
+/// Unguarded: run it inside a panic guard.
 pub fn compute_completion(
-    snapshot: &AnalysisDatabase,
-    schema: SchemaHandle,
     bases: &Arc<Bases>,
     query: &CompletionQuery,
-) -> Option<Result<CompletionAnswer, String>> {
-    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-        let generation = (query.config_generation, *schema.revision(snapshot));
-        let text: Arc<str> = Arc::from(query.buffer.text(snapshot).as_str());
-        let base = match &query.key.root {
-            None => own_base(snapshot, schema, bases, query, generation, &text),
-            Some(root) => context_base(snapshot, schema, bases, query, generation, root, &text)?,
-        };
-        let Some(base) = base else {
-            let list = answer(snapshot, None, query, &text, &query.path);
-            return Ok(CompletionAnswer { list, base: 0 });
-        };
-        let document = match &query.key.root {
-            None => base.root.clone(),
-            Some(_) => spelled_as_expanded(&base.expansion, &base.root, &query.path),
-        };
-        let list = with_base(snapshot, &base, |navigation| {
-            let fragment =
-                query.key.root.is_none() && oxabl_workspace::is_include_fragment(&document);
-            let completion = CompletionBase {
-                navigation,
-                text: &base.text,
-                fragment,
-            };
-            answer(snapshot, Some(&completion), query, &text, &document)
-        })
-        .flatten();
-        Ok(CompletionAnswer {
-            list,
-            base: base.id,
-        })
-    }))
-    .ok()
-}
-
-fn answer(
-    snapshot: &AnalysisDatabase,
-    base: Option<&CompletionBase<'_, '_, '_>>,
-    query: &CompletionQuery,
-    text: &str,
-    document: &Path,
-) -> Option<CompletionList> {
-    let request = CompletionRequest {
-        text,
-        offset: query.offset,
-        path: document,
-        keyword_case: snapshot.config().pipeline.style.keyword_case,
-        snippets: query.snippets,
+) -> Result<CompletionAnswer, String> {
+    fn request<'q>(query: &'q CompletionQuery, path: &'q Path) -> CompletionRequest<'q> {
+        CompletionRequest {
+            text: &query.text,
+            offset: query.offset,
+            path,
+            keyword_case: query.config.pipeline.style.keyword_case,
+            snippets: query.snippets,
+            trigger: query.trigger,
+        }
+    }
+    // A position that asks for nothing needs no base: a `.` that ends a
+    // statement must not start an analysis.
+    if !wants_base(&request(query, &query.path)) {
+        return Ok(CompletionAnswer {
+            list: None,
+            base: 0,
+        });
+    }
+    let found = match &query.key.root {
+        None => own_base(bases, query),
+        Some(root) => context_base(bases, query, root)?,
     };
-    complete(&request, base)
+    let Some((base, stale)) = found else {
+        let list = match query.key.root {
+            // The root no longer reads the include: no list.
+            Some(_) => None,
+            None => complete(&request(query, &query.path), None),
+        };
+        return Ok(CompletionAnswer { list, base: 0 });
+    };
+    let document = match &query.key.root {
+        None => base.root.clone(),
+        Some(_) => spelled_as_expanded(&base.expansion, &base.root, &query.path),
+    };
+    let list = with_base(&base, |navigation| {
+        let fragment = query.key.root.is_none() && oxabl_workspace::is_include_fragment(&document);
+        let completion = CompletionBase {
+            navigation,
+            text: &base.text,
+            fragment,
+            stale,
+        };
+        complete(&request(query, &document), Some(&completion))
+    })
+    .flatten();
+    Ok(CompletionAnswer {
+        list,
+        base: base.id,
+    })
 }
 
 /// The base of a document that is its own root: the newest one, made now
 /// when there is none. A stale one starts a refresh. `None` when the
 /// preprocessing of the document failed.
-fn own_base(
-    snapshot: &AnalysisDatabase,
-    schema: SchemaHandle,
-    bases: &Arc<Bases>,
-    query: &CompletionQuery,
-    generation: (u64, u32),
-    text: &Arc<str>,
-) -> Option<Arc<Base>> {
-    if let Some(base) = bases.newest(&query.key, generation) {
-        if base.text != *text && bases.claim_refresh(&query.key) {
-            let db = snapshot.clone();
-            let buffer = query.buffer;
-            refresh(bases, &query.key, Arc::clone(text), move |id| {
-                salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                    make_own_base(&db, schema, buffer, id, generation)
-                }))
-                .ok()
-                .flatten()
+fn own_base(bases: &Arc<Bases>, query: &CompletionQuery) -> Option<(Arc<Base>, bool)> {
+    if let Some(base) = bases.newest(&query.key, query.generation) {
+        if base.text != query.text && bases.claim_refresh(&query.key) {
+            let config = query.config.clone();
+            let path = query.path.clone();
+            let text = Arc::clone(&query.text);
+            let generation = query.generation;
+            refresh(bases, &query.key, Arc::clone(&query.text), move |id| {
+                make_own_base(&config, &path, text, id, generation)
             });
         }
-        return Some(base);
+        return Some((base, false));
     }
     let base = Arc::new(make_own_base(
-        snapshot,
-        schema,
-        query.buffer,
+        &query.config,
+        &query.path,
+        Arc::clone(&query.text),
         bases.next_id(),
-        generation,
+        query.generation,
     )?);
-    bases.store(&query.key, Arc::clone(&base));
-    Some(base)
+    bases.store_made(&query.key, Arc::clone(&base));
+    Some((base, false))
 }
 
+/// The analysis of `text`, the document at `path` as its own root. Its
+/// includes are read from disk, as diagnostics read them.
 fn make_own_base(
-    db: &AnalysisDatabase,
-    schema: SchemaHandle,
-    buffer: Buffer,
+    config: &AnalysisConfig,
+    path: &Path,
+    text: Arc<str>,
     id: u64,
-    (config_generation, schema_revision): (u64, u32),
+    generation: (u64, u32),
 ) -> Option<Base> {
-    let root = buffer.path(db).clone()?;
-    let text: Arc<str> = Arc::from(buffer.text(db).as_str());
-    let model = navigation_model(db, buffer, schema)?;
-    let expansion = Arc::new(expanded_text(db, buffer));
+    let run = config.lint_pipeline();
+    let handle = run.with_file(path);
+    let expansion = handle.expand(&text);
+    let model = handle.navigation_model(&expansion)?;
     Some(Base {
         id,
         text,
-        root,
+        root: path.to_path_buf(),
         root_text: None,
         overlay: HashMap::new(),
-        model,
-        expansion,
-        config_generation,
-        schema_revision,
+        model: Arc::new(model),
+        expansion: Arc::new(expansion),
+        config: config.clone(),
+        generation,
     })
 }
 
@@ -306,7 +313,7 @@ fn refresh(
             move || {
                 oxabl_common::hold_if_injected(REFRESH_SITE, &text);
                 if let Ok(Some(base)) = oxabl_common::catch_panic(|| make(id)) {
-                    bases.store(&key, Arc::new(base));
+                    bases.store_refreshed(&key, Arc::new(base));
                 }
                 bases.end_refresh(&key);
             }
@@ -316,135 +323,139 @@ fn refresh(
     }
 }
 
-/// The base of an include in the selected root `root`. `Ok(None)` when no
-/// base can be made: the root cannot be read, its preprocessing failed, or it
-/// no longer reads the include, and then the answer is `null`.
+/// The base of an include in the selected root `root`, and whether it is
+/// older than a file it read. `Ok(None)` when no base can be made: the
+/// preprocessing of the root failed, or it no longer reads the include, and
+/// then the answer is `null`.
+///
+/// A base whose root or other open includes changed is still read, marked
+/// stale, while a refresh makes the new one: only the preprocessing runs on
+/// the request's thread, to see that the root still reads the include.
 fn context_base(
-    snapshot: &AnalysisDatabase,
-    schema: SchemaHandle,
     bases: &Arc<Bases>,
     query: &CompletionQuery,
-    generation: (u64, u32),
     root: &Path,
-    text: &Arc<str>,
-) -> Result<Option<Arc<Base>>, String> {
-    let config = snapshot.config();
+) -> Result<Option<(Arc<Base>, bool)>, String> {
     let fs = OverlayFs {
         overlay: query.overlay.clone(),
-        inner: Arc::clone(&config.fs),
+        inner: Arc::clone(&query.config.fs),
     };
     let root_text = fs
         .read(root)
         .map_err(|error| format!("cannot read {}: {error}", root.display()))?;
-    if let Some(base) = bases.newest(&query.key, generation)
-        && base.root_text.as_deref() == Some(&*root_text)
-    {
-        // Only the include changed: the root still reads it where it did.
-        if base.text != *text && bases.claim_refresh(&query.key) {
-            let db = snapshot.clone();
+    if let Some(base) = bases.newest(&query.key, query.generation) {
+        let others_changed = base.root_text.as_deref() != Some(&*root_text)
+            || includes_changed(&base, &query.overlay, &query.path);
+        if others_changed && !still_reads(&query.config, &fs, root, &root_text, &query.path) {
+            return Ok(None);
+        }
+        if (others_changed || base.text != query.text) && bases.claim_refresh(&query.key) {
+            let config = query.config.clone();
             let path = query.path.clone();
             let root = root.to_path_buf();
-            refresh(bases, &query.key, Arc::clone(text), move |id| {
-                salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                    make_context_base(&db, schema, &path, &root, &fs, id, generation)
-                }))
-                .ok()
-                .and_then(Result::ok)
-                .flatten()
+            let generation = query.generation;
+            refresh(bases, &query.key, Arc::clone(&query.text), move |id| {
+                make_context_base(&config, &path, &root, fs, id, generation)
             });
         }
-        return Ok(Some(base));
+        return Ok(Some((base, others_changed)));
     }
     let made = make_context_base(
-        snapshot,
-        schema,
+        &query.config,
         &query.path,
         root,
-        &fs,
+        fs,
         bases.next_id(),
-        generation,
-    )?;
+        query.generation,
+    );
     let Some(base) = made else {
         return Ok(None);
     };
     let base = Arc::new(base);
-    bases.store(&query.key, Arc::clone(&base));
-    Ok(Some(base))
+    bases.store_made(&query.key, Arc::clone(&base));
+    Ok(Some((base, false)))
+}
+
+/// Whether an include of `base` other than the document is open now with
+/// text other than the analysis read.
+fn includes_changed(base: &Base, overlay: &HashMap<PathBuf, Arc<str>>, document: &Path) -> bool {
+    let document = canonical_path(document);
+    base.expansion
+        .dependency_paths()
+        .iter()
+        .map(|path| canonical_path(path))
+        .filter(|path| *path != document)
+        .any(|path| base.overlay.get(&path) != overlay.get(&path))
+}
+
+/// Whether `root_text` still reads the include at `path`: the preprocessing
+/// alone, with no analysis.
+fn still_reads(
+    config: &AnalysisConfig,
+    fs: &OverlayFs,
+    root: &Path,
+    root_text: &str,
+    path: &Path,
+) -> bool {
+    let run = LintPipeline::new(&config.pipeline, fs).with_preprocess(config.preprocess);
+    let expansion = run.with_file(root).expand(root_text);
+    reads(&expansion, path)
+}
+
+fn reads(expansion: &Expansion, path: &Path) -> bool {
+    let include = canonical_path(path);
+    !expansion.preprocessing_failed()
+        && expansion
+            .dependency_paths()
+            .iter()
+            .any(|path| canonical_path(path) == include)
 }
 
 fn make_context_base(
-    snapshot: &AnalysisDatabase,
-    schema: SchemaHandle,
+    config: &AnalysisConfig,
     path: &Path,
     root: &Path,
-    fs: &OverlayFs,
+    fs: OverlayFs,
     id: u64,
-    (config_generation, schema_revision): (u64, u32),
-) -> Result<Option<Base>, String> {
-    let _revision = schema.revision(snapshot);
-    let config = snapshot.config();
-    let Ok(root_text) = fs.read(root) else {
-        return Ok(None);
-    };
-    let run = LintPipeline::new(&config.pipeline, fs).with_preprocess(config.preprocess);
+    generation: (u64, u32),
+) -> Option<Base> {
+    let root_text = fs.read(root).ok()?;
+    let run = LintPipeline::new(&config.pipeline, &fs)
+        .with_preprocess(config.preprocess)
+        .with_branch_tracking(true);
     let handle = run.with_file(root);
     let expansion = handle.expand(&root_text);
-    if expansion.preprocessing_failed() {
-        return Ok(None);
-    }
-    let include = canonical_path(path);
-    if !expansion
-        .dependency_paths()
-        .iter()
-        .any(|path| canonical_path(path) == include)
-    {
-        return Ok(None);
+    if !reads(&expansion, path) {
+        return None;
     }
     let spelled = spelled_as_expanded(&expansion, root, path);
-    let text = fs
-        .read(&spelled)
-        .map_err(|error| format!("cannot read {}: {error}", spelled.display()))?;
-    salsa::Database::unwind_if_revision_cancelled(snapshot);
-    let index = SnapshotIndex::new(snapshot, Some(root), expansion.search_base());
-    let Some(model) = handle.with_index(&index).navigation_model(&expansion) else {
-        return Ok(None);
-    };
-    Ok(Some(Base {
+    let text = fs.read(&spelled).ok()?;
+    let model = handle.navigation_model(&expansion)?;
+    drop(handle);
+    drop(run);
+    Some(Base {
         id,
         text,
         root: root.to_path_buf(),
         root_text: Some(root_text),
-        overlay: fs.overlay.clone(),
+        overlay: fs.overlay,
         model: Arc::new(model),
         expansion: Arc::new(expansion),
-        config_generation,
-        schema_revision,
-    }))
+        config: config.clone(),
+        generation,
+    })
 }
 
-/// Run `answer` over a [`Navigation`] of `base`. `None` when the base's
-/// expansion has no text (its preprocessing failed).
-fn with_base<T>(
-    snapshot: &AnalysisDatabase,
-    base: &Base,
-    answer: impl FnOnce(&Navigation<'_, '_>) -> T,
-) -> Option<T> {
-    let config = snapshot.config();
+/// Run `answer` over a [`Navigation`] of `base`, with the pipeline's own run
+/// index. `None` when the base's expansion has no text.
+fn with_base<T>(base: &Base, answer: impl FnOnce(&Navigation<'_, '_>) -> T) -> Option<T> {
     let fs = OverlayFs {
         overlay: base.overlay.clone(),
-        inner: Arc::clone(&config.fs),
+        inner: Arc::clone(&base.config.fs),
     };
-    let run = LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
-    let index = SnapshotIndex::new(snapshot, Some(&base.root), base.expansion.search_base());
-    let handle = run.with_file(&base.root).with_index(&index);
-    let file_of = |id: IndexedFileId| {
-        config
-            .index
-            .registered()
-            .into_iter()
-            .find(|(_, known)| *known == id)
-            .map(|(file, _)| file.path(snapshot).clone())
-    };
+    let run = LintPipeline::new(&base.config.pipeline, &fs).with_preprocess(base.config.preprocess);
+    let handle = run.with_file(&base.root);
+    let file_of = |_| None;
     let navigation = handle.navigation_with(&base.expansion, Arc::clone(&base.model), &file_of)?;
     Some(answer(&navigation))
 }
@@ -459,24 +470,13 @@ pub enum ResolveQuery {
 }
 
 /// The Markdown documentation of an item. `None` when there is none, or the
-/// base of a symbol is no longer kept, or a write cancelled the read.
-pub fn compute_resolve(
-    snapshot: &AnalysisDatabase,
-    bases: &Bases,
-    query: ResolveQuery,
-) -> Option<String> {
+/// base of a symbol is no longer kept. Unguarded: run it inside a panic guard.
+pub fn compute_resolve(bases: &Bases, query: ResolveQuery) -> Option<String> {
     match query {
         ResolveQuery::Doc(doc) => keyword_documentation(doc),
         ResolveQuery::Symbol { base, symbol } => {
             let base = bases.by_id(base)?;
-            salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                with_base(snapshot, &base, |navigation| {
-                    symbol_documentation(navigation, symbol)
-                })
-                .flatten()
-            }))
-            .ok()
-            .flatten()
+            with_base(&base, |navigation| symbol_documentation(navigation, symbol)).flatten()
         }
     }
 }

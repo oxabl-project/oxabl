@@ -369,11 +369,16 @@ lists.
 
 - The server serves the static snippets too, at a statement start where their
   body is valid. It has the resolved `StyleGuide`, so it needs no TOML reader.
-- The extension's provider gives no item while
+- The extension's provider gives no item while the client runs
+  (`client.isRunning()`) and
   `client.initializeResult.capabilities.completionProvider` is set
-  (`registerSnippets` takes a `serverCompletes` test). Where no server runs,
+  (`registerSnippets` takes a `serverCompletes` test). A client that stopped
+  keeps its initialize result, so the running test is needed: after a crash or
+  during a restart, the extension offers the snippets again. Where no server runs,
   or the server is older and has no completion provider, the extension offers
-  the snippets as before. `keywordCaseOf` and `test/keyword-case.json` stay
+  the snippets as before. A server newer than the extension, with an extension
+  older than this hand-off, shows each snippet twice; the two are released
+  apart, and the extension updates itself. `keywordCaseOf` and `test/keyword-case.json` stay
   for that case only.
 - The end-to-end scenario `completion` fails when the suggest widget shows
   `trycatch` twice.
