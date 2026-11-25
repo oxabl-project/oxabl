@@ -16,8 +16,9 @@ use rustc_hash::FxBuildHasher;
 ///   what the argument hides. A scoped name stays visible there.
 /// - `&GLOBAL-DEFINE` never ends, and `&UNDEFINE` removes the visible
 ///   definition wherever it came from, in any file. A global define of a name
-///   that has a scoped name or an include argument is an error in the AVM and
-///   is ignored here.
+///   that has a scoped name, or an argument of the include that is read, is an
+///   error in the AVM and is ignored here. Below a hidden argument it is
+///   not an error: it defines the visible name.
 ///
 /// All lookups are case-insensitive (ABL preprocessor variables are
 /// case-insensitive).
@@ -145,7 +146,8 @@ impl PreprocVarTable {
                 };
                 self.store(key, None, Some(entry));
             }
-            // The AVM rejects a global define over a scoped name or an argument.
+            // The AVM rejects a global define over a scoped name or an argument
+            // of the include being read.
             Some(_) => {}
         }
     }

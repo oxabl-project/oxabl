@@ -746,3 +746,58 @@ fn a_global_define_over_an_argument_of_the_same_include_is_ignored() {
         "MESSAGE \"P[zzz]\".\nMESSAGE \"M[]\".",
     );
 }
+
+const LADDER: &str = "&IF DEFINED(x) = 0 &THEN\nMESSAGE \"@-D0[{&x}]\".\n&ELSEIF DEFINED(x) = 1 &THEN\nMESSAGE \"@-D1[{&x}]\".\n&ELSEIF DEFINED(x) = 2 &THEN\nMESSAGE \"@-D2[{&x}]\".\n&ELSE\nMESSAGE \"@-D3[{&x}]\".\n&ENDIF";
+
+/// `p19.i` and `b19.i`: each shows the value of `x` and `DEFINED(x)`.
+fn ladder_files() -> [(&'static str, String); 2] {
+    [
+        ("/inc/b19.i", LADDER.replace('@', "B")),
+        (
+            "/inc/p19.i",
+            format!("{{b19.i}}{}", LADDER.replace('@', "P")),
+        ),
+    ]
+}
+
+fn assert_ladder(source: &str, expected: &str) {
+    let files = ladder_files();
+    let more: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    assert_passes(source, &more, expected);
+}
+
+#[test]
+fn an_undefine_below_an_argument_removes_the_visible_global_definition() {
+    assert_passes(
+        "&GLOBAL-DEFINE x g\n{/inc/p18.i &x=zzz}\nMESSAGE \"M[{&x}]\".",
+        &[
+            ("/inc/p18.i", "{b18.i}\nMESSAGE \"P[{&x}]\"."),
+            ("/inc/b18.i", "&UNDEFINE x\nMESSAGE \"B[{&x}]\"."),
+        ],
+        "MESSAGE \"B[]\".\nMESSAGE \"P[zzz]\".\nMESSAGE \"M[]\".",
+    );
+}
+
+#[test]
+fn defined_is_0_below_an_argument_and_2_for_the_argument() {
+    assert_ladder(
+        "{/inc/p19.i &x=zzz}",
+        "MESSAGE \"B-D0[]\".\nMESSAGE \"P-D2[zzz]\".\n",
+    );
+}
+
+#[test]
+fn defined_is_1_for_the_global_hidden_below_an_argument() {
+    assert_ladder(
+        "&GLOBAL-DEFINE x g\n{/inc/p19.i &x=zzz}",
+        "MESSAGE \"B-D1[g]\".\nMESSAGE \"P-D2[zzz]\".\n",
+    );
+}
+
+#[test]
+fn defined_is_3_for_the_scoped_name_below_an_argument() {
+    assert_ladder(
+        "&SCOPED-DEFINE x s\n{/inc/p19.i &x=zzz}",
+        "MESSAGE \"B-D3[s]\".\nMESSAGE \"P-D2[zzz]\".\n",
+    );
+}

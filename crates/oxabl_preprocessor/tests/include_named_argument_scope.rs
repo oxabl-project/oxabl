@@ -84,3 +84,38 @@ fn an_argument_is_read_again_after_a_chain_of_includes_below() {
     let result = run("{p.i &x=zzz}", &files, false);
     assert_eq!(&*result.to_text(), "<>[zzz]");
 }
+
+#[test]
+fn a_define_in_an_undecided_region_below_the_argument_keeps_the_name_unknown() {
+    let files = [
+        ("/inc/p.i", "{b.i}"),
+        (
+            "/inc/b.i",
+            "&IF SEARCH(\"nofile\") <> ? &THEN\n&GLOBAL-DEFINE x yes\n&ENDIF\n{c.i}",
+        ),
+        (
+            "/inc/c.i",
+            "&IF DEFINED(x) = 1 &THEN\nA\n&ELSE\nZ\n&ENDIF\n",
+        ),
+    ];
+    let result = run("{p.i &x=zzz}", &files, false);
+    assert_eq!(
+        states(&result),
+        [
+            BranchState::Undecided,
+            BranchState::Undecided,
+            BranchState::Undecided
+        ],
+        "the global define may have happened"
+    );
+}
+
+#[test]
+fn without_its_includer_a_global_define_below_the_argument_leaves_the_name_unknown_after_it() {
+    let files = [
+        ("/inc/p.i", "{b.i}\n&IF \"{&x}\" = \"zzz\" &THEN\nA\n&ENDIF"),
+        ("/inc/b.i", "&GLOBAL-DEFINE x yes\n"),
+    ];
+    let result = run("{p.i &x=zzz}", &files, true);
+    assert_eq!(states(&result), [BranchState::Undecided]);
+}

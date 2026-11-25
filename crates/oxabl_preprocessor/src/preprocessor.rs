@@ -2636,6 +2636,16 @@ impl Knowledge {
                     saved.touched = true;
                 }
             }
+            // The define acts on the definition that an argument hides, so
+            // that is what the hidden name is known as from now on.
+            for (_, before) in self
+                .arguments
+                .iter_mut()
+                .flatten()
+                .filter(|(n, _)| n == name)
+            {
+                *before = after;
+            }
         }
         let before = self.state(name);
         if before == after {
