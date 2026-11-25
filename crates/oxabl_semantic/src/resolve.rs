@@ -1669,6 +1669,9 @@ struct CrossFileState {
     /// unqualified. An `IMPLEMENTS` gap does not count, since a class declares
     /// its interfaces' members itself.
     opaque_surfaces: FxHashSet<SymbolId>,
+    /// Classes whose surface has a level whose member list the index says is
+    /// not whole: another compile may declare more methods.
+    partial_surfaces: FxHashSet<SymbolId>,
     /// References recorded `NotInScope` inside a class with an opaque surface.
     /// Softened to `External` after the walk, so the receiver path still sees
     /// `NotInScope` and can try the name as a type first.
@@ -1859,19 +1862,29 @@ struct InheritedMember {
     /// a call never resolves to an inherited property, nor a bare read to an
     /// inherited method.
     namespace: NamespaceId,
-    /// The type every reachable descriptor for this name agrees on, or
-    /// [`ResolvedType::Unknown`] when they disagree — see the fold in
-    /// [`ResolveWalker::walk_member_surface`]. Never erased merely because a
-    /// name is declared more than once up the chain, which is an `OVERRIDE` or
-    /// an interface contract far more often than an overload.
-    data_type: Option<ResolvedType>,
-    flags: SymbolFlags,
+    /// One entry for a property or a data member: the nearest declaration. For
+    /// a method, every declaration of the name on the surface, nearest first,
+    /// one for each parameter list (an `OVERRIDE` and the method it overrides
+    /// count once).
+    candidates: Vec<InheritedCandidate>,
     /// The table a buffer member is `FOR`, resolved when the symbol is minted.
     record: Option<MemberRecord>,
-    /// `None` until the first reference names this member.
+    /// `None` until the first reference names this member. For a method, the
+    /// symbol of the first candidate, which anchors the overload set.
     symbol: Option<SymbolId>,
-    /// The file of the nearest class in the walk that declares it.
+}
+
+/// One declaration of an inherited member, as the walk found it.
+struct InheritedCandidate {
+    /// The declared type as the declaring file wrote it.
+    ty: MemberType,
+    params: Option<Arc<[MemberParam]>>,
+    flags: SymbolFlags,
+    /// The file of the class that declares it.
     file: IndexedFileId,
+    /// The imports of the declaring file, under which a class name in `ty` or
+    /// `params` is written.
+    imports: Arc<ImportContext>,
 }
 
 impl<'a> ResolveWalker<'a> {
@@ -6365,7 +6378,7 @@ impl<'a> ResolveWalker<'a> {
         // Copied out of the map rather than borrowed across the insert below,
         // which needs `&mut self.symbols`. Scoped in a block for the same reason:
         // the borrow of the cross-file state must end before that insert.
-        let (kind, namespace, data_type, flags, record, file) = {
+        let (kind, namespace, record) = {
             let Some(member) = cf.inherited.get(&key) else {
                 // Probed only in the namespaces the reference site is looking in,
                 // so an inaccessible member cannot soften a reference that was
@@ -6388,47 +6401,98 @@ impl<'a> ResolveWalker<'a> {
             if let Some(sym) = member.symbol {
                 return InheritedLookup::Member(sym);
             }
-            (
-                member.kind,
-                member.namespace,
-                // Already folded across every reachable descriptor for this
-                // name, so an overload set that disagrees is `Unknown` here and
-                // one that agrees keeps its type.
-                member.data_type.clone(),
-                member.flags,
-                member.record.clone(),
-                member.file,
-            )
+            (member.kind, member.namespace, member.record.clone())
         };
+        // Taken out of the map while the symbols are minted, which needs
+        // `&mut self`; the entry is known to exist.
+        let candidates = std::mem::take(
+            &mut self
+                .cross_file_mut()
+                .inherited
+                .get_mut(&key)
+                .expect("the entry was read above")
+                .candidates,
+        );
         let table_id = record.and_then(|_| self.inherited_buffer_table(class, atom));
         // The declared type goes onto the symbol, exactly as a local
-        // declaration's would.
-        //
-        // It used to be parked in a side map, so that attaching an index could be
-        // merged on evidence that it changed no diagnostic: `Symbol::data_type`
-        // feeds the type lattice through two readers that take it at face value —
-        // `check.rs::type_from_reference`'s fallback arm and
-        // `type_mismatch_assignment::target_type`, which reads `data_type`
-        // directly — and either one turns an inherited `LONGCHAR` assigned into an
-        // `INTEGER` from silence into a finding. That is now the *intent*: the
-        // type is the one the declaring file wrote, and a cross-file resolution
-        // being shape-identical to a local one is what lets every consumer read
-        // one type channel instead of two.
-        let sym = self.symbols.insert(Symbol {
-            data_type,
-            flags: flags | SymbolFlags::INHERITED,
-            table_id,
-            ..Symbol::synthesized(atom.clone(), namespace, kind, identifier_span(use_site))
-        });
-        if self.ctx.record_sites {
-            self.symbols.record_member_file(sym, file);
+        // declaration's would. For a method, each candidate is its own symbol
+        // with its own type and parameter list, linked as an overload set
+        // under the nearest one; the type-check pass picks among them.
+        let mut anchor: Option<SymbolId> = None;
+        for candidate in &candidates {
+            let data_type = self.inherited_member_type(&candidate.ty, &candidate.imports, use_site);
+            let sym = self.symbols.insert(Symbol {
+                data_type,
+                flags: candidate.flags | SymbolFlags::INHERITED,
+                table_id,
+                ..Symbol::synthesized(atom.clone(), namespace, kind, identifier_span(use_site))
+            });
+            if self.ctx.record_sites {
+                self.symbols.record_member_file(sym, candidate.file);
+            }
+            if kind == SymbolKind::Function
+                && let Some(decls) = &candidate.params
+            {
+                let imports = Arc::clone(&candidate.imports);
+                let params = crate::signature::call_params(decls, |name| {
+                    self.class_type_in_imports(name, &imports, use_site)
+                });
+                self.symbols.record_method_params(sym, params.into());
+            }
+            match anchor {
+                None => anchor = Some(sym),
+                Some(first) => self.symbols.record_method_overload(first, sym),
+            }
         }
-        // Re-acquired rather than held across the insert above. The entry is
-        // known to exist — the read that got us here found it.
+        let sym = anchor.expect("an inherited member has at least one candidate");
+        // Put back for the readers of the surface, with the anchor recorded.
         if let Some(member) = self.cross_file_mut().inherited.get_mut(&key) {
+            member.candidates = candidates;
             member.symbol = Some(sym);
         }
         InheritedLookup::Member(sym)
+    }
+
+    /// The type of an inherited member as the declaring file wrote it, in this
+    /// file's symbol space. A class name is read through the declaring file's
+    /// imports; a name that does not resolve gives `Unknown`.
+    fn inherited_member_type(
+        &mut self,
+        ty: &MemberType,
+        imports: &ImportContext,
+        use_site: &Identifier,
+    ) -> Option<ResolvedType> {
+        match ty {
+            MemberType::Portable(ty) => Some(ty.as_resolved().clone()),
+            MemberType::Named(name) => Some(self.class_type_in_imports(name, imports, use_site)),
+            // `VOID`, or a form naming no type: no type at all.
+            MemberType::Untyped => None,
+        }
+    }
+
+    /// The class a name written under `imports` (another file's) means, as a
+    /// type: `Class` when it resolves to a class of this file or of the
+    /// workspace, else `Unknown`. A bare name of a file that may import more
+    /// than the index read stays `Unknown`.
+    fn class_type_in_imports(
+        &mut self,
+        name: &IndexName,
+        imports: &ImportContext,
+        use_site: &Identifier,
+    ) -> ResolvedType {
+        let raw = name.as_written();
+        if !raw.contains('.') && imports.has_unseen_imports() {
+            return ResolvedType::Unknown;
+        }
+        match self.search_in_imports(raw, imports, true, identifier_span(use_site)) {
+            TypeLookup::Local(class) | TypeLookup::Indexed(class) => ResolvedType::Class(class),
+            TypeLookup::Builtin(_)
+            | TypeLookup::External
+            | TypeLookup::NotFound
+            | TypeLookup::Unusable
+            | TypeLookup::Unknowable
+            | TypeLookup::NotLooked => ResolvedType::Unknown,
+        }
     }
 
     /// The schema table the inherited buffer `name` reads, so that its fields and
@@ -6637,7 +6701,7 @@ impl<'a> ResolveWalker<'a> {
             // absent-parent case looks exactly like a parent that resolved and
             // contributed nothing. The analyze envelope's dependency-state
             // section is what reads it.
-            let declaring = match index.class(&name) {
+            let (declaring, imports) = match index.class(&name) {
                 IndexAnswer::Found(descriptor) => {
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Linked(descriptor.file));
@@ -6654,7 +6718,10 @@ impl<'a> ResolveWalker<'a> {
                             &mut queue,
                         );
                     }
-                    descriptor.file
+                    if !descriptor.members_complete {
+                        self.cross_file_mut().partial_surfaces.insert(class);
+                    }
+                    (descriptor.file, Arc::clone(&descriptor.imports))
                 }
                 // A supertype no file on the paths declares, or one that cannot
                 // be known statically, contributes nothing — and no diagnostic:
@@ -6744,61 +6811,49 @@ impl<'a> ResolveWalker<'a> {
                             ));
                             continue;
                         }
-                        let data_type = match &member.ty {
-                            MemberType::Portable(ty) => Some(ty.as_resolved().clone()),
-                            // A class-typed member. `ResolvedType::Class` carries
-                            // a `SymbolId` in *this* file's table and no symbol
-                            // for a cross-file class exists yet — minting one is
-                            // `USING`/`NEW` resolution's job — so the type stays
-                            // `Unknown`. That is the lattice bottom, and exactly
-                            // what a locally declared class-typed variable gets
-                            // today when its class is declared elsewhere. It also
-                            // avoids a second chain walk per member.
-                            MemberType::Named(_) => Some(ResolvedType::Unknown),
-                            // `VOID`, or a form naming no type: no type at all.
-                            MemberType::Untyped => None,
+                        let candidate = InheritedCandidate {
+                            ty: member.ty.clone(),
+                            params: member.params.clone(),
+                            flags: access_flag(member.access)
+                                | flag_if(member.is_static, SymbolFlags::STATIC),
+                            file: declaring,
+                            imports: Arc::clone(&imports),
                         };
-                        self.cross_file_mut()
+                        match self
+                            .cross_file_mut()
                             .inherited
                             .entry((class, member.name.as_atom().clone()))
-                            .and_modify(|existing| {
+                        {
+                            // The surface is walked breadth-first over the
+                            // whole ancestor chain, so one name arrives more
+                            // than once for an `OVERRIDE` and for a class that
+                            // inherits an interface's contract as well as for
+                            // a genuine overload. A declaration with the
+                            // parameter list of a nearer one is the same
+                            // method; ABL requires an `OVERRIDE` to keep the
+                            // return type, so the nearer one has the right type.
+                            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                let existing = entry.get_mut();
                                 if existing.kind == SymbolKind::Function
                                     && member.kind == SymbolKind::Function
-                                    && existing.data_type != data_type
+                                    && !existing
+                                        .candidates
+                                        .iter()
+                                        .any(|c| c.params.is_some() && c.params == candidate.params)
                                 {
-                                    // The surface is walked breadth-first over
-                                    // the *whole* ancestor chain, so one name
-                                    // arrives more than once for an `OVERRIDE`
-                                    // and for a class that inherits an
-                                    // interface's contract as well as for a
-                                    // genuine overload. Erasing the type on any
-                                    // repeat unjudged most real OO-ABL: ABL
-                                    // requires an `OVERRIDE` to keep the
-                                    // overridden return type, so the repeats
-                                    // agree and the answer is the one the
-                                    // nearest declaration already gave.
-                                    //
-                                    // Only a real disagreement is unknowable.
-                                    // Overload *selection* is not modelled — no
-                                    // argument list is matched against a
-                                    // signature — so when the candidates return
-                                    // different types the call goes to the
-                                    // lattice bottom and the assignment is left
-                                    // unjudged rather than judged by whichever
-                                    // descriptor the walk happened to see first.
-                                    existing.data_type = Some(ResolvedType::Unknown);
+                                    existing.candidates.push(candidate);
                                 }
-                            })
-                            .or_insert(InheritedMember {
-                                kind: member.kind,
-                                namespace,
-                                data_type,
-                                flags: access_flag(member.access)
-                                    | flag_if(member.is_static, SymbolFlags::STATIC),
-                                record: member.record.clone(),
-                                symbol: None,
-                                file: declaring,
-                            });
+                            }
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                entry.insert(InheritedMember {
+                                    kind: member.kind,
+                                    namespace,
+                                    candidates: vec![candidate],
+                                    record: member.record.clone(),
+                                    symbol: None,
+                                });
+                            }
+                        }
                     }
                 }
                 IndexAnswer::NotFound | IndexAnswer::Unusable | IndexAnswer::Unknowable => {
@@ -11645,6 +11700,7 @@ mod tests {
             IndexAnswer::Found(std::sync::Arc::new(ClassDescriptor {
                 name: name.clone(),
                 members_complete: true,
+                is_abstract: false,
                 file: IndexedFileId::new(1),
                 kind: ClassKind::Class,
                 inherits: None,

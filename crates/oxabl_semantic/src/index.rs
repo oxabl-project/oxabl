@@ -524,6 +524,9 @@ pub struct ClassDescriptor {
     /// `{include}` the index could not read, or an `&IF` around a member
     /// declaration: another compile may declare more members.
     pub members_complete: bool,
+    /// Whether the header says `ABSTRACT`. An abstract class need not declare
+    /// the methods of its interfaces.
+    pub is_abstract: bool,
 }
 
 /// A [`ResolvedType`] proven safe to carry across a file boundary.

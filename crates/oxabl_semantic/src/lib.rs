@@ -400,6 +400,7 @@ mod tests {
                 IndexAnswer::Found(Arc::new(ClassDescriptor {
                     name: name.clone(),
                     members_complete: true,
+                    is_abstract: false,
                     file: IndexedFileId::new(3),
                     kind: ClassKind::Class,
                     inherits: None,

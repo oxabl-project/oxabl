@@ -520,6 +520,7 @@ fn declared_classes(
             inherits,
             implements,
             body,
+            is_abstract,
             ..
         } = &stmt.kind
         {
@@ -536,6 +537,7 @@ fn declared_classes(
                         .collect(),
                     imports: imports_for(inherits.is_some() || !implements.is_empty(), &members),
                     members_complete: !hides_members(body),
+                    is_abstract: *is_abstract,
                 }),
                 members,
             });
@@ -562,6 +564,7 @@ fn declared_classes(
                     implements: inherits.iter().map(|id| IndexName::new(&id.name)).collect(),
                     imports: imports_for(!inherits.is_empty(), &members),
                     members_complete: !hides_members(body),
+                    is_abstract: false,
                 }),
                 members,
             });
@@ -678,6 +681,7 @@ fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<Cl
                 implements: Vec::new(),
                 imports: Arc::default(),
                 members_complete: well_formed,
+                is_abstract: false,
             }),
             members: if well_formed {
                 members.into()

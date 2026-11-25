@@ -19,6 +19,7 @@ impl WorkspaceIndex for Classes {
             Some((parent, _)) => IndexAnswer::Found(Arc::new(ClassDescriptor {
                 name: name.clone(),
                 members_complete: true,
+                is_abstract: false,
                 file: IndexedFileId::new(1),
                 kind: ClassKind::Class,
                 inherits: parent.map(IndexName::new),

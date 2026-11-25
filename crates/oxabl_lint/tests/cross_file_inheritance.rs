@@ -856,8 +856,9 @@ fn inherited_overloads_do_not_lend_calls_the_first_return_type() {
     let (_stmts, sem) = with_index(child, &workspace);
     let member = sole_resolved(&sem, "choose");
     assert_eq!(
-        sem.symbols.get(member).data_type,
-        Some(ResolvedType::Unknown)
+        sem.symbols.overload_set_data_type(member),
+        Some(ResolvedType::Unknown),
+        "the candidates disagree on the return type"
     );
     assert!(lint0004_with_index(child, &workspace).is_empty());
 }
