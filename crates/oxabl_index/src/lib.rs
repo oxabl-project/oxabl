@@ -545,7 +545,7 @@ fn declared_classes(
                         .map(|id| IndexName::new(&id.name))
                         .collect(),
                     imports: imports_for(inherits.is_some() || !implements.is_empty(), &members),
-                    members_complete: !hides_members(body),
+                    members_complete: members_readable(stmt, body, &members, tokens, source),
                     is_abstract: *is_abstract,
                 }),
                 members,
@@ -572,7 +572,7 @@ fn declared_classes(
                     inherits: None,
                     implements: inherits.iter().map(|id| IndexName::new(&id.name)).collect(),
                     imports: imports_for(!inherits.is_empty(), &members),
-                    members_complete: !hides_members(body),
+                    members_complete: members_readable(stmt, body, &members, tokens, source),
                     is_abstract: false,
                 }),
                 members,
@@ -591,6 +591,66 @@ fn names_a_class(member: &MemberDescriptor) -> bool {
                 .iter()
                 .any(|p| matches!(p.shape, MemberParamShape::Value(MemberType::Named(_))))
         })
+}
+
+/// Whether the members of a class are all that it declares, each with its own
+/// name: no `{include}` or `&IF` can add one ([`hides_members`]), no member
+/// name holds a preprocessor reference, and no reference stands where a
+/// member can be declared ([`reference_declares`]).
+fn members_readable(
+    class: &Statement,
+    body: &[Statement],
+    members: &[MemberDescriptor],
+    tokens: &[Token],
+    source: &str,
+) -> bool {
+    !hides_members(body)
+        && members.iter().all(|m| !m.name.as_str().contains('{'))
+        && !reference_declares(class, body, tokens, source)
+}
+
+/// Whether a `{&name}` or `{N}` reference in `class` stands outside every
+/// member declaration of `body`: its value can be a whole declaration, which
+/// the parser skips. A reference inside a declaration that the facts read
+/// (its type, a method body) cannot add a member; one in a member name is a
+/// name that holds `{`.
+fn reference_declares(
+    class: &Statement,
+    body: &[Statement],
+    tokens: &[Token],
+    source: &str,
+) -> bool {
+    fn declarations(body: &[Statement], spans: &mut Vec<(usize, usize)>) {
+        for stmt in body {
+            match &stmt.kind {
+                StatementKind::Block(inner) | StatementKind::VariableDeclarationList(inner) => {
+                    declarations(inner, spans)
+                }
+                StatementKind::Method { .. }
+                | StatementKind::Constructor { .. }
+                | StatementKind::Destructor { .. }
+                | StatementKind::Property { .. }
+                | StatementKind::VariableDeclaration { .. }
+                | StatementKind::DefineTempTable { .. }
+                | StatementKind::DefineBuffer { .. }
+                | StatementKind::DefineDataset { .. }
+                | StatementKind::DefineDataSource { .. }
+                | StatementKind::DefineEvent { .. } => {
+                    spans.push((stmt.span.start as usize, stmt.span.end as usize))
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut spans = Vec::new();
+    declarations(body, &mut spans);
+    let (start, end) = (class.span.start as usize, class.span.end as usize);
+    let from = tokens.partition_point(|t| t.start < start);
+    tokens[from..]
+        .iter()
+        .take_while(|t| t.start < end)
+        .filter(|t| source[t.start..t.end].starts_with('{'))
+        .any(|t| !spans.iter().any(|(s, e)| *s <= t.start && t.end <= *e))
 }
 
 /// Whether a class body may declare more members than its statements show: it

@@ -896,9 +896,9 @@ fn wanted_methods<'m>(
 }
 
 /// The name spans of the methods `ordinals` of `name` of the class `class`
-/// in the class file `path`, and why they are not exact. When the file writes
-/// another number of methods of the name than the facts list, every method of
-/// the name is shown; when it writes none that oxabl reads, the class name is.
+/// in the class file `path`, and why they are not exact. When the outline
+/// lists more methods of the name than the facts, every method of the name is
+/// shown; when it lists fewer, the class name is shown with them.
 fn method_spans(
     unit: &HierarchyUnit<'_>,
     path: &Path,
@@ -922,6 +922,18 @@ fn method_spans(
             Some(format!(
                 "oxabl cannot place `{name}` in `{}` (an include or a preprocessor name writes \
                  it): the class is shown",
+                class.as_written()
+            )),
+        ))
+    } else if all.len() < total {
+        // The match may be one the outline does not list.
+        let mut spans = all;
+        spans.push(decl.selection);
+        Some((
+            spans,
+            Some(format!(
+                "oxabl cannot place every `{name}` in `{}` (an include or a preprocessor name \
+                 writes one): each it places is shown, and the class",
                 class.as_written()
             )),
         ))

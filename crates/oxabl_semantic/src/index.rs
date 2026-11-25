@@ -567,9 +567,11 @@ pub struct ClassDescriptor {
     /// `implements` and class-typed members and parameters are written under.
     /// Empty when the class names no supertype and no class-typed member.
     pub imports: Arc<ImportContext>,
-    /// Whether the member list is whole. `false` when the class body holds an
-    /// `{include}` the index could not read, or an `&IF` around a member
-    /// declaration: another compile may declare more members.
+    /// Whether the member list is whole, each member with its own name. `false`
+    /// when the class body holds an `{include}` the index could not read, an
+    /// `&IF` around a member declaration, or a preprocessor reference outside
+    /// every member declaration or in a member name: another compile may
+    /// declare more members, or name one differently.
     pub members_complete: bool,
     /// Whether the header says `ABSTRACT`. An abstract class need not declare
     /// the methods of its interfaces.

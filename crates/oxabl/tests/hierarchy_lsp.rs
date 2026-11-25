@@ -2495,3 +2495,110 @@ fn a_method_oxabl_cannot_place_shows_its_class() {
         "{warnings:?}"
     );
 }
+
+#[test]
+fn a_record_name_that_a_preprocessor_name_writes_can_name_the_table() {
+    // `app.LG` declares a temp-table or a buffer `item` in a way the text as
+    // written does not show: the class sees it, the interface does not.
+    let variants = [
+        (
+            "a temp-table name",
+            "&SCOPED-DEFINE TT item\n",
+            "    DEFINE PROTECTED TEMP-TABLE {&TT} NO-UNDO FIELD code AS INTEGER.\n",
+        ),
+        (
+            "a whole definition",
+            "&SCOPED-DEFINE TTDEF DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER.\n",
+            "    {&TTDEF}\n",
+        ),
+        (
+            "a buffer name",
+            "&SCOPED-DEFINE B item\n",
+            "    DEFINE PROTECTED BUFFER {&B} FOR customer.\n",
+        ),
+        (
+            "part of a name",
+            "&SCOPED-DEFINE S m\n",
+            "    DEFINE PROTECTED TEMP-TABLE ite{&S} NO-UNDO FIELD code AS INTEGER.\n",
+        ),
+        (
+            "a global name",
+            "&GLOBAL-DEFINE TT item\n",
+            "    DEFINE PROTECTED TEMP-TABLE {&TT} NO-UNDO FIELD code AS INTEGER.\n",
+        ),
+    ];
+    let class = like_class("app.LC INHERITS app.LG IMPLEMENTS app.LI", "").replace("OVERRIDE ", "");
+    for (what, define, body) in variants {
+        let grand = format!("{define}CLASS app.LG:\n{body}END CLASS.\n");
+        let ws = small(&[
+            ("app/LG.cls", &grand),
+            ("app/LI.cls", LIKE_LI),
+            ("app/LC.cls", &class),
+        ]);
+        let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+        assert_eq!(found.len(), 1, "{what}");
+        assert_eq!(gaps.len(), 1, "{what}: {gaps:?}");
+        assert!(
+            gaps[0].contains("`app.LI` declares `M`"),
+            "{what}: {gaps:?}"
+        );
+
+        let li = ws.path("app/LI.cls");
+        let mut session = Session::start(&ws.root);
+        session.open(&li, LIKE_LI);
+        let (found, warnings) = implementation(&mut session, &li, LIKE_LI, "M(", 0);
+        assert_eq!(found.len(), 1, "{what}");
+        assert!(
+            warnings.iter().any(|w| w.contains("`app.LC` declares `M`")),
+            "{what}: {warnings:?}"
+        );
+    }
+
+    // The control: a preprocessor name in a field type, and a temp-table of
+    // another name, leave the records known.
+    let grand = "&SCOPED-DEFINE T INTEGER\nCLASS app.LG:\n\
+        \x20   DEFINE PROTECTED TEMP-TABLE other NO-UNDO FIELD code AS {&T}.\n\
+        END CLASS.\n";
+    let ws = small(&[
+        ("app/LG.cls", grand),
+        ("app/LI.cls", LIKE_LI),
+        ("app/LC.cls", &class),
+    ]);
+    let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+    assert_eq!(found.len(), 1);
+    assert_eq!(gaps, Vec::<String>::new(), "the control");
+}
+
+const UNPLACED_DERIVED: &str = "&SCOPED-DEFINE T INTEGER\n\
+    CLASS app.PD INHERITS app.PB:\n\
+    \x20   METHOD PUBLIC VOID N(INPUT a AS CHARACTER, INPUT b AS CHARACTER):\n\
+    \x20   END METHOD.\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID N(INPUT a AS {&T}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn an_overload_oxabl_cannot_place_adds_its_class() {
+    let ws = small(&[("app/PB.cls", PLACE_BASE), ("app/PD.cls", UNPLACED_DERIVED)]);
+    let base = ws.path("app/PB.cls");
+    let derived = ws.path("app/PD.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&base, PLACE_BASE);
+    let (found, warnings) = implementation(&mut session, &base, PLACE_BASE, "N(", 0);
+    assert!(
+        found.contains(&location(&derived, UNPLACED_DERIVED, "app.PD", 0)),
+        "{found:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("oxabl cannot place every `N` in `app.PD`")),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.contains("each is shown\"") || w.contains("could not be told apart")),
+        "{warnings:?}"
+    );
+}

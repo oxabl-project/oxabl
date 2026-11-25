@@ -171,7 +171,7 @@ its type. It answers `Yes`, `No` or `Unknown`:
 | Parameter | Comparison |
 | --- | --- |
 | Primitive types | Equal types are `Yes`, different types are `No`; an `&IF` type is `Unknown` |
-| `LIKE` | Two lists that write the same `table.field` (and the same `EXTENT`) are `Yes` when no temp-table or buffer can have the name of the table: none in the subclass (or the class at the cursor) and in every class and interface above it, through any number of headers, and none in the interface or class that declares the other method and every type above it. Every member list must be whole, and every supertype must resolve and be read. An interface counts because oxabl does not model whether a class sees the temp-tables of its interfaces. Then both read the database field. Any other `LIKE` is `Unknown`: a name with no table can be a variable, and a different spelling can name a field of the same type |
+| `LIKE` | Two lists that write the same `table.field` (and the same `EXTENT`) are `Yes` when no temp-table or buffer can have the name of the table: none in the subclass (or the class at the cursor) and in every class and interface above it, through any number of headers, and none in the interface or class that declares the other method and every type above it. Every member list must be whole, and every supertype must resolve and be read. A member list is not whole when an `{include}` or an `&IF` can add a member, when a preprocessor reference stands where a member can be declared (`{&TTDEF}`), or when a member name holds one (`DEFINE TEMP-TABLE {&TT}`). A temp-table defined `LIKE` or `LIKE-SEQUENTIAL` another table, a static temp-table and a work table count by their own names. An interface counts because oxabl does not model whether a class sees the temp-tables of its interfaces. Then both read the database field. Any other `LIKE` is `Unknown`: a name with no table can be a variable, and a different spelling can name a field of the same type. The rule takes one schema for the two classes: a class compiled against another database, or under another alias, can read another field |
 | Class types | Each name is resolved through the imports of the file that declares the method (`ImportContext::resolve_class`). The same class is `Yes`, two classes are `No`. A name that resolves in no file is `Yes` when both lists write it alike under equal imports, else `Unknown`. A .NET type, or a name that two files can supply, is `Unknown` |
 | `TABLE`, `BUFFER`, `DATASET` | `Unknown`: the table is not in the list |
 | A list that an `{include}` or `&IF` hides | `Unknown` |
@@ -216,9 +216,9 @@ match is listed and says that it may be an overload.
   list the methods of a name in the same order. When the two lists have not
   the same length (an `{include}` or an `&IF` adds methods), the overloads
   cannot be told apart: every method of the name counts, and the answer says
-  so. When the outline lists no method of the name (a preprocessor name
-  writes the declaration), the answer gives the class name and says that
-  oxabl cannot place the method.
+  so. When the outline lists fewer methods of the name than the facts (a
+  preprocessor name writes a declaration), the answer gives the methods it
+  places and the class name, and says that oxabl cannot place every method.
 
 `Progress.Lang.Object` has four methods (`Clone`, `Equals`, `GetClass`,
 `ToString`) that oxabl does not model. A super method search for one of these
@@ -374,8 +374,9 @@ include that does not resolve (also in `reference_lens_lsp.rs`, for the mark of
 calls through a supertype); `LIKE` parameters written alike, with a buffer,
 a temp-table or an unread include in the subclass, the base, a class between
 them, a class above the matched parent, or an interface that the matched
-interface extends, a parent that does not resolve, and another `EXTENT`; a
-method that the outline does not list; an enum; a protected method that does not implement
+interface extends, a parent that does not resolve, and another `EXTENT`; a temp-table or
+buffer whose name, or whole definition, a preprocessor name writes; a
+method that the outline does not list, alone or with an overload it lists; an enum; a protected method that does not implement
 an interface method; a list cut at `MAX_LISTED`; and a cancel in the middle of
 the index (`OXABL-TEST-HOLD:daemon.hierarchy-index`, after a request that waits
 for the workspace pass, so that the cancel cannot meet the pass).
