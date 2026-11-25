@@ -19,7 +19,7 @@ use oxabl_ast::{
     TypeArguments, TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 /// An error encountered during parsing, with a human-readable message and source [`Span`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -218,11 +218,11 @@ pub struct Parser<'a> {
     /// Token ranges read and dropped since the last statement was built; the
     /// next [`stmt`](Self::stmt) takes them into its [`SkippedTail`].
     dropped: Vec<(usize, usize)>,
-    /// Token indexes after a `CREATE` whose parse failed and was skipped. A
-    /// failed CREATE is parsed again when a block around it rewinds, and its
-    /// trigger blocks hold the CREATEs after it, so without this the work
-    /// doubled with each nested CREATE.
-    failed_creates: HashSet<usize>,
+    /// Token indexes after a `CREATE` whose parse failed and was skipped, with
+    /// the error of the failure. A failed CREATE is parsed again when a block
+    /// around it rewinds, and its trigger blocks hold the CREATEs after it, so
+    /// without this the work doubled with each nested CREATE.
+    failed_creates: HashMap<usize, ParseError>,
     /// Test builds only: read a failed CREATE again instead of taking it from
     /// `failed_creates`, so a test sees what the memo hides.
     #[cfg(test)]
@@ -256,7 +256,7 @@ impl<'a> Parser<'a> {
             limit_error: None,
             in_interface: false,
             dropped: Vec::new(),
-            failed_creates: HashSet::new(),
+            failed_creates: HashMap::new(),
             #[cfg(test)]
             reread_failed_creates: false,
         }

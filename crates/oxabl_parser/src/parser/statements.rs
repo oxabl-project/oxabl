@@ -12,11 +12,11 @@ use oxabl_ast::{
     DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DeleteObjectKind, DisplayItem, Expression,
     ExpressionKind, FileName, FindType, FrameField, HandleParamKind, HandlePassingOptions,
     Identifier, IndexField, Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection,
-    ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SkippedTail, SortDirection,
-    Span, Statement, StatementKind, StreamDirection, StreamOperation, StreamTarget, StringLiteral,
-    SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing,
-    TypeSource, UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef,
-    WidgetTrigger, XmlSerializeOptions,
+    ParameterType, ParentIdRelation, PersistentRunTarget, PreprocIf, RunArgument, RunTarget,
+    SkippedTail, SortDirection, Span, Statement, StatementKind, StreamDirection, StreamOperation,
+    StreamTarget, StringLiteral, SubscribeTarget, TempTableField, TempTableIndex,
+    TriggerAssignParam, TriggerReferencing, TypeSource, UnknownLiteral, UseIndex, UsingSource,
+    WhenBranch, WidgetQualifier, WidgetRef, WidgetTrigger, XmlSerializeOptions,
 };
 use oxabl_lexer::TokenValue;
 use oxabl_lexer::{Kind, is_callable_kind};
@@ -7147,38 +7147,42 @@ impl Parser<'_> {
         let memo = !self.reread_failed_creates;
         #[cfg(not(test))]
         let memo = true;
-        if memo && self.failed_creates.contains(&resume.0) {
-            return Ok(self.recover_create_as_skipped(resume));
+        if memo && let Some(error) = self.failed_creates.get(&resume.0).cloned() {
+            return Ok(self.recover_create_as_skipped(resume, error));
         }
 
         if self.check(Kind::WidgetPool) {
             return Ok(self
                 .parse_create_widget_pool()
-                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+                .unwrap_or_else(|error| self.recover_create_as_skipped(resume, error)));
         }
         if let Some(kind) = self.match_create_target_kind() {
             self.advance(); // consume the type keyword
             return Ok(self
                 .parse_create_handle(kind, None)
-                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+                .unwrap_or_else(|error| self.recover_create_as_skipped(resume, error)));
         }
         if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
             return Ok(self
                 .parse_create_computed_type()
-                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+                .unwrap_or_else(|error| self.recover_create_as_skipped(resume, error)));
         }
         if self.check(Kind::StringLiteral) {
             return Ok(self
                 .parse_create_automation()
-                .unwrap_or_else(|_| self.recover_create_as_skipped(resume)));
+                .unwrap_or_else(|error| self.recover_create_as_skipped(resume, error)));
         }
         if !Self::can_be_identifier(self.peek().kind) {
             // Forms with no handle or record name to model. Skip to end.
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
         }
-        if self.check(Kind::Alias) {
+        let database_form = self.check(Kind::Database)
+            && (Self::can_be_identifier(self.peek_at(1).kind)
+                || matches!(self.peek_at(1).kind, Kind::StringLiteral | Kind::Value));
+        if self.check(Kind::Alias) || database_form {
             // CREATE ALIAS name FOR DATABASE value(expr). — database alias creation.
+            // CREATE DATABASE new-name FROM old-name ... — database creation.
             let (_, hi) = self.skip_to_statement_end_triggers_aware();
             return Ok(self.skipped_stmt(hi));
         }
@@ -7202,7 +7206,8 @@ impl Parser<'_> {
     }
 
     /// Skip the rest of a CREATE whose tail did not parse, so the statement
-    /// after it is not swallowed. The names in it are still harvested.
+    /// after it is not swallowed, and record why it did not parse. The names in
+    /// it are still harvested.
     ///
     /// A failed `TRIGGERS:` block has parsed statements of its own, which moved
     /// the harvest anchor, so the CREATE's own anchor is put back first. It
@@ -7211,10 +7216,22 @@ impl Parser<'_> {
     fn recover_create_as_skipped(
         &mut self,
         (resume, error_count, anchor, import_count): (usize, usize, usize, usize),
+        mut error: ParseError,
     ) -> Statement {
+        // A tail that runs to the end of the text fails there, far from its
+        // cause: the error is placed at the `CREATE` keyword.
+        let eof = self.tokens.last().map_or(0, |token| token.start);
+        if error.span.start as usize >= eof {
+            let create = self.token_at(resume.saturating_sub(1));
+            error.span = Span {
+                start: create.start as u32,
+                end: create.end as u32,
+            };
+        }
         self.errors.truncate(error_count);
         self.imported_classes.truncate(import_count);
-        self.failed_creates.insert(resume);
+        self.failed_creates.insert(resume, error.clone());
+        self.record_error(error);
         self.stmt_start_token = anchor;
         self.current = resume;
         let (_, hi) = self.skip_to_statement_end_triggers_aware();
@@ -8571,12 +8588,20 @@ impl Parser<'_> {
             return Ok(OnAction::Revert);
         }
 
-        // PERSISTENT RUN procedure [(args)]
+        // PERSISTENT RUN procedure | VALUE(expr) [IN handle] [(args)]
         if self.check(Kind::Persistent) {
             self.advance();
             self.expect_kind(Kind::Run, "Expected RUN after PERSISTENT")?;
-            let (name, span) = self.parse_procedure_name()?;
-            let procedure = Identifier { span, name };
+            let procedure = if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
+                self.advance(); // consume VALUE
+                self.advance(); // consume '('
+                let expression = self.parse_expression()?;
+                self.expect_kind(Kind::RightParen, "Expected ')' after VALUE expression")?;
+                PersistentRunTarget::Value(expression)
+            } else {
+                let (name, span) = self.parse_procedure_name()?;
+                PersistentRunTarget::Name(Identifier { span, name })
+            };
             let in_handle = if self.check(Kind::KwIn) {
                 self.advance();
                 Some(self.parse_run_in_handle()?)
