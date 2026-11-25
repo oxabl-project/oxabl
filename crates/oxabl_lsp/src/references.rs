@@ -42,7 +42,7 @@ pub(crate) struct InFlight {
 }
 
 impl InFlight {
-    fn start(&self, id: &RequestId) -> Arc<AtomicBool> {
+    pub(crate) fn start(&self, id: &RequestId) -> Arc<AtomicBool> {
         let flag = Arc::new(AtomicBool::new(false));
         self.lock().insert(id.clone(), Arc::clone(&flag));
         flag
@@ -75,7 +75,7 @@ impl InFlight {
 }
 
 /// A rendered answer, and how many places it could not show.
-type Rendered = serde_json::Result<(serde_json::Value, usize)>;
+pub(crate) type Rendered = serde_json::Result<(serde_json::Value, usize)>;
 
 /// What a call hierarchy item carries back to the server, in `data`.
 #[derive(Serialize, Deserialize)]
@@ -354,7 +354,7 @@ impl Server<'_> {
 
     /// The unit to analyse, the file and the byte offset of a request's
     /// cursor. `None` when the request was already answered with an error.
-    fn cursor(
+    pub(crate) fn cursor(
         &mut self,
         id: &RequestId,
         position: &lsp_types::TextDocumentPositionParams,
@@ -395,6 +395,38 @@ impl Server<'_> {
         what: &'static str,
         render: impl FnOnce(ReferenceAnswer, &PositionEncodingKind) -> Rendered + Send + 'static,
     ) -> anyhow::Result<()> {
+        self.spawn_answer(
+            id,
+            root,
+            (what, "references and calls"),
+            move |host, session_root, root, cancel| {
+                answer_references(host, session_root, root, &query, cancel)
+            },
+            |answer: &ReferenceAnswer| answer.gaps.clone(),
+            render,
+        )
+    }
+
+    /// Run `compute` on a worker thread and send its answer, rendered, as the
+    /// response to `id`. A gap of the answer goes to the client as a warning
+    /// that says what the answer is (`what`); a standing gap goes once per
+    /// session to the log, as a gap of `standing`. Both are in `labels`.
+    pub(crate) fn spawn_answer<A: Send + 'static>(
+        &mut self,
+        id: RequestId,
+        root: PathBuf,
+        (what, standing): (&'static str, &'static str),
+        compute: impl FnOnce(
+            &oxabl_daemon::SessionHost,
+            &std::path::Path,
+            &std::path::Path,
+            &AtomicBool,
+        ) -> Result<A, ReferenceError>
+        + Send
+        + 'static,
+        gaps_of: impl FnOnce(&A) -> Vec<Gap> + Send + 'static,
+        render: impl FnOnce(A, &PositionEncodingKind) -> Rendered + Send + 'static,
+    ) -> anyhow::Result<()> {
         let in_flight = self.references.clone();
         let cancel = in_flight.start(&id);
         let host = self.host.clone();
@@ -408,16 +440,21 @@ impl Server<'_> {
                 let id = id.clone();
                 let in_flight = in_flight.clone();
                 move || {
-                    let answered = oxabl_common::catch_panic(|| {
-                        answer_references(&host, &session_root, &root, &query, &cancel)
-                    });
+                    let answered =
+                        oxabl_common::catch_panic(|| compute(&host, &session_root, &root, &cancel));
                     in_flight.finish(&id);
                     let response = match answered {
                         Ok(Ok(answer)) => {
-                            let gaps = answer.gaps.clone();
+                            let gaps = gaps_of(&answer);
                             match render(answer, &encoding) {
                                 Ok((value, dropped)) => {
-                                    warn(&sender, &in_flight, what, &with_dropped(&gaps, dropped));
+                                    warn(
+                                        &sender,
+                                        &in_flight,
+                                        what,
+                                        standing,
+                                        &with_dropped(&gaps, dropped),
+                                    );
                                     Response::new_ok(id, value)
                                 }
                                 Err(error) => Response::new_err(
@@ -464,7 +501,7 @@ impl Server<'_> {
 }
 
 /// `gaps`, and one more when the rendering dropped places.
-fn with_dropped(gaps: &[Gap], dropped: usize) -> Vec<Gap> {
+pub(crate) fn with_dropped(gaps: &[Gap], dropped: usize) -> Vec<Gap> {
     let mut gaps = gaps.to_vec();
     if dropped > 0 {
         gaps.push(Gap::of_referent(format!(
@@ -481,6 +518,7 @@ fn warn(
     sender: &crossbeam_channel::Sender<Message>,
     in_flight: &InFlight,
     what: &str,
+    standing: &str,
     gaps: &[Gap],
 ) {
     let send = |method: &str, message: &str| {
@@ -506,10 +544,7 @@ fn warn(
         if in_flight.first_time(&gap.reason) {
             send(
                 lsp_types::notification::LogMessage::METHOD,
-                &format!(
-                    "oxabl: references and calls may be incomplete: {}",
-                    gap.reason
-                ),
+                &format!("oxabl: {standing} may be incomplete: {}", gap.reason),
             );
         }
     }
@@ -530,7 +565,7 @@ fn marker(shown: &CallHierarchyItem, gaps: &[Gap]) -> CallHierarchyItem {
     }
 }
 
-fn invalid(id: RequestId, message: &str) -> Response {
+pub(crate) fn invalid(id: RequestId, message: &str) -> Response {
     Response::new_err(
         id,
         ErrorCode::InvalidParams as i32,
@@ -578,20 +613,20 @@ fn render_item(
 }
 
 /// The text of each answered file as a rope, built once.
-struct Ropes<'t> {
+pub(crate) struct Ropes<'t> {
     texts: &'t HashMap<PathBuf, Arc<str>>,
     ropes: HashMap<PathBuf, Rope>,
 }
 
 impl<'t> Ropes<'t> {
-    fn new(texts: &'t HashMap<PathBuf, Arc<str>>) -> Self {
+    pub(crate) fn new(texts: &'t HashMap<PathBuf, Arc<str>>) -> Self {
         Ropes {
             texts,
             ropes: HashMap::new(),
         }
     }
 
-    fn range(
+    pub(crate) fn range(
         &mut self,
         path: &std::path::Path,
         span: Span,

@@ -7,8 +7,9 @@
 //! (`selection_range_provider`), workspace symbols (`workspace_symbol_provider`), go to
 //! definition (`definition_provider`), hover (`hover_provider`), document highlights
 //! (`document_highlight_provider`), document links (`document_link_provider`), find
-//! references (`references_provider`) and the call hierarchy
-//! (`call_hierarchy_provider`). Push
+//! references (`references_provider`), the call hierarchy
+//! (`call_hierarchy_provider`) and go to implementation (`implementation_provider`). The
+//! type hierarchy has no field in `lsp_types`: the handshake adds `typeHierarchyProvider`. Push
 //! diagnostics require no
 //! capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (completion, pull
@@ -22,9 +23,9 @@
 
 use lsp_types::{
     CallHierarchyServerCapability, ClientCapabilities, DocumentLinkOptions,
-    FoldingRangeProviderCapability, HoverProviderCapability, OneOf, PositionEncodingKind,
-    SelectionRangeProviderCapability, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions,
+    FoldingRangeProviderCapability, HoverProviderCapability, ImplementationProviderCapability,
+    OneOf, PositionEncodingKind, SelectionRangeProviderCapability, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
 };
 
 /// Negotiate a position encoding (KTD4): prefer UTF-8 when the client's
@@ -78,6 +79,7 @@ pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities
         }),
         references_provider: Some(OneOf::Left(true)),
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
+        implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
         // Explicitly leave every other capability unset so clients don't offer
         // features v1 doesn't implement (R2).
         ..Default::default()
@@ -184,6 +186,9 @@ mod tests {
             caps.call_hierarchy_provider,
             Some(CallHierarchyServerCapability::Simple(true))
         );
-        assert!(caps.implementation_provider.is_none());
+        assert_eq!(
+            caps.implementation_provider,
+            Some(ImplementationProviderCapability::Simple(true))
+        );
     }
 }

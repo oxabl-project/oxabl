@@ -45,9 +45,9 @@ pub use coercion::{
 };
 pub use diagnostics::{SEM0001, SEM0002, SEM0003};
 pub use index::{
-    ClassDescriptor, ClassKind, ImportContext, IndexAnswer, IndexName, IndexRevision,
-    IndexedFileId, LocateKind, Located, MemberDescriptor, MemberRecord, MemberType, NullIndex,
-    PortableType, WorkspaceIndex,
+    ClassDescriptor, ClassKind, ClassResolution, ImportContext, IndexAnswer, IndexName,
+    IndexRevision, IndexedFileId, LocateKind, Located, MemberDescriptor, MemberRecord, MemberType,
+    NullIndex, PortableType, WorkspaceIndex,
 };
 pub use index_vec::NodeIndexVec;
 pub use inherited::{

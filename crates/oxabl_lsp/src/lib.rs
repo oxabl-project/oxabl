@@ -38,6 +38,7 @@ mod document_symbol;
 mod editor_syntax;
 mod expanded_unit;
 pub mod formatting;
+mod hierarchy;
 mod inactive_regions;
 mod includer_context;
 mod inlay_hint;
@@ -64,9 +65,10 @@ use lsp_types::notification::{
 use lsp_types::request::{
     CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
     DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest,
-    Formatting, GotoDefinition, HoverRequest, InlayHintRequest, References, Request as _,
-    SelectionRangeRequest, SemanticTokensFullDeltaRequest, SemanticTokensFullRequest,
-    SemanticTokensRangeRequest, WorkspaceSymbolRequest,
+    Formatting, GotoDefinition, GotoImplementation, HoverRequest, InlayHintRequest, References,
+    Request as _, SelectionRangeRequest, SemanticTokensFullDeltaRequest, SemanticTokensFullRequest,
+    SemanticTokensRangeRequest, TypeHierarchyPrepare, TypeHierarchySubtypes,
+    TypeHierarchySupertypes, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -907,6 +909,8 @@ fn finish_handshake(
     let mut result = serde_json::to_value(result)?;
     // Not a field of the LSP types: the name clangd gives the capability.
     result["capabilities"]["inactiveRegionsProvider"] = serde_json::Value::Bool(true);
+    // `lsp_types` has no field for it.
+    result["capabilities"]["typeHierarchyProvider"] = serde_json::Value::Bool(true);
     connection
         .initialize_finish(id, result)
         .context("LSP initialize_finish")?;
@@ -1168,6 +1172,16 @@ impl<'c> Server<'c> {
                                 self.handle_incoming_calls(req)?;
                             } else if req.method == CallHierarchyOutgoingCalls::METHOD {
                                 self.handle_outgoing_calls(req)?;
+                            } else if req.method == GotoImplementation::METHOD {
+                                self.handle_implementation(req)?;
+                            } else if req.method == TypeHierarchyPrepare::METHOD {
+                                self.handle_prepare_type_hierarchy(req)?;
+                            } else if req.method == TypeHierarchySupertypes::METHOD {
+                                self.handle_type_supertypes(req)?;
+                            } else if req.method == TypeHierarchySubtypes::METHOD {
+                                self.handle_type_subtypes(req)?;
+                            } else if req.method == hierarchy::SUPER_METHOD {
+                                self.handle_super_method(req)?;
                             } else if req.method == expanded_unit::METHOD {
                                 self.handle_expanded_unit(req)?;
                             } else if req.method == includer_context::LIST_METHOD {

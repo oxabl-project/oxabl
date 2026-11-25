@@ -44,6 +44,7 @@
 pub mod db;
 pub mod dispatch;
 pub mod handshake;
+pub mod hierarchy;
 pub mod idle;
 #[cfg(unix)]
 pub mod listener;

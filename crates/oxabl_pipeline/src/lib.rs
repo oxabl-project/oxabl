@@ -85,6 +85,7 @@ mod explain;
 pub use effects::{EffectFile, Elsewhere, Routine, WorkspaceEffects};
 mod config;
 mod format;
+mod hierarchy;
 mod hints;
 mod includers;
 mod keyword_docs;
@@ -105,6 +106,7 @@ pub use config::{
     resolve_from_config_deferred,
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
+pub use hierarchy::{ClassDecl, MethodAt, MethodDecl, MethodsAt, TypeAt, class_decl};
 pub use hints::{HintKinds, InlayHint, InlayKind};
 pub use includers::{IncluderPools, PoolVerdict};
 pub use lint::{

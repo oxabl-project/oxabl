@@ -101,6 +101,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use oxabl_analyze::CollectedDiagnostics;
+use oxabl_index::hierarchy::{ClassFile, SubtypeIndex};
 use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, IncludeContext, index_file_at, program_signatures_at};
 use oxabl_pipeline::{
@@ -1662,6 +1663,99 @@ pub fn with_navigation<T>(
             expansion: &expansion,
             fs: &fs,
         }))
+    }))
+    .ok()
+}
+
+/// The class files of a workspace as one snapshot reads them, for the
+/// hierarchy requests: the facts of each file (an open buffer over the disk),
+/// the resolution of the names a class header writes, and the file behind an
+/// index id.
+pub struct HierarchyUnit<'a> {
+    snapshot: &'a AnalysisDatabase,
+    index: SnapshotIndex<'a>,
+    fs: OverlayFs,
+}
+
+impl HierarchyUnit<'_> {
+    /// The index that resolves a class name to its file, for any file: none
+    /// is the analysed one.
+    pub fn index(&self) -> &dyn WorkspaceIndex {
+        &self.index
+    }
+
+    /// The facts of the class file `path`. An open buffer gives its own text;
+    /// any other file is read through the memoized per-file facts, so only a
+    /// file that changed is read again.
+    pub fn facts(&self, path: &Path) -> Arc<FileFacts> {
+        let config = self.snapshot.config();
+        let file = config.index.file_for(self.snapshot, path);
+        let open = self
+            .fs
+            .overlay
+            .get(path)
+            .or_else(|| self.fs.overlay.get(&crate::session::canonical_path(path)));
+        let Some(text) = open else {
+            return indexed_facts(self.snapshot, file);
+        };
+        let environment = config.index.environment(self.snapshot);
+        let includes = IncludeContext {
+            fs: &self.fs,
+            include_paths: environment.include_paths(self.snapshot),
+            root_relative_paths: environment.root_relative_include_paths(self.snapshot),
+            predefined: environment.preprocessor(self.snapshot),
+        };
+        let id = IndexedFileId::new(*file.index_id(self.snapshot));
+        Arc::new(index_file_at(id, path, text, &includes).0)
+    }
+
+    /// The path of the file the index minted `id` for, if a lookup reached it.
+    pub fn path_of(&self, id: IndexedFileId) -> Option<PathBuf> {
+        self.snapshot
+            .config()
+            .index
+            .registered()
+            .into_iter()
+            .find(|(_, known)| *known == id)
+            .map(|(file, _)| file.path(self.snapshot).clone())
+    }
+
+    /// A file's text through the open buffers over the disk.
+    pub fn read(&self, path: &Path) -> Option<Arc<str>> {
+        self.fs.read(path).ok()
+    }
+
+    /// The reverse inheritance index of `files`, class files of the
+    /// workspace.
+    pub fn subtype_index(&self, files: &[PathBuf]) -> SubtypeIndex {
+        SubtypeIndex::build(
+            files.iter().map(|path| ClassFile {
+                path: path.clone(),
+                facts: self.facts(path),
+            }),
+            &self.index,
+        )
+    }
+}
+
+/// Run `answer` over a snapshot with `overlay` over the configured file
+/// system. `None` when a concurrent write cancelled the read.
+pub fn with_hierarchy<T>(
+    snapshot: &AnalysisDatabase,
+    overlay: HashMap<PathBuf, Arc<str>>,
+    answer: impl FnOnce(&HierarchyUnit<'_>) -> T,
+) -> Option<T> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let config = snapshot.config();
+        let unit = HierarchyUnit {
+            snapshot,
+            index: SnapshotIndex::new(snapshot, None, None),
+            fs: OverlayFs {
+                overlay,
+                inner: Arc::clone(&config.fs),
+            },
+        };
+        answer(&unit)
     }))
     .ok()
 }

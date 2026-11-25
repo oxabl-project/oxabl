@@ -151,6 +151,8 @@ LSP features:
 - Document symbols (outline and breadcrumbs)
 - Workspace symbols
 - Go to definition
+- Find references and call hierarchy
+- Go to implementation, go to super method and type hierarchy (classes and interfaces, across files that are not open; an answer that can be short says so)
 - Clickable links on {includes}, RUN targets, and USING
 - Database-effect code lenses (only with strict database rules enabled)
 - List all files that include a specific include file, and pick one as the include's context
