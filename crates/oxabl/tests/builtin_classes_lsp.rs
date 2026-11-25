@@ -337,7 +337,7 @@ fn hover_of_a_built_in_member() {
         ws,
         "c = oErr:GetMessage(1)",
         "GetMessage",
-        code("METHOD PUBLIC CHARACTER GetMessage (MessageIndex AS INTEGER)")
+        code("METHOD CHARACTER GetMessage (MessageIndex AS INTEGER)")
             + &format!(
                 "\n\nDeclared in built-in class `Progress.Lang.ProError` (OpenEdge 12.8). Parameter modes are not known. [Progress documentation]({DOCS}/Progress.Lang.ProError-class.html)"
             ),
@@ -347,7 +347,7 @@ fn hover_of_a_built_in_member() {
         ws,
         "i = oErr:NumMessages",
         "NumMessages",
-        code("DEFINE PUBLIC PROPERTY NumMessages AS INTEGER")
+        code("DEFINE PROPERTY NumMessages AS INTEGER")
             + &format!(
                 "\n\nDeclared in built-in class `Progress.Lang.ProError` (OpenEdge 12.8). [Progress documentation]({DOCS}/Progress.Lang.ProError-class.html)"
             ),
@@ -357,10 +357,10 @@ fn hover_of_a_built_in_member() {
         ws,
         "lc = oJson:GetLongchar",
         "GetLongchar",
-        code("METHOD PUBLIC LONGCHAR GetLongchar (property-name AS CHARACTER)")
+        code("METHOD LONGCHAR GetLongchar (property-name AS CHARACTER)")
             + "\n\n"
             + &code(
-                "METHOD PUBLIC LONGCHAR GetLongchar (property-name AS CHARACTER, code-page AS CHARACTER)",
+                "METHOD LONGCHAR GetLongchar (property-name AS CHARACTER, code-page AS CHARACTER)",
             )
             + &format!(
                 "\n\nDeclared in built-in class `Progress.Json.ObjectModel.JsonObject` (OpenEdge 12.8). Parameter modes are not known. [Progress documentation]({DOCS}/Progress.Json.ObjectModel.JsonObject-class.html)"
@@ -371,11 +371,9 @@ fn hover_of_a_built_in_member() {
         ws,
         "OpenEdge.Core.String:IsQuoted",
         "IsQuoted",
-        code("METHOD PUBLIC STATIC LOGICAL IsQuoted (pcValue AS LONGCHAR)")
+        code("METHOD STATIC LOGICAL IsQuoted (pcValue AS LONGCHAR)")
             + "\n\n"
-            + &code(
-                "METHOD PUBLIC STATIC LOGICAL IsQuoted (pcValue AS LONGCHAR, pcQuote AS CHARACTER)",
-            )
+            + &code("METHOD STATIC LOGICAL IsQuoted (pcValue AS LONGCHAR, pcQuote AS CHARACTER)")
             + &format!(
                 "\n\nDeclared in built-in class `OpenEdge.Core.String` (OpenEdge 12.8). Parameter modes are not known. [Progress documentation]({API_DOCS}/OpenEdge.Core.String.html)"
             ),
@@ -385,7 +383,7 @@ fn hover_of_a_built_in_member() {
         ws,
         "JsonDataType:NUMBER",
         "NUMBER",
-        code("DEFINE PUBLIC STATIC PROPERTY Number AS INTEGER")
+        code("DEFINE STATIC PROPERTY Number AS INTEGER")
             + &format!(
                 "\n\nDeclared in built-in class `Progress.Json.ObjectModel.JsonDataType` (OpenEdge 12.8). [Progress documentation]({DOCS}/Progress.Json.ObjectModel.JsonDataType-class.html)"
             ),
@@ -405,7 +403,7 @@ fn hover_of_a_built_in_member() {
         ws,
         "c = oThing:ToString()",
         "ToString",
-        code("METHOD PUBLIC CHARACTER ToString ()")
+        code("METHOD CHARACTER ToString ()")
             + &format!(
                 "\n\nDeclared in built-in class `Progress.Lang.Object` (OpenEdge 12.8). [Progress documentation]({DOCS}/Progress.Lang.Object-class.html)"
             ),
@@ -415,7 +413,7 @@ fn hover_of_a_built_in_member() {
         ws,
         "c = e:GetMessage(1)",
         "GetMessage",
-        code("METHOD PUBLIC CHARACTER GetMessage (MessageIndex AS INTEGER)")
+        code("METHOD CHARACTER GetMessage (MessageIndex AS INTEGER)")
             + &format!(
                 "\n\nDeclared in built-in interface `Progress.Lang.Error` (OpenEdge 12.8). Parameter modes are not known. [Progress documentation]({DOCS}/Progress.Lang.Error-interface.html)"
             ),
@@ -426,7 +424,7 @@ fn hover_of_a_built_in_member() {
 fn hover_of_an_overload_set_shows_ten_signatures_and_the_count_of_the_rest() {
     let (ws, mut session) = open_hover_program();
     let got = hover_markdown(&mut session, &ws, "MESSAGE oJson:Add(", "Add");
-    let first = code("METHOD PUBLIC LOGICAL Add (property-name AS CHARACTER, value AS CHARACTER)");
+    let first = code("METHOD LOGICAL Add (property-name AS CHARACTER, value AS CHARACTER)");
     let tail = format!(
         "\n\n7 more overloads.\n\nDeclared in built-in class `Progress.Json.ObjectModel.JsonObject` (OpenEdge 12.8). Parameter modes are not known. [Progress documentation]({DOCS}/Progress.Json.ObjectModel.JsonObject-class.html)"
     );
