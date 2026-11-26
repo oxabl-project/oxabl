@@ -137,6 +137,18 @@ pub fn lex_counts() -> (usize, usize, usize) {
     )
 }
 
+/// [`lex_counts`] in a build with the test-only `test-counters` feature, and
+/// `None` in any other build, for a caller that cannot name the feature.
+#[doc(hidden)]
+pub fn lex_counts_if_counted() -> Option<(usize, usize, usize)> {
+    #[cfg(feature = "test-counters")]
+    {
+        Some(lex_counts())
+    }
+    #[cfg(not(feature = "test-counters"))]
+    None
+}
+
 pub struct Lexer<'a> {
     /// Source Text
     source: &'a str,

@@ -708,6 +708,15 @@ fn main() -> ExitCode {
     {
         eprintln!("oxabl-test: source maps built: {built}");
     }
+    // Test builds only: a test reads how much text the command lexed and parsed.
+    if std::env::var_os("OXABL_TEST_LEX_PARSE").is_some()
+        && let Some((lexers, lexed, _)) = oxabl_lexer::lex_counts_if_counted()
+        && let Some((parses, parsed)) = oxabl_parser::parse_counts()
+    {
+        eprintln!(
+            "oxabl-test: lexers: {lexers}, lexed bytes: {lexed}, parses: {parses}, parsed bytes: {parsed}"
+        );
+    }
     // Test builds only: a test reads how many schema files the command parsed.
     if std::env::var_os("OXABL_TEST_SCHEMA_PARSES").is_some()
         && let Some(parsed) = oxabl_common::schema_files_parsed()
