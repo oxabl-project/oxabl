@@ -263,7 +263,7 @@ pub fn index_file_with_includes(
 /// That is what [`program_signatures_at`] answers for such a file, without a
 /// second read and parse. The lists are `None` when the file needs more than
 /// this one parse; ask [`program_signatures_at`] then.
-pub fn index_file_and_signatures_at(
+pub(crate) fn index_file_and_signatures_at(
     file: IndexedFileId,
     path: &Path,
     source: &str,

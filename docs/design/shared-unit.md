@@ -147,6 +147,11 @@ and the run reads them many times.
   a class, the first index that asks reads the target again, with its
   expansion, and the slot keeps the answer for the run. This second read is
   left work: one more parse for each such target, one time for the run.
+  Every index computes the lists from the facts parse, also where nothing
+  reads them: an index with no `SharedFacts` (the daemon) drops them and reads
+  the target again when it asks, and a run without `strict.calls` keeps them
+  in the slot until the end of the run. This is left work too; the cost is
+  small (one walk of the top-level statements of each file).
 - **Key.** The run assumes that no file changes while it runs, as the memo of
   each index does. So the key is the path. The daemon keys by file and disk
   revision (salsa inputs), which is the content stamp.

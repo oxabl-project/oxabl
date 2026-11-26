@@ -1241,12 +1241,28 @@ fn files_that_many_roots_reach_answer_the_same_at_any_job_count() {
     for flags in [&[][..], &["--json"]] {
         let run = |jobs: &str| check([&[dir, "--no-format", "-j", jobs][..], flags].concat());
         let serial = run("1");
-        assert!(
-            serial.stdout.contains("CL003"),
-            "the fixture must reach the parameter lists: {}{}",
-            serial.stdout,
-            serial.stderr
+        // The same output at each job count proves nothing when each run
+        // loses findings, so pin the findings of the serial run: one for each
+        // fifth root, and none for `via-include.p`, whose list an include
+        // marks.
+        let reported = if flags.is_empty() {
+            serial.stdout.matches("warning[CL003]").count()
+        } else {
+            serial.stdout.matches("\"code\": \"CL003\"").count()
+        };
+        assert_eq!(
+            reported, 8,
+            "one CL003 for each root that passes one argument {flags:?}: {}{}",
+            serial.stdout, serial.stderr
         );
+        if flags.is_empty() {
+            for k in (0..40).step_by(5) {
+                let line = format!(
+                    "src/r{k:02}.p:4:5: warning[CL003]: `RUN takes.p` passes 1 argument, but the procedure takes 2\n"
+                );
+                assert!(serial.stdout.contains(&line), "{line}{}", serial.stdout);
+            }
+        }
         for jobs in ["2", "7", "64"] {
             let parallel = run(jobs);
             assert_eq!(parallel.code, serial.code, "-j {jobs} {flags:?}");
