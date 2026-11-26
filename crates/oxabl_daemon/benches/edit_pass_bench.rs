@@ -23,16 +23,25 @@
 //! those calls out and warns that the bench is dominated by system calls, so
 //! the wall time of `cargo bench` is the number to read for the whole cost.
 //!
+//! **One thread.** The daemon analyses the files of a pass on as many threads
+//! as the machine has cores. CodSpeed's simulation counts the instructions of
+//! the thread that runs the bench and none of a worker's, so a bench on the
+//! default threads times the stat sweep and little else, and it reads the same
+//! before and after a change that makes the pass analyse fewer files. The bench
+//! calls `methods::limit_pass_jobs(1)`: the pass then runs on the calling
+//! thread, and the timed part holds all of its work. The graph is the same for
+//! any thread count. The wall time of `cargo bench` is then the sum of the
+//! work, not the time a daemon takes on many cores.
+//!
 //! The setup opens the edited buffers with the text of the files and runs one
-//! full pass, so each timed call is a warm pass after an edit. The bench uses
-//! only the public API that every version of the daemon has.
+//! full pass, so each timed call is a warm pass after an edit.
 
 use std::path::PathBuf;
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use oxabl_bench::generate::{GenFile, Knobs, Preset, Workspace, generate};
 use oxabl_daemon::SessionHost;
-use oxabl_daemon::methods::reference_graph;
+use oxabl_daemon::methods::{limit_pass_jobs, reference_graph};
 use oxabl_daemon::session::canonical_root;
 
 /// The roots that read `h0.i`: a hot include of the `ci` preset.
@@ -147,6 +156,7 @@ impl Fixture {
 }
 
 fn edit_pass_benchmarks(c: &mut Criterion) {
+    limit_pass_jobs(1);
     let workspace = generate(&knobs());
     assert_eq!(workspace.roots().count(), 1_200);
     let leaf_path = leaf(&workspace).path.clone();

@@ -61,6 +61,13 @@ which use the plain system allocator.
 - An input must parse with no error, or the bench measures the error recovery.
   `crates/oxabl_bench/tests/fixtures_parse.rs` parses every
   `resources/bench_*.abl`, the large inputs and `lsp_bench.p` after expansion.
+- CodSpeed counts only the thread that runs the bench. A bench of code that
+  uses worker threads must limit that code to one thread, or the workers' work
+  is not in the number. `edit_pass_bench` calls
+  `oxabl_daemon::methods::limit_pass_jobs(1)` for the workspace pass.
+- A bench that shows or guards a speed-up must show a CodSpeed difference
+  between the base and the change before it merges. A green check alone proves
+  nothing.
 - Read every file from an `InMemoryFileSystem`. CodSpeed marks a bench that
   reads the disk as "Dominated by system calls", and its number is too low.
 
