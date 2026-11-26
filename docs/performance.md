@@ -463,6 +463,7 @@ the work.
 | schema files parsed (`schema_file_parsed`) | `oxabl_common`, feature `test-panics` | `OXABL_TEST_SCHEMA_PARSES` is set | `crates/oxabl/tests/schema_cache.rs` |
 | calls of `parse_program` (`parse_count`) | `oxabl_parser`, feature `test-counters` | `OXABL_TEST_PARSES` is set | `crates/oxabl/tests/check_producer_prefilter.rs`, `check_producer_scan.rs` |
 | expansions of each file of the producer scan | `oxabl_common::test_tally`, feature `test-panics` | `OXABL_TEST_TALLY` is set | `crates/oxabl/tests/check_producer_scan.rs` |
+| sites that a references request resolves in the unit that asks (`references.site_keys`, for each unit) | `oxabl_common::test_tally`, feature `test-panics`; the daemon writes it after the request | `OXABL_TEST_TALLY` is set | `crates/oxabl/tests/references_lsp.rs` (`a_local_name_costs_no_resolution_of_class_calls`) |
 | files each workspace pass of the daemon analyses | `oxabl_daemon`, through `oxabl_common`'s feature `test-panics` | `OXABL_TEST_PASS_COUNTS` is set | `crates/oxabl/tests/incremental_pass_lsp.rs` |
 
 `check_producer_prefilter.rs` runs `oxabl check` over 3 and 6 roots of one
