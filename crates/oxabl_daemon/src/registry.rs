@@ -1285,6 +1285,29 @@ pub fn unregister(workspace_root: &Path) -> io::Result<()> {
     }
 }
 
+/// Remove the registration that sits beside `socket_path`.
+///
+/// Unlike [`unregister`] it needs no root on disk: the name of a registration is the
+/// canonical root of the time it was written, and a daemon whose root has since been
+/// deleted can no longer compute it.
+pub fn unregister_beside_socket(socket_path: &Path) -> io::Result<()> {
+    let name = socket_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".sock"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a daemon socket path", socket_path.display()),
+            )
+        })?;
+    match fs::remove_file(socket_path.with_file_name(format!("{name}.json"))) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// The socket path a daemon for `workspace_root` listens on.
 ///
 /// Beside the registration rather than in a temp directory, so the two share a

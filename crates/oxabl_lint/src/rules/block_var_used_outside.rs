@@ -260,7 +260,7 @@ mod paths {
                 let Some(scope) = sem.symbols.block_defined_scope(*sid) else {
                     continue;
                 };
-                let owner = sem.scope_tree.get(scope).owner_node;
+                let owner = sem.scope_tree.get(scope).owner_node();
                 let candidate = Candidate {
                     at,
                     undoable: !self.no_undo.contains(&sym.declaration),

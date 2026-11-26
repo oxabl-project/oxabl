@@ -95,10 +95,10 @@ use oxabl_common::{
 use oxabl_index::calls::{DynamicCalls, FileCalls};
 use oxabl_index::{
     BatchIndex, BranchKind, ClosureExpansions, ClosureReference, ClosureTarget, ConditionalBranch,
-    ConditionalInclude, ConditionalIncludeName, ConditionalReference, DirectIncludeInput,
-    EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput,
-    ReferenceSyntax, SharedProducers, UnreadableIncludeInput, UnresolvedIncludeInput,
-    WrittenReference, build_edge_set, conditional_include_closure_cached,
+    ConditionalInclude, ConditionalIncludeName, ConditionalReference, DeferredProducers,
+    DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput,
+    NestedUnresolvedIncludeInput, ReferenceSyntax, SharedProducers, UnreadableIncludeInput,
+    UnresolvedIncludeInput, WrittenReference, build_edge_set, conditional_include_closure_cached,
     conditional_include_closure_with, written_imports, written_references,
 };
 use oxabl_semantic::{
@@ -591,6 +591,15 @@ impl<'a> SharedRun<'a> {
         self
     }
 
+    /// Answer `SHARED` producer questions from `producers`, built on the first
+    /// question, as [`LintPipeline::with_deferred_producers`] does. Apply
+    /// before any handle is made.
+    #[must_use]
+    pub fn with_deferred_producers(mut self, producers: &'a DeferredProducers) -> Self {
+        self.index = self.index.with_deferred_producers(producers);
+        self
+    }
+
     /// Answer `SHARED` producer questions from `files`, as
     /// [`LintPipeline::with_known_files`] does. Apply before any handle is
     /// made.
@@ -917,6 +926,33 @@ impl<'a> LintPipeline<'a> {
             RunIndex::External(index) => RunIndex::External(index),
         };
         self
+    }
+
+    /// [`with_shared_producers`](Self::with_shared_producers) with a map that
+    /// the first `SHARED` question of any handle that borrows it builds (see
+    /// [`deferred_producers`](Self::deferred_producers)). The answers are the
+    /// same; a file that asks no such question does not wait for the scan.
+    ///
+    /// Apply to the **run** handle, before any lookup.
+    #[must_use]
+    pub fn with_deferred_producers(mut self, producers: &'a DeferredProducers) -> Self {
+        self.index = match self.index {
+            RunIndex::Owned(index) => {
+                RunIndex::Owned(Box::new((*index).with_deferred_producers(producers)))
+            }
+            RunIndex::Shared(index) => RunIndex::Shared(index),
+            RunIndex::External(index) => RunIndex::External(index),
+        };
+        self
+    }
+
+    /// The map of the `SHARED` names that `files` may produce, scanned on
+    /// `threads` threads when a handle first asks for a producer, not now. The
+    /// scan reads through the asking index's filesystem, include paths and
+    /// preprocessor configuration, which are this run's
+    /// ([`index_includes`](Self::index_includes)).
+    pub fn deferred_producers(&self, files: &[PathBuf], threads: usize) -> DeferredProducers {
+        DeferredProducers::new(files, threads)
     }
 
     /// Scan `files` for the `SHARED` names they produce, under this run's

@@ -5,8 +5,8 @@
 //! root, procedure, function, class, method, property accessor,
 //! constructor, destructor, `DO` / `REPEAT` / `FOR` block, CATCH, trigger —
 //! gets one [`Scope`]. Lookups walk parents; each scope carries one
-//! [`BindingMap`] per namespace (indexed by
-//! [`NamespaceId`](crate::NamespaceId)).
+//! [`BindingMap`] for each namespace it binds a name in
+//! ([`ScopeBindings`]).
 
 use oxabl_ast::NodeId;
 use oxabl_common::VirtualSpan;
@@ -14,7 +14,7 @@ use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use crate::{NUM_NAMESPACES, NamespaceId, SymbolId};
+use crate::{NamespaceId, SymbolId};
 
 /// Dense arena index for a scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -36,7 +36,7 @@ impl ScopeId {
 }
 
 /// What kind of lexical scope this is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScopeKind {
     /// Implicit top-level scope of a file. Always id `ScopeId::ROOT`.
     File,
@@ -107,14 +107,14 @@ pub enum BindingMap {
     Large(FxHashMap<OxablAtom, SymbolId>),
 }
 
-// Lock the size of a binding map deliberately: each scope holds one for each
-// namespace. Gated to 64-bit; bump the bound deliberately.
+// Lock the size of a binding map deliberately: a scope holds one for each
+// namespace it binds a name in. Gated to 64-bit; bump the bound deliberately.
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<BindingMap>() <= 144);
 
 /// Inline capacity at which [`BindingMap::Small`] spills into
-/// [`BindingMap::Large`]. Chosen to cover the vast majority of ABL method
-/// bodies, blocks, and procedures without heap allocation.
+/// [`BindingMap::Large`]. A map exists only for a namespace that binds a
+/// name, and nearly all such maps hold 8 names or fewer.
 pub const BINDING_MAP_SMALL_CAP: usize = 8;
 
 impl Default for BindingMap {
@@ -165,10 +165,10 @@ impl BindingMap {
     }
 
     /// Iterate over every `(name, SymbolId)` pair. Order is unspecified.
-    pub fn iter(&self) -> Box<dyn Iterator<Item = (&OxablAtom, SymbolId)> + '_> {
+    pub fn iter(&self) -> BindingIter<'_> {
         match self {
-            BindingMap::Small(vec) => Box::new(vec.iter().map(|(n, s)| (n, *s))),
-            BindingMap::Large(map) => Box::new(map.iter().map(|(n, s)| (n, *s))),
+            BindingMap::Small(vec) => BindingIter(BindingIterInner::Small(vec.iter())),
+            BindingMap::Large(map) => BindingIter(BindingIterInner::Large(map.iter())),
         }
     }
 
@@ -184,18 +184,84 @@ impl BindingMap {
     }
 }
 
+/// The iterator of [`BindingMap::iter`].
+#[derive(Clone)]
+pub struct BindingIter<'a>(BindingIterInner<'a>);
+
+#[derive(Clone)]
+enum BindingIterInner<'a> {
+    Small(std::slice::Iter<'a, (OxablAtom, SymbolId)>),
+    Large(std::collections::hash_map::Iter<'a, OxablAtom, SymbolId>),
+}
+
+impl<'a> Iterator for BindingIter<'a> {
+    type Item = (&'a OxablAtom, SymbolId);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.0 {
+            BindingIterInner::Small(it) => it.next().map(|(n, s)| (n, *s)),
+            BindingIterInner::Large(it) => it.next().map(|(n, s)| (n, *s)),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match &self.0 {
+            BindingIterInner::Small(it) => it.size_hint(),
+            BindingIterInner::Large(it) => it.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for BindingIter<'_> {}
+
+impl std::iter::FusedIterator for BindingIter<'_> {}
+
+/// The binding maps of one [`Scope`]: one for each namespace that binds a
+/// name, in namespace order. Most scopes bind no name, so this holds no map
+/// and allocates nothing.
+#[derive(Debug, Clone, Default)]
+pub struct ScopeBindings(Vec<(NamespaceId, BindingMap)>);
+
+impl ScopeBindings {
+    /// The map of `ns`, or `None` when the scope binds no name in it.
+    #[inline]
+    pub fn get(&self, ns: NamespaceId) -> Option<&BindingMap> {
+        self.0.iter().find(|(n, _)| *n == ns).map(|(_, map)| map)
+    }
+
+    /// The map of `ns`, made empty when the scope has none yet.
+    pub fn get_or_insert(&mut self, ns: NamespaceId) -> &mut BindingMap {
+        let at = match self.0.binary_search_by_key(&ns.index(), |(n, _)| n.index()) {
+            Ok(at) => at,
+            Err(at) => {
+                // One namespace is the common case: no spare slots.
+                self.0.reserve_exact(1);
+                self.0.insert(at, (ns, BindingMap::default()));
+                at
+            }
+        };
+        &mut self.0[at].1
+    }
+
+    /// Every map with its namespace, in namespace order.
+    pub fn iter(&self) -> impl Iterator<Item = (NamespaceId, &BindingMap)> {
+        self.0.iter().map(|(ns, map)| (*ns, map))
+    }
+}
+
 /// One scope in the tree.
 #[derive(Debug, Clone)]
 pub struct Scope {
-    pub kind: ScopeKind,
-    pub parent: Option<ScopeId>,
+    // Read-only: `ScopeTree::children` is keyed by these three.
+    kind: ScopeKind,
+    parent: Option<ScopeId>,
     /// The AST node that introduced this scope. For `ScopeKind::File`,
     /// this is [`NodeId::PROGRAM`]; for everything else it's the node id
     /// of the statement that opened the scope.
-    pub owner_node: NodeId,
-    /// Per-namespace bindings. Indexed by
-    /// [`NamespaceId::index`](crate::NamespaceId::index).
-    pub bindings: [BindingMap; NUM_NAMESPACES],
+    owner_node: NodeId,
+    /// The bindings of the namespaces this scope binds a name in.
+    pub bindings: ScopeBindings,
     /// The text the scope covers: the span of its owner statement, which holds
     /// the body and the `END` of a block. The file scope covers all text, and
     /// a block that the end of the text closed runs to `u32::MAX`.
@@ -205,7 +271,7 @@ pub struct Scope {
 // Lock the size of a scope deliberately: a file has one for each block and
 // routine. Gated to 64-bit; bump the bound deliberately.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<Scope>() <= 1_464);
+const _: () = assert!(std::mem::size_of::<Scope>() <= 48);
 
 impl Scope {
     fn new(
@@ -218,24 +284,119 @@ impl Scope {
             kind,
             parent,
             owner_node,
-            bindings: std::array::from_fn(|_| BindingMap::default()),
+            bindings: ScopeBindings::default(),
             span,
         }
+    }
+
+    #[inline]
+    pub fn kind(&self) -> ScopeKind {
+        self.kind
+    }
+
+    /// The enclosing scope, or `None` for the file scope.
+    #[inline]
+    pub fn parent(&self) -> Option<ScopeId> {
+        self.parent
+    }
+
+    /// The AST node that opened this scope.
+    #[inline]
+    pub fn owner_node(&self) -> NodeId {
+        self.owner_node
     }
 
     /// Look up `name` in the requested namespace of this scope only — does
     /// not walk parents.
     #[inline]
     pub fn get_in(&self, ns: NamespaceId, name: &OxablAtom) -> Option<SymbolId> {
-        self.bindings[ns.index()].get(name)
+        self.bindings.get(ns).and_then(|map| map.get(name))
+    }
+
+    /// Bind `name` to `sym` in namespace `ns` of this scope. Returns the prior
+    /// binding of `name`, if any.
+    #[inline]
+    pub fn bind(&mut self, ns: NamespaceId, name: OxablAtom, sym: SymbolId) -> Option<SymbolId> {
+        self.bindings.get_or_insert(ns).insert(name, sym)
     }
 }
+
+/// The storage of a [`ScopeTree`]. Every read of a record goes through it and
+/// its vector is private, so the test-only count sees a scan wherever it sits.
+mod records {
+    use super::{Scope, ScopeId};
+
+    /// How many scope records [`super::ScopeTree`] read in this process,
+    /// counted only with the test-only `test-counts` feature in a build with
+    /// debug assertions. A bench build (`cargo build --benches` turns the
+    /// feature on for the whole workspace) has none, so the count never runs
+    /// in measured code.
+    #[cfg(all(feature = "test-counts", debug_assertions))]
+    static READ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    #[inline]
+    fn count(_n: usize) {
+        #[cfg(all(feature = "test-counts", debug_assertions))]
+        READ.fetch_add(_n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(super) fn read() -> Option<usize> {
+        #[cfg(all(feature = "test-counts", debug_assertions))]
+        return Some(READ.load(std::sync::atomic::Ordering::Relaxed));
+        #[cfg(not(all(feature = "test-counts", debug_assertions)))]
+        None
+    }
+
+    #[derive(Debug, Clone)]
+    pub(super) struct Records(Vec<Scope>);
+
+    impl Records {
+        pub(super) fn new(root: Scope) -> Self {
+            Records(vec![root])
+        }
+
+        pub(super) fn push(&mut self, scope: Scope) -> ScopeId {
+            let id = ScopeId(self.0.len() as u32);
+            self.0.push(scope);
+            id
+        }
+
+        pub(super) fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        #[inline]
+        pub(super) fn get(&self, id: ScopeId) -> &Scope {
+            count(1);
+            &self.0[id.raw() as usize]
+        }
+
+        #[inline]
+        pub(super) fn get_mut(&mut self, id: ScopeId) -> &mut Scope {
+            count(1);
+            &mut self.0[id.raw() as usize]
+        }
+
+        #[inline]
+        pub(super) fn iter(&self) -> impl DoubleEndedIterator<Item = (ScopeId, &Scope)> {
+            self.0.iter().enumerate().map(|(i, s)| {
+                count(1);
+                (ScopeId(i as u32), s)
+            })
+        }
+    }
+}
+
+use records::Records;
 
 /// Arena of scopes with a fixed root. Scopes are never removed; the tree
 /// grows monotonically during the declare pass.
 #[derive(Debug, Clone)]
 pub struct ScopeTree {
-    scopes: Vec<Scope>,
+    scopes: Records,
+    /// The first scope pushed for each parent, owner node and kind, so a pass
+    /// finds the scope of a statement without a scan.
+    children: FxHashMap<(ScopeId, NodeId, ScopeKind), ScopeId>,
 }
 
 impl ScopeTree {
@@ -243,12 +404,13 @@ impl ScopeTree {
     /// already created.
     pub fn new() -> Self {
         ScopeTree {
-            scopes: vec![Scope::new(
+            scopes: Records::new(Scope::new(
                 ScopeKind::File,
                 None,
                 NodeId::PROGRAM,
                 VirtualSpan::new(0, u32::MAX),
-            )],
+            )),
+            children: FxHashMap::default(),
         }
     }
 
@@ -260,10 +422,35 @@ impl ScopeTree {
         owner_node: NodeId,
         span: VirtualSpan,
     ) -> ScopeId {
-        let id = ScopeId(self.scopes.len() as u32);
-        self.scopes
+        let id = self
+            .scopes
             .push(Scope::new(kind, Some(parent), owner_node, span));
+        self.children
+            .entry((parent, owner_node, kind))
+            .or_insert(id);
         id
+    }
+
+    /// The first scope of `kind` pushed under `parent` for `owner_node`.
+    pub fn child(&self, parent: ScopeId, owner_node: NodeId, kind: ScopeKind) -> Option<ScopeId> {
+        let id = self.children.get(&(parent, owner_node, kind)).copied()?;
+        debug_assert!(
+            {
+                let s = self.scopes.get(id);
+                s.parent == Some(parent) && s.owner_node == owner_node && s.kind == kind
+            },
+            "a scope changed its parent, owner or kind after push"
+        );
+        Some(id)
+    }
+
+    /// How many scope records every tree read in this process, or `None`
+    /// unless the test-only `test-counts` feature is on in a build with debug
+    /// assertions. A test sees that this count grows with the number of
+    /// scopes and not with its square.
+    #[doc(hidden)]
+    pub fn scopes_read() -> Option<usize> {
+        records::read()
     }
 
     /// The innermost scope whose span holds `offset`. A scope is pushed after
@@ -272,18 +459,19 @@ impl ScopeTree {
     pub fn innermost_at(&self, offset: u32) -> ScopeId {
         self.scopes
             .iter()
-            .enumerate()
             .rev()
             .find(|(_, scope)| scope.span.start <= offset && offset < scope.span.end)
-            .map_or(ScopeId::ROOT, |(id, _)| ScopeId(id as u32))
+            .map_or(ScopeId::ROOT, |(id, _)| id)
     }
 
     pub fn get(&self, id: ScopeId) -> &Scope {
-        &self.scopes[id.raw() as usize]
+        self.scopes.get(id)
     }
 
+    /// The scope's bindings and span. Its parent, owner and kind stay as
+    /// `push` set them.
     pub fn get_mut(&mut self, id: ScopeId) -> &mut Scope {
-        &mut self.scopes[id.raw() as usize]
+        self.scopes.get_mut(id)
     }
 
     pub fn len(&self) -> usize {
@@ -291,14 +479,11 @@ impl ScopeTree {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.scopes.is_empty()
+        self.scopes.len() == 0
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (ScopeId, &Scope)> {
-        self.scopes
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (ScopeId(i as u32), s))
+        self.scopes.iter()
     }
 
     /// The scope a `DEFINE` statement, `FUNCTION` or `PROCEDURE` at `scope`
@@ -310,22 +495,20 @@ impl ScopeTree {
     /// The root file scope is var-transparent-free, so this always terminates.
     pub fn var_binding_scope(&self, scope: ScopeId) -> ScopeId {
         self.ancestors(scope)
-            .find(|id| !self.scopes[id.raw() as usize].kind.is_var_transparent())
+            .find(|id| !self.scopes.get(*id).kind.is_var_transparent())
             .unwrap_or(ScopeId::ROOT)
     }
 
     /// Walk from `scope` up through parents, yielding each id in order.
     pub fn ancestors(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> + '_ {
-        std::iter::successors(Some(scope), move |cur| {
-            self.scopes[cur.raw() as usize].parent
-        })
+        std::iter::successors(Some(scope), move |cur| self.scopes.get(*cur).parent)
     }
 
     /// Resolve `name` in namespace `ns`, walking parents. Returns the first
     /// binding encountered (shadowing preserves ABL semantics).
     pub fn resolve(&self, scope: ScopeId, ns: NamespaceId, name: &OxablAtom) -> Option<SymbolId> {
         for id in self.ancestors(scope) {
-            if let Some(sym) = self.scopes[id.raw() as usize].get_in(ns, name) {
+            if let Some(sym) = self.scopes.get(id).get_in(ns, name) {
                 return Some(sym);
             }
         }
@@ -445,12 +628,12 @@ mod tests {
             NodeId::from_u32(2),
             VirtualSpan::new(0, 0),
         );
-        tree.get_mut(ScopeId::ROOT).bindings[NamespaceId::Values.index()]
-            .insert(atom("outer"), SymbolId::new(1));
-        tree.get_mut(a).bindings[NamespaceId::Values.index()]
-            .insert(atom("inner"), SymbolId::new(2));
-        tree.get_mut(b).bindings[NamespaceId::Values.index()]
-            .insert(atom("outer"), SymbolId::new(3));
+        tree.get_mut(ScopeId::ROOT)
+            .bind(NamespaceId::Values, atom("outer"), SymbolId::new(1));
+        tree.get_mut(a)
+            .bind(NamespaceId::Values, atom("inner"), SymbolId::new(2));
+        tree.get_mut(b)
+            .bind(NamespaceId::Values, atom("outer"), SymbolId::new(3));
 
         assert_eq!(
             tree.resolve(b, NamespaceId::Values, &atom("outer")),

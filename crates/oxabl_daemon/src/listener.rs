@@ -30,13 +30,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::bounded;
 use lsp_server::Connection;
 
 use crate::dispatch::Dispatch;
+use crate::idle::Activity;
 use crate::registry;
+use crate::root_watch::{self, RootState, RootWatch};
 use crate::server;
 use crate::session::SessionHost;
 use crate::transport;
@@ -293,6 +295,20 @@ impl Listener {
         // daemon would hold this root's lock and refuse every client of it.
         host.bind_root(&self.workspace_root)?;
         let activity = Arc::clone(host.activity());
+        // The root the host is bound to is the canonical one, so the watch follows
+        // the directory and not a link to it.
+        let root = host.bound_root().unwrap_or(&self.workspace_root);
+        let root_watch = RootWatch::new(root)?;
+        self.listener.set_nonblocking(true)?;
+        let root_gone = Arc::new(AtomicBool::new(false));
+        // Declared before the idle watcher, so a failed spawn of the watcher still
+        // ends the thread.
+        let _root_thread = RootThread::spawn(
+            root_watch,
+            Arc::clone(&activity),
+            self.stopper(),
+            Arc::clone(&root_gone),
+        )?;
         let watcher = match self.idle_timeout {
             Some(timeout) => {
                 let activity = Arc::clone(&activity);
@@ -311,16 +327,31 @@ impl Listener {
         };
         let mut clients = Vec::new();
         let mut reported_spawn_failure = false;
-        for stream in self.listener.incoming() {
+        loop {
             if self.stopping.load(Ordering::SeqCst) {
                 break;
             }
-            let stream = match stream {
-                Ok(stream) => stream,
+            let stream = match self.listener.accept() {
+                Ok((stream, _)) => stream,
+                // Nothing to accept. The wait ends after one interval, so a stop is seen
+                // even when its throwaway connection cannot reach a socket file that
+                // was removed.
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    wait_for_client(&self.listener, Instant::now() + root_watch::CHECK_INTERVAL);
+                    continue;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 // One failed accept is not a reason to stop serving the clients
-                // already connected.
-                Err(_) => continue,
+                // already connected. The pause keeps a lasting failure from spinning.
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
             };
+            // A socket of a non-blocking listener can inherit the mode.
+            if stream.set_nonblocking(false).is_err() {
+                continue;
+            }
             // The daemon has decided to exit. The stream closes unread, which its
             // client reads as "no daemon here" and looks again.
             let Some(busy) = activity.admit() else {
@@ -373,15 +404,107 @@ impl Listener {
             }
         }
         activity.end();
-        // Let every client finish in flight rather than cutting responses off.
-        for client in clients {
-            let _ = client.join();
-        }
         if let Some(watcher) = watcher {
             let _ = watcher.join();
         }
+        // Let every client finish in flight rather than cutting responses off. A root
+        // that is gone has no client worth waiting for: the process ends them.
+        if !root_gone.load(Ordering::SeqCst) {
+            for client in clients {
+                let _ = client.join();
+            }
+        }
         Ok(())
     }
+}
+
+/// The thread that watches the root of a daemon, so that a hung mount blocks it and
+/// not the accept loop. Dropping the guard ends the thread at its next wakeup; a thread
+/// blocked in a file system call is left to finish alone.
+struct RootThread {
+    done: Arc<AtomicBool>,
+    thread: thread::Thread,
+}
+
+impl RootThread {
+    fn spawn(
+        watch: RootWatch,
+        activity: Arc<Activity>,
+        stopper: Stopper,
+        root_gone: Arc<AtomicBool>,
+    ) -> io::Result<RootThread> {
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&done);
+        let handle = thread::Builder::new()
+            .name("oxabl-root-watch".to_string())
+            .spawn(move || {
+                let mut reported_replaced = false;
+                while !flag.load(Ordering::SeqCst) {
+                    thread::park_timeout(root_watch::CHECK_INTERVAL);
+                    if flag.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let reason = match watch.check() {
+                        RootState::Gone(reason) => reason,
+                        // A client is a reason to trust the path less than the open
+                        // directory; with none, a restart costs little.
+                        RootState::Replaced(reason) if activity.close_if_no_client() => reason,
+                        RootState::Replaced(reason) => {
+                            if !std::mem::replace(&mut reported_replaced, true) {
+                                use std::io::Write as _;
+                                let _ = writeln!(
+                                    std::io::stderr(),
+                                    "oxabl daemon: {reason}; the daemon keeps running \
+                                     because a client is connected"
+                                );
+                            }
+                            continue;
+                        }
+                        RootState::Present => {
+                            reported_replaced = false;
+                            continue;
+                        }
+                        RootState::Unknown(_) => continue,
+                    };
+                    // The check may have blocked past the end of the accept loop.
+                    if flag.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "oxabl daemon: {reason}, so this daemon exits"
+                    );
+                    root_gone.store(true, Ordering::SeqCst);
+                    stopper.stop();
+                    break;
+                }
+            })?;
+        Ok(RootThread {
+            done,
+            thread: handle.thread().clone(),
+        })
+    }
+}
+
+impl Drop for RootThread {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::SeqCst);
+        self.thread.unpark();
+    }
+}
+
+/// Block until `listener` has a client to accept, or until `deadline`.
+fn wait_for_client(listener: &UnixListener, deadline: Instant) {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let left = deadline.saturating_duration_since(Instant::now());
+    let timeout = Timespec {
+        tv_sec: left.as_secs() as _,
+        tv_nsec: left.subsec_nanos() as _,
+    };
+    let mut fds = [PollFd::new(listener, PollFlags::IN)];
+    // An interrupted or failed wait only makes the loop look again.
+    let _ = poll(&mut fds, Some(&timeout));
 }
 
 impl Drop for Listener {
@@ -399,7 +522,7 @@ impl Drop for Listener {
     /// can register for this root before the registration here is gone.
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket_path);
-        let _ = registry::unregister(&self.workspace_root);
+        let _ = registry::unregister_beside_socket(&self.socket_path);
         if let Some(lock) = self.lock.take() {
             lock.remove();
         }
@@ -439,9 +562,10 @@ pub struct Stopper {
 impl Stopper {
     /// Stop accepting.
     ///
-    /// The flag alone is not enough: `incoming()` blocks, so nothing would observe it
-    /// until the next client arrived. A throwaway connection is made to wake the
-    /// accept, which then sees the flag and breaks.
+    /// The flag alone is not enough: the accept loop waits for a client, so a
+    /// throwaway connection wakes it at once. When that connection cannot reach the
+    /// socket (its file was removed with the runtime directory), the loop still sees
+    /// the flag within [`root_watch::CHECK_INTERVAL`].
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         let _ = UnixStream::connect(&self.socket_path);

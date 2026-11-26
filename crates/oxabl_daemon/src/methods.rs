@@ -978,11 +978,11 @@ fn build_workspace(
         disk: config.file_system(),
     };
     let jobs = std::thread::available_parallelism().map_or(1, usize::from);
-    let producers = LintPipeline::new(&config, &fs).shared_producers_parallel(&files, jobs);
+    let producers = LintPipeline::new(&config, &fs).deferred_producers(&files, jobs);
     let (graph, file_rows) = ReverseGraph::build_with(
         &files,
         jobs,
-        || LintPipeline::new(&config, &fs).with_shared_producers(&producers),
+        || LintPipeline::new(&config, &fs).with_deferred_producers(&producers),
         |path, expansion, result| {
             let rows = collect_symbols(path, expansion, result, &fs);
             progress.advance();

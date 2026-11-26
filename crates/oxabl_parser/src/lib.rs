@@ -8,6 +8,28 @@ mod parser;
 
 pub use parser::{ParseError, ParseResult, Parser, Program};
 
+/// The calls of [`Parser::parse_program`], counted only with the test-only
+/// `test-counters` feature.
+#[cfg(feature = "test-counters")]
+static PARSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[inline]
+pub(crate) fn count_parse() {
+    #[cfg(feature = "test-counters")]
+    PARSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many programs this process parsed, or `None` without the test-only
+/// `test-counters` feature, so a test of the binary can see that a command
+/// parses a file a fixed number of times.
+#[doc(hidden)]
+pub fn parse_count() -> Option<usize> {
+    #[cfg(feature = "test-counters")]
+    return Some(PARSES.load(std::sync::atomic::Ordering::Relaxed));
+    #[cfg(not(feature = "test-counters"))]
+    None
+}
+
 use oxabl_common::{InternalPanic, catch_panic};
 
 /// Tokenize and parse `source` in the parser's error-recovery mode, containing

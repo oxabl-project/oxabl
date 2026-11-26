@@ -215,9 +215,9 @@ pub(crate) fn scope_at(base: &CompletionBase<'_, '_, '_>, virt: u32) -> ScopeId 
     let tree = &base.navigation.model.semantic.scope_tree;
     let mut scope = tree.innermost_at(virt);
     while matches!(
-        tree.get(scope).kind,
+        tree.get(scope).kind(),
         ScopeKind::TempTable | ScopeKind::Frame
-    ) && let Some(parent) = tree.get(scope).parent
+    ) && let Some(parent) = tree.get(scope).parent()
     {
         scope = parent;
     }

@@ -18,6 +18,9 @@ serde = { version = "1", optional = true, features = ["derive"] }
 # Opt-in `Serialize` on `ParseError` (part of the diagnostic family). Pulls
 # `oxabl_ast/serde` because `ParseError` embeds a `Span`.
 serde = ["dep:serde", "oxabl_ast/serde"]
+# Test only: count the calls of `parse_program`, for tests that want to see that
+# a command parses a file a fixed number of times. Never on in a shipped build.
+test-counters = []
 
 [dev-dependencies]
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }

@@ -1,0 +1,2 @@
+x = obj:
+{member.i}
