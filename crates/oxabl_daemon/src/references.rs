@@ -753,7 +753,10 @@ trait PoolTask: Send + Sync {
 }
 
 impl Pool {
-    const IDLE: Duration = Duration::from_secs(30);
+    /// Short, because the allocator keeps the memory that a thread freed until
+    /// the thread ends: after a large search that is most of the memory of
+    /// the process, and none of it is in use.
+    const IDLE: Duration = Duration::from_secs(5);
 
     fn shared() -> &'static Pool {
         static POOL: std::sync::LazyLock<Pool> = std::sync::LazyLock::new(|| Pool {

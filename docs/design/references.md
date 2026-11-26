@@ -60,7 +60,11 @@ the number of analyses in progress does not grow with the number of requests,
 and a short search does not wait for the end of a long one. A request that
 waits for its search holds no analysis thread, and a request that waits for a
 workspace pass holds no place in the pool. A thread of the pool that has had
-no work for 30 seconds ends. A `$/cancelRequest` stops a request while it
+no work for 5 seconds ends. The allocator keeps the memory that a thread freed
+until the thread ends, so this gives the memory of a large search back soon
+after it: on a workspace of about 14,000 files, the daemon held 1.36 GB just
+after the reference lenses of a large class, of which 0.30 GB was in use
+(heaptrack), and 0.36 GB once the threads had ended. A `$/cancelRequest` stops a request while it
 waits for the pass (the pass goes on and is kept for later requests), and
 between two files. The request answers
 `RequestCancelled`.

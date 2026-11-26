@@ -271,8 +271,8 @@ the effect lenses with the reference lenses beside them; and the batch: the
 lenses of a file that are resolved at once have the counts and lists that each
 lens has alone, and one search analyses each other file once for all the
 lenses of the file; and the threads: resolves that wait and searches that run
-together start no thread for each resolve and no new thread to analyse a file
-(a file with `OXABL-TEST-HOLD:daemon.reference-unit@<ms>` makes its analysis
+together start no thread for each resolve and no new thread to analyse a file,
+and the threads of the searches end soon after them (a file with `OXABL-TEST-HOLD:daemon.reference-unit@<ms>` makes its analysis
 wait, in test builds only). A source with `OXABL-TEST-COUNT:lsp.reference-lens` makes
 the server write the files that the search of each batch analysed to the log
 (`window/logMessage`), in test builds only. The cache bounds

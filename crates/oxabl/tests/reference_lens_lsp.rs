@@ -1849,6 +1849,7 @@ fn waiting_resolves_and_searches_hold_no_threads_of_their_own() {
         texts.push((path, text));
     }
     assert_eq!(listed.len(), 12);
+    let idle = threads_of(pid);
     // The workspace pass and the threads that analyse other files exist.
     let (uses, _) = find_references(&mut session, &texts[0].0, &texts[0].1, "Stop()");
     assert_eq!(uses, 0);
@@ -1903,4 +1904,15 @@ fn waiting_resolves_and_searches_hold_no_threads_of_their_own() {
         most - before <= allowed,
         "the daemon went from {before} to {most} threads (allowed {allowed} more)"
     );
+    // The threads of the searches end soon after them, and the memory that
+    // they freed goes back with them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while threads_of(pid) > idle {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} threads 15 s after the searches, {idle} before them",
+            threads_of(pid)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
