@@ -12,7 +12,7 @@
 //! - `edit_pass/no_edit`: no edit between two calls. The stored pass is current.
 //!
 //! The edit is the one an editor makes: `Session::set_buffer` with new text for
-//! a file that is open. The text toggles between two values, so each iteration
+//! a file that is open. Each call of the setup makes new text, so each iteration
 //! is a real change. Nothing is saved to disk in the timed part.
 //!
 //! **File-system calls.** The pass reads `oxabl.toml`, walks the root and reads
@@ -23,16 +23,25 @@
 //! those calls out and warns that the bench is dominated by system calls, so
 //! the wall time of `cargo bench` is the number to read for the whole cost.
 //!
+//! **One thread.** The daemon analyses the files of a pass on as many threads
+//! as the machine has cores. CodSpeed's simulation counts the instructions of
+//! the thread that runs the bench and none of a worker's, so a bench on the
+//! default threads times the stat sweep and little else, and it reads the same
+//! before and after a change that makes the pass analyse fewer files. The bench
+//! calls `methods::limit_pass_jobs(1)`: the pass then runs on the calling
+//! thread, and the timed part holds all of its work. The graph is the same for
+//! any thread count. The wall time of `cargo bench` is then the sum of the
+//! work, not the time a daemon takes on many cores.
+//!
 //! The setup opens the edited buffers with the text of the files and runs one
-//! full pass, so each timed call is a warm pass after an edit. The bench uses
-//! only the public API that every version of the daemon has.
+//! full pass, so each timed call is a warm pass after an edit.
 
 use std::path::PathBuf;
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use oxabl_bench::generate::{GenFile, Knobs, Preset, Workspace, generate};
 use oxabl_daemon::SessionHost;
-use oxabl_daemon::methods::reference_graph;
+use oxabl_daemon::methods::{limit_pass_jobs, reference_graph};
 use oxabl_daemon::session::canonical_root;
 
 /// The roots that read `h0.i`: a hot include of the `ci` preset.
@@ -54,10 +63,10 @@ fn knobs() -> Knobs {
     }
 }
 
-/// The text of `file` with one more line at the end. A line of code, never a
-/// comment, so the analysis reads it.
-fn edited(text: &str) -> String {
-    format!("{text}\nMESSAGE \"edit\".\n")
+/// The text of a file with one more line at the end. A line of code, never a
+/// comment, so the analysis reads it. `n` makes each text different.
+fn edited(text: &str, n: u64) -> String {
+    format!("{text}\nMESSAGE \"edit {n}\".\n")
 }
 
 /// A program that exactly two other roots run, by the `RUN <path>` text of the
@@ -86,7 +95,6 @@ struct Fixture {
     key: String,
     path: PathBuf,
     original: String,
-    changed: String,
     // Removes the directory when the fixture drops.
     _dir: tempfile::TempDir,
 }
@@ -113,7 +121,6 @@ impl Fixture {
             key,
             path,
             original: file.text.clone(),
-            changed: edited(&file.text),
             _dir: dir,
         };
         // The first pass is the full one, outside the timed part.
@@ -121,13 +128,16 @@ impl Fixture {
         fixture
     }
 
-    fn edit(&self, text: &str) {
+    /// The text of the `n`th edit. It differs from the text of every other edit.
+    fn changed(&self, n: u64) -> String {
+        edited(&self.original, n)
+    }
+
+    fn edit(&self, text: String) {
         self.host.with(|sessions| {
-            sessions.for_root(&self.root).set_buffer(
-                &self.key,
-                text.to_string(),
-                Some(self.path.clone()),
-            );
+            sessions
+                .for_root(&self.root)
+                .set_buffer(&self.key, text, Some(self.path.clone()));
         });
     }
 
@@ -147,6 +157,7 @@ impl Fixture {
 }
 
 fn edit_pass_benchmarks(c: &mut Criterion) {
+    limit_pass_jobs(1);
     let workspace = generate(&knobs());
     assert_eq!(workspace.roots().count(), 1_200);
     let leaf_path = leaf(&workspace).path.clone();
@@ -173,18 +184,17 @@ fn edit_pass_benchmarks(c: &mut Criterion) {
         let fixture = Fixture::new(&workspace, edited_path);
         let tracked = fixture.pass();
         assert!(tracked >= 1_200, "{name}: the pass tracks {tracked} files");
-        let mut toggle = false;
+        let mut edits = 0_u64;
         group.bench_function(name, |bencher| {
             bencher.iter_batched(
                 || {
-                    toggle = !toggle;
-                    // The first edit of a run goes to the changed text, the
-                    // next back to the original, and so on.
-                    if toggle {
-                        &fixture.changed
-                    } else {
-                        &fixture.original
-                    }
+                    // New text for every call of the setup. CodSpeed's bencher
+                    // calls the setup twice before a measured run and uses the
+                    // second text, so two texts that alternate would make the
+                    // measured edit equal to the buffer, and the pass would see
+                    // no change.
+                    edits += 1;
+                    fixture.changed(edits)
                 },
                 |text| {
                     fixture.edit(text);
