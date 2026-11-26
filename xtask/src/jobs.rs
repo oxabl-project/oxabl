@@ -3,6 +3,7 @@
 //! in the workflow; everything else is here.
 
 use crate::Context;
+use crate::changed::{Tests, Umbrella};
 use crate::checks::{self, Outcome};
 use crate::tools::{Need, find_on_path};
 use std::path::PathBuf;
@@ -150,16 +151,29 @@ const GIT: Need = Need::Tool {
     hint: "Install git.",
 };
 
-pub fn all(context: &Context) -> Vec<Job> {
+/// The names of the jobs, in the order of `ci.yml`.
+pub const JOB_NAMES: [&str; 14] = [
+    "check",
+    "test",
+    "remote-cache",
+    "self-update",
+    "install-script",
+    "musl-binary",
+    "fmt",
+    "clippy",
+    "fuzz-targets",
+    "wasm",
+    "schema-drift",
+    "grammar-drift",
+    "vscode-client",
+    "vscode-e2e",
+];
+
+/// Every job. The `test` job runs what `tests` selects.
+pub fn all(context: &Context, tests: &Tests) -> Vec<Job> {
     let jobs = vec![
         check_job(),
-        job(
-            "test",
-            vec![step(
-                "cargo test --workspace",
-                Command::cargo(&["test", "--workspace"]),
-            )],
-        ),
+        test_job(tests),
         remote_cache(context),
         self_update(),
         install_script(),
@@ -196,6 +210,57 @@ pub fn all(context: &Context) -> Vec<Job> {
         "every job has a step"
     );
     jobs
+}
+
+/// The steps of the `test` job. With nothing selected the job has one step that says so: a
+/// job never has no step.
+fn test_job(tests: &Tests) -> Job {
+    let steps = match tests {
+        Tests::Full => vec![step(
+            "cargo test --workspace",
+            Command::cargo(&["test", "--workspace"]),
+        )],
+        Tests::Nothing => vec![step("no test is selected", Command::new("true", &[]))],
+        Tests::Scoped { packages, umbrella } => {
+            let mut steps = Vec::new();
+            if !packages.is_empty() {
+                let mut args = vec!["test".to_owned()];
+                for package in packages {
+                    args.push("-p".into());
+                    args.push(package.clone());
+                }
+                steps.push(step("cargo test (changed crates)", cargo_owned(args)));
+            }
+            match umbrella {
+                Umbrella::None => {}
+                Umbrella::All => steps.push(step(
+                    "cargo test -p oxabl",
+                    Command::cargo(&["test", "-p", "oxabl"]),
+                )),
+                Umbrella::Targets(targets) => {
+                    let mut args: Vec<String> = ["test", "-p", "oxabl"].map(str::to_owned).into();
+                    for target in targets {
+                        args.push("--test".into());
+                        args.push(target.clone());
+                    }
+                    steps.push(step(
+                        "cargo test -p oxabl (selected tests)",
+                        cargo_owned(args),
+                    ));
+                }
+            }
+            assert!(!steps.is_empty(), "a scoped selection has a test");
+            steps
+        }
+    };
+    job("test", steps)
+}
+
+fn cargo_owned(args: Vec<String>) -> Command {
+    assert!(!args.is_empty(), "cargo needs a subcommand");
+    let mut command = Command::cargo(&[]);
+    command.args = args;
+    command
 }
 
 fn check_job() -> Job {
@@ -539,23 +604,6 @@ fn vscode_e2e(context: &Context) -> Job {
 mod tests {
     use super::*;
 
-    const ORDER: [&str; 14] = [
-        "check",
-        "test",
-        "remote-cache",
-        "self-update",
-        "install-script",
-        "musl-binary",
-        "fmt",
-        "clippy",
-        "fuzz-targets",
-        "wasm",
-        "schema-drift",
-        "grammar-drift",
-        "vscode-client",
-        "vscode-e2e",
-    ];
-
     fn context() -> Context {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         Context {
@@ -567,8 +615,11 @@ mod tests {
 
     #[test]
     fn jobs_come_in_the_order_of_the_workflow() {
-        let names: Vec<&str> = all(&context()).iter().map(|j| j.name).collect();
-        assert_eq!(names, ORDER);
+        let names: Vec<&str> = all(&context(), &Tests::Full)
+            .iter()
+            .map(|j| j.name)
+            .collect();
+        assert_eq!(names, JOB_NAMES);
     }
 
     /// Each workflow job must run its xtask job, and no other, so that CI cannot drift from here.
@@ -576,7 +627,7 @@ mod tests {
     fn every_workflow_job_calls_its_xtask_job() {
         let workflow = std::fs::read_to_string(context().root.join(".github/workflows/ci.yml"))
             .expect("ci.yml exists");
-        for name in ORDER {
+        for name in JOB_NAMES {
             let header = format!("  {name}:");
             let calls: Vec<&str> = workflow
                 .lines()
@@ -597,6 +648,6 @@ mod tests {
                 "{name}"
             );
         }
-        assert_eq!(workflow.matches("cargo xtask ci").count(), ORDER.len());
+        assert_eq!(workflow.matches("cargo xtask ci").count(), JOB_NAMES.len());
     }
 }
