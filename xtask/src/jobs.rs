@@ -741,6 +741,12 @@ mod tests {
             workflow.contains("cancel-in-progress: ${{ github.event_name == 'pull_request' }}"),
             "a master or merge group run is never cancelled"
         );
+        assert!(
+            workflow.contains(
+                "group: ci-${{ github.workflow }}-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}"
+            ),
+            "a pull request's group is its number: a merged pull request's `closed` run has the base branch as its ref"
+        );
     }
 
     #[test]
