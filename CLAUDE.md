@@ -154,9 +154,9 @@ The lexer tokenizes ABL source code into a stream of tokens. Key components:
 
 - **Token**: Contains `kind` (token type), `start`/`end` byte offsets, and `value` (for literals)
 - **Kind**: Enum of all token types (operators, keywords, identifiers, literals)
-- **TokenValue**: Enum for literal values (Integer, BigInt, Decimal, String, Boolean, None)
+- **TokenValue**: Enum for literal values (Integer, BigInt, Decimal, Text, String, Boolean, None). A string literal, a date constant and an include reference give `Text { start, end }`, the place of their text in the source; `Token::text(source)` reads it. Only an identifier with a backslash escape has `String`, its normalized spelling
 
-The lexer uses `string_cache` for interned strings (atoms). Atoms are generated at build time via `build.rs` which includes all ABL keywords.
+The lexer uses `string_cache` for interned strings (atoms). Atoms are generated at build time via `build.rs` which includes all ABL keywords. Do not intern token text in the lexer: the global atom set is shared by all threads, and each new atom walks one of its 4,096 lists under a lock, so on a large workspace and many threads it costs more than the lex. `crates/oxabl_lexer/tests/text_values.rs` fails when a lex allocates for each literal.
 
 ABL-specific features handled:
 - Case-insensitive keywords with abbreviations (e.g., `def`, `defi`, `define` all map to `Kind::Define`)

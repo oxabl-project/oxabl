@@ -478,3 +478,20 @@ fn every_module_is_reachable() {
     let _tf = oxabl::try_format_source;
     let _ff: Option<oxabl::formatter::FormatFailure> = None;
 }
+
+/// `Token::text` reads the text of a string literal, a date and an include
+/// reference from the source, through the umbrella's `lexer` re-export.
+#[test]
+fn lexer_token_text_reads_literals_from_the_source() {
+    let source = "x = \"hi there\". d = 02/01/2026. {inc.i}\n";
+    let tokens = oxabl::lexer::tokenize(source);
+    let text_of = |kind: oxabl::lexer::Kind| {
+        tokens
+            .iter()
+            .find(|t| t.kind == kind)
+            .and_then(|t| t.text(source))
+    };
+    assert_eq!(text_of(oxabl::lexer::Kind::StringLiteral), Some("hi there"));
+    assert_eq!(text_of(oxabl::lexer::Kind::DateLiteral), Some("02/01/2026"));
+    assert!(text_of(oxabl::lexer::Kind::IncludeReference).is_some_and(|t| t.contains("inc.i")));
+}

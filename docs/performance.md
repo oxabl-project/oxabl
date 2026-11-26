@@ -126,8 +126,8 @@ compares the allocations and the bytes with a budget:
 
 | Stage | Allocations | Bytes |
 | --- | --- | --- |
-| lex | 169 | 1,245,667 |
-| parse | 11,877 | 3,943,096 |
+| lex | 1 | 1,241,136 |
+| parse | 11,877 | 3,942,288 |
 
 The counts are the same on each run of one toolchain. The test fails when a
 number is more than 0.5% above its budget. It also fails when a number is more
@@ -591,3 +591,38 @@ in-process benches do not report findings, so only `cli.sh` shows it.
 in `SourceMap::new`, which `LabelPlaces::resolver` builds for each include
 finding when it is reported. `check/workspace_include_findings` runs the fold
 of the findings, not their report, so it does not show this cost.
+
+### The global atom set on many threads
+
+`string_cache` keeps every atom of more than seven bytes in one global set of
+4,096 lists. A new atom (`OxablAtom::from`) takes the lock of one list and
+walks it, and each entry is a cache miss. The atoms of the index stay alive
+for the whole run, so on a large workspace each list holds many entries, and
+the walk costs much more on 16 threads than one thread shows. Measure it at
+the default `-j` with `perf`; `task-clock:u` works where the hardware events
+do not:
+
+```sh
+perf record -e task-clock:u -F 199 -o check.data oxabl check src
+perf report -i check.data --no-children --sort symbol --stdio | grep dynamic_set
+```
+
+The lexer interned the text of each string literal, date constant and include
+reference, and each root lexed its includes again. Now the token keeps the
+place of the text (`TokenValue::Text`). Release build, 16 threads, three runs
+of `oxabl check` each:
+
+| Workspace | `Set::insert` (perf, self) | User CPU | Wall |
+| --- | --- | --- | --- |
+| a large real-world codebase kept outside the repository | 3.03% to 1.94% | −2.0% | −1.5% |
+| generated `erp` | 1.54% to 1.35% | 261.4 s to 259.8 s | 19.5 s to 19.4 s |
+
+With `-j 1` under callgrind: `check big.p` 1,196 M to 1,176 M instructions (the older tables above predate
+several changes and give other numbers for the same command),
+`check lsp_bench.p` 94.7 M to 93.6 M, `check -j 1 src` of `ci` about 1%
+fewer (1,166 M to 1,158 M in one build pair), `conformance -j 1 big.p` 160.0 M to 158.9 M.
+
+The rest of `Set::insert` comes from the names that the semantic passes fold
+and intern (`fold_atom`), and from `IndexName::new`. A cache of atoms in front
+of the set, for each thread or for the process, did not lower the CPU: its own
+lookup is a cache miss too, and the atoms it keeps make the lists longer.
