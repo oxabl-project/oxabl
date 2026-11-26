@@ -537,6 +537,25 @@ the CodSpeed CPU build, has it on. Its cost is up to three atomic additions
 for each lexer, which is very small, and a build of the shipped binary does
 not have it.
 
+The test-only feature `test-counters` of `oxabl_parser` counts the calls of
+`parse_program` and the bytes that their tokens cover. A test build of `oxabl`
+prints the bytes lexed and parsed when `OXABL_TEST_LEX_PARSE` is set
+(`crates/oxabl/tests/check_lex_parse_counts.rs`). As for the lexer, Cargo
+unifies the feature of the dev-dependency over a workspace build, so the
+CodSpeed CPU build has it on. Its cost is two relaxed atomic additions for each
+`parse_program`, and a build of the shipped binary does not have it.
+`docs/design/shared-unit.md` lists what each stage of `check` lexes and parses,
+and the plan to do it once for each text.
+
+The first slice of that plan (one `SharedFacts` for the indexes of the threads
+of a walk, no lex of a format candidate that is the source, and no second lex
+of the expanded text in the resolve pass), from commit `89ab4c3` on one
+machine: `check lsp_bench.p` goes from 94.9 M to 80.2 M instructions, `check
+big.p` from 1,191.6 M to 1,130.3 M, and `check -j 1 src` on the `ci` workspace
+from 1,171.4 M to 1,077.9 M. On a real workspace of about 10,400 roots (16
+threads), the CPU time goes from 183–186 s to 168–171 s and the peak RSS from
+886–932 MB to 701–719 MB.
+
 On the `erp` workspace (10,386 roots, 12 cores, a machine with other work on
 it), the release binary of `oxabl check src` took 22.4 s and 237 CPU-seconds
 (22.8 ms for each root), with a peak RSS of 719 MB. The system-allocator binary

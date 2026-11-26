@@ -175,6 +175,11 @@ pub(crate) fn preserves_with_input_tokens(
     input_tokens: &[Token],
     candidate: &str,
 ) -> bool {
+    // The same text lexes to the same tokens, so it preserves itself: a file
+    // that is already formatted is not lexed again.
+    if candidate == input {
+        return true;
+    }
     let candidate_tokens = tokenize(candidate);
     compare(
         &stream_from(input, input_tokens),

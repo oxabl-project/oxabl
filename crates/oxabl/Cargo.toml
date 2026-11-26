@@ -153,6 +153,11 @@ oxabl_parser = { path = "../oxabl_parser", version = "5.0.1", features = [
 ] }
 oxabl_schema = { path = "../oxabl_schema", version = "0.6.1" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "3.7.1" }
+# A test build of the binary counts what it lexes and parses
+# (`OXABL_TEST_LEX_PARSE`, `tests/check_lex_parse_counts.rs`).
+oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.5", features = [
+    "test-counters",
+] }
 # The shared cross-client parity fixture table (R19). A dev-dependency feature
 # only: the shipped binary and the library both take `oxabl_pipeline` without it.
 oxabl_pipeline = { path = "../oxabl_pipeline", version = "4.1.0", features = [

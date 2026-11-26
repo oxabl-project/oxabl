@@ -97,9 +97,10 @@ use oxabl_index::{
     BatchIndex, BranchKind, ClosureExpansions, ClosureReference, ClosureTarget, ConditionalBranch,
     ConditionalInclude, ConditionalIncludeName, ConditionalReference, DeferredProducers,
     DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput,
-    NestedUnresolvedIncludeInput, ReferenceSyntax, SharedProducers, UnreadableIncludeInput,
-    UnresolvedIncludeInput, WrittenReference, build_edge_set, conditional_include_closure_cached,
-    conditional_include_closure_with, written_imports, written_references,
+    NestedUnresolvedIncludeInput, ReferenceSyntax, SharedFacts, SharedProducers,
+    UnreadableIncludeInput, UnresolvedIncludeInput, WrittenReference, build_edge_set,
+    conditional_include_closure_cached, conditional_include_closure_with, written_imports,
+    written_references,
 };
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
@@ -922,6 +923,28 @@ impl<'a> LintPipeline<'a> {
             }
             // As `with_known_files`: only the run handle owns an index to change,
             // and a supplied index owns its own file set.
+            RunIndex::Shared(index) => RunIndex::Shared(index),
+            RunIndex::External(index) => RunIndex::External(index),
+        };
+        self
+    }
+
+    /// Index each file once for the whole run, in `facts`, which the handles of
+    /// the run's other threads share, instead of once in each thread's index.
+    ///
+    /// A client that analyses on several threads has one run handle per thread,
+    /// each with an index of its own. Give each the same `facts`: a file that
+    /// many files reach is then read, parsed and declared once, and the
+    /// answers do not change ([`SharedFacts`]). Build `facts` from the same
+    /// configuration and file system as the handles.
+    ///
+    /// Apply to the **run** handle, before any lookup.
+    #[must_use]
+    pub fn with_shared_facts(mut self, facts: &'a SharedFacts) -> Self {
+        self.index = match self.index {
+            RunIndex::Owned(index) => RunIndex::Owned(Box::new((*index).with_shared_facts(facts))),
+            // As `with_shared_producers`: only the run handle owns an index to
+            // change, and a supplied index keeps its own facts.
             RunIndex::Shared(index) => RunIndex::Shared(index),
             RunIndex::External(index) => RunIndex::External(index),
         };

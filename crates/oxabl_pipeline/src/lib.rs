@@ -159,7 +159,7 @@ pub use oxabl_index::{
     BranchKind, ClosureReference, Completeness, ConditionalBranch, ConditionalInclude,
     ConditionalIncludeClosure, ConditionalReference, DeferredProducers, DegradedReason,
     DependencyEdge, DependencyEdges, EdgeKind, EdgeTarget, IncludeContext, ReferenceSyntax,
-    SharedProducers, UnresolvedReference, definitions_in,
+    SharedFacts, SharedProducers, UnresolvedReference, definitions_in,
 };
 
 use oxabl_common::FileId;

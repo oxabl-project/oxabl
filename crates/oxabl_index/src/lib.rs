@@ -68,7 +68,7 @@ mod producers;
 pub mod search;
 mod written;
 
-pub use batch::{BatchIndex, ExcludingFile, SearchingFrom};
+pub use batch::{BatchIndex, ExcludingFile, SearchingFrom, SharedFacts};
 pub use closure::{
     ClosureExpansions, ClosureTarget, ConditionalIncludeName, conditional_include_closure,
     conditional_include_closure_cached, conditional_include_closure_with,
@@ -253,9 +253,43 @@ pub fn index_file_with_includes(
     source: &str,
     includes: &IncludeContext<'_>,
 ) -> (FileFacts, Vec<PathBuf>) {
+    let (facts, _, read) = index_file_and_signatures(file, source, includes, false);
+    (facts, read)
+}
+
+/// [`index_file_at`], and the parameter lists of the file when the parse that
+/// the facts come from settles them: the text as written needs no expansion
+/// and shows the lists of its main block and of every internal procedure whole.
+/// That is what [`program_signatures_at`] answers for such a file, without a
+/// second read and parse. The lists are `None` when the file needs more than
+/// this one parse; ask [`program_signatures_at`] then.
+pub(crate) fn index_file_and_signatures_at(
+    file: IndexedFileId,
+    path: &Path,
+    source: &str,
+    includes: &IncludeContext<'_>,
+) -> (FileFacts, Option<ProgramSignatures>, Vec<PathBuf>) {
+    let paths = includes.paths_for(path, source);
+    let includes = IncludeContext {
+        include_paths: &paths,
+        root_relative_paths: &[],
+        ..*includes
+    };
+    index_file_and_signatures(file, source, &includes, true)
+}
+
+fn index_file_and_signatures(
+    file: IndexedFileId,
+    source: &str,
+    includes: &IncludeContext<'_>,
+    signatures: bool,
+) -> (FileFacts, Option<ProgramSignatures>, Vec<PathBuf>) {
     let written = Written::parse(source);
     if let Some(written) = written.as_ref().filter(|w| !w.needs_expansion()) {
-        return (written.facts(file, None), Vec::new());
+        let shown = signatures
+            .then(|| ProgramSignatures::of(&written.program.statements))
+            .filter(|s| s.main.is_some() && s.procedures.iter().all(|(_, list)| list.is_some()));
+        return (written.facts(file, None), shown, Vec::new());
     }
     // The facts of the text as written are read only when the expansion does
     // not give them.
@@ -265,7 +299,7 @@ pub fn index_file_with_includes(
             .map_or_else(|| FileFacts::unparseable(file), |w| w.facts(file, values))
     };
     let Some(expansion) = expand(source, includes) else {
-        return (as_written(None), Vec::new());
+        return (as_written(None), None, Vec::new());
     };
     let read = included_paths(&expansion.processed);
     let expanded = expansion
@@ -274,14 +308,15 @@ pub fn index_file_with_includes(
         .and_then(Written::parse)
         .map(|expanded| expanded.facts(file, None));
     match expanded {
-        Some(expanded) => (expanded, read),
+        Some(expanded) => (expanded, None, read),
         // The expansion settled and its text does not parse: the values of
         // the references are known, so the text as written can still be whole.
         None if expansion.text.is_some() => (
             as_written(Some(&KnownValues::of(&expansion.processed))),
+            None,
             read,
         ),
-        None => (as_written(None), read),
+        None => (as_written(None), None, read),
     }
 }
 

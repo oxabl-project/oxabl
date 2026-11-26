@@ -100,6 +100,15 @@ impl<T> Observed<T> {
         &self.value
     }
 
+    /// Another value that carries the same observations, for a second result
+    /// of the one computation.
+    pub fn with_value<U>(&self, value: U) -> Observed<U> {
+        Observed {
+            value,
+            observed: self.observed.clone(),
+        }
+    }
+
     /// The value, without what it observed.
     pub fn value(&self) -> &T {
         &self.value

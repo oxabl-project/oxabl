@@ -5488,7 +5488,7 @@ impl<'a> ResolveWalker<'a> {
     /// that introduces a query, frame, buffer, temp-table or widget.
     fn follows_widget_keyword(&mut self, name: &OxablAtom) -> bool {
         if self.cross_file().is_none_or(|cf| cf.widget_names.is_none()) {
-            let names = names_after_widget_keywords(self.ctx.source);
+            let names = names_after_widget_keywords(self.ctx.source, self.ctx.tokens);
             self.cross_file_mut().widget_names = Some(names);
         }
         self.cross_file()
@@ -7723,10 +7723,24 @@ fn could_be_builtin_type(name: &str) -> bool {
 
 /// The folded names the source writes straight after a keyword that introduces a
 /// query, frame, buffer, temp-table, dataset or widget. Scanned from the tokens,
-/// so a keyword inside a comment or a string does not count.
-fn names_after_widget_keywords(source: &str) -> FxHashSet<OxablAtom> {
+/// so a keyword inside a comment or a string does not count. `tokens` are the
+/// tokens of the context; the source is lexed only when they are not the
+/// tokens of `source`.
+fn names_after_widget_keywords(
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+) -> FxHashSet<OxablAtom> {
     use oxabl_lexer::Kind;
-    let tokens = oxabl_lexer::tokenize(source);
+    let lexed;
+    let tokens = if tokens
+        .last()
+        .is_some_and(|t| t.kind == Kind::Eof && t.end == source.len())
+    {
+        tokens
+    } else {
+        lexed = oxabl_lexer::tokenize(source);
+        &lexed
+    };
     let mut names = FxHashSet::default();
     for pair in tokens.windows(2) {
         let [keyword, name] = pair else { continue };
