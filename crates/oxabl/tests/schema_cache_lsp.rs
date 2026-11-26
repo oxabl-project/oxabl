@@ -33,8 +33,19 @@ fn entries(directory: &Path) -> Vec<PathBuf> {
 /// The codes of the diagnostics the server publishes for `program`, in a new
 /// session whose schema cache is `cache`.
 fn diagnostics(root: &Path, cache: &Path, program: &Path) -> Vec<String> {
+    diagnostics_with(root, cache, program, &[])
+}
+
+/// [`diagnostics`] with `env` set for `oxabl lsp`.
+fn diagnostics_with(
+    root: &Path,
+    cache: &Path,
+    program: &Path,
+    env: &[(&str, &str)],
+) -> Vec<String> {
     let launch = Launch {
         schema_cache: Some(cache),
+        env,
         ..Launch::default()
     };
     let mut session = Session::launch_with(root, serde_json::json!({}), launch, |_| {})
@@ -62,14 +73,20 @@ fn diagnostics(root: &Path, cache: &Path, program: &Path) -> Vec<String> {
     codes
 }
 
-#[test]
-fn the_editor_writes_and_reads_the_schema_cache() {
+/// A workspace with the schema and the program, and the program's path.
+fn workspace() -> (tempfile::TempDir, PathBuf) {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join("db")).unwrap();
     std::fs::write(root.path().join("oxabl.toml"), CONFIG).unwrap();
     std::fs::write(root.path().join("db/shop.df"), SCHEMA).unwrap();
     let program = root.path().join("t.p");
     std::fs::write(&program, PROGRAM).unwrap();
+    (root, program)
+}
+
+#[test]
+fn the_editor_writes_and_reads_the_schema_cache() {
+    let (root, program) = workspace();
     let cache = tempfile::tempdir().unwrap();
     let cache = cache.path().join("schema");
 
@@ -89,5 +106,25 @@ fn the_editor_writes_and_reads_the_schema_cache() {
         std::fs::read(&written[0]).unwrap(),
         bytes,
         "the second session replaced the entry"
+    );
+}
+
+/// With `CI` set and no `OXABL_CACHE_MODE`, the mode is `read-only` and the
+/// cache is off: the editor gives the same answer and writes no entry.
+#[test]
+fn on_a_ci_runner_the_editor_writes_no_schema_cache() {
+    let (root, program) = workspace();
+    let cache = tempfile::tempdir().unwrap();
+    let cache = cache.path().join("schema");
+
+    let on_ci = diagnostics_with(root.path(), &cache, &program, &[("CI", "true")]);
+    assert!(
+        on_ci.iter().any(|code| code == "LINT0003"),
+        "the unknown field must be a finding: {on_ci:?}"
+    );
+    assert_eq!(
+        entries(&cache),
+        Vec::<PathBuf>::new(),
+        "the editor wrote an entry on a CI runner"
     );
 }
