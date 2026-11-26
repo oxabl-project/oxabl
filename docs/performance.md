@@ -23,6 +23,7 @@ reads the disk, but outside the measured part.
 | `check/workspace` | the 300 roots of the generated `ci` workspace: no finding, no drift | `oxabl check <dir>`: one pipeline for the walk |
 | `check/workspace_include_findings` | the same, with 100 unused variables in each hot include (42,700 findings in includes, about 140 for each root) | `oxabl check <dir>` where shared includes have findings: the fold of include findings (`IncludeRows::add` in `oxabl_analyze` is 11.9% of the bench, the hash of its key 7.6%) |
 | `format/file_end_to_end` | `lsp_bench.p` | `oxabl format`, Format Document: `FormatPipeline::format` from the text |
+| `format/synthetic_mixed`, `format/synthetic_mixed_with_tokens` | a synthetic program of 40 repeated units | the formatter engine on a parsed tree: `format()` lexes the source itself, `format_with_tokens()` takes the tokens of the caller, as the pipeline does. The lex and parse are outside the timed loop |
 | `navigation/definitions` | `lsp_bench.p` | one go to definition request: expansion, analysis, query |
 | `navigation/links` | the `ci` root with the most includes | one document links request |
 | `workspace_symbols/query` | the `ci` workspace, on disk | one `oxabl/symbolSearch` request after the workspace pass |
@@ -236,12 +237,13 @@ less work, which look like a gain.
 - `tokenize` and `parse_program` show the share of the run and the calls, as
   "N full + M small". A call is full when its caller pays, for each call, at
   least a tenth of what the most expensive caller pays: a lex or parse of a
-  whole file. The formatter also lexes short pieces of text many times
-  (`blanks::normalize`); these are the small calls. So on one file, "5 full"
-  means that the command lexes the file five times. In a walk, the count is
-  not a number for each root: the index lexes and parses the includes too
-  (`index_parsed`), so read the callers. `callgrind_summary.py` without `--row` names each full
-  caller with its calls and its share.
+  whole file. Some passes lex short pieces of text many times (the resolve
+  pass, and the formatter's `apply_end_type`); these are the small calls. So
+  on one file, "5 full" means that the command lexes the file five times. In a
+  walk, the count is not a number for each root: the index lexes and parses
+  the includes too (`index_parsed`), so read the callers.
+  `callgrind_summary.py` without `--row` names each full caller with its calls
+  and its share.
 - When the C library has no symbols, `memcpy` shows as an address. Its cost is
   then in the column `unnamed libc self`.
 
@@ -309,6 +311,23 @@ are rough:
 | `format --check src` (`-j 1` under callgrind) | 0.01 s | 30 MB | 4.0 MB | 160,963 | 362 M | 47.7% (900 full) | 16.4% (300 full) |
 | `conformance -j 1 big.p` | 0.04 s | 53 MB | 41.1 MB | 74,854 | 160 M | 43.3% (1 full) | 46.2% (1 full) |
 | `explain lsp_bench.p` | 0.01 s | 18 MB | 7.0 MB | 25,059 | 46.4 M | 17.0% (1 full) | 20.0% (1 full) |
+
+The rows above are from before the formatter took the tokens of its caller
+(`format_with_tokens`), and before `check` built each file's line table once.
+For this change alone, from commit `2285153` on the same machine and
+toolchain: `check lsp_bench.p` goes from 103.6 M to 94.5 M instructions
+(`tokenize`: 4 full calls, 0 small), and `format --check src` goes from 355.8 M
+to 288.6 M (600 full calls instead of 900). The warm run of `check/file` makes
+44,318 allocations (27.2 MB requested, peak 9.7 MB) and `format/file_end_to_end`
+makes 19,710 (14.9 MB, peak 8.9 MB); the memory table above has the numbers
+from before.
+
+The test-only feature `test-counters` of `oxabl_lexer` counts the lexers and
+the calls of `tokenize`. Cargo unifies a feature of a dev-dependency over a
+workspace build, so a workspace-wide build, such as `cargo test --workspace` or
+the CodSpeed CPU build, has it on. Its cost is up to three atomic additions
+for each lexer, which is very small, and a build of the shipped binary does
+not have it.
 
 On the `erp` workspace (7,000 roots, 16 cores, a loaded machine, before the
 generated text was made format-clean), `oxabl check src` took 23.3 s with a
