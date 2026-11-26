@@ -360,6 +360,7 @@ the work.
 | --- | --- | --- | --- |
 | line tables built (`SourceMap::built`) | `oxabl_common`, feature `test-panics` | `OXABL_TEST_SOURCE_MAPS` is set | `crates/oxabl/tests/check_source_maps.rs` |
 | calls of `parse_program` (`parse_count`) | `oxabl_parser`, feature `test-counters` | `OXABL_TEST_PARSES` is set | `crates/oxabl/tests/check_producer_prefilter.rs` |
+| files each workspace pass of the daemon analyses | `oxabl_daemon`, through `oxabl_common`'s feature `test-panics` | `OXABL_TEST_PASS_COUNTS` is set | `crates/oxabl/tests/incremental_pass_lsp.rs` |
 
 `check_producer_prefilter.rs` runs `oxabl check` over 3 and 6 roots of one
 shape and reads the parses of one more root. A class root costs 1 parse (the
@@ -369,6 +370,39 @@ The producer scan reads a class or interface header from the tokens
 (`oxabl_index::expansion_scan`). It cannot read more from them: an include, a
 reference or a directive can mend a text that does not parse as written, and
 the scan must then send the file to its expansion.
+
+## The daemon after an edit
+
+`scripts/bench/lsp-edit-pass.py` measures find references through `oxabl lsp`
+on the `erp` workspace: the first request (with the cold workspace pass), a
+second one, the first one after a one-character edit of another open file, and
+one more. For each it prints the wall time, the CPU seconds of the daemon and
+its peak RSS. Give it a short runtime directory of its own: the daemon socket
+is in it.
+
+```sh
+scripts/bench/gen-workspace --preset erp target/ws-erp
+cargo build --release -p oxabl
+python3 -I scripts/bench/lsp-edit-pass.py target/release/oxabl target/ws-erp ~/rt-edit
+```
+
+By default the request asks for the references of the class `cls.pk3.C120`
+(15 places), and the edit adds a character at the end of
+`src/app/m47/p4716.p`, a program that two files run. The fourth argument names
+another file to edit: `src/app/m0/p1.p` is a program that 570 files read
+(through the includes that run it). Release build, 12 threads:
+
+| Request | Before (a full pass after each edit) | After (`docs/design/workspace-pass.md`) |
+| --- | --- | --- |
+| First request (cold pass) | 20.8 s, 226 CPU s, 953 MiB | 21.3 s, 227 CPU s, 915 MiB |
+| Second request, no edit | 0.31 s, 2.3 CPU s | 0.30 s, 2.3 CPU s |
+| First request after an edit of `p4716.p` (the pass analyses 3 files) | 21.4 s, 229 CPU s, 1,125 MiB | 1.35 s, 3.4 CPU s, 915 MiB |
+| First request after an edit of `p1.p` (the pass analyses 571 files) | 20.7 s, 230 CPU s, 1,144 MiB | 3.9 s, 34 CPU s, 1,227 MiB |
+
+The pass of the `erp` workspace analyses 10,386 files. The parts it keeps for
+the next pass take about 60 MB (`oxabl-test: workspace pass ... kept`). While
+a pass that analysed files joins its parts, the daemon holds two sets of
+parts, so the peak after the edit of `p1.p` is higher than before.
 
 ## CodSpeed
 

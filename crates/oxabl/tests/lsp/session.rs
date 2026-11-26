@@ -122,6 +122,7 @@ impl Session {
             .env("XDG_RUNTIME_DIR", runtime)
             .env("XDG_CACHE_HOME", runtime)
             .env("HOME", runtime)
+            .envs(launch.env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr_target)
@@ -356,6 +357,8 @@ pub struct Launch<'a> {
     /// Give stderr a pipe that the session holds and does not read, in place of a
     /// file. [`Session::stderr`] is then empty.
     pub stderr_pipe: bool,
+    /// Variables to add to the environment of `oxabl lsp` and its daemon.
+    pub env: &'a [(&'a str, &'a str)],
 }
 
 fn signal(pid: u32, signal: i32) -> i32 {
