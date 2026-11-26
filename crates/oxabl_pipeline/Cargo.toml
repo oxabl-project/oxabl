@@ -106,3 +106,7 @@ harness = false
 [[bench]]
 name = "signature_bench"
 harness = false
+
+[[bench]]
+name = "references_bench"
+harness = false
