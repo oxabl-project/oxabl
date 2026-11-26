@@ -199,6 +199,17 @@ Generates:
 - `OXABL_MUSL_CACHE` (default `target/xtask-ci/musl-cache`), `OXABL_CACHE_BIN_DIR` (default `~/oxabl-cache-bin`) and `OXABL_E2E_RUNTIME` (a short path; default `$TMPDIR/oxrt`) set the directories of `musl-binary`, `remote-cache` and `vscode-e2e`. Set `CARGO_BUILD_JOBS` to limit the build jobs on a shared machine. `--verbose` also streams the output of each step.
 - `vscode-e2e` takes about 10 minutes. The whole run takes about 30 minutes: another reason to leave it to the merge queue.
 
+### The two tiers
+
+`ci.yml` has two tiers.
+
+- **A pull request runs the fast tier.** The first job, `changes`, runs `cargo xtask ci --changed --list` and gives the selected job names as its output. Each other job runs on a pull request only when it is in that list. The jobs run the same code as a local run: the `test` job runs `cargo xtask ci --changed test`, which tests only the changed area. A pull request with the label `full-ci` runs every job. The release pull request (head branch `release-please--*`) runs the lint jobs only (`--lint-only`).
+- **The merge queue runs the full suite.** The `merge_group` event runs every job, with the full `cargo test --workspace`, on the combined result. A push to master runs every job too.
+- **`CI` is the one check that a branch rule should require.** It is the last job, `needs` every other job and runs with `if: always()`. It passes only when `changes` succeeded, every selected job succeeded and no job failed or was cancelled. On `merge_group` and on a push, a skipped job is a failure: all jobs must run. A skipped job on a pull request is a pass only when `changes` did not select it. A test in `xtask` fails when a job lacks `needs: changes` or its selection condition, when `CI` does not wait for a job, and when `ci.yml` has a call of xtask that no test accounts for.
+- **A closed pull request cancels its runs.** `closed` is one of the `pull_request` types and no job runs on it, so the run of a merged or closed pull request ends. A merge group is never cancelled.
+- **CodSpeed runs on pushes to master and on `workflow_dispatch`, not on a pull request.** Its concurrency group is one for each commit and never cancels, so a master run is always the baseline of the next one. A regression shows on the master run after the merge.
+- **The musl cache** (`oxabl-musl`) is restored by every run and saved by a push to master only: `actions/cache/restore` and `actions/cache/save`. A pull request run never writes a 1 GB entry.
+
 Every job in `ci.yml` and `codspeed.yml` has a `timeout-minutes` of about three times its usual run time, so a hung step (such as a toolchain setup that never returns) fails in minutes, not after GitHub's six-hour default. Raise a job's limit when it grows; do not remove it.
 
 Every workflow sets up Rust with the local action `.github/actions/setup-rust`: the runner's own `rustup` installs the toolchain, `actions/cache` restores the cargo registry, and `cargo install --locked` builds the cargo binaries a job needs, each pinned as `name@version` and cached after the first build. Each network call in it has its own time limit, since a composite step takes no `timeout-minutes`. It calls no GitHub API and uses no third-party action; `moonrepo/setup-rust`, which it replaced, hung for the whole job timeout when `cargo-binstall` met GitHub's API rate limit. The action saves caches on `master` only, which every branch and pull request can read; a pull request only restores. Only the `Check` job saves the registry (`save-registry: true`), after `cargo fetch` of the workspace and the fuzz crate, so the entry holds every dependency; every other job only restores it. Raise a pinned binary's version in the workflow that names it. Target directories are not cached: one is several GB, and a set of them passes the repository's cache limit and evicts itself. The `Check` job fails when a workflow or local action uses an action outside its allowlist (first-party `actions/*`, local actions, and the few it names): add an action there only on purpose.
@@ -220,7 +231,7 @@ The release workflow's `binary` job builds the static Linux binary with `--featu
 
 ## Benchmarks
 
-Benchmarks use `codspeed-criterion-compat` (Criterion with CodSpeed integration). CodSpeed CI runs on every push/PR via `.github/workflows/codspeed.yml` and auto-discovers all `[[bench]]` targets.
+Benchmarks use `codspeed-criterion-compat` (Criterion with CodSpeed integration). CodSpeed CI runs on every push to master and on request via `.github/workflows/codspeed.yml` (not on a pull request) and auto-discovers all `[[bench]]` targets.
 
 ```bash
 # Run benchmarks for a specific crate

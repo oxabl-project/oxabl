@@ -622,32 +622,128 @@ mod tests {
         assert_eq!(names, JOB_NAMES);
     }
 
+    fn workflow(name: &str) -> String {
+        std::fs::read_to_string(context().root.join(format!(".github/workflows/{name}")))
+            .expect("the workflow exists")
+    }
+
+    /// The lines of one job of a workflow: from its header to the next job.
+    fn job_block<'a>(workflow: &'a str, name: &str) -> Vec<&'a str> {
+        let header = format!("  {name}:");
+        let block: Vec<&str> = workflow
+            .lines()
+            .skip_while(|line| *line != header)
+            .skip(1)
+            .take_while(|line| !line.starts_with("  ") || line.starts_with("   "))
+            .collect();
+        assert!(!block.is_empty(), "job {name} is in the workflow");
+        block
+    }
+
+    /// A line that runs xtask: a comment does not.
+    fn is_call(line: &str) -> bool {
+        line.contains("cargo xtask ci") && !line.trim_start().starts_with('#')
+    }
+
+    fn xtask_calls<'a>(block: &[&'a str]) -> Vec<&'a str> {
+        block.iter().copied().filter(|line| is_call(line)).collect()
+    }
+
     /// Each workflow job must run its xtask job, and no other, so that CI cannot drift from here.
+    /// The `test` job has two calls: the scoped one of a pull request and the full one.
     #[test]
     fn every_workflow_job_calls_its_xtask_job() {
-        let workflow = std::fs::read_to_string(context().root.join(".github/workflows/ci.yml"))
-            .expect("ci.yml exists");
+        let workflow = workflow("ci.yml");
+        let mut counted = 0;
         for name in JOB_NAMES {
-            let header = format!("  {name}:");
-            let calls: Vec<&str> = workflow
-                .lines()
-                .skip_while(|line| *line != header)
-                .skip(1)
-                .take_while(|line| !line.starts_with("  ") || line.starts_with("   "))
-                .filter(|line| line.trim_start().starts_with("- run: cargo xtask ci"))
-                .collect();
-            assert_eq!(
-                calls.len(),
-                1,
-                "job {name} must call cargo xtask ci once: {calls:?}"
+            let calls = xtask_calls(&job_block(&workflow, name));
+            let expected = if name == "test" { 2 } else { 1 };
+            assert_eq!(calls.len(), expected, "job {name}: {calls:?}");
+            for call in &calls {
+                assert!(
+                    call.trim_end().ends_with(&format!("cargo xtask ci {name}"))
+                        || call
+                            .trim_end()
+                            .ends_with(&format!("\"origin/$BASE\" {name}")),
+                    "{name}: {call}"
+                );
+            }
+            counted += calls.len();
+        }
+        // The `changes` job only lists jobs.
+        let selection = xtask_calls(&job_block(&workflow, "changes"));
+        assert!(!selection.is_empty());
+        assert!(
+            selection.iter().all(|call| call.contains("--list")),
+            "{selection:?}"
+        );
+        counted += selection.len();
+        assert_eq!(workflow.lines().filter(|l| is_call(l)).count(), counted);
+    }
+
+    /// A pull request runs a job only when `changes` selected it, and no job runs on `closed`.
+    #[test]
+    fn every_job_runs_only_when_selected_and_never_on_close() {
+        let workflow = workflow("ci.yml");
+        for name in JOB_NAMES {
+            let block = job_block(&workflow, name).join("\n");
+            assert!(block.contains("needs: changes"), "{name} needs changes");
+            assert!(
+                block.contains("github.event.action != 'closed'"),
+                "{name} skips a closed event"
             );
             assert!(
-                calls[0]
-                    .trim_end()
-                    .ends_with(&format!("cargo xtask ci {name}")),
-                "{name}"
+                block.contains(&format!(
+                    "github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), '{name}')"
+                )),
+                "{name} runs on a pull request only when selected, and always elsewhere"
             );
         }
-        assert_eq!(workflow.matches("cargo xtask ci").count(), JOB_NAMES.len());
+        assert!(
+            workflow.contains("\n  merge_group:\n"),
+            "the merge queue runs CI"
+        );
+    }
+
+    /// The required check `CI` waits for every job, and runs even when one fails or is skipped.
+    #[test]
+    fn the_ci_job_waits_for_every_job() {
+        let workflow = workflow("ci.yml");
+        let block = job_block(&workflow, "ci").join("\n");
+        assert!(block.contains("name: CI\n"), "the check is named CI");
+        assert!(block.contains("if: always()"), "CI runs after a failure");
+        let needs = block
+            .lines()
+            .find(|line| line.trim_start().starts_with("needs:"))
+            .expect("CI has needs");
+        for name in JOB_NAMES.iter().copied().chain(["changes"]) {
+            assert!(
+                needs.contains(&format!("{name},")) || needs.contains(&format!("{name}]")),
+                "CI does not wait for {name}"
+            );
+        }
+        let jobs_section = workflow.split("\njobs:\n").nth(1).expect("a jobs section");
+        let ids = jobs_section
+            .lines()
+            .filter(|line| line.starts_with("  ") && !line.starts_with("   "))
+            .filter_map(|line| line.trim().strip_suffix(':'))
+            .filter(|id| !id.starts_with('#'))
+            .count();
+        // The jobs, `changes` and `ci`.
+        assert_eq!(ids, JOB_NAMES.len() + 2);
+    }
+
+    #[test]
+    fn codspeed_runs_on_master_and_on_request_only() {
+        let workflow = workflow("codspeed.yml");
+        assert!(
+            !workflow.contains("pull_request"),
+            "no benchmark on a pull request"
+        );
+        assert!(workflow.contains("workflow_dispatch"));
+        assert!(
+            workflow.contains("cancel-in-progress: false"),
+            "a master run is never cancelled"
+        );
     }
 }

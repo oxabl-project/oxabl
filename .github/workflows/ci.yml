@@ -1,26 +1,72 @@
 name: CI
 
-
-# When master or a PR branch gets a new push, cancel the CI run of the earlier push.
+# A new push to a pull request, to master or to a branch cancels the run of the earlier push. A
+# merge group is never cancelled: its run decides the merge. `closed` starts a run in the same
+# group, which cancels the run of a merged or closed pull request; no job of it runs.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
+# Two tiers. A pull request runs the fast tier: the jobs that `cargo xtask ci --changed --list`
+# selects for its changed paths. The merge queue (`merge_group`) and master run every job. The
+# job `CI` is the one required check.
 on:
   push:
     branches: [master]
-  # Unfiltered: every PR gets the full suite, including stacked PRs whose base
-  # is a feature branch rather than master. GitHub runs this against each PR's
-  # merge ref and re-runs it when the base branch moves, so a chain member is
-  # re-checked as its base rebases.
+  merge_group:
+  # Unfiltered by branch: stacked pull requests, whose base is a feature branch, get the fast
+  # tier too. GitHub runs this against each pull request's merge ref.
   pull_request:
+    types: [opened, synchronize, reopened, closed, labeled, unlabeled]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    name: Changes
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      jobs: ${{ steps.select.outputs.jobs }}
+      scoped: ${{ steps.select.outputs.scoped }}
+    steps:
+      # The merge base of the branch needs the whole history.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+      # Every job on a merge group and on master, and on a pull request with the label
+      # `full-ci`. The release pull request gets the lint jobs only. Any other pull request
+      # gets the jobs of its changed paths (xtask/src/changed.rs).
+      - id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          set -euo pipefail
+          scoped=true
+          if [ "$EVENT" != pull_request ] || [[ " $LABELS " == *" full-ci "* ]]; then
+            scoped=false
+            list=$(cargo xtask ci --list)
+          elif [[ "$HEAD" == release-please--* ]]; then
+            list=$(cargo xtask ci --changed --lint-only --base "origin/$BASE" --list)
+          else
+            list=$(cargo xtask ci --changed --base "origin/$BASE" --list)
+          fi
+          echo "$list"
+          echo "jobs=$(jq -Rsc 'split("\n") | map(select(length > 0))' <<<"$list")" >> "$GITHUB_OUTPUT"
+          echo "scoped=$scoped" >> "$GITHUB_OUTPUT"
+
   check:
     name: Check
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'check'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -35,17 +81,32 @@ jobs:
 
   test:
     name: Test
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'test'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
-      - run: cargo xtask ci test
+      # A pull request runs the tests of its changed area; the merge queue runs them all.
+      - env:
+          SCOPED: ${{ needs.changes.outputs.scoped }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ "$SCOPED" = true ]; then
+            cargo xtask ci --changed --base "origin/$BASE" test
+          else
+            cargo xtask ci test
+          fi
 
   remote-cache:
     name: Remote cache
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'remote-cache'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -64,6 +125,8 @@ jobs:
 
   self-update:
     name: Self-update
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'self-update'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -78,6 +141,8 @@ jobs:
 
   install-script:
     name: Install script
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'install-script'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -89,6 +154,8 @@ jobs:
 
   musl-binary:
     name: Static Linux binary
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'musl-binary'))
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -96,7 +163,10 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
-      - uses: actions/cache@v6
+      # Only a push to master saves the cache: the entry is 1 GB, and a pull request would evict
+      # the others.
+      - uses: actions/cache/restore@v6
+        id: musl-cache
         with:
           path: ${{ runner.temp }}/oxabl-musl
           key: oxabl-musl-${{ hashFiles('Cargo.lock', 'scripts/build-musl.sh') }}
@@ -106,9 +176,16 @@ jobs:
       - run: cargo xtask ci musl-binary
         env:
           OXABL_MUSL_CACHE: ${{ runner.temp }}/oxabl-musl
+      - uses: actions/cache/save@v6
+        if: github.event_name == 'push' && steps.musl-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/oxabl-musl
+          key: oxabl-musl-${{ hashFiles('Cargo.lock', 'scripts/build-musl.sh') }}
 
   fmt:
     name: Format
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'fmt'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -121,6 +198,8 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'clippy'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -133,6 +212,8 @@ jobs:
 
   fuzz-targets:
     name: Fuzz targets
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'fuzz-targets'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -148,6 +229,8 @@ jobs:
 
   wasm:
     name: WebAssembly client
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'wasm'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -160,6 +243,8 @@ jobs:
 
   schema-drift:
     name: Schema drift
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'schema-drift'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -173,6 +258,8 @@ jobs:
 
   grammar-drift:
     name: Grammar drift
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'grammar-drift'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -186,6 +273,8 @@ jobs:
 
   vscode-client:
     name: VS Code client
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'vscode-client'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -211,6 +300,8 @@ jobs:
 
   vscode-e2e:
     name: VS Code end-to-end
+    needs: changes
+    if: github.event.action != 'closed' && (github.event_name != 'pull_request' || contains(fromJSON(needs.changes.outputs.jobs), 'vscode-e2e'))
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -243,3 +334,29 @@ jobs:
           name: vscode-e2e-screenshots
           path: clients/vscode/test/e2e/screenshots/
           if-no-files-found: ignore
+
+  # The one required check. It passes when `changes` succeeded, every selected job succeeded
+  # and no other job failed or was cancelled. A merge group or a push to master must have run
+  # every job: a skipped job is not a pass there.
+  ci:
+    name: CI
+    if: always() && github.event.action != 'closed'
+    needs: [changes, check, test, remote-cache, self-update, install-script, musl-binary, fmt, clippy, fuzz-targets, wasm, schema-drift, grammar-drift, vscode-client, vscode-e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          SELECTED: ${{ needs.changes.outputs.jobs }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          accept='success'
+          if [ "$EVENT" = pull_request ]; then accept='success|skipped'; fi
+          jq -e --arg accept "$accept" --argjson selected "${SELECTED:-[]}" '
+            . as $needs
+            | .changes.result == "success"
+            and ([to_entries[] | .value.result] | all(test("^(" + $accept + ")$")))
+            and all($selected[]; . as $job | $needs[$job].result == "success")
+          ' <<<"$NEEDS" > /dev/null
