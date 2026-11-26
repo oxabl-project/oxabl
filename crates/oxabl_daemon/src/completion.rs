@@ -16,12 +16,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use oxabl_pipeline::completion::{
-    CompletionBase, CompletionList, CompletionRequest, DirListing, complete, keyword_documentation,
-    path_documentation, sorted_listing, symbol_documentation, table_documentation, wants_base,
+    CompletionBase, CompletionList, CompletionRequest, DirListing, Prior, Token, complete,
+    keyword_documentation, lex, path_documentation, sorted_listing, symbol_documentation,
+    table_documentation, wants_base,
 };
 use oxabl_pipeline::{Expansion, LintPipeline, Navigation, NavigationModel};
 use oxabl_workspace::{DirEntry, FileSystem};
@@ -64,6 +65,24 @@ pub struct Base {
     /// The configuration the analysis ran under.
     config: AnalysisConfig,
     generation: (u64, u32),
+    /// The tokens of `text`, lexed once: a request lexes only what differs
+    /// from them. A refresh fills them before it keeps the base.
+    tokens: OnceLock<Vec<Token>>,
+}
+
+impl Base {
+    fn tokens(&self) -> &[Token] {
+        self.tokens.get_or_init(|| lex(&self.text))
+    }
+
+    /// The text and tokens of this base, for a request that reads only what
+    /// differs from them.
+    fn prior(&self) -> Prior<'_> {
+        Prior {
+            text: &self.text,
+            tokens: self.tokens(),
+        }
+    }
 }
 
 /// The newest bases of each document, and the refresh that runs for it.
@@ -317,7 +336,11 @@ pub fn compute_completion(
     let listing: &dyn DirListing = &listing;
     // A position that reads no analysis needs no base: a `.` that ends a
     // statement must not start one.
-    if !wants_base(&request(query, &query.path, listing)) {
+    let newest = bases.newest(&query.key, query.generation);
+    if !wants_base(
+        &request(query, &query.path, listing),
+        newest.as_deref().map(Base::prior),
+    ) {
         return Ok(CompletionAnswer {
             list: complete(&request(query, &query.path, listing), None),
             base: 0,
@@ -346,6 +369,7 @@ pub fn compute_completion(
             text: &base.text,
             fragment,
             stale,
+            tokens: Some(base.tokens()),
         };
         complete(&request(query, &document, listing), Some(&completion))
     })
@@ -413,6 +437,7 @@ fn make_own_base(
         expansion: Arc::new(expansion),
         config: config.clone(),
         generation,
+        tokens: OnceLock::new(),
     })
 }
 
@@ -433,6 +458,7 @@ fn refresh(
             move || {
                 oxabl_common::hold_if_injected(REFRESH_SITE, &text);
                 if let Ok(Some(base)) = oxabl_common::catch_panic(|| make(token)) {
+                    base.tokens();
                     bases.store_refreshed(&key, Arc::new(base));
                 }
                 bases.end_refresh(&key, token);
@@ -570,6 +596,7 @@ fn make_context_base(
         expansion: Arc::new(expansion),
         config: config.clone(),
         generation,
+        tokens: OnceLock::new(),
     })
 }
 

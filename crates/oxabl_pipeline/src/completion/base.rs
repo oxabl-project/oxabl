@@ -77,15 +77,7 @@ pub(crate) fn map(
     let (stale, prefix, suffix) = if old == new {
         (false, new.len(), 0)
     } else {
-        let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-        let room = old.len().min(new.len()) - prefix;
-        let suffix = old
-            .iter()
-            .rev()
-            .zip(new.iter().rev())
-            .take(room)
-            .take_while(|(a, b)| a == b)
-            .count();
+        let (prefix, suffix) = super::tokens::common_ends(old, new);
         (true, prefix, suffix)
     };
     let to_base = |at: u32| -> u32 {
@@ -167,10 +159,11 @@ pub(crate) fn map(
     let scope_changed = stale && {
         let new_changed = (prefix, new.len() - suffix);
         let old_changed = (prefix, old.len() - suffix);
-        opens_scope(tokens, new_changed) || {
-            let old_tokens = oxabl_lexer::tokenize(base.text);
-            opens_scope(&old_tokens, old_changed)
-        }
+        opens_scope(tokens, new_changed)
+            || match base.tokens {
+                Some(old_tokens) => opens_scope(old_tokens, old_changed),
+                None => opens_scope(&oxabl_lexer::tokenize(base.text), old_changed),
+            }
     };
     Some(Mapped {
         ids,
