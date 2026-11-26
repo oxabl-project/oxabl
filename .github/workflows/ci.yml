@@ -1,11 +1,13 @@
 name: CI
 
 # A new push to a pull request cancels the run of the earlier push. `closed` starts a run in the
-# same group, which cancels the run of a merged or closed pull request; no job of it runs. A run
-# on master or in a merge group is never cancelled: each master commit keeps its own result, and a
-# merge group's run decides the merge.
+# same group, which cancels the run of a merged or closed pull request; no job of it runs. A pull
+# request's group is its number, never its ref: the `closed` event of a merged pull request has
+# the base branch as its ref, so a ref group would cancel the run of master. A run on master or in
+# a merge group is never cancelled: each master commit keeps its own result, and a merge group's
+# run decides the merge.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Two tiers. A pull request runs the fast tier: the jobs that `cargo xtask ci --changed --list`
