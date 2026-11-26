@@ -258,3 +258,61 @@ fn a_path_that_was_only_checked_and_is_read_later_is_read_as_it_is() {
         "the include no longer runs b.p: {changed:?}"
     );
 }
+
+/// The impact of `target` as a new daemon gives it, with each of `open`
+/// opened as the text given.
+fn fresh_impact_with(root: &Path, open: &[(&str, &str)], target: &str) -> Vec<(String, String)> {
+    let mut fresh = Daemon::start(root);
+    for (name, text) in open {
+        fresh.open(name, text);
+    }
+    fresh.impact(target)
+}
+
+// The graph of a pass after an edit joins the rows of the files that were not
+// analysed again with the rows of the ones that were. After each edit the rows
+// of the edited file must be the rows of its new text only: a row it no longer
+// has is gone, also when it was the last row of its subject, and a row it gains
+// is there, also for a subject that no file named before.
+#[test]
+fn the_rows_of_an_edited_file_replace_its_old_rows_in_the_graph() {
+    let ws = Workspace::new(&[
+        ("user.p", "RUN one.p.\n"),
+        ("keeper.p", "RUN one.p.\n"),
+        ("one.p", "MESSAGE 1.\n"),
+        ("two.p", "MESSAGE 2.\n"),
+        ("other.p", "MESSAGE 3.\n"),
+    ]);
+    let mut daemon = Daemon::start(&ws.root);
+    daemon.reindex();
+    let expected: Vec<(String, String)> = ["keeper.p", "user.p"]
+        .iter()
+        .map(|name| ("Program".to_string(), name.to_string()))
+        .collect();
+    assert_eq!(daemon.impact("one.p"), expected);
+
+    for text in ["RUN two.p.\n", "MESSAGE 4.\n", "RUN one.p.\nRUN two.p.\n"] {
+        daemon.open("user.p", text);
+        for name in ["one.p", "two.p"] {
+            assert_eq!(
+                daemon.impact(name),
+                fresh_impact_with(&ws.root, &[("user.p", text)], name),
+                "after user.p became {text:?}, the dependents of {name}"
+            );
+        }
+    }
+    // Each program loses its last dependent.
+    let texts = [("keeper.p", "MESSAGE 5.\n"), ("user.p", "MESSAGE 6.\n")];
+    for (name, text) in texts {
+        daemon.open(name, text);
+    }
+    for name in ["one.p", "two.p"] {
+        let found = daemon.impact(name);
+        assert_eq!(
+            found,
+            fresh_impact_with(&ws.root, &texts, name),
+            "the dependents of {name} after the last dependent left"
+        );
+        assert!(found.is_empty(), "{name}: {found:?}");
+    }
+}

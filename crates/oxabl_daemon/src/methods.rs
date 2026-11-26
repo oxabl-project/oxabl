@@ -410,7 +410,11 @@ const REFERENCE_WALK_INTERVAL: Duration = Duration::from_secs(1);
 ///
 /// Ranking is unchanged: prefix matches order ahead of substring matches, then by
 /// folded name, then by id.
-fn select_symbols(symbols: &[SymbolRow], query: &str, limit: usize) -> (Vec<SymbolRow>, u32) {
+fn select_symbols<R: std::borrow::Borrow<SymbolRow>>(
+    symbols: &[R],
+    query: &str,
+    limit: usize,
+) -> (Vec<SymbolRow>, u32) {
     // Folded once, for the whole request. Every comparison below reads these bytes
     // and folds the candidate a byte at a time, so no row allocates.
     let needle = query.to_ascii_lowercase();
@@ -422,6 +426,7 @@ fn select_symbols(symbols: &[SymbolRow], query: &str, limit: usize) -> (Vec<Symb
     let mut total_matches: u32 = 0;
 
     for row in symbols {
+        let row: &SymbolRow = row.borrow();
         if !contains_folded(&row.name, needle) {
             continue;
         }
@@ -664,7 +669,7 @@ fn reindex(
         value: ReindexResponse {
             freshness: workspace_freshness(&workspace),
             pass_millis: workspace.pass_millis,
-            graph_bytes: workspace.graph_bytes,
+            graph_bytes: workspace.graph.estimated_heap_bytes() as u64,
         },
     })
     .map_err(MethodError::internal)
@@ -1050,7 +1055,7 @@ fn build_workspace(
 
 type PassOutput = (
     Arc<ReverseGraph>,
-    Arc<Vec<SymbolRow>>,
+    Arc<Vec<Arc<SymbolRow>>>,
     Arc<pass::KeptPass>,
     usize,
 );
@@ -1135,7 +1140,6 @@ fn build_workspace_from(
     report_pass_counts(analysed, discovered_files, &kept);
 
     let tracked_files = graph.tracked_files();
-    let graph_bytes = graph.estimated_heap_bytes() as u64;
     Ok(WorkspaceSnapshot {
         graph,
         symbols,
@@ -1143,7 +1147,6 @@ fn build_workspace_from(
         config: Arc::new(config),
         generations,
         pass_millis: started.elapsed().as_millis() as u64,
-        graph_bytes,
         root: root.to_path_buf(),
         // The count discovery produced, captured before the pipeline widened it with
         // include targets from outside the tree.

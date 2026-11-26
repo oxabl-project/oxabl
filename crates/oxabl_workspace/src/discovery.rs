@@ -150,6 +150,7 @@ pub fn walk_include_fragments(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn walk_matching(dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let mut reached_by_link = false;
     let mut files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .follow_links(true)
         .into_iter()
@@ -157,11 +158,19 @@ fn walk_matching(dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
         // spelled.
         .filter_entry(|entry| entry.depth() == 0 || !is_hidden_directory(entry))
         .filter_map(|entry| entry.ok())
+        .inspect(|entry| reached_by_link |= entry.depth() > 0 && entry.path_is_symlink())
         .filter(|entry| entry.file_type().is_file())
         .filter(|entry| wanted(entry.path()))
         .map(walkdir::DirEntry::into_path)
         .collect();
     files.sort();
+
+    // Without a link below the root, each file has the one spelling that the
+    // walk gave it, and the canonical path of every file would cost a
+    // `realpath` for nothing.
+    if !reached_by_link {
+        return files;
+    }
 
     // Dedupe *after* sorting so the surviving spelling of a doubly-reachable
     // file is the lexicographically first one, not whichever the walk happened
@@ -462,6 +471,18 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(walk_directory(tmp.path()), found);
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn walk_yields_a_file_reachable_through_a_file_link_once() {
+        // A link to a file, and no link to a directory: the dedupe still runs.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("alpha.p"), "").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("alpha.p"), tmp.path().join("beta.p")).unwrap();
+
+        let found = walk_directory(tmp.path());
+        assert_eq!(found.len(), 1, "one real file, got {found:?}");
     }
 
     #[test]

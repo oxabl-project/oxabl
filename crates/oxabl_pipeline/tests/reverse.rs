@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use oxabl_pipeline::{EdgeKind, LintPipeline, PipelineConfig, ReverseGraph, Subject};
+use oxabl_pipeline::{EdgeKind, FilePart, LintPipeline, PipelineConfig, ReverseGraph, Subject};
 use oxabl_schema::test_support::customer_schema;
 use oxabl_workspace::InMemoryFileSystem;
 
@@ -691,5 +691,197 @@ fn a_parallel_pass_builds_the_serial_graph() {
         );
         assert_eq!(parallel, serial, "at {jobs} jobs");
         assert_eq!(inspected, analysed, "at {jobs} jobs");
+    }
+}
+
+/// The programs a file can hold in the joins below. Between them they have
+/// include edges, a `RUN`, a table, an include that does not resolve, a
+/// reference that does not resolve, a dynamic call and a parse error.
+const VARIANTS: &[&str] = &[
+    "MESSAGE 1.\n",
+    "{base.i}\nMESSAGE v-base.\n",
+    "{middle.i}\nMESSAGE v-mid.\n",
+    "{base.i}\n{middle.i}\nRUN worker.p.\n",
+    "RUN worker.p.\nRUN other.p.\n",
+    "{nowhere.i}\nMESSAGE 1.\n",
+    "RUN nowhere.p.\n",
+    "FOR EACH Customer NO-LOCK:\nDISPLAY Customer.Name.\nEND.\n",
+    "DEFINE VARIABLE n AS CHARACTER NO-UNDO.\nRUN VALUE(n).\n",
+    "IF THEN THEN THEN.\n",
+];
+
+/// The parts of a pass over `files`, in `files` order.
+fn parts_over(ws: &Workspace, config: &PipelineConfig, files: &[PathBuf]) -> Vec<FilePart> {
+    ReverseGraph::analyse_parts(
+        files,
+        1,
+        || LintPipeline::new(config, &ws.fs).with_known_files(files),
+        |_, _, _| (),
+    )
+    .into_iter()
+    .map(|analysed| analysed.part)
+    .collect()
+}
+
+// Two listed spellings of one file share a normalised path, so a row of one
+// cannot be told from a row of the other. An edit of one spelling must still
+// give the graph of the whole join, which keeps the rows of the other.
+#[test]
+fn an_updated_graph_keeps_the_rows_of_another_spelling_of_the_same_file() {
+    let base = "DEFINE VARIABLE v-base AS INTEGER NO-UNDO.\n";
+    let before = Workspace::new(&[
+        ("base.i", base),
+        ("a.p", "{base.i}\nMESSAGE v-base.\n"),
+        ("x/../a.p", "{base.i}\nMESSAGE 2.\n"),
+    ]);
+    let after = Workspace::new(&[
+        ("base.i", base),
+        ("a.p", "MESSAGE 3.\n"),
+        ("x/../a.p", "{base.i}\nMESSAGE 2.\n"),
+    ]);
+    let mut files = before.files.clone();
+    files.sort();
+    assert_eq!(files, [proj("a.p"), proj("x/../a.p")]);
+    let config = before.config();
+
+    let parts = parts_over(&before, &config, &files);
+    let graph = ReverseGraph::from_parts(
+        &LintPipeline::new(&config, &before.fs).with_known_files(&files),
+        &files,
+        &parts,
+    );
+    let next_parts = parts_over(&after, &config, &files);
+    let pipeline = LintPipeline::new(&config, &after.fs).with_known_files(&files);
+    let borrowed: Vec<&FilePart> = next_parts.iter().collect();
+    let updated = ReverseGraph::updated(
+        &graph,
+        &pipeline,
+        &files,
+        &borrowed,
+        &[&parts[0]],
+        &[&next_parts[0]],
+    );
+    let whole = ReverseGraph::from_parts(&pipeline, &files, &next_parts);
+    assert_eq!(
+        updated, whole,
+        "an edit of one spelling dropped the rows of the other"
+    );
+}
+
+// The graph that an earlier graph and the parts that changed give is the graph
+// of the whole join, after each of many edits: a file set to another program, a
+// file removed, an include edited, an unreadable file listed. A step that
+// missed a row of a changed file, or kept one of its old rows, shows as a graph
+// that differs from the whole join.
+#[test]
+fn an_updated_graph_is_the_graph_of_the_whole_join() {
+    let mut texts: Vec<(String, Option<&'static str>)> = vec![
+        (
+            "base.i".into(),
+            Some("DEFINE VARIABLE v-base AS INTEGER NO-UNDO.\n"),
+        ),
+        (
+            "middle.i".into(),
+            Some("{base.i}\nDEFINE VARIABLE v-mid AS INTEGER NO-UNDO.\n"),
+        ),
+        ("worker.p".into(), Some("{base.i}\nMESSAGE v-base.\n")),
+        ("other.p".into(), Some("MESSAGE 2.\n")),
+    ];
+    for n in 0..12 {
+        texts.push((format!("p{n}.p"), Some(VARIANTS[n % VARIANTS.len()])));
+    }
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = move |bound: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % bound as u64) as usize
+    };
+
+    // The workspace of `texts`, and the files its pass lists. A listed file
+    // that is not on the disk has an error for its part.
+    let build = |texts: &[(String, Option<&'static str>)], ghost_listed: bool| {
+        let present: Vec<(&str, &str)> = texts
+            .iter()
+            .filter_map(|(name, text)| text.map(|text| (name.as_str(), text)))
+            .collect();
+        let ws = Workspace::new(&present);
+        let mut files = ws.files.clone();
+        if ghost_listed {
+            files.push(proj("ghost.p"));
+        }
+        files.sort();
+        (ws, files)
+    };
+
+    let mut ghost_listed = false;
+    let (ws, mut files) = build(&texts, ghost_listed);
+    let config = ws.with_schema();
+    let mut parts = parts_over(&ws, &config, &files);
+    let mut graph = ReverseGraph::from_parts(
+        &LintPipeline::new(&config, &ws.fs).with_known_files(&files),
+        &files,
+        &parts,
+    );
+
+    for step in 0..300 {
+        let before = texts.clone();
+        let before_files = files.clone();
+        for _ in 0..1 + next(3) {
+            let at = next(texts.len());
+            match next(8) {
+                0 => texts[at].1 = None,
+                1 if texts[at].0.ends_with(".i") => {
+                    texts[at].1 =
+                        Some(["", "DEFINE VARIABLE v-base AS INTEGER NO-UNDO.\n"][next(2)]);
+                }
+                1 => ghost_listed = !ghost_listed,
+                _ => texts[at].1 = Some(VARIANTS[next(VARIANTS.len())]),
+            }
+        }
+        let (next_ws, next_files) = build(&texts, ghost_listed);
+        let next_config = next_ws.with_schema();
+        let next_parts = parts_over(&next_ws, &next_config, &next_files);
+
+        // A file is changed when its own text moved, or when a file that the
+        // programs may include or run moved. The rows of any other file are
+        // the earlier ones.
+        let moved = |name: &str| {
+            before.iter().find(|(n, _)| n == name).map(|(_, t)| *t)
+                != texts.iter().find(|(n, _)| n == name).map(|(_, t)| *t)
+        };
+        let includes_moved = ["base.i", "middle.i", "worker.p", "other.p"]
+            .iter()
+            .any(|name| moved(name));
+        let changed = |path: &PathBuf| {
+            let name = path.strip_prefix("/proj").unwrap().to_string_lossy();
+            moved(&name) || includes_moved
+        };
+        let removed: Vec<&FilePart> = before_files
+            .iter()
+            .zip(&parts)
+            .filter(|(path, _)| changed(path) || !next_files.contains(path))
+            .map(|(_, part)| part)
+            .collect();
+        let added: Vec<&FilePart> = next_files
+            .iter()
+            .zip(&next_parts)
+            .filter(|(path, _)| changed(path) || !before_files.contains(path))
+            .map(|(_, part)| part)
+            .collect();
+        let borrowed: Vec<&FilePart> = next_parts.iter().collect();
+
+        let pipeline = LintPipeline::new(&next_config, &next_ws.fs).with_known_files(&next_files);
+        let updated =
+            ReverseGraph::updated(&graph, &pipeline, &next_files, &borrowed, &removed, &added);
+        let whole = ReverseGraph::from_parts(&pipeline, &next_files, &next_parts);
+        assert_eq!(
+            updated, whole,
+            "step {step}: the updated graph differs from the whole join"
+        );
+
+        files = next_files;
+        parts = next_parts;
+        graph = updated;
     }
 }
