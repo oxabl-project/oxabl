@@ -312,6 +312,8 @@ fn forward_frames(
     peer: &str,
 ) {
     forward(frames, bytes, progress, limit, close, peer);
+    // The workers still in flight send their answers here until teardown. Drop them,
+    // so they do not collect.
     for _dropped in frames {}
 }
 
@@ -328,27 +330,36 @@ fn forward(
     loop {
         // Wait without taking a frame, so the gate covers the take and the count.
         select.ready();
-        let _gate = progress.gate.lock().unwrap_or_else(PoisonError::into_inner);
-        let message = match frames.try_recv() {
-            Ok(message) => message,
-            Err(TryRecvError::Empty) => continue,
-            Err(TryRecvError::Disconnected) => return,
+        let over_limit = {
+            let _gate = progress.gate.lock().unwrap_or_else(PoisonError::into_inner);
+            let message = match frames.try_recv() {
+                Ok(message) => message,
+                Err(TryRecvError::Empty) => continue,
+                Err(TryRecvError::Disconnected) => return,
+            };
+            let waiting = progress.waiting.load(Ordering::SeqCst);
+            if waiting > limit {
+                Some(waiting)
+            } else {
+                let mut frame = Vec::new();
+                if message.write(&mut frame).is_err() {
+                    continue;
+                }
+                progress.waiting.fetch_add(frame.len(), Ordering::SeqCst);
+                if bytes.send(frame).is_err() {
+                    return;
+                }
+                None
+            }
         };
-        let waiting = progress.waiting.load(Ordering::SeqCst);
-        if waiting > limit {
+        // Outside the gate: a log write to a full stderr pipe can block, and
+        // `Threads::finish` must not wait on the gate for longer than its grace.
+        if let Some(waiting) = over_limit {
             close();
             log(format_args!(
                 "closing the connection of {peer}: {waiting} bytes of frames for it were \
                  not written, because it does not read them"
             ));
-            return;
-        }
-        let mut frame = Vec::new();
-        if message.write(&mut frame).is_err() {
-            continue;
-        }
-        progress.waiting.fetch_add(frame.len(), Ordering::SeqCst);
-        if bytes.send(frame).is_err() {
             return;
         }
     }

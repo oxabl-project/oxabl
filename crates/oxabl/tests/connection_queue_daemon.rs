@@ -532,8 +532,10 @@ fn a_client_that_closes_its_read_side_is_disconnected() {
             Err(error) => break error,
         }
         id += 1;
+        // A bound on the requests too: each one starts a worker, so a daemon that
+        // never closes must not load the machine and fail the other tests.
         assert!(
-            written < WRITE_LIMIT && started.elapsed() < LIMIT,
+            written < WRITE_LIMIT && id < 300 && started.elapsed() < LIMIT,
             "the daemon still reads the client that does not read after {id} requests in \
              {:?}",
             started.elapsed()
@@ -548,4 +550,70 @@ fn a_client_that_closes_its_read_side_is_disconnected() {
         "the daemon must close the connection: {refused}"
     );
     assert_serves(&mut daemon, "a client closed its read side");
+}
+
+/// The names of the threads of `pid` whose name starts with one of `prefixes`.
+#[cfg(target_os = "linux")]
+fn threads_named(pid: u32, prefixes: &[&str]) -> Vec<String> {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+    tasks
+        .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+        .map(|name| name.trim_end().to_string())
+        .filter(|name| prefixes.iter().any(|prefix| name.starts_with(prefix)))
+        .collect()
+}
+
+/// When the daemon cannot write to a client, the requests of that client that wait
+/// for the server are dropped: the daemon does no work for a client that is gone.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_requests_of_a_gone_client_are_not_handled() {
+    const HELD: &str = "OXABL-TEST-HOLD started: lsp.highlights";
+    let mut daemon = Daemon::start(None);
+    let mut client = daemon.silent_client();
+    // Every file is on disk, so the highlights do not take the path that skips the
+    // hold.
+    let text = "DEFINE VARIABLE x AS INTEGER NO-UNDO.\nx = 1.\n\
+                /* OXABL-TEST-HOLD:lsp.highlights@1000 */\n";
+    let held: Vec<String> = (0..5).map(|i| format!("h{i}.p")).collect();
+    for name in &held {
+        std::fs::write(daemon.root().join(name), text).unwrap();
+        client.write(&open(&daemon.uri(name), text)).unwrap();
+    }
+    let later = format!("/* OXABL-TEST-HOLD:lsp.did-open@{HOLD_MS} */\n");
+    std::fs::write(daemon.root().join("later.p"), &later).unwrap();
+
+    client.write(&highlights(1, &daemon.uri(&held[0]))).unwrap();
+    daemon.wait_for_stderr(HELD, 1);
+    // The answer of the held worker now fails to be written.
+    client.stream.shutdown(std::net::Shutdown::Read).unwrap();
+    // The server is held longer than the worker, so the requests that follow still
+    // wait for it when that write fails.
+    client.write(&open(&daemon.uri("later.p"), &later)).unwrap();
+    for (id, name) in (2..).zip(&held[1..]) {
+        client.write(&highlights(id, &daemon.uri(name))).unwrap();
+    }
+
+    let pid = daemon.child.id();
+    let started = Instant::now();
+    loop {
+        let left = threads_named(pid, &["oxabl-conn", "oxabl-navig"]);
+        if left.is_empty() {
+            break;
+        }
+        assert!(
+            started.elapsed() < LIMIT,
+            "the threads of the gone client did not end in {LIMIT:?}: {left:?}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        daemon.stderr().matches(HELD).count(),
+        1,
+        "the daemon answered requests of a gone client; its stderr:\n{}",
+        daemon.stderr()
+    );
+    assert_serves(&mut daemon, "a client went away with requests that wait");
 }
