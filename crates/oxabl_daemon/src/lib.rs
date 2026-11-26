@@ -54,6 +54,8 @@ pub mod references;
 pub mod registry;
 pub mod server;
 pub mod session;
+#[cfg(unix)]
+pub mod stderr;
 
 pub use dispatch::{ClientContext, Dispatch, MethodError, MethodResult};
 pub use handshake::{default_dispatch, register_handshake};

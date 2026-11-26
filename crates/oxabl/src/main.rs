@@ -1,10 +1,13 @@
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-#[cfg(not(any(target_env = "msvc", target_arch = "wasm32")))]
+#[cfg(not(any(target_env = "msvc", target_arch = "wasm32", oxabl_system_allocator)))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -402,6 +405,11 @@ enum Cli {
         /// `OXABL_DAEMON_IDLE_TIMEOUT`.
         #[arg(long, value_name = "DURATION")]
         idle_timeout: Option<String>,
+
+        /// Exit with no message when another process holds the start lock: a client
+        /// that starts the daemon again after such an exit has shown it once.
+        #[arg(long, hide = true)]
+        quiet_if_locked: bool,
     },
     /// Emit the JSON Schema for `oxabl.toml` to stdout.
     ///
@@ -612,7 +620,7 @@ fn render_preproc_diagnostics(
 /// single-file and its envelope names the path once.
 fn surface_collected_preproc(
     path: &Path,
-    source: &str,
+    source: &Lines<'_>,
     collected: &CollectedDiagnostics,
     output: &mut Output,
 ) {
@@ -623,7 +631,12 @@ fn surface_collected_preproc(
     if loud.is_empty() {
         return;
     }
-    let resolver = SourceResolver::new(ROOT_FILE_ID, path.display().to_string(), source);
+    let resolver = SourceResolver::with_map(
+        ROOT_FILE_ID,
+        path.display().to_string(),
+        source.text(),
+        source.map(),
+    );
     output.err(render_diagnostics(&loud, &resolver));
 }
 
@@ -686,6 +699,12 @@ fn main() -> ExitCode {
     }
     // Every command may parse ABL: give it a stack of known size, not `ulimit -s`.
     let code = oxabl_common::stack::run(|| dispatch(cli));
+    // Test builds only: a test reads how many line tables the command built.
+    if std::env::var_os("OXABL_TEST_SOURCE_MAPS").is_some()
+        && let Some(built) = SourceMap::built()
+    {
+        eprintln!("oxabl-test: source maps built: {built}");
+    }
     if after {
         self_update::schedule_if_due();
     }
@@ -801,7 +820,8 @@ fn dispatch(cli: Cli) -> ExitCode {
         Cli::Daemon {
             workspace_root,
             idle_timeout,
-        } => run_daemon(&workspace_root, idle_timeout.as_deref()),
+            quiet_if_locked,
+        } => run_daemon(&workspace_root, idle_timeout.as_deref(), quiet_if_locked),
         Cli::Schema => run_schema(),
         Cli::Skill { command } => skill::run(command),
         Cli::Build {
@@ -907,7 +927,11 @@ fn run_lsp() -> ExitCode {
 /// discovery that editor clients already have, so clients do not need to locate a
 /// second binary.
 #[cfg(unix)]
-fn run_daemon(workspace_root: &Path, idle_timeout: Option<&str>) -> ExitCode {
+fn run_daemon(
+    workspace_root: &Path,
+    idle_timeout: Option<&str>,
+    quiet_if_locked: bool,
+) -> ExitCode {
     let idle_timeout = match daemon_idle_timeout(idle_timeout) {
         Ok(timeout) => timeout,
         Err(error) => {
@@ -918,13 +942,21 @@ fn run_daemon(workspace_root: &Path, idle_timeout: Option<&str>) -> ExitCode {
     let mut listener = match oxabl_daemon::Listener::bind(workspace_root) {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("oxabl daemon: {error}");
-            if oxabl_daemon::listener::is_start_lock_held(&error) {
+            let locked = oxabl_daemon::listener::is_start_lock_held(&error);
+            if !(locked && quiet_if_locked) {
+                eprintln!("oxabl daemon: {error}");
+            }
+            if locked {
                 return ExitCode::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD);
             }
             return ExitCode::FAILURE;
         }
     };
+    // From here the daemon may outlive the process that started it and reads its
+    // stderr.
+    if let Err(error) = oxabl_daemon::stderr::watch() {
+        eprintln!("oxabl daemon: stderr is not watched for a closed reader: {error}");
+    }
     listener.set_idle_timeout(idle_timeout);
     let dispatch = std::sync::Arc::new(oxabl_daemon::default_dispatch());
     let host = std::sync::Arc::new(oxabl_daemon::SessionHost::new());
@@ -941,7 +973,12 @@ fn run_daemon(workspace_root: &Path, idle_timeout: Option<&str>) -> ExitCode {
                         request,
                         host.clone(),
                     ) {
-                        eprintln!("oxabl daemon: LSP client failed: {error}");
+                        use std::io::Write as _;
+                        // A closed stderr must not end the other clients' sessions.
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "oxabl daemon: LSP client failed: {error}"
+                        );
                     }
                 }
                 first => {
@@ -979,7 +1016,11 @@ fn daemon_idle_timeout(flag: Option<&str>) -> Result<Option<std::time::Duration>
 }
 
 #[cfg(not(unix))]
-fn run_daemon(_workspace_root: &Path, _idle_timeout: Option<&str>) -> ExitCode {
+fn run_daemon(
+    _workspace_root: &Path,
+    _idle_timeout: Option<&str>,
+    _quiet_if_locked: bool,
+) -> ExitCode {
     eprintln!("oxabl daemon: Unix domain sockets are not supported on this platform");
     ExitCode::FAILURE
 }
@@ -1413,41 +1454,72 @@ struct CheckJsonRelated {
     end: Option<CheckJsonPosition>,
 }
 
-/// The files a finding's labels may point into, each with its display path
-/// and text when known.
-struct LabelPlaces {
-    files: Vec<(FileId, String, Option<String>)>,
+/// A source text and its line table. The table is built on first use, once,
+/// and every finding and label that points into the text shares it, so a
+/// report is linear in its findings.
+struct Lines<'a> {
+    text: Cow<'a, str>,
+    map: OnceCell<SourceMap>,
 }
 
-impl LabelPlaces {
+impl<'a> Lines<'a> {
+    fn new(text: impl Into<Cow<'a, str>>) -> Rc<Self> {
+        Rc::new(Lines {
+            text: text.into(),
+            map: OnceCell::new(),
+        })
+    }
+
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn map(&self) -> &SourceMap {
+        self.map.get_or_init(|| SourceMap::new(&self.text))
+    }
+}
+
+/// A file that labels may point into: its id, display path, and text when
+/// known.
+type LabelFile<'a> = (FileId, String, Option<Rc<Lines<'a>>>);
+
+/// The label files of an analysis, with their paths spelled from `root`.
+fn label_files<'a>(root: &str, files: &'a [oxabl_analyze::LabelFile]) -> Vec<LabelFile<'a>> {
+    files
+        .iter()
+        .map(|f| {
+            let text = f.text.as_deref().map(Lines::new);
+            (f.file, display_path::spell(&f.path, root), text)
+        })
+        .collect()
+}
+
+/// The files a finding's labels may point into, each with its display path
+/// and text when known.
+struct LabelPlaces<'a> {
+    files: Vec<LabelFile<'a>>,
+}
+
+impl<'a> LabelPlaces<'a> {
     /// The places of a finding in the text `own` (`None` when it cannot be
-    /// read), and of `label_files`, in the text the analysis read.
-    fn new(
-        own: (FileId, &str, Option<&str>),
-        root: &str,
-        label_files: &[oxabl_analyze::LabelFile],
-    ) -> Self {
-        let mut files = vec![(own.0, own.1.to_string(), own.2.map(str::to_owned))];
-        for f in label_files {
-            if f.file != own.0 {
-                let text = f.text.as_deref().map(str::to_owned);
-                files.push((f.file, display_path::spell(&f.path, root), text));
-            }
-        }
+    /// read), and of `labels`, in the text the analysis read.
+    fn new(own: LabelFile<'a>, labels: &[LabelFile<'a>]) -> Self {
+        let own_file = own.0;
+        let mut files = vec![own];
+        files.extend(labels.iter().filter(|f| f.0 != own_file).cloned());
         LabelPlaces { files }
     }
 
-    /// Add the text-mode places to `resolver`, whose own file is the first.
-    fn resolver<'a>(&self, own_text: &'a str) -> SourceResolver<'a> {
-        let (file, path, text) = &self.files[0];
-        let file = if text.is_some() {
-            *file
-        } else {
-            FileId::UNKNOWN
+    /// The text-mode resolver, whose own file is the first.
+    fn resolver(&self) -> SourceResolver<'_> {
+        let (file, path, lines) = &self.files[0];
+        let mut resolver = match lines {
+            Some(lines) => SourceResolver::with_map(*file, path.clone(), lines.text(), lines.map()),
+            None => SourceResolver::new(FileId::UNKNOWN, path.clone(), ""),
         };
-        let mut resolver = SourceResolver::new(file, path.clone(), own_text);
-        for (file, path, text) in &self.files[1..] {
-            resolver = resolver.with_file(*file, path.clone(), text.as_deref());
+        for (file, path, lines) in &self.files[1..] {
+            resolver =
+                resolver.with_file_map(*file, path.clone(), lines.as_deref().map(Lines::map));
         }
         resolver
     }
@@ -1456,10 +1528,10 @@ impl LabelPlaces {
         d.labels
             .iter()
             .filter_map(|label| {
-                let (_, path, text) = self.files.iter().find(|(f, ..)| *f == label.span.file)?;
-                let resolved = text
+                let (_, path, lines) = self.files.iter().find(|(f, ..)| *f == label.span.file)?;
+                let resolved = lines
                     .as_deref()
-                    .map(|text| position::resolve_file_span(&SourceMap::new(text), &label.span));
+                    .map(|lines| position::resolve_file_span(lines.map(), &label.span));
                 Some(CheckJsonRelated {
                     path: path.clone(),
                     message: label.message.clone(),
@@ -2336,7 +2408,7 @@ impl CheckPass<'_> {
         }
         let encrypted = oxabl_pipeline::encrypted_root_diagnostics();
         // The warning has no position in the text, so no text is shown.
-        surface_collected_preproc(file, "", &encrypted, &mut unit.output);
+        surface_collected_preproc(file, &Lines::new(""), &encrypted, &mut unit.output);
         if self.json_output {
             let map = SourceMap::new("");
             unit.preproc.extend(
@@ -2388,8 +2460,9 @@ impl CheckPass<'_> {
         } else {
             (lint.with_file(indexed_path).run(source), None)
         };
+        let root = Lines::new(source);
         if let Some(origins) = origins {
-            let map = SourceMap::new(source);
+            let map = root.map();
             let lines = origins
                 .into_iter()
                 .map(|origin| (origin.path, map.lookup(origin.site.start as usize).0))
@@ -2408,7 +2481,7 @@ impl CheckPass<'_> {
             // same helper `analyze` uses, so the two cannot drift. They are
             // coverage warnings, not findings, and never move the exit code: an
             // elided include still parses.
-            surface_collected_preproc(file, source, result.diagnostics(), &mut unit.output);
+            surface_collected_preproc(file, &root, result.diagnostics(), &mut unit.output);
             let withheld = reaches_encrypted(&result);
             // Machine-readable, through the *same* row builder the findings use
             // (D1): an entry names its file, so two files losing coverage on
@@ -2423,9 +2496,9 @@ impl CheckPass<'_> {
                     .by_source(oxabl_analyze::DiagnosticSource::Preproc)
                     .peekable();
                 if collected.peek().is_some() {
-                    let map = SourceMap::new(source);
+                    let map = root.map();
                     unit.preproc
-                        .extend(collected.map(|c| check_json_diagnostic(&display, &map, c, None)));
+                        .extend(collected.map(|c| check_json_diagnostic(&display, map, c, None)));
                 }
             }
 
@@ -2446,7 +2519,7 @@ impl CheckPass<'_> {
             } else {
                 reported
             };
-            report_findings(self, &display, indexed_path, source, reported, None, unit);
+            report_findings(self, &display, indexed_path, &root, reported, None, unit);
 
             if self.include_findings {
                 let mut shown = result.include_origin().to_vec();
@@ -2455,7 +2528,7 @@ impl CheckPass<'_> {
                 }
                 report_include_findings(
                     &display,
-                    source,
+                    &root,
                     &shown,
                     &result.diagnostics().label_files,
                     texts,
@@ -2517,14 +2590,14 @@ impl CheckPass<'_> {
             });
             return unit;
         }
+        let lines = Lines::new(source.as_str());
         if reaches_encrypted(&result) {
-            surface_collected_preproc(file, &source, result.diagnostics(), &mut unit.output);
+            surface_collected_preproc(file, &lines, result.diagnostics(), &mut unit.output);
             if self.json_output {
-                let map = SourceMap::new(&source);
                 unit.preproc.extend(
                     result
                         .by_source(oxabl_analyze::DiagnosticSource::Preproc)
-                        .map(|c| check_json_diagnostic(&display, &map, c, None)),
+                        .map(|c| check_json_diagnostic(&display, lines.map(), c, None)),
                 );
             }
             self.withhold(&display, &mut unit, false);
@@ -2536,7 +2609,7 @@ impl CheckPass<'_> {
             self,
             &display,
             indexed_path,
-            &source,
+            &lines,
             result.into_diagnostics(),
             includers.as_ref(),
             &mut unit,
@@ -2644,11 +2717,12 @@ fn report_findings(
     pass: &CheckPass<'_>,
     display: &str,
     indexed_path: &Path,
-    source: &str,
+    root: &Rc<Lines<'_>>,
     reported: CollectedDiagnostics,
     includers: Option<&CheckJsonIncluders>,
     unit: &mut Unit,
 ) {
+    let source = root.text();
     let quiet = pass.quiet();
     let reported = match pass.baseline {
         Some(run) => run.filter(indexed_path, source, reported),
@@ -2657,13 +2731,13 @@ fn report_findings(
     if reported.diagnostics.is_empty() {
         return;
     }
+    let labels = label_files(display, &reported.label_files);
     let places = LabelPlaces::new(
-        (ROOT_FILE_ID, display, Some(source)),
-        display,
-        &reported.label_files,
+        (ROOT_FILE_ID, display.to_string(), Some(Rc::clone(root))),
+        &labels,
     );
     if !quiet {
-        let resolver = places.resolver(source);
+        let resolver = places.resolver();
         match includers.filter(|found| found.count > 0 || found.unknown > 0) {
             // The note follows its own finding, so each one renders alone.
             Some(found) => {
@@ -2680,9 +2754,8 @@ fn report_findings(
             }
         }
     }
-    let map = SourceMap::new(source);
     for collected in reported.all() {
-        let mut row = check_json_diagnostic(display, &map, collected, Some(&places));
+        let mut row = check_json_diagnostic(display, root.map(), collected, Some(&places));
         row.includers = includers.cloned();
         unit.diagnostics.push(row);
     }
@@ -2918,7 +2991,7 @@ fn render_summary(summary: &CheckJsonSummary) -> String {
 /// Include files read for `--include-findings`, each at most once per worker.
 struct IncludeTexts {
     decoding: SourceDecoding,
-    texts: HashMap<PathBuf, Option<String>>,
+    texts: HashMap<PathBuf, Option<Rc<Lines<'static>>>>,
 }
 
 impl IncludeTexts {
@@ -2929,11 +3002,11 @@ impl IncludeTexts {
         }
     }
 
-    fn get(&mut self, path: &Path) -> Option<&str> {
+    fn get(&mut self, path: &Path) -> Option<Rc<Lines<'static>>> {
         self.texts
             .entry(path.to_path_buf())
-            .or_insert_with(|| read_source(path, self.decoding).ok())
-            .as_deref()
+            .or_insert_with(|| read_source(path, self.decoding).ok().map(Lines::new))
+            .clone()
     }
 }
 
@@ -2954,10 +3027,10 @@ fn read_source(path: &Path, decoding: SourceDecoding) -> std::io::Result<String>
 
 /// `path:line:col` of a reference at `at` in `text`, or just `path` when the
 /// text is not known.
-fn site_label(path: &str, text: Option<&str>, at: Option<oxabl_ast::Span>) -> String {
+fn site_label(path: &str, text: Option<&Lines<'_>>, at: Option<oxabl_ast::Span>) -> String {
     match (text, at) {
         (Some(text), Some(at)) => {
-            let (line, column) = SourceMap::new(text).lookup(at.start as usize);
+            let (line, column) = text.map().lookup(at.start as usize);
             format!("{path}:{line}:{column}")
         }
         (_, None) => format!("{path} (`{{&...}}` substitution)"),
@@ -2972,29 +3045,30 @@ fn site_label(path: &str, text: Option<&str>, at: Option<oxabl_ast::Span>) -> St
 /// cannot be read keeps its byte span and loses line and column.
 fn report_include_findings(
     root: &str,
-    root_source: &str,
+    root_source: &Rc<Lines<'_>>,
     found: &[oxabl_analyze::IncludeOriginDiagnostic],
-    label_files: &[oxabl_analyze::LabelFile],
+    label_files_of_root: &[oxabl_analyze::LabelFile],
     texts: &mut IncludeTexts,
     json_output: bool,
     unit: &mut Unit,
 ) {
+    if found.is_empty() {
+        return;
+    }
+    let labels = label_files(root, label_files_of_root);
     for finding in found {
         let display = display_path::spell(&finding.path, root);
         let diagnostic = finding.diagnostic.clone();
-        let text = texts.get(&finding.path).map(str::to_owned);
+        let text = texts.get(&finding.path);
         let mut places = LabelPlaces::new(
-            (diagnostic.span.file, &display, text.as_deref()),
-            root,
-            label_files,
+            (diagnostic.span.file, display.clone(), text.clone()),
+            &labels,
         );
-        places.files.push((
-            ROOT_FILE_ID,
-            root.to_string(),
-            Some(root_source.to_string()),
-        ));
+        places
+            .files
+            .push((ROOT_FILE_ID, root.to_string(), Some(Rc::clone(root_source))));
         if !json_output {
-            let resolver = places.resolver(text.as_deref().unwrap_or(""));
+            let resolver = places.resolver();
             unit.output.out(render_diagnostics(
                 std::slice::from_ref(&diagnostic),
                 &resolver,
@@ -3002,14 +3076,12 @@ fn report_include_findings(
             for expansion in &finding.expansions {
                 // Each site is in the file that wrote it: the root, then the
                 // include before it in the chain.
-                let mut previous = (root.to_string(), Some(root_source.to_string()));
+                let mut previous: (String, Option<Rc<Lines<'_>>>) =
+                    (root.to_string(), Some(Rc::clone(root_source)));
                 let mut via = Vec::new();
                 for step in &expansion.chain {
                     via.push(site_label(&previous.0, previous.1.as_deref(), step.site));
-                    previous = (
-                        display_path::spell(&step.path, root),
-                        texts.get(&step.path).map(str::to_owned),
-                    );
+                    previous = (display_path::spell(&step.path, root), texts.get(&step.path));
                 }
                 let nth = if expansion.occurrences > 1 {
                     format!(
@@ -3028,23 +3100,21 @@ fn report_include_findings(
         }
         let resolved = text
             .as_deref()
-            .map(|text| position::resolve_diagnostic(&SourceMap::new(text), &diagnostic));
+            .map(|text| position::resolve_diagnostic(text.map(), &diagnostic));
         let expansions = finding
             .expansions
             .iter()
             .map(|expansion| {
-                let mut previous = Some(root_source.to_string());
+                let mut previous: Option<Rc<Lines<'_>>> = Some(Rc::clone(root_source));
                 let chain = expansion
                     .chain
                     .iter()
                     .map(|step| {
                         let position = match (&previous, step.site) {
-                            (Some(text), Some(at)) => {
-                                Some(SourceMap::new(text).lookup(at.start as usize))
-                            }
+                            (Some(text), Some(at)) => Some(text.map().lookup(at.start as usize)),
                             _ => None,
                         };
-                        previous = texts.get(&step.path).map(str::to_owned);
+                        previous = texts.get(&step.path);
                         CheckJsonChainStep {
                             path: display_path::spell(&step.path, root),
                             site: step.site.map(|at| CheckJsonSpan {
@@ -3230,7 +3300,7 @@ fn run_analyze(
     // saying how much of the file the count-gated rules could not judge. The
     // envelope carries both facts as well; neither replaces the other.
     let mut notes = Output::default();
-    surface_collected_preproc(path, &source, &collected, &mut notes);
+    surface_collected_preproc(path, &Lines::new(source.as_str()), &collected, &mut notes);
     if !surface_source_context(sem, &mut notes) {
         surface_unjudged_symbols(sem, &mut notes);
     }

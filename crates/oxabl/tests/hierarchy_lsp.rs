@@ -2021,3 +2021,631 @@ fn a_request_that_is_cancelled_stops_the_index_between_two_files() {
         "{elapsed:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Parameter lists that an include writes
+// ---------------------------------------------------------------------------
+
+/// Each parameter starts with a preprocessor name that has no value.
+const PARAMS_I: &str = "{&IO}INPUT pcA AS CHARACTER,\n\
+    {&IO}INPUT piB AS INTEGER\n";
+
+const INC_BASE: &str = "CLASS app.IncBase ABSTRACT:\n\
+    \x20   METHOD PUBLIC ABSTRACT VOID Init({params.i}).\n\
+    END CLASS.\n";
+
+const INC_DERIVED: &str = "CLASS app.IncDerived INHERITS app.IncBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Init({params.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn parameter_lists_from_one_include_are_compared_after_preprocessing() {
+    let ws = small(&[
+        ("params.i", PARAMS_I),
+        ("app/IncBase.cls", INC_BASE),
+        ("app/IncDerived.cls", INC_DERIVED),
+    ]);
+    let base = ws.path("app/IncBase.cls");
+    let derived = ws.path("app/IncDerived.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&derived, INC_DERIVED);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&derived, INC_DERIVED, "Init(", 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({"locations": [name_in(&base, INC_BASE, "VOID Init(", "Init")], "gaps": []})
+    );
+
+    session.open(&base, INC_BASE);
+    let (found, warnings) = implementation(&mut session, &base, INC_BASE, "Init(", 0);
+    assert_eq!(
+        found,
+        vec![name_in(&derived, INC_DERIVED, "VOID Init(", "Init")]
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+const NO_BASE: &str = "CLASS app.NoBase ABSTRACT:\n\
+    \x20   METHOD PUBLIC ABSTRACT VOID Init({nope.i}).\n\
+    END CLASS.\n";
+
+const NO_DERIVED: &str = "CLASS app.NoDerived INHERITS app.NoBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Init(INPUT pcA AS CHARACTER):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// The list is read, but an include that does not resolve comes first and
+/// can define `IO`.
+const HALF_BASE: &str = "{defs.i}\n\
+    CLASS app.HalfBase ABSTRACT:\n\
+    \x20   METHOD PUBLIC ABSTRACT VOID Init({params.i}).\n\
+    END CLASS.\n";
+
+const HALF_DERIVED: &str = "CLASS app.HalfDerived INHERITS app.HalfBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Init({params.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const CANNOT_COMPARE: &str = "with parameters oxabl cannot compare: it may be an overload";
+
+#[test]
+fn a_parameter_list_whose_expansion_is_not_known_is_not_compared() {
+    let ws = small(&[
+        ("params.i", PARAMS_I),
+        ("app/NoBase.cls", NO_BASE),
+        ("app/NoDerived.cls", NO_DERIVED),
+        ("app/HalfBase.cls", HALF_BASE),
+        ("app/HalfDerived.cls", HALF_DERIVED),
+    ]);
+    let mut session = Session::start(&ws.root);
+    for (base, base_text, derived, derived_text) in [
+        ("app/NoBase.cls", NO_BASE, "app/NoDerived.cls", NO_DERIVED),
+        (
+            "app/HalfBase.cls",
+            HALF_BASE,
+            "app/HalfDerived.cls",
+            HALF_DERIVED,
+        ),
+    ] {
+        let base = ws.path(base);
+        let derived = ws.path(derived);
+        session.open(&derived, derived_text);
+        let answer = ask(
+            &mut session,
+            "oxabl/superMethod",
+            position(&derived, derived_text, "Init(", 0),
+        );
+        assert_eq!(
+            answer.result["locations"],
+            json!([name_in(&base, base_text, "VOID Init(", "Init")]),
+            "{}",
+            derived.display()
+        );
+        let gaps = answer.result["gaps"].as_array().unwrap();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(
+            gaps[0].as_str().unwrap().contains(CANNOT_COMPARE),
+            "{gaps:?}"
+        );
+
+        session.open(&base, base_text);
+        let (found, warnings) = implementation(&mut session, &base, base_text, "Init(", 0);
+        assert_eq!(
+            found,
+            vec![name_in(&derived, derived_text, "VOID Init(", "Init")]
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains(CANNOT_COMPARE)),
+            "{warnings:?}"
+        );
+    }
+}
+
+/// The mode of the parameter is the value of `MODE` in the file that
+/// includes it.
+const MODE_I: &str = "{&MODE} pcA AS CHARACTER\n";
+
+const MODE_BASE: &str = "&SCOPED-DEFINE MODE INPUT\n\
+    CLASS app.ModeBase:\n\
+    \x20   METHOD PUBLIC VOID Init({mode.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const MODE_SAME: &str = "&SCOPED-DEFINE MODE INPUT\n\
+    CLASS app.ModeSame INHERITS app.ModeBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Init({mode.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// `OUTPUT`: an overload of `app.ModeBase:Init`.
+const MODE_OTHER: &str = "&SCOPED-DEFINE MODE OUTPUT\n\
+    CLASS app.ModeOther INHERITS app.ModeBase:\n\
+    \x20   METHOD PUBLIC VOID Init({mode.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn one_include_with_two_preprocessor_values_gives_two_lists() {
+    let ws = small(&[
+        ("mode.i", MODE_I),
+        ("app/ModeBase.cls", MODE_BASE),
+        ("app/ModeSame.cls", MODE_SAME),
+        ("app/ModeOther.cls", MODE_OTHER),
+    ]);
+    let base = ws.path("app/ModeBase.cls");
+    let same = ws.path("app/ModeSame.cls");
+    let other = ws.path("app/ModeOther.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&base, MODE_BASE);
+    let (found, warnings) = implementation(&mut session, &base, MODE_BASE, "Init(", 0);
+    assert_eq!(found, vec![name_in(&same, MODE_SAME, "VOID Init(", "Init")]);
+    assert_eq!(warnings, Vec::<String>::new());
+
+    session.open(&same, MODE_SAME);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&same, MODE_SAME, "Init(", 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({"locations": [name_in(&base, MODE_BASE, "VOID Init(", "Init")], "gaps": []})
+    );
+    session.open(&other, MODE_OTHER);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&other, MODE_OTHER, "Init(", 0),
+    );
+    assert_eq!(answer.result, json!({"locations": [], "gaps": []}));
+}
+
+// ---------------------------------------------------------------------------
+// `LIKE` parameters
+// ---------------------------------------------------------------------------
+
+/// No mode (`INPUT`), a prefix with no value, and a field of a database table.
+const LIKE_I: &str = "/* the parameters of a form */\n\
+    \x20  {&prefix}pcCode LIKE item.code,\n\
+    \x20  {&prefix}piQty AS INTEGER\n";
+
+const LIKE_BASE: &str = "CLASS app.LikeBase ABSTRACT:\n\
+    \x20   METHOD PUBLIC ABSTRACT VOID Fill(\n\
+    \x20   {like.i}).\n\
+    END CLASS.\n";
+
+const LIKE_DERIVED: &str = "CLASS app.LikeDerived INHERITS app.LikeBase:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Fill(\n\
+    \x20       {like.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// A temp-table named like the database table: below it, `LIKE item.code`
+/// reads the temp-table.
+const LIKE_MID: &str = "CLASS app.LikeMid INHERITS app.LikeBase ABSTRACT:\n\
+    \x20   DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER.\n\
+    END CLASS.\n";
+
+const LIKE_LEAF: &str = "CLASS app.LikeLeaf INHERITS app.LikeMid:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Fill({like.i}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn like_parameters_written_alike_name_one_field_unless_a_temp_table_can_hide_it() {
+    let ws = small(&[
+        ("like.i", LIKE_I),
+        ("app/LikeBase.cls", LIKE_BASE),
+        ("app/LikeDerived.cls", LIKE_DERIVED),
+        ("app/LikeMid.cls", LIKE_MID),
+        ("app/LikeLeaf.cls", LIKE_LEAF),
+    ]);
+    let base = ws.path("app/LikeBase.cls");
+    let derived = ws.path("app/LikeDerived.cls");
+    let leaf = ws.path("app/LikeLeaf.cls");
+    let mut session = Session::start(&ws.root);
+    let base_fill = name_in(&base, LIKE_BASE, "VOID Fill(", "Fill");
+
+    session.open(&derived, LIKE_DERIVED);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&derived, LIKE_DERIVED, "Fill(", 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({"locations": [base_fill.clone()], "gaps": []})
+    );
+
+    session.open(&leaf, LIKE_LEAF);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&leaf, LIKE_LEAF, "Fill(", 0),
+    );
+    assert_eq!(answer.result["locations"], json!([base_fill]));
+    let gaps = answer.result["gaps"].as_array().unwrap();
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert!(
+        gaps[0].as_str().unwrap().contains(CANNOT_COMPARE),
+        "{gaps:?}"
+    );
+
+    session.open(&base, LIKE_BASE);
+    let (found, warnings) = implementation(&mut session, &base, LIKE_BASE, "Fill(", 0);
+    assert_eq!(
+        found,
+        sorted(vec![
+            name_in(&derived, LIKE_DERIVED, "VOID Fill(", "Fill"),
+            name_in(&leaf, LIKE_LEAF, "VOID Fill(", "Fill"),
+        ])
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("`app.LikeLeaf` declares `Fill`")
+            && !warnings[0].contains("app.LikeDerived"),
+        "{warnings:?}"
+    );
+}
+
+const LIKE_M: &str = "M(INPUT p LIKE item.code)";
+
+/// `app.LB` declares `M` with a `LIKE` parameter.
+const LIKE_LB: &str = "CLASS app.LB:\n\
+    \x20   METHOD PUBLIC VOID M(INPUT p LIKE item.code):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// An interface with the same `M`.
+const LIKE_LI: &str = "INTERFACE app.LI:\n\
+    \x20   METHOD PUBLIC VOID M(INPUT p LIKE item.code).\n\
+    END INTERFACE.\n";
+
+/// A class whose header is `header`, with `body` before an override of `M`
+/// written as in `app.LB`.
+fn like_class(header: &str, body: &str) -> String {
+    format!(
+        "CLASS {header}:\n{body}\
+         \x20   METHOD PUBLIC OVERRIDE VOID {LIKE_M}:\n\
+         \x20   END METHOD.\n\
+         END CLASS.\n"
+    )
+}
+
+/// The super methods of `M` in `file`, and the classes the gaps say oxabl
+/// cannot compare.
+fn like_super(ws: &Workspace, file: &str, text: &str) -> (Vec<Value>, Vec<String>) {
+    let path = ws.path(file);
+    let mut session = Session::start(&ws.root);
+    session.open(&path, text);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&path, text, LIKE_M, 0),
+    );
+    let gaps = answer.result["gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|gap| gap.as_str().unwrap().to_string())
+        .filter(|gap| gap.contains(CANNOT_COMPARE))
+        .collect();
+    (locations(&answer.result["locations"]), gaps)
+}
+
+#[test]
+fn a_like_parameter_is_not_compared_when_a_temp_table_or_buffer_can_name_its_table() {
+    let tt = "    DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER.\n";
+    let buffer = "    DEFINE PRIVATE BUFFER item FOR customer.\n";
+    let compared = |gaps: &[String]| -> Vec<String> {
+        gaps.iter()
+            .map(|gap| gap.split('`').nth(1).unwrap_or_default().to_string())
+            .collect()
+    };
+    // The control: nothing can name `item`, so both read the database table.
+    let derived = like_class("app.LD INHERITS app.LB", "");
+    let ws = small(&[("app/LB.cls", LIKE_LB), ("app/LD.cls", &derived)]);
+    let (found, gaps) = like_super(&ws, "app/LD.cls", &derived);
+    assert_eq!(found.len(), 1);
+    assert_eq!(gaps, Vec::<String>::new(), "the control");
+
+    // In the subclass: a buffer, a temp-table, members an include hides.
+    for (what, body) in [
+        ("a buffer", buffer.to_string()),
+        ("a temp-table", tt.to_string()),
+        ("an unread include", "    {tt.i}\n".to_string()),
+    ] {
+        let derived = like_class("app.LD INHERITS app.LB", &body);
+        let ws = small(&[("app/LB.cls", LIKE_LB), ("app/LD.cls", &derived)]);
+        let (found, gaps) = like_super(&ws, "app/LD.cls", &derived);
+        assert_eq!(found.len(), 1, "{what}");
+        assert_eq!(compared(&gaps), ["app.LB"], "{what}");
+    }
+
+    // In the base itself.
+    let base = LIKE_LB.replace("CLASS app.LB:\n", &format!("CLASS app.LB:\n{tt}"));
+    let derived = like_class("app.LD INHERITS app.LB", "");
+    let ws = small(&[("app/LB.cls", &base), ("app/LD.cls", &derived)]);
+    let (_, gaps) = like_super(&ws, "app/LD.cls", &derived);
+    assert_eq!(compared(&gaps), ["app.LB"], "in the base");
+
+    // Another `EXTENT`.
+    let derived = like_class("app.LD INHERITS app.LB", "")
+        .replace("LIKE item.code)", "LIKE item.code EXTENT 2)");
+    let ws = small(&[("app/LB.cls", LIKE_LB), ("app/LD.cls", &derived)]);
+    let path = ws.path("app/LD.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, &derived);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&path, &derived, "M(", 0),
+    );
+    assert_eq!(answer.result["locations"].as_array().unwrap().len(), 1);
+    assert!(
+        answer.result["gaps"][0]
+            .as_str()
+            .unwrap()
+            .contains(CANNOT_COMPARE),
+        "another extent: {}",
+        answer.result
+    );
+}
+
+#[test]
+fn an_interface_like_parameter_is_compared_with_every_type_above_the_class() {
+    let tt = "    DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER.\n";
+    let compared = |gaps: &[String]| -> Vec<String> {
+        let mut names: Vec<String> = gaps
+            .iter()
+            .map(|gap| gap.split('`').nth(1).unwrap_or_default().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+    // A temp-table above the matched parent: the class sees it and the
+    // interface does not.
+    let grand = format!("CLASS app.LG:\n{tt}END CLASS.\n");
+    let parent = LIKE_LB.replace("CLASS app.LB:", "CLASS app.LB INHERITS app.LG:");
+    let class = like_class("app.LC INHERITS app.LB IMPLEMENTS app.LI", "");
+    let ws = small(&[
+        ("app/LG.cls", &grand),
+        ("app/LB.cls", &parent),
+        ("app/LI.cls", LIKE_LI),
+        ("app/LC.cls", &class),
+    ]);
+    let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+    assert_eq!(found.len(), 2);
+    assert!(compared(&gaps).contains(&"app.LI".to_string()), "{gaps:?}");
+    // The other direction agrees.
+    let li = ws.path("app/LI.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&li, LIKE_LI);
+    let (found, warnings) = implementation(&mut session, &li, LIKE_LI, "M(", 0);
+    assert_eq!(found.len(), 1);
+    assert!(
+        warnings.iter().any(|w| w.contains("`app.LC` declares `M`")),
+        "{warnings:?}"
+    );
+
+    // A temp-table of an interface that the matched interface extends.
+    let top = format!("INTERFACE app.LTop:\n{tt}END INTERFACE.\n");
+    let iface = LIKE_LI.replace("INTERFACE app.LI:", "INTERFACE app.LI INHERITS app.LTop:");
+    let class = like_class("app.LC IMPLEMENTS app.LI", "").replace("OVERRIDE ", "");
+    let ws = small(&[
+        ("app/LTop.cls", &top),
+        ("app/LI.cls", &iface),
+        ("app/LC.cls", &class),
+    ]);
+    let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+    assert_eq!(found.len(), 1);
+    assert_eq!(compared(&gaps), ["app.LI"], "a super-interface");
+
+    // A parent that does not resolve can hold a temp-table.
+    let class = like_class("app.LC INHERITS app.Gone IMPLEMENTS app.LI", "");
+    let ws = small(&[("app/LI.cls", LIKE_LI), ("app/LC.cls", &class)]);
+    let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+    assert_eq!(found.len(), 1);
+    assert_eq!(compared(&gaps), ["app.LI"], "an unresolved parent");
+
+    // With nothing that can name `item`, the interface match is certain.
+    let class = like_class("app.LC IMPLEMENTS app.LI", "").replace("OVERRIDE ", "");
+    let ws = small(&[("app/LI.cls", LIKE_LI), ("app/LC.cls", &class)]);
+    let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+    assert_eq!(found.len(), 1);
+    assert_eq!(gaps, Vec::<String>::new(), "the control");
+}
+
+const PLACE_BASE: &str = "CLASS app.PB:\n\
+    \x20   METHOD PUBLIC VOID N(INPUT a AS INTEGER):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// The file names no include, so its facts are read as written, and the
+/// outline does not read the method.
+const PLACE_DERIVED: &str = "&SCOPED-DEFINE T INTEGER\n\
+    CLASS app.PD INHERITS app.PB:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID N(INPUT a AS {&T}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn a_method_oxabl_cannot_place_shows_its_class() {
+    let ws = small(&[("app/PB.cls", PLACE_BASE), ("app/PD.cls", PLACE_DERIVED)]);
+    let base = ws.path("app/PB.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&base, PLACE_BASE);
+    let (found, warnings) = implementation(&mut session, &base, PLACE_BASE, "N(", 0);
+    assert_eq!(
+        found,
+        vec![location(&ws.path("app/PD.cls"), PLACE_DERIVED, "app.PD", 0)]
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("oxabl cannot place `N` in `app.PD`")),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings.iter().any(|w| w.contains("each is shown")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_record_name_that_a_preprocessor_name_writes_can_name_the_table() {
+    // `app.LG` declares a temp-table or a buffer `item` in a way the text as
+    // written does not show: the class sees it, the interface does not.
+    let variants = [
+        (
+            "a temp-table name",
+            "&SCOPED-DEFINE TT item\n",
+            "    DEFINE PROTECTED TEMP-TABLE {&TT} NO-UNDO FIELD code AS INTEGER.\n",
+        ),
+        (
+            "a whole definition",
+            "&SCOPED-DEFINE TTDEF DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER.\n",
+            "    {&TTDEF}\n",
+        ),
+        (
+            "a buffer name",
+            "&SCOPED-DEFINE B item\n",
+            "    DEFINE PROTECTED BUFFER {&B} FOR customer.\n",
+        ),
+        (
+            "part of a name",
+            "&SCOPED-DEFINE S m\n",
+            "    DEFINE PROTECTED TEMP-TABLE ite{&S} NO-UNDO FIELD code AS INTEGER.\n",
+        ),
+        (
+            "a global name",
+            "&GLOBAL-DEFINE TT item\n",
+            "    DEFINE PROTECTED TEMP-TABLE {&TT} NO-UNDO FIELD code AS INTEGER.\n",
+        ),
+        (
+            "a definition after a period in a declaration",
+            "&SCOPED-DEFINE MORE . DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER\n",
+            "    DEFINE PROTECTED TEMP-TABLE other NO-UNDO FIELD code AS INTEGER {&MORE}.\n",
+        ),
+        (
+            "a definition that ends a method",
+            "&SCOPED-DEFINE MORE END METHOD. DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code \
+             AS INTEGER. METHOD PRIVATE VOID z():\n",
+            "    METHOD PRIVATE VOID y():\n        {&MORE}\n    END METHOD.\n",
+        ),
+        (
+            "a definition in a file whose expanded text does not parse",
+            "&SCOPED-DEFINE MORE . DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER\n",
+            "    DEFINE PROTECTED TEMP-TABLE other NO-UNDO FIELD code AS INTEGER {&MORE}.\n\
+             \x20   METHOD PRIVATE VOID y():\n        MESSAGE {&OPSYS}.\n    END METHOD.\n",
+        ),
+    ];
+    let class = like_class("app.LC INHERITS app.LG IMPLEMENTS app.LI", "").replace("OVERRIDE ", "");
+    for (what, define, body) in variants {
+        let grand = format!("{define}CLASS app.LG:\n{body}END CLASS.\n");
+        let ws = small(&[
+            ("app/LG.cls", &grand),
+            ("app/LI.cls", LIKE_LI),
+            ("app/LC.cls", &class),
+        ]);
+        let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+        assert_eq!(found.len(), 1, "{what}");
+        assert_eq!(gaps.len(), 1, "{what}: {gaps:?}");
+        assert!(
+            gaps[0].contains("`app.LI` declares `M`"),
+            "{what}: {gaps:?}"
+        );
+
+        let li = ws.path("app/LI.cls");
+        let mut session = Session::start(&ws.root);
+        session.open(&li, LIKE_LI);
+        let (found, warnings) = implementation(&mut session, &li, LIKE_LI, "M(", 0);
+        assert_eq!(found.len(), 1, "{what}");
+        assert!(
+            warnings.iter().any(|w| w.contains("`app.LC` declares `M`")),
+            "{what}: {warnings:?}"
+        );
+    }
+
+    // The control: a preprocessor name in a field type, and a temp-table of
+    // another name, leave the records known.
+    let grand = "&SCOPED-DEFINE T INTEGER\nCLASS app.LG:\n\
+        \x20   DEFINE PROTECTED TEMP-TABLE other NO-UNDO FIELD code AS {&T}.\n\
+        END CLASS.\n";
+    let ws = small(&[
+        ("app/LG.cls", grand),
+        ("app/LI.cls", LIKE_LI),
+        ("app/LC.cls", &class),
+    ]);
+    let (found, gaps) = like_super(&ws, "app/LC.cls", &class);
+    assert_eq!(found.len(), 1);
+    assert_eq!(gaps, Vec::<String>::new(), "the control");
+}
+
+const UNPLACED_DERIVED: &str = "&SCOPED-DEFINE T INTEGER\n\
+    CLASS app.PD INHERITS app.PB:\n\
+    \x20   METHOD PUBLIC VOID N(INPUT a AS CHARACTER, INPUT b AS CHARACTER):\n\
+    \x20   END METHOD.\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID N(INPUT a AS {&T}):\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+#[test]
+fn an_overload_oxabl_cannot_place_adds_its_class() {
+    let ws = small(&[("app/PB.cls", PLACE_BASE), ("app/PD.cls", UNPLACED_DERIVED)]);
+    let base = ws.path("app/PB.cls");
+    let derived = ws.path("app/PD.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&base, PLACE_BASE);
+    let (found, warnings) = implementation(&mut session, &base, PLACE_BASE, "N(", 0);
+    assert!(
+        found.contains(&location(&derived, UNPLACED_DERIVED, "app.PD", 0)),
+        "{found:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("oxabl cannot place every `N` in `app.PD`")),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.contains("each is shown\"") || w.contains("could not be told apart")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_preprocessor_reference_that_expands_to_nothing_leaves_the_members_whole() {
+    // A Prolint suppression at class level, and a name in a method body.
+    let grand = "CLASS app.LG:\n\
+        \x20   {&_proparse_ prolint-nowarn(varusage)}\n\
+        \x20   DEFINE PRIVATE VARIABLE v AS INTEGER NO-UNDO.\n\
+        \x20   METHOD PUBLIC VOID Log():\n\
+        \x20       MESSAGE \"{&FILE-NAME}\".\n\
+        \x20   END METHOD.\n\
+        END CLASS.\n";
+    let class = like_class("app.LC INHERITS app.LG IMPLEMENTS app.LI", "").replace("OVERRIDE ", "");
+    let ws = small(&[
+        ("app/LG.cls", grand),
+        ("app/LI.cls", LIKE_LI),
+        ("app/LC.cls", &class),
+    ]);
+    let path = ws.path("app/LC.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, &class);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&path, &class, LIKE_M, 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({"locations": [name_in(&ws.path("app/LI.cls"), LIKE_LI, "VOID M(", "M")], "gaps": []})
+    );
+}

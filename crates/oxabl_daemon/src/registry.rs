@@ -883,7 +883,8 @@ fn report_once(message: &str) -> bool {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if reported.insert(message.to_owned()) {
-        eprintln!("oxabl: {message}");
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "oxabl: {message}");
         return true;
     }
     false

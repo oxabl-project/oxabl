@@ -288,6 +288,8 @@ async function startClient(): Promise<void> {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "abl" }],
     outputChannel: log,
+    // Sends a progress token with `initialize`; the server reports a slow daemon start on it.
+    progressOnInitialization: true,
     initializationOptions: {
       inlayHints: readInlayHints(),
       semanticTokens: readSemanticTokens(),

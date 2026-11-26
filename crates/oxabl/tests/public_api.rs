@@ -450,6 +450,11 @@ fn every_module_is_reachable() {
     let _lints = oxabl::lint::lint_file(&program.statements, &sem, &ctx);
     let formatted = oxabl::formatter::format("MESSAGE \"x\".", &program, &style);
     assert!(formatted.is_ok());
+    // A caller that holds the tokens of the source passes them.
+    assert_eq!(
+        oxabl::formatter::format_with_tokens("MESSAGE \"x\".", &tokens, &program, &style),
+        formatted
+    );
 
     // Remaining items resolve: construct/reference them directly.
     let mut parser = Parser::new(&tokens, "MESSAGE \"x\".");

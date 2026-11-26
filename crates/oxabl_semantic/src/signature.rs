@@ -9,8 +9,8 @@
 //! `docs/design/strict-analysis-open-questions.md`, section 10.
 
 use oxabl_ast::{
-    HandleParamKind, ParameterDirection, ParameterType, PreprocIf, Statement, StatementKind,
-    TypeSource,
+    HandleParamKind, ParameterDirection, ParameterExtent, ParameterType, PreprocIf, Statement,
+    StatementKind, TypeSource,
 };
 
 use crate::index::{IndexName, MemberType};
@@ -434,8 +434,14 @@ pub struct MemberParam {
 /// the consumer to resolve through the declaring file's imports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemberParamShape {
-    /// A variable. `LIKE` gives `Portable(Unknown)`; `EXTENT` gives an array.
+    /// A variable with a type of its own. `EXTENT` gives an array.
     Value(MemberType),
+    /// A variable `LIKE` a field or a variable: its name as written, and the
+    /// `EXTENT` clause of the parameter. Its type is not known here.
+    Like {
+        source: IndexName,
+        extent: Option<ParameterExtent>,
+    },
     /// `BUFFER b FOR table`.
     Buffer,
     /// `TABLE FOR tt`.
@@ -501,11 +507,13 @@ fn member_param(direction: &ParameterDirection, param_type: &ParameterType) -> O
                 .unwrap_or(MemberType::Untyped),
         ),
         ParameterType::Variable {
-            type_source: TypeSource::Like { .. },
+            type_source: TypeSource::Like { source },
+            extent,
             ..
-        } => MemberParamShape::Value(
-            MemberType::portable(ResolvedType::Unknown).unwrap_or(MemberType::Untyped),
-        ),
+        } => MemberParamShape::Like {
+            source: IndexName::new(&source.name),
+            extent: *extent,
+        },
         ParameterType::Handle { kind, .. } => match kind {
             HandleParamKind::Table => MemberParamShape::Table,
             HandleParamKind::TableHandle => MemberParamShape::TableHandle,
@@ -554,7 +562,7 @@ pub(crate) fn call_params(
                 MemberParamShape::Value(MemberType::Named(name)) => {
                     CallParamKind::Value(class(name))
                 }
-                MemberParamShape::Value(MemberType::Untyped) => {
+                MemberParamShape::Value(MemberType::Untyped) | MemberParamShape::Like { .. } => {
                     CallParamKind::Value(ResolvedType::Unknown)
                 }
                 MemberParamShape::Buffer => CallParamKind::Buffer,

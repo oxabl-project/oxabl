@@ -1,0 +1,42 @@
+[package]
+name = "oxabl_bench"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "End-to-end and memory benchmarks of oxabl, and a generator of large synthetic ABL workspaces"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_bench"
+publish = false
+
+# Not published. The oxabl crates are path dependencies with no version, so a
+# release does not rewrite this manifest.
+[dependencies]
+criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
+oxabl_common = { path = "../oxabl_common" }
+oxabl_pipeline = { path = "../oxabl_pipeline" }
+oxabl_schema = { path = "../oxabl_schema" }
+oxabl_workspace = { path = "../oxabl_workspace" }
+
+[dev-dependencies]
+oxabl_lexer = { path = "../oxabl_lexer" }
+oxabl_parser = { path = "../oxabl_parser" }
+oxabl_semantic = { path = "../oxabl_semantic" }
+oxabl_analyze = { path = "../oxabl_analyze" }
+oxabl_index = { path = "../oxabl_index" }
+
+# Only the `[[bench]]` targets run under `cargo bench`, so Criterion options
+# after `--` reach them and no libtest harness refuses them.
+[lib]
+bench = false
+
+[[bin]]
+name = "gen-workspace"
+path = "src/bin/gen_workspace.rs"
+bench = false
+
+[[bench]]
+name = "e2e_bench"
+harness = false
+
+[[bench]]
+name = "large_bench"
+harness = false

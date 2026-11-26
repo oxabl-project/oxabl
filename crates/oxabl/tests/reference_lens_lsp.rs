@@ -1582,3 +1582,48 @@ fn a_method_that_a_class_event_subscribes_by_name_never_has_an_exact_count() {
         assert_eq!(method, &exact(0), "{titles:?}");
     }
 }
+
+#[test]
+fn a_parameter_list_from_an_include_is_compared_after_preprocessing() {
+    // `MODE` is `OUTPUT` in `app.Other`: its `Init` is an overload.
+    const MODE_I: &str = "{&MODE} pcA AS CHARACTER\n";
+    const BASE: &str = "&SCOPED-DEFINE MODE INPUT\nCLASS app.Base:\n\
+        \x20 METHOD PUBLIC VOID Init({mode.i}):\n  END METHOD.\nEND CLASS.\n";
+    const SAME: &str = "&SCOPED-DEFINE MODE INPUT\nCLASS app.Same INHERITS app.Base:\n\
+        \x20 METHOD PUBLIC OVERRIDE VOID Init({mode.i}):\n  END METHOD.\nEND CLASS.\n";
+    const OTHER: &str = "&SCOPED-DEFINE MODE OUTPUT\nCLASS app.Other INHERITS app.Base:\n\
+        \x20 METHOD PUBLIC VOID Init({mode.i}):\n  END METHOD.\nEND CLASS.\n";
+    let ws = class_workspace(
+        &[
+            ("mode.i", MODE_I),
+            ("app/Base.cls", BASE),
+            ("app/Same.cls", SAME),
+            ("app/Other.cls", OTHER),
+        ],
+        "MESSAGE 1.\n",
+    );
+    let mut session = start(&ws);
+    let titles = titles_of(&mut session, &ws, "app/Same.cls", SAME);
+    assert_eq!(titles[1], short(0, SUPERTYPE), "{titles:?}");
+    let titles = titles_of(&mut session, &ws, "app/Other.cls", OTHER);
+    assert_eq!(titles[1], exact(0), "{titles:?}");
+}
+
+#[test]
+fn a_parameter_list_from_an_include_that_does_not_resolve_may_override() {
+    const BASE: &str = "CLASS app.Base:\n  METHOD PUBLIC VOID Init({nope.i}):\n  END METHOD.\n\
+        END CLASS.\n";
+    const CHILD: &str = "CLASS app.Child INHERITS app.Base:\n\
+        \x20 METHOD PUBLIC VOID Init(INPUT pcA AS CHARACTER):\n  END METHOD.\nEND CLASS.\n";
+    let ws = class_workspace(
+        &[("app/Base.cls", BASE), ("app/Child.cls", CHILD)],
+        "MESSAGE 1.\n",
+    );
+    let mut session = start(&ws);
+    let titles = titles_of(&mut session, &ws, "app/Child.cls", CHILD);
+    // The unresolved include is also a file oxabl cannot read, which comes
+    // first; the other reason is the supertype, which the class has not.
+    let unread = short(0, UNKNOWN_FILE);
+    assert_eq!(titles[0], unread, "{titles:?}");
+    assert_eq!(titles[1], format!("{unread} (+1 more)"), "{titles:?}");
+}

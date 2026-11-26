@@ -33,3 +33,28 @@ jobs:
         with:
           mode: simulation
           run: cargo codspeed run
+
+  # Allocations and peak heap of the lexer, the parser and the end-to-end
+  # benches, with CodSpeed's Memory instrument. The same bench binaries; the
+  # numbers show on the pull request next to the Simulation ones.
+  codspeed-memory:
+    name: Run benchmarks (memory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up the Rust toolchain and cargo-codspeed
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+          bins: cargo-codspeed@6.1.0
+
+      - name: Build the benchmark target(s)
+        run: cargo codspeed build -m memory -p oxabl_lexer -p oxabl_parser -p oxabl_bench -p oxabl_daemon
+
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: memory
+          run: cargo codspeed run -p oxabl_lexer -p oxabl_parser -p oxabl_bench -p oxabl_daemon

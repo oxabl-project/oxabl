@@ -9,6 +9,7 @@
 //! structurally replaceable by a v2 doc-IR — but it builds **none** of Wadler's
 //! `group`/`break`/`nest` algebra. There is no width measurement here.
 
+use oxabl_common::SourceMap;
 use oxabl_style::IndentStyle;
 
 /// One emitted line: an absolute indent width in columns plus its content.
@@ -170,10 +171,18 @@ pub(crate) fn render_indent(cols: usize, style: IndentStyle, size: usize) -> Str
 /// common as bare LF; otherwise `"\n"`. This keeps a CRLF codebase from being
 /// silently rewritten to LF (a surprise byte-level churn), while defaulting to
 /// LF for LF-only or newline-free files.
-pub(crate) fn dominant_line_ending(source: &str) -> &'static str {
-    let crlf = source.matches("\r\n").count();
+///
+/// `sm` is the line table of `source`: each line start after the first follows
+/// one `\n`, so the table has the line endings and no other scan is needed.
+pub(crate) fn dominant_line_ending(source: &str, sm: &SourceMap) -> &'static str {
     let bytes = source.as_bytes();
-    let total_lf = bytes.iter().filter(|&&b| b == b'\n').count();
+    let total_lf = sm.line_count() - 1;
+    let crlf = (2..=sm.line_count())
+        .filter(|&line| {
+            let start = sm.line_start(line).unwrap_or(0);
+            start >= 2 && bytes[start - 2] == b'\r'
+        })
+        .count();
     let lf_only = total_lf - crlf;
     if crlf > 0 && crlf >= lf_only {
         "\r\n"
@@ -185,6 +194,10 @@ pub(crate) fn dominant_line_ending(source: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ending(source: &str) -> &'static str {
+        dominant_line_ending(source, &SourceMap::new(source))
+    }
 
     #[test]
     fn indent_rendering_spaces_and_tabs() {
@@ -230,10 +243,15 @@ mod tests {
 
     #[test]
     fn detects_crlf_and_lf() {
-        assert_eq!(dominant_line_ending("a\r\nb\r\n"), "\r\n");
-        assert_eq!(dominant_line_ending("a\nb\n"), "\n");
-        assert_eq!(dominant_line_ending("no newline"), "\n");
+        assert_eq!(ending("a\r\nb\r\n"), "\r\n");
+        assert_eq!(ending("a\nb\n"), "\n");
+        assert_eq!(ending("no newline"), "\n");
         // Mixed but CRLF-dominant.
-        assert_eq!(dominant_line_ending("a\r\nb\r\nc\n"), "\r\n");
+        assert_eq!(ending("a\r\nb\r\nc\n"), "\r\n");
+        // A line feed at offset 0, a bare CR, a CRLF on the first line.
+        assert_eq!(ending("\n\nx"), "\n");
+        assert_eq!(ending("\r\n\n"), "\r\n");
+        assert_eq!(ending("a\rb\n"), "\n");
+        assert_eq!(ending(""), "\n");
     }
 }

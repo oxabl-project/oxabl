@@ -419,12 +419,14 @@ pub mod analyze {
     };
 }
 
-/// Layout formatter — the pure [`format`](formatter::format) entry point and
+/// Layout formatter — the pure [`format`](formatter::format) entry point
+/// (and [`format_with_tokens`](formatter::format_with_tokens) for a caller that
+/// holds the tokens of the source) and
 /// its [`FormatBail`](formatter::FormatBail) failure channel, plus the
 /// [`FormatFailure`] channel that
 /// [`try_format_source`] adds a contained-panic arm to.
 pub mod formatter {
-    pub use oxabl_formatter::{FormatBail, FormatFailure, format};
+    pub use oxabl_formatter::{FormatBail, FormatFailure, format, format_with_tokens};
 }
 
 /// Style guide — typed, configurable formatting/diagnostic rules and the two
