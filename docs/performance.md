@@ -456,6 +456,10 @@ the work.
 | schema files parsed (`schema_file_parsed`) | `oxabl_common`, feature `test-panics` | `OXABL_TEST_SCHEMA_PARSES` is set | `crates/oxabl/tests/schema_cache.rs` |
 | calls of `parse_program` (`parse_count`) | `oxabl_parser`, feature `test-counters` | `OXABL_TEST_PARSES` is set | `crates/oxabl/tests/check_producer_prefilter.rs`, `check_producer_scan.rs` |
 | expansions of each file of the producer scan | `oxabl_common::test_tally`, feature `test-panics` | `OXABL_TEST_TALLY` is set | `crates/oxabl/tests/check_producer_scan.rs` |
+| spellings of a path in the include findings of a root (`display_path::spell_from`) | `oxabl_common::test_tally`, feature `test-panics` | `OXABL_TEST_TALLY` is set | `crates/oxabl/tests/check_include_spelling.rs` |
+| path resolutions of `canonical_path`, for the include findings of one root's unit (the daemon) and the labels of an include's diagnostics (the language server) | `oxabl_common::test_tally`, feature `test-panics` | the test calls `test_tally::within` | `crates/oxabl_daemon/tests/context_canonical.rs`, `crates/oxabl_lsp/tests/related_canonical.rs` |
+
+`oxabl check --include-findings` spells each include file once for each worker, not once for each chain step of each expansion of each finding: `IncludeFiles` in `crates/oxabl/src/main.rs` keeps the text and the two spellings (relative and absolute root) of a file with one hash of its path. The rows share the spelling (`Arc<str>`), and the run filters the borrowed findings of the root instead of copying them. `oxabl_daemon::db::compute_context_diagnostics` resolves each distinct path once (`IsInclude`), and the language server's `Placer` resolves each label file once.
 
 `check_producer_prefilter.rs` runs `oxabl check` over 3 and 6 roots of one
 shape, with one `SHARED` consumer, and reads the parses of one more root. A

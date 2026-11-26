@@ -100,6 +100,7 @@ pub fn canonical_root(root: impl AsRef<Path>) -> std::io::Result<PathBuf> {
 /// whose directory is missing too keeps its lexically normalised spelling — no
 /// worse than the key it had before, and still the key a lexical caller would use.
 pub fn canonical_path(path: &Path) -> PathBuf {
+    oxabl_common::test_tally::count("session.canonical");
     if let Ok(resolved) = std::fs::canonicalize(path) {
         return resolved;
     }

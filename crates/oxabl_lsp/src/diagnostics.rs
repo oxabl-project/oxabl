@@ -39,11 +39,15 @@ struct Related<'a> {
     files: &'a [LabelFile],
 }
 
-/// Places labels, building the rope of each other file once.
+/// Places labels, building the rope and resolving the path of each other file
+/// once.
 struct Placer<'a> {
     related: &'a Related<'a>,
     document: Option<PathBuf>,
     ropes: HashMap<PathBuf, Option<Rope>>,
+    /// The canonical path of each file a label pointed into: a file system
+    /// call, so one for each file and not one for each label.
+    canonical: HashMap<PathBuf, PathBuf>,
 }
 
 impl<'a> Placer<'a> {
@@ -52,6 +56,7 @@ impl<'a> Placer<'a> {
             related,
             document: crate::uri_to_path(related.uri).map(|path| canonical_path(&path)),
             ropes: HashMap::new(),
+            canonical: HashMap::new(),
         }
     }
 
@@ -73,8 +78,12 @@ impl<'a> Placer<'a> {
         }
         let known = self.related.files.iter().find(|f| f.file == label.file)?;
         let path = known.path.as_path();
-        let canonical = canonical_path(path);
-        if self.document.as_ref() == Some(&canonical) {
+        if !self.canonical.contains_key(path) {
+            self.canonical
+                .insert(path.to_path_buf(), canonical_path(path));
+        }
+        let canonical = &self.canonical[path];
+        if self.document.as_ref() == Some(canonical) {
             return Some(in_document(range(rope, label, encoding)));
         }
         let other = self
@@ -83,7 +92,7 @@ impl<'a> Placer<'a> {
             .or_insert_with(|| known.text.as_deref().map(Rope::from_str))
             .as_ref()?;
         Some(Location {
-            uri: path_to_uri(&canonical)?,
+            uri: path_to_uri(canonical)?,
             range: range(other, label, encoding),
         })
     }
