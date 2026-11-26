@@ -2,6 +2,8 @@
 //! buffer edit, a write on disk, a file created or removed, a buffer opened or
 //! closed. After each step the references that the daemon gives must be those
 //! of a new daemon on the same text, and a test states some of them as well.
+//! The workspace symbols and the incoming calls are compared too: the pass
+//! keeps their rows, and a search over files does not read them.
 //!
 //! The tests here are the ones that reach what the workspace pass keeps of the
 //! paths it read: a path that no file reads for a while, a file that is
@@ -183,6 +185,69 @@ impl Run {
             assert!(answer.get("error").is_none(), "references gave {answer}");
             found.insert(format!("{name}:{needle}"), locations(&answer["result"]));
         }
+        found.insert("workspace symbols".to_string(), self.symbols());
+        for name in self.buffers.keys().copied().collect::<Vec<_>>() {
+            found.insert(format!("incoming calls {name}"), self.incoming_calls(name));
+        }
+        found
+    }
+
+    /// Every symbol of the workspace, as one line each, in a fixed order. The
+    /// symbol rows are kept by the pass, and a search over files does not read
+    /// them, so a row of a file that is gone shows only here.
+    fn symbols(&mut self) -> Vec<String> {
+        let answer = self
+            .session
+            .request("workspace/symbol", json!({"query": ""}));
+        assert!(answer.get("error").is_none(), "symbol gave {answer}");
+        let mut rows: Vec<String> = answer["result"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|row| {
+                let uri = row["location"]["uri"].as_str().unwrap_or_default();
+                format!(
+                    "{} {} {} {}",
+                    row["name"],
+                    row["kind"],
+                    row["containerName"],
+                    uri.rsplit('/').next().unwrap_or_default()
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// The callers of the program in `name`, from the dependency graph that
+    /// the pass keeps.
+    fn incoming_calls(&mut self, name: &str) -> Vec<String> {
+        let items = self.session.request(
+            "textDocument/prepareCallHierarchy",
+            json!({
+                "textDocument": {"uri": file_uri(&self.root.join(name))},
+                "position": {"line": 0, "character": 0}
+            }),
+        );
+        assert!(items.get("error").is_none(), "prepare gave {items}");
+        let mut found = Vec::new();
+        for item in items["result"].as_array().cloned().unwrap_or_default() {
+            let incoming = self
+                .session
+                .request("callHierarchy/incomingCalls", json!({"item": item.clone()}));
+            assert!(incoming.get("error").is_none(), "incoming gave {incoming}");
+            for call in incoming["result"].as_array().cloned().unwrap_or_default() {
+                let uri = call["from"]["uri"].as_str().unwrap_or_default();
+                found.push(format!(
+                    "{} {} {}",
+                    item["name"],
+                    call["from"]["name"],
+                    uri.rsplit('/').next().unwrap_or_default()
+                ));
+            }
+        }
+        found.sort();
         found
     }
 
@@ -344,6 +409,29 @@ fn a_file_removed_and_made_again_is_analysed_as_it_is() {
     );
     let last = run.step("d.p has the first text", Step::Write("d.p", "RUN b.p.\n"));
     assert!(has(&last, "q.p:b.p", "d.p@0:4"), "{last:?}");
+}
+
+#[test]
+fn a_removed_file_is_gone_from_the_symbols_and_the_calls() {
+    let mut run = Run::new(&script(&[("d.p", "RUN b.p.\n")], &["q.p", "b.p"]));
+    let first = run.step("the start", Step::Edit("q.p", BASE[2].1));
+    assert!(
+        first["workspace symbols"]
+            .iter()
+            .any(|row| row.contains("d.p")),
+        "d.p has a symbol: {first:?}"
+    );
+    let gone = run.step("d.p is removed", Step::Remove("d.p"));
+    assert!(
+        !gone["workspace symbols"]
+            .iter()
+            .any(|row| row.contains("d.p")),
+        "d.p has no symbol: {gone:?}"
+    );
+    assert!(
+        gone.values().flatten().all(|row| !row.contains("d.p")),
+        "no answer names d.p: {gone:?}"
+    );
 }
 
 #[test]

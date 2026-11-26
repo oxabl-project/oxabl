@@ -188,3 +188,15 @@ daemon on the same text. It tests:
   rounds;
 - a schema from the schema cache and a parsed one: the passes after the cache
   is removed and filled again are not full.
+
+Each step also compares the workspace symbols and the incoming calls of each
+open file with the new daemon: the pass keeps their rows, and a search over
+files does not read them, so a row of a file that is gone shows only there.
+
+`crates/oxabl_daemon/tests/incremental_graph.rs` asks the daemon in the process
+for `oxabl/impact`, because no language server request reads the edges that it
+tests. It tests a file that starts to produce a `SHARED` name that a consumer
+used with no producer (the consumer read no file, so only the map of the
+producers says that it changed), a path that two include paths both have and
+that a `RUN` only checks for, and that is removed, and the same path when
+another file reads it later and its text changes.
