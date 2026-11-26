@@ -81,7 +81,7 @@ pub use deps::{
     UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
 };
 pub use facts::{ClassFacts, FileFacts};
-pub use producers::{SharedProducers, definitions_in};
+pub use producers::{DeferredProducers, FileScan, SharedProducers, definitions_in};
 pub use written::{ReferenceSyntax, WrittenReference, written_imports, written_references};
 
 use std::io;
@@ -93,7 +93,7 @@ use oxabl_ast::{
 };
 use oxabl_common::FileId;
 use oxabl_lexer::{Kind, Token};
-use oxabl_parser::Parser;
+use oxabl_parser::{Parser, Program};
 use oxabl_preprocessor::{ElidedKind, PreprocessedFile, Preprocessor, SpanNode};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
@@ -349,8 +349,41 @@ impl KnownValues {
 /// a superset of the files it expands. A class or interface header answers from
 /// the tokens; any other file is parsed.
 pub(crate) fn may_be_expanded(source: &str) -> bool {
-    let tokens = oxabl_lexer::tokenize(source);
-    expansion_scan::may_declare_a_type(&tokens) || expansion_scan::parsed(source, &tokens)
+    may_be_expanded_tokens(source, &oxabl_lexer::tokenize(source))
+}
+
+/// [`may_be_expanded`] of `source` with its tokens.
+pub(crate) fn may_be_expanded_tokens(source: &str, tokens: &[Token]) -> bool {
+    expansion_scan::may_declare_a_type(tokens) || expansion_scan::parsed(source, tokens)
+}
+
+/// [`may_be_expanded`] of a text already parsed.
+pub(crate) fn may_be_expanded_parsed(program: &Program) -> bool {
+    !program.is_ok()
+        || only_includes(&program.statements)
+        || program.statements.iter().any(|stmt| {
+            matches!(
+                stmt.kind,
+                StatementKind::Class { .. } | StatementKind::Interface { .. }
+            )
+        })
+}
+
+/// The names the declare pass gives the `NEW [GLOBAL] SHARED` flags in
+/// `statements`, the text of `source`: what [`index_file`] reports.
+pub(crate) fn declared_shared(statements: &[Statement], source: &str) -> Vec<IndexName> {
+    let schema = Schema::empty();
+    let ctx = AnalysisContext::new(INDEXED_FILE, source, &schema);
+    let (_scopes, symbols, _diagnostics, _schema_revision) = declare_pass(statements, &ctx);
+    symbols
+        .iter()
+        .filter(|(_, symbol)| {
+            symbol
+                .flags
+                .intersects(SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED)
+        })
+        .map(|(_, symbol)| IndexName::new(&symbol.name))
+        .collect()
 }
 
 /// The expanded text of `source`, the file at `path`, with its includes read as
@@ -383,6 +416,7 @@ struct Expansion {
 /// names (`CLASS {&fullName}:`) or spliced in from an `{include}`. `None` when
 /// the preprocessor failed outright.
 fn expand(source: &str, includes: &IncludeContext<'_>) -> Option<Expansion> {
+    oxabl_common::test_tally::count("index.expand");
     let processed = Preprocessor::new(includes.fs, includes.include_paths)
         .with_predefined(includes.predefined)
         .process(INDEXED_FILE, source)

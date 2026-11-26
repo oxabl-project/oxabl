@@ -35,7 +35,10 @@ pub use diagnostics::{
     SCHEMA0001, SCHEMA0010, SCHEMA0011, SCHEMA0012, SCHEMA0020, SCHEMA0021, SCHEMA0030, SCHEMA0031,
 };
 pub use like::{EffectiveIndex, EffectiveTable};
-pub use loader::{FileSchema, LOAD_FIELD_CAP, LOAD_TABLE_CAP, SchemaLoader, df_files_in_dir};
+pub use loader::{
+    FileSchema, LOAD_FIELD_CAP, LOAD_TABLE_CAP, SchemaCache, SchemaLoader, SchemaSource,
+    df_files_in_dir,
+};
 pub use metaschema::{METASCHEMA_DF, metaschema};
 pub use parser::{ParseOutcome, SkippedDirective, parse_df};
 pub use schema::{

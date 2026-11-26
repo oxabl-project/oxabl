@@ -1,6 +1,7 @@
 //! Multi-file schema loader with merge and conflict diagnostics.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan};
@@ -17,6 +18,31 @@ use crate::schema::{Field, Schema, SchemaType, Table, TableId};
 pub const LOAD_TABLE_CAP: usize = 100_000;
 /// Hard upper bound on fields per table before `SCHEMA0031` fires.
 pub const LOAD_FIELD_CAP: usize = 10_000;
+
+/// One schema file as a [`SchemaCache`] sees it: where it is and what it said.
+#[derive(Debug, Clone, Copy)]
+pub struct SchemaSource<'a> {
+    pub path: &'a Path,
+    pub text: &'a str,
+}
+
+/// A store for loaded schemas, keyed by the files they were loaded from.
+///
+/// A cache is an optimisation: a `fetch` that fails or doubts an entry gives
+/// `None`, and a `store` that fails is silent.
+pub trait SchemaCache: Send + Sync {
+    /// The key of a load of `files`, given in load order. It must depend on
+    /// every path and every byte of them, and on whatever else decides what the
+    /// loader makes of them (the build of the program). The loader asks once
+    /// for each load and passes the key to `fetch` and `store`.
+    fn key(&self, files: &[SchemaSource<'_>]) -> String;
+
+    /// The entry that [`store`](Self::store) kept under `key`.
+    fn fetch(&self, key: &str) -> Option<Vec<u8>>;
+
+    /// Keep `entry` under `key`.
+    fn store(&self, key: &str, entry: &[u8]);
+}
 
 /// Merges one or more `.df` files into a single `Schema`.
 ///
@@ -44,7 +70,7 @@ impl SchemaLoader {
         paths: &[PathBuf],
         fs: &dyn FileSystem,
     ) -> (Schema, Vec<Diagnostic>) {
-        Self::load(paths, fs, None, false)
+        Self::load(paths, fs, None, false, None)
     }
 
     pub fn load_files_with_root(
@@ -52,7 +78,21 @@ impl SchemaLoader {
         fs: &dyn FileSystem,
         workspace_root: Option<&Path>,
     ) -> (Schema, Vec<Diagnostic>) {
-        Self::load(paths, fs, workspace_root, true)
+        Self::load(paths, fs, workspace_root, true, None)
+    }
+
+    /// As [`load_files`](Self::load_files), but a load of files the `cache`
+    /// already holds the result of parses nothing.
+    ///
+    /// The result is the one `load_files` gives, diagnostics included. A file
+    /// that cannot be read is a load with diagnostics of its own, and runs
+    /// without the cache, as does an entry that does not decode.
+    pub fn load_files_cached(
+        paths: &[PathBuf],
+        fs: &dyn FileSystem,
+        cache: Option<&dyn SchemaCache>,
+    ) -> (Schema, Vec<Diagnostic>) {
+        Self::load(paths, fs, None, true, cache)
     }
 
     fn load(
@@ -60,7 +100,31 @@ impl SchemaLoader {
         fs: &dyn FileSystem,
         workspace_root: Option<&Path>,
         with_metaschema: bool,
+        cache: Option<&dyn SchemaCache>,
     ) -> (Schema, Vec<Diagnostic>) {
+        // The texts, read ahead only to ask the cache about them. One that
+        // cannot be read, or a path that escapes the root, leaves the load to
+        // report it in its own order.
+        let texts = cache
+            .filter(|_| with_metaschema)
+            .and_then(|_| read_all(paths, fs, workspace_root));
+        let inputs: Vec<SchemaSource<'_>> = texts
+            .iter()
+            .flatten()
+            .zip(paths)
+            .map(|(text, path)| SchemaSource { path, text })
+            .collect();
+        let keyed = cache
+            .filter(|_| texts.is_some())
+            .map(|cache| (cache, cache.key(&inputs)));
+        if let Some((cache, key)) = &keyed
+            && let Some((schema, diagnostics)) =
+                cache.fetch(key).and_then(|entry| Schema::decode(&entry))
+            && schema.has_sources(paths)
+        {
+            return (schema, diagnostics);
+        }
+
         let mut schema = Schema::empty();
         let mut diagnostics = Vec::new();
 
@@ -85,7 +149,11 @@ impl SchemaLoader {
                 continue;
             }
 
-            let source = match fs.read(path) {
+            let source = match texts.as_ref() {
+                Some(texts) => Ok(Arc::clone(&texts[idx])),
+                None => fs.read(path),
+            };
+            let source = match source {
                 Ok(s) => s,
                 Err(err) => {
                     diagnostics.push(Diagnostic::error(
@@ -100,6 +168,7 @@ impl SchemaLoader {
                 }
             };
 
+            oxabl_common::schema_file_parsed();
             ingest(&mut schema, &source, file_id, &mut diagnostics, None);
             schema.record_source_file(file_id, path.clone());
         }
@@ -119,8 +188,26 @@ impl SchemaLoader {
             schema.bump_revision();
         }
 
+        if let Some((cache, key)) = &keyed
+            && let Some(entry) = schema.encode(&diagnostics)
+        {
+            cache.store(key, &entry);
+        }
         (schema, diagnostics)
     }
+}
+
+/// The text of every path, or `None` when one escapes `root` or cannot be read.
+fn read_all(paths: &[PathBuf], fs: &dyn FileSystem, root: Option<&Path>) -> Option<Vec<Arc<str>>> {
+    paths
+        .iter()
+        .map(|path| {
+            if root.is_some_and(|root| !path_within(root, path)) {
+                return None;
+            }
+            fs.read(path).ok()
+        })
+        .collect()
 }
 
 /// Build a `Schema` from `.df` text that has no file behind it.

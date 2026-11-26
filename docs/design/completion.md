@@ -988,6 +988,11 @@ It is measured in two ways:
   seconds before it analyses, in test builds only
   (`oxabl_common::hold_if_injected`). A completion after an edit answers
   before the hold ends, from the stale base, with `isIncomplete: true`.
+- A second black-box test (`crates/oxabl/tests/completion_review_lsp.rs`)
+  uses the marker `OXABL-TEST-HOLD:completion.base@<ms>`: the first base of
+  the document waits that long, in test builds only. A `.` at the end of a
+  statement answers before the hold ends, and a request that needs a base
+  waits for it.
 
 The first request after a document opens makes its base and can take longer.
 

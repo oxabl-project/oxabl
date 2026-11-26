@@ -342,6 +342,8 @@ pub(crate) struct AddedFileWalk {
     pub last_ran: Option<Instant>,
     /// What that walk counted, or the pass's own count before the first walk.
     pub last_count: usize,
+    /// How many paths that the pass looked for and did not find that walk found.
+    pub last_appeared: u32,
     /// How many walks have run. Read by tests, which is the only way the rate limit
     /// is observable at all — a limit nothing can see is a limit nothing pins.
     pub walks: u64,
@@ -354,6 +356,7 @@ impl AddedFileWalk {
         AddedFileWalk {
             last_ran: None,
             last_count: discovered,
+            last_appeared: 0,
             walks: 0,
         }
     }

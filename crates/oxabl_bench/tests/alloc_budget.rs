@@ -1,4 +1,5 @@
-//! Allocation budgets of one lex and one parse of `resources/lsp_bench.p`.
+//! Allocation budgets of one lex and one parse of `resources/lsp_bench.p`, and
+//! of one parse of the schema fixture `sp2k.df`.
 //!
 //! The counts are the same on every run of one toolchain. A change that
 //! allocates more fails here. A change that allocates less fails too, so its
@@ -81,6 +82,31 @@ fn lex_and_parse_of_lsp_bench_stay_in_budget() {
         parse,
     ));
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+    parse_of_sp2k_df_stays_in_budget();
+}
+
+/// Called from the test above, not a test of its own: the counter is global,
+/// so two tests that run in parallel would count each other's allocations.
+fn parse_of_sp2k_df_stays_in_budget() {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxabl_schema/fixtures/sp2k.df"),
+    )
+    .unwrap();
+    let file = oxabl_common::FileId::new(1);
+    // One run first, so the atom table and the lazy statics are not counted.
+    let _ = oxabl_schema::parse_df(&text, file);
+    let (outcome, usage) = measure(|| oxabl_schema::parse_df(&text, file));
+    assert_eq!(outcome.tables.len(), 25, "the input changed");
+    eprintln!("parse_df: {usage:?}");
+    let problems = check(
+        &Budget {
+            what: "parse_df",
+            allocations: DF_ALLOCATIONS,
+            bytes: DF_BYTES,
+        },
+        usage,
+    );
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
 // Measured on 20,311 tokens: 0.008 allocations and 61 bytes for each token in
@@ -89,3 +115,8 @@ const LEX_ALLOCATIONS: u64 = 169;
 const LEX_BYTES: u64 = 1_245_667;
 const PARSE_ALLOCATIONS: u64 = 11_877;
 const PARSE_BYTES: u64 = 3_943_096;
+
+// The parse of `sp2k.df` (the strings the model keeps, and no string for a
+// keyword or an attribute word).
+const DF_ALLOCATIONS: u64 = 1_848;
+const DF_BYTES: u64 = 358_902;

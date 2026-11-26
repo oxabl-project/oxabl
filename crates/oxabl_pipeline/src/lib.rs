@@ -109,7 +109,7 @@ mod syntax;
 
 pub use config::{
     ConfigOverrides, ConfigWarning, PipelineConfig, configured_schema_files, resolve_from_config,
-    resolve_from_config_deferred,
+    resolve_from_config_deferred, set_schema_cache,
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use format_range::{RangeBail, RangeEdit, RangeFailure};
@@ -157,9 +157,9 @@ pub use syntax::{DocumentSyntax, Fold, FoldKind, document_syntax};
 // `oxabl_index` to name the edge kind every answer is grouped by.
 pub use oxabl_index::{
     BranchKind, ClosureReference, Completeness, ConditionalBranch, ConditionalInclude,
-    ConditionalIncludeClosure, ConditionalReference, DegradedReason, DependencyEdge,
-    DependencyEdges, EdgeKind, EdgeTarget, IncludeContext, ReferenceSyntax, SharedProducers,
-    UnresolvedReference, definitions_in,
+    ConditionalIncludeClosure, ConditionalReference, DeferredProducers, DegradedReason,
+    DependencyEdge, DependencyEdges, EdgeKind, EdgeTarget, IncludeContext, ReferenceSyntax,
+    SharedProducers, UnresolvedReference, definitions_in,
 };
 
 use oxabl_common::FileId;

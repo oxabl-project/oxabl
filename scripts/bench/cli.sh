@@ -72,6 +72,11 @@ if [ ${#missing[@]} -gt 0 ]; then
     exec nix shell "${missing[@]}" --command "$0" "${again[@]}"
 fi
 
+# Every run parses the schema, so each tool and each commit measures the same
+# work. To measure runs that read the cache, set OXABL_SCHEMA_CACHE to
+# anything but off, with OXABL_SCHEMA_CACHE_DIR and OXABL_CACHE_MODE=developer.
+export OXABL_SCHEMA_CACHE=${OXABL_SCHEMA_CACHE:-off}
+
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 shipped=$out/oxabl

@@ -60,7 +60,7 @@ pub use resolve::{
     Resolution, UnresolvedReason, declare_pass, resolve_pass, run_miss_is_reported,
     run_target_climbs_out,
 };
-pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
+pub use scope::{BindingIter, BindingMap, Scope, ScopeBindings, ScopeId, ScopeKind, ScopeTree};
 pub use sequence::{SequenceOperand, sequence_operand};
 pub use signature::{
     CallParam, CallParamKind, MemberParam, MemberParamShape, Param, ParamMode, ParamShape,

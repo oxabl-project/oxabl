@@ -53,6 +53,8 @@ pub mod methods;
 mod pass;
 pub mod references;
 pub mod registry;
+#[cfg(unix)]
+pub mod root_watch;
 pub mod server;
 pub mod session;
 #[cfg(unix)]

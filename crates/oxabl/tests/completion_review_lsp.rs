@@ -307,8 +307,10 @@ fn a_static_method_offers_no_instance_member() {
 }
 
 /// A `.` typed at the end of a statement answers `null` with no analysis:
-/// the first request on a large document that never had one is a trigger
-/// at a statement end, and it answers far below the cost of an analysis.
+/// the first request on a document that never had one is a trigger at a
+/// statement end, and it answers far below the cost of an analysis. A hold
+/// marker makes the first analysis of the document take 1.5 s, whatever its
+/// size, so the test does not depend on how fast the analysis is.
 /// Diagnostics are off: the server computes those of a newly opened file on
 /// its main loop, and the request would wait for them, whatever completion
 /// does.
@@ -320,8 +322,8 @@ fn a_period_at_a_statement_end_answers_without_an_analysis() {
             "[workspace]\nname = \"bare\"\n[workspace.features]\ndiagnostics = false\n",
         )
         .start();
-    let mut text = String::new();
-    for k in 0..10_000 {
+    let mut text = String::from("/* OXABL-TEST-HOLD:completion.base@1500 */\n");
+    for k in 0..100 {
         text.push_str(&format!(
             "PROCEDURE p{k}:\n    DEFINE VARIABLE i{k} AS INTEGER NO-UNDO.\n    i{k} = i{k} + 1.\nEND PROCEDURE.\n"
         ));
@@ -333,10 +335,10 @@ fn a_period_at_a_statement_end_answers_without_an_analysis() {
     let took = started.elapsed();
     answer.assert_null();
     assert!(
-        took < Duration::from_millis(500),
+        took < Duration::from_millis(1000),
         "a `.` at a statement end took {took:?}: it waited for an analysis"
     );
-    // The control: a request that needs the analysis takes much longer.
+    // The control: a request that needs the analysis waits for the hold.
     let started = Instant::now();
     ws.complete_at(
         "large.p",
@@ -349,7 +351,7 @@ fn a_period_at_a_statement_end_answers_without_an_analysis() {
     .list();
     let analysed = started.elapsed();
     assert!(
-        analysed > took * 3,
-        "the control took {analysed:?}, not far above {took:?}"
+        analysed >= Duration::from_millis(1500),
+        "the control took {analysed:?}: the hold of the analysis did not act"
     );
 }

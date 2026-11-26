@@ -6,6 +6,8 @@ use rustc_hash::FxHashMap;
 
 use crate::atom::fold_atom;
 
+mod codec;
+
 /// Monotonic identifier for a `Schema` snapshot.
 ///
 /// Semantic-layer results tagged with a `SchemaRevision` become stale after a
@@ -82,7 +84,7 @@ impl TableId {
 /// only by the loader when two merged `.df` files disagree on a field type
 /// (`SCHEMA0012`) — downstream consumers treat an `Error`-typed field as
 /// poisoned.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SchemaType {
     Integer,
     Int64,
@@ -107,47 +109,34 @@ impl SchemaType {
     /// Classify a `.df` `AS <type>` token. ASCII case-insensitive; unknown
     /// spellings round-trip as `Unknown`.
     pub fn classify(token: &str) -> Self {
-        // Exhaustive match over the fourteen Progress primitives observable
-        // in `.df` dumps. Ordered alphabetically for legibility; the compiler
-        // lowers this to a jump table.
-        let atom = fold_atom(token);
-        if atom == fold_atom("integer") {
-            SchemaType::Integer
-        } else if atom == fold_atom("int64") {
-            SchemaType::Int64
-        } else if atom == fold_atom("decimal") {
-            SchemaType::Decimal
-        } else if atom == fold_atom("character") {
-            SchemaType::Character
-        } else if atom == fold_atom("longchar") {
-            SchemaType::Longchar
-        } else if atom == fold_atom("logical") {
-            SchemaType::Logical
-        } else if atom == fold_atom("date") {
-            SchemaType::Date
-        } else if atom == fold_atom("datetime") {
-            SchemaType::Datetime
-        } else if atom == fold_atom("datetime-tz") {
-            SchemaType::DatetimeTz
-        } else if atom == fold_atom("handle") {
-            SchemaType::Handle
-        } else if atom == fold_atom("raw") {
-            SchemaType::Raw
-        } else if atom == fold_atom("recid") {
-            SchemaType::Recid
-        } else if atom == fold_atom("rowid") {
-            SchemaType::Rowid
-        } else if atom == fold_atom("blob") {
-            SchemaType::Blob
-        } else if atom == fold_atom("clob") {
-            SchemaType::Clob
-        } else {
-            SchemaType::Unknown(atom)
-        }
+        const KNOWN: [(&str, SchemaType); 15] = [
+            ("integer", SchemaType::Integer),
+            ("int64", SchemaType::Int64),
+            ("decimal", SchemaType::Decimal),
+            ("character", SchemaType::Character),
+            ("longchar", SchemaType::Longchar),
+            ("logical", SchemaType::Logical),
+            ("date", SchemaType::Date),
+            ("datetime", SchemaType::Datetime),
+            ("datetime-tz", SchemaType::DatetimeTz),
+            ("handle", SchemaType::Handle),
+            ("raw", SchemaType::Raw),
+            ("recid", SchemaType::Recid),
+            ("rowid", SchemaType::Rowid),
+            ("blob", SchemaType::Blob),
+            ("clob", SchemaType::Clob),
+        ];
+        KNOWN
+            .iter()
+            .find(|(name, _)| token.eq_ignore_ascii_case(name))
+            .map_or_else(
+                || SchemaType::Unknown(fold_atom(token)),
+                |(_, ty)| ty.clone(),
+            )
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Field {
     pub name: OxablAtom,
     pub display_name: String,
@@ -187,7 +176,7 @@ impl Field {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IndexField {
     pub name: OxablAtom,
     pub display_name: String,
@@ -196,7 +185,7 @@ pub struct IndexField {
     pub unsorted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Index {
     pub name: OxablAtom,
     pub display_name: String,
@@ -210,7 +199,7 @@ pub struct Index {
     pub source: FileSpan,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Table {
     pub name: OxablAtom,
     pub display_name: String,
@@ -230,7 +219,7 @@ pub struct Table {
 /// A database sequence declared by `ADD SEQUENCE`.
 ///
 /// A bound the `.df` writes as `?` (no limit) is `None`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Sequence {
     pub name: OxablAtom,
     pub display_name: String,
@@ -343,6 +332,40 @@ impl Schema {
             metaschema: false,
             source_files: Vec::new(),
         }
+    }
+
+    /// The bytes of this schema and `diagnostics`, or `None` when they would
+    /// not give the same schema back.
+    pub(crate) fn encode(&self, diagnostics: &[oxabl_common::Diagnostic]) -> Option<Vec<u8>> {
+        codec::encode(self, diagnostics)
+    }
+
+    /// The schema and diagnostics of bytes `encode` made, or `None` for any
+    /// other bytes.
+    pub(crate) fn decode(bytes: &[u8]) -> Option<(Schema, Vec<oxabl_common::Diagnostic>)> {
+        codec::decode(bytes)
+    }
+
+    /// Whether the loader recorded exactly `paths`, in order, as the files of
+    /// this schema.
+    pub(crate) fn has_sources(&self, paths: &[PathBuf]) -> bool {
+        self.source_files.len() == paths.len()
+            && self.source_files.iter().zip(paths).enumerate().all(
+                |(at, ((file, recorded), path))| file.raw() == at as u32 + 1 && recorded == path,
+            )
+    }
+
+    /// Feed `state` everything that decides what the schema answers: its tables
+    /// and sequences in their order, with the `.df` files they come from, and
+    /// whether the metaschema is on. It walks no hash map, so a schema that
+    /// the loader parsed and one that the cache gave back feed the same
+    /// bytes. The revision is left out: it counts loads.
+    pub fn hash_content<H: std::hash::Hasher>(&self, state: &mut H) {
+        use std::hash::Hash;
+        self.arena.hash(state);
+        self.sequences.hash(state);
+        self.source_files.hash(state);
+        self.metaschema.hash(state);
     }
 
     /// Record that `file` is the `.df` at `path`. The loader calls this.

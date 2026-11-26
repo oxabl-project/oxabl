@@ -508,11 +508,11 @@ impl Engine<'_, '_, '_, '_> {
         let (base, _) = self.based()?;
         let tree = &base.navigation.model.semantic.scope_tree;
         let scope = self.scope()?;
-        let kind = tree.get(scope).kind;
+        let kind = tree.get(scope).kind();
         // A block is a statement of the routine that holds it.
         let routine = tree
             .ancestors(scope)
-            .map(|id| tree.get(id).kind)
+            .map(|id| tree.get(id).kind())
             .find(|kind| !kind.is_var_transparent() && *kind != ScopeKind::Trigger);
         Some(match kind {
             ScopeKind::File => {

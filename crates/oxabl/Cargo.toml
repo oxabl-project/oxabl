@@ -47,7 +47,9 @@ schemars = { version = "0.8", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
 tokio = { version = "1", features = ["rt", "net", "time"], optional = true }
 sha2 = { version = "0.10", optional = true }
-rustix = { version = "1", features = ["process"], optional = true }
+rustix = { version = "1", features = ["fs", "process"], optional = true }
+# The schema cache hashes the `.df` files it keys an entry by.
+blake3 = { version = "1", optional = true }
 
 [[test]]
 name = "self_update"
@@ -97,6 +99,8 @@ cli = [
     "dep:schemars",
     "dep:serde_json",
     "dep:tikv-jemallocator",
+    "dep:blake3",
+    "dep:rustix",
 ]
 
 # The remote cache of `oxabl build`. Off by default: it brings the network and
@@ -139,6 +143,9 @@ oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.4.1" }
 oxabl_analyze = { path = "../oxabl_analyze", version = "4.5.0" }
 oxabl_common = { path = "../oxabl_common", version = "1.5.0", features = [
     "test-panics",
+] }
+oxabl_semantic = { path = "../oxabl_semantic", version = "6.0.1", features = [
+    "test-counts",
 ] }
 # Counts the parses of a test build (`OXABL_TEST_PARSES`).
 oxabl_parser = { path = "../oxabl_parser", version = "5.0.1", features = [

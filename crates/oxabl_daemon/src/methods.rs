@@ -1024,6 +1024,57 @@ fn build_workspace(
     build_workspace_from(root, overlay, generations, progress, None)
 }
 
+type PassOutput = (
+    Arc<ReverseGraph>,
+    Arc<Vec<SymbolRow>>,
+    Arc<pass::KeptPass>,
+    usize,
+);
+
+/// The graph, the symbol rows, the kept parts and the count of files analysed.
+/// Incremental from `previous` when the `SHARED` producers allow it.
+fn run_pass(
+    context: &pass::PassContext<'_>,
+    previous: Option<&WorkspaceSnapshot>,
+    files: Vec<PathBuf>,
+    overlay: &HashMap<PathBuf, Arc<str>>,
+    disk: &oxabl_workspace::EncodedFileSystem,
+) -> PassOutput {
+    let refreshed = match previous {
+        Some(previous) => {
+            pass::incremental_pass(context, &previous.kept, files.clone(), overlay, disk)
+        }
+        None => pass::Refreshed::Full,
+    };
+    match (refreshed, previous) {
+        (pass::Refreshed::Same(kept), Some(previous)) => (
+            Arc::clone(&previous.graph),
+            Arc::clone(&previous.symbols),
+            kept,
+            0,
+        ),
+        (pass::Refreshed::Built(built), _) => {
+            (built.graph, built.symbols, built.kept, built.analysed)
+        }
+        _ => {
+            let built = pass::full_pass(context, files);
+            (built.graph, built.symbols, built.kept, built.analysed)
+        }
+    }
+}
+
+/// Test builds only: write how many files a pass analysed.
+fn report_pass_counts(analysed: usize, discovered: usize, kept: &pass::KeptPass) {
+    if oxabl_common::INJECTION_ENABLED && std::env::var_os("OXABL_TEST_PASS_COUNTS").is_some() {
+        use std::io::Write;
+        let _ = writeln!(
+            io::stderr(),
+            "oxabl-test: workspace pass analysed {analysed} of {discovered} files, kept {} bytes",
+            kept.estimated_heap_bytes()
+        );
+    }
+}
+
 /// Run a pass. With `previous`, analyse only the files that changed since it
 /// ran (see [`crate::pass`]); the pass is full when the configuration, the
 /// schema or the `SHARED` producers are not the same.
@@ -1056,35 +1107,8 @@ fn build_workspace_from(
             && previous.generations.schema == generations.schema
             && previous.kept.same_config(&config)
     });
-    let refreshed = match previous {
-        Some(previous) => {
-            pass::incremental_pass(&context, &previous.kept, files.clone(), &overlay, &disk)
-        }
-        None => pass::Refreshed::Full,
-    };
-    let (graph, symbols, kept, analysed) = match (refreshed, previous) {
-        (pass::Refreshed::Same(kept), Some(previous)) => (
-            Arc::clone(&previous.graph),
-            Arc::clone(&previous.symbols),
-            kept,
-            0,
-        ),
-        (pass::Refreshed::Built(built), _) => {
-            (built.graph, built.symbols, built.kept, built.analysed)
-        }
-        _ => {
-            let built = pass::full_pass(&context, files);
-            (built.graph, built.symbols, built.kept, built.analysed)
-        }
-    };
-    if oxabl_common::INJECTION_ENABLED && std::env::var_os("OXABL_TEST_PASS_COUNTS").is_some() {
-        use std::io::Write;
-        let _ = writeln!(
-            io::stderr(),
-            "oxabl-test: workspace pass analysed {analysed} of {discovered_files} files, kept {} bytes",
-            kept.estimated_heap_bytes()
-        );
-    }
+    let (graph, symbols, kept, analysed) = run_pass(&context, previous, files, &overlay, &disk);
+    report_pass_counts(analysed, discovered_files, &kept);
 
     let tracked_files = graph.tracked_files();
     let graph_bytes = graph.estimated_heap_bytes() as u64;
@@ -1293,6 +1317,10 @@ fn added_since_pass(workspace: &WorkspaceSnapshot, interval: Duration) -> AddedF
     let counted = match walk.last_ran {
         Some(last) if last.elapsed() < interval => walk.last_count,
         _ => {
+            // A path that the pass looked for and did not find, and that is
+            // there now (an include earlier on the path, a class, a program):
+            // no stamp holds it, and it can change what a file resolves to.
+            walk.last_appeared = workspace.kept.appeared_paths();
             let Ok(files) = discover_path_in(&workspace.root, &workspace.config.root_extensions)
             else {
                 // Left un-timestamped on purpose, so the next poll retries rather
@@ -1307,7 +1335,8 @@ fn added_since_pass(workspace: &WorkspaceSnapshot, interval: Duration) -> AddedF
     };
 
     match counted.abs_diff(workspace.discovered_files) {
-        0 => AddedFiles::None,
+        0 if walk.last_appeared == 0 => AddedFiles::None,
+        0 => AddedFiles::Some(walk.last_appeared),
         difference => AddedFiles::Some(difference.min(u32::MAX as usize) as u32),
     }
 }

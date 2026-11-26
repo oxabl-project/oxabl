@@ -153,11 +153,21 @@ mod producer_built_from_includes {
     const DEFS: &str = "DEFINE NEW SHARED VARIABLE v-x AS INTEGER NO-UNDO.\nRUN b.p.\n";
     const B: &str = "DEFINE SHARED VARIABLE v-x AS INTEGER NO-UNDO.\nMESSAGE v-x.\n";
     const C: &str = "RUN a.p.\n";
+    /// A definition that holds a `DEFINE` of its own, in a trigger block.
+    const TRIGGERED: &str = "DEFINE NEW SHARED VARIABLE v-x AS CHARACTER NO-UNDO\n\
+         VIEW-AS FILL-IN\n\
+         TRIGGERS:\n\
+         ON LEAVE DO:\n\
+         DEFINE VARIABLE v-inner AS INTEGER NO-UNDO.\n\
+         END.\n\
+         END TRIGGERS.\n";
 
     fn workspace(a: &str) -> InMemoryFileSystem {
         let mut fs = InMemoryFileSystem::new();
         fs.insert(PathBuf::from("/p/a.p"), a);
         fs.insert(PathBuf::from("/p/defs.i"), DEFS);
+        fs.insert(PathBuf::from("/p/head.i"), "NEW SHARED");
+        fs.insert(PathBuf::from("/p/trig.i"), TRIGGERED);
         fs.insert(PathBuf::from("/p/b.p"), B);
         fs.insert(PathBuf::from("/p/c.p"), C);
         fs
@@ -210,7 +220,59 @@ mod producer_built_from_includes {
         let reused = LintPipeline::new(&config, &fs).with_shared_producers(&map);
         observed(&reused, "/p/c.p", C);
         seen.push(("map, after c.p", observed(&reused, "/p/b.p", B)));
+
+        // A map that the first question builds, and that two threads share.
+        let deferred = LintPipeline::new(&config, &fs).deferred_producers(&known, 2);
+        let fresh = LintPipeline::new(&config, &fs).with_deferred_producers(&deferred);
+        seen.push(("deferred map, fresh", observed(&fresh, "/p/b.p", B)));
+
+        let deferred = LintPipeline::new(&config, &fs).deferred_producers(&known, 2);
+        let reused = LintPipeline::new(&config, &fs).with_deferred_producers(&deferred);
+        observed(&reused, "/p/c.p", C);
+        seen.push(("deferred map, after c.p", observed(&reused, "/p/b.p", B)));
+
+        let deferred = LintPipeline::new(&config, &fs).deferred_producers(&known, 2);
+        let threads: Vec<Vec<String>> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let run =
+                            LintPipeline::new(&config, &fs).with_deferred_producers(&deferred);
+                        observed(&run, "/p/b.p", B)
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().expect("worker panicked"))
+                .collect()
+        });
+        for edges in threads {
+            seen.push(("deferred map, two threads", edges));
+        }
         seen
+    }
+
+    /// Whether the map lists `a.p` for `v-x`: a file it lists that does not
+    /// define the name must still get no edge.
+    fn listed(a: &str) -> bool {
+        let fs = workspace(a);
+        let config = config();
+        LintPipeline::new(&config, &fs)
+            .shared_producers(&known())
+            .producers_of(&oxabl_semantic::IndexName::new("v-x"))
+            .contains(&PathBuf::from("/p/a.p"))
+    }
+
+    fn assert_missed_everywhere(a: &str) {
+        for (how, edges) in every_order(a) {
+            assert!(
+                !edges
+                    .iter()
+                    .any(|e| e.starts_with(EdgeKind::SharedProducer.as_str())),
+                "{how}: {edges:?}"
+            );
+        }
     }
 
     fn assert_found_everywhere(a: &str) {
@@ -237,14 +299,50 @@ mod producer_built_from_includes {
     /// Not found, by the documented rule, but alike in every order.
     #[test]
     fn a_producer_with_code_of_its_own_and_an_include_is_missed_in_every_order() {
-        let a = "DEFINE VARIABLE v-own AS INTEGER NO-UNDO.\n{defs.i}\nMESSAGE v-own.\n";
-        for (how, edges) in every_order(a) {
-            assert!(
-                !edges
-                    .iter()
-                    .any(|e| e.starts_with(EdgeKind::SharedProducer.as_str())),
-                "{how}: {edges:?}"
-            );
-        }
+        assert_missed_everywhere(
+            "DEFINE VARIABLE v-own AS INTEGER NO-UNDO.\n{defs.i}\nMESSAGE v-own.\n",
+        );
+    }
+
+    /// The text as written does not parse: the index reads the expanded text,
+    /// where the include supplies `NEW SHARED`.
+    #[test]
+    fn a_producer_whose_new_shared_comes_from_an_include_is_found_in_every_order() {
+        assert_found_everywhere("DEFINE {head.i} VARIABLE v-x AS INTEGER NO-UNDO.\nRUN b.p.\n");
+    }
+
+    /// A statement that holds a `DEFINE` does not parse alone, and the index
+    /// still finds the producer, written or through an include.
+    #[test]
+    fn a_producer_with_a_trigger_block_is_found_in_every_order() {
+        assert_found_everywhere(TRIGGERED);
+        assert_found_everywhere("{trig.i}\n");
+        assert_found_everywhere(&format!("{TRIGGERED}{TRIGGERED}"));
+        assert_found_everywhere(&format!(
+            "DEFINE VARIABLE v-own AS INTEGER NO-UNDO.\n{TRIGGERED}"
+        ));
+    }
+
+    /// The scan lists the second arm, but the declare pass keeps the first
+    /// arm's declaration, so the file is no producer, in every order.
+    #[test]
+    fn a_new_shared_definition_in_a_later_exclusive_arm_is_missed_in_every_order() {
+        let a = "&IF DEFINED(no-such-name) = 0 &THEN\n\
+                 DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\n\
+                 &ELSE\n\
+                 DEFINE NEW SHARED VARIABLE v-x AS INTEGER NO-UNDO.\n\
+                 &ENDIF\n\
+                 RUN b.p.\n";
+        assert!(listed(a), "the control: the map lists the file");
+        assert_missed_everywhere(a);
+    }
+
+    /// The expanded text says `NEW SHARED` but does not parse, so the file
+    /// defines nothing, in every order.
+    #[test]
+    fn a_producer_that_does_not_parse_after_expansion_is_missed_in_every_order() {
+        let a = "{defs.i}\nMESSAGE @ @ @.\n";
+        assert!(listed(a), "the control: the map lists the file");
+        assert_missed_everywhere(a);
     }
 }

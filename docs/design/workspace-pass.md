@@ -5,7 +5,7 @@ dependency graph (`ReverseGraph`), the dynamic calls of the workspace and the
 rows of the symbol search. Find references, the call hierarchy, the reference
 lenses, `oxabl/impact` and `workspace/symbol` read it. A full pass analyses
 each file of the workspace one time. On the generated `erp` workspace (10,386
-roots) it costs about 230 CPU seconds.
+roots) it costs about 80 CPU seconds.
 
 This document tells how the daemon keeps that cost away from an edit.
 
@@ -33,9 +33,10 @@ Each file gives one part to a pass (`crates/oxabl_daemon/src/pass.rs`):
   on, with the kind and the span of each edge, the references it could not
   resolve, why its edge set is incomplete, and its dynamic calls;
 - its rows of the symbol search;
-- the `SHARED` names it produces;
-- its inputs: the paths that its analysis and its `SHARED` scan read, the paths
-  they looked for and did not find, and the directories they listed.
+- its inputs: the paths that its analysis read, the paths it looked for and
+  did not find, and the directories it listed;
+- when the pass built the map of `SHARED` producers (below): the `SHARED` names
+  the file produces, and the inputs of its scan, added to its inputs.
 
 The pass reads through an `ObservingFileSystem`, which records the inputs of
 each analysis. That includes the include files at any depth and the class and
@@ -45,6 +46,40 @@ the hash (BLAKE3) of the text and the disk stamp before the read.
 
 The daemon keeps the parts of the last pass. `ReverseGraph::from_parts` joins
 them into the graph that `ReverseGraph::build_with` gives for the same text.
+
+### The map of `SHARED` producers
+
+A pass builds the map of `SHARED` producers on the first question of any
+analysis (`DeferredProducers`), and not before. A pass in which no file asks
+for a producer never scans the files for `SHARED` names. The pass gives the
+map its own scan of each file (`DeferredProducers::with_scan`), so it keeps the
+names and the inputs of each scan.
+
+- When the pass built the map, each kept part has its `SHARED` names and the
+  inputs of its scan. The next pass scans the files it analyses again, and
+  compares the map with the kept one.
+- When the pass did not build the map, no analysis read it, so no kept part
+  depends on it. The next pass gives its analyses a new lazy map. When one
+  asks, the pass scans every file, and keeps the names and the inputs for the
+  next pass.
+
+### The table of paths
+
+Each input is a path with a record of what the pass read there: the hash of
+the text and the disk stamp, that the path was looked for and not found, or the
+stamp of the directory when it was listed. The records are kept for the paths
+that a kept part reads and for no others. The pass cuts the table to those
+paths before it checks the inputs and when it ends, so:
+
+- a record of a path that no kept file reads cannot go stale. Such a record was
+  not checked, and a later file that read the path again would have taken the
+  hash of text that is gone as the hash of what it read;
+- the table has at most one record for each input of a kept part. It does not
+  grow with the paths that edits read once and forgot, such as the include
+  candidates of a name that was typed and removed.
+
+The table is shared between passes while no path comes or goes, and the
+records are shared one by one, so a pass does not copy the paths or the stamps.
 
 ## The next pass
 
@@ -59,10 +94,11 @@ them into the graph that `ReverseGraph::build_with` gives for the same text.
    - a directory that the pass listed: changed when its stamp changed;
    - a file that could not be read: always changed.
 3. Analyse again each new file and each file with a changed input. Drop the
-   parts of removed files.
-4. Scan the files of step 3 for the `SHARED` names they produce. When the map
-   of `SHARED` producers is not the same, run a full pass: each file can read
-   that map, and no part records which names it asked about.
+   parts of removed files, and the paths that no kept part reads.
+4. When the earlier pass built the map of `SHARED` producers, scan the files of
+   step 3 for the `SHARED` names they produce. When the map is not the same,
+   run a full pass: each file can read that map, and no part records which
+   names it asked about.
 5. Join the parts. When no file was analysed and the file list is the same,
    the daemon keeps the graph and the symbol rows that it has. A reference lens
    that holds the pass (`references::Pass`) then stays current.
@@ -74,13 +110,31 @@ A pass is full when:
 - there is no kept pass, or its session generations of the configuration or
   the schema are not the current ones;
 - the configuration that the pass resolves from disk is not the same as the
-  one of the kept pass (a hash of its `Debug` text), also when no client said
-  that `oxabl.toml` changed;
+  one of the kept pass (`ConfigKey`), also when no client said that
+  `oxabl.toml` changed;
 - the map of `SHARED` producers changed.
+
+`ConfigKey` names each field of the configuration that an analysis reads:
+the include paths, the preprocessor settings, the file extensions, the
+decoding, the lint settings, the features and the schema. The schema is a
+hash of its tables, sequences and files in their order, so a schema that was
+parsed and one that the schema cache gave back have the same key. A new field of
+the configuration needs a line there.
 
 Two writes during one pass can give two analyses different text of one file.
 The part keeps the first hash, so the next pass analyses again each file that
 read the file.
+
+The freshness check (`oxabl/freshness`, and the check of each find references
+request) also looks for the paths that the pass looked for and did not find.
+A path that is there now makes the pass stale, with the same rate limit as the
+walk for added files. So a new include earlier on the include path, which no
+count of root files can see, makes the next request run a pass.
+
+A directory stamp is taken when the directory is first listed: before a
+listing, or, for a directory below the first one of a case-insensitive lookup,
+as soon as the lookup returns. A file that is added to such a directory during
+that lookup is not seen.
 
 ## Cost
 
@@ -91,10 +145,12 @@ each unit that includes it. An edit of a class analyses the files that read
 the class, also through inheritance.
 
 On the `erp` preset (`docs/performance.md`), an edit of a program that two
-files run analyses 3 files, and the next find references takes 1.4 s and 3.4
-CPU seconds, against 21 s and 229 CPU seconds with a full pass. An edit of a
-program that 570 files read analyses 571 files (3.9 s, 34 CPU seconds). The
-kept parts take about 60 MB.
+files run analyses 3 files, and the next find references takes 1.4 s and 2.5
+CPU seconds, against 8.2 s and 80 CPU seconds with a full pass. An edit of a
+program that 570 files read analyses 571 files (2.8 s, 15.5 CPU seconds).
+The kept parts take about 55 MB, as many after an edit as after the cold pass.
+The schema key (`ConfigKey`) takes 15 ms to build on the 1,230 tables of the
+`erp` schema.
 
 ## Tests
 
@@ -113,3 +169,22 @@ build of the daemon writes one line to stderr for each pass when
 - a file changed on disk, and an include that could not be read and then
   reads, give the answers of a new daemon;
 - a pass after a change of `oxabl.toml` that no client reported is full.
+
+`crates/oxabl/tests/incremental_pass_script_lsp.rs` runs a series of edits
+(a buffer edit, a write, a removal, a buffer opened or closed) through the
+real `oxabl lsp`, and compares the references after each step with a new
+daemon on the same text. It tests:
+
+- an include or a file that no kept file reads for a while, and that is read
+  again as it was in the first pass, with the include in a buffer, on disk,
+  and as a root file that is removed and made again;
+- a path that the pass looked for and did not find, and that is made later: an
+  include, an include ahead of the one in use, a program and a class (no pass
+  has to be asked for by another change), and a buffer opened at such a path;
+- a directory that a case-insensitive lookup listed, and in which a file is
+  made;
+- the bound of the table: after 30 rounds of an include of a name that exists
+  nowhere, and its removal, the bytes of the kept parts are those of the first
+  rounds;
+- a schema from the schema cache and a parsed one: the passes after the cache
+  is removed and filled again are not full.
