@@ -733,6 +733,16 @@ mod tests {
         assert_eq!(ids, JOB_NAMES.len() + 2);
     }
 
+    /// Only a newer push to a pull request may cancel a CI run; master and merge groups keep theirs.
+    #[test]
+    fn only_a_pull_request_run_is_cancelled() {
+        let workflow = workflow("ci.yml");
+        assert!(
+            workflow.contains("cancel-in-progress: ${{ github.event_name == 'pull_request' }}"),
+            "a master or merge group run is never cancelled"
+        );
+    }
+
     #[test]
     fn codspeed_runs_on_master_and_on_request_only() {
         let workflow = workflow("codspeed.yml");
