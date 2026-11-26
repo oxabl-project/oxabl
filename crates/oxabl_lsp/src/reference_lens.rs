@@ -6,9 +6,9 @@
 //! kind with their own configuration.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use lsp_server::RequestId;
 use lsp_server::{ErrorCode, Message, Request, Response};
@@ -344,137 +344,54 @@ impl Server<'_> {
     /// lens of the file, and the lenses that arrive while it runs wait in it
     /// with no thread of their own. A lens of another kind comes back as it is.
     pub(crate) fn handle_code_lens_resolve(&mut self, req: Request) -> anyhow::Result<()> {
-        let lens: CodeLens = match serde_json::from_value(req.params) {
-            Ok(lens) => lens,
-            Err(error) => {
-                return self.respond(Response::new_err(
-                    req.id,
-                    ErrorCode::InvalidParams as i32,
-                    format!("oxabl-lsp: invalid codeLens: {error}"),
-                ));
-            }
+        let asked = match self.asked_lens(req) {
+            Ok(asked) => asked,
+            Err(response) => return self.respond(response),
         };
-        let data = lens
-            .data
-            .clone()
-            .and_then(|data| serde_json::from_value::<LensData>(data).ok())
-            .filter(|data| data.oxabl == DATA_TAG);
-        let Some(data) = data else {
-            return self.respond(Response::new_ok(req.id, lens));
-        };
-        let Ok(uri) = data.uri.parse::<Uri>() else {
-            return self.respond(Response::new_err(
-                req.id,
-                ErrorCode::InvalidParams as i32,
-                "oxabl-lsp: the lens names no file".to_string(),
-            ));
-        };
-        let Some(path) = uri_to_path(&uri).map(|path| canonical_path(&path)) else {
-            return self.respond(Response::new_err(
-                req.id,
-                ErrorCode::InvalidParams as i32,
-                format!("oxabl-lsp: {} is not a file", data.uri),
-            ));
-        };
-        // Offsets of other text mean another place: the client asks again.
-        if self
-            .documents
-            .get(&uri)
-            .is_none_or(|doc| doc.version != data.version)
-        {
-            return self.respond(Response::new_err(
-                req.id,
-                ErrorCode::ContentModified as i32,
-                "oxabl-lsp: the text changed since the lens was made".to_string(),
-            ));
-        }
         let selected = self
             .contexts
-            .selected(&uri)
+            .selected(&asked.uri)
             .cloned()
-            .unwrap_or_else(|| path.clone());
-        let root_of = |kind: Kind| match kind {
-            Kind::Program => path.clone(),
+            .unwrap_or_else(|| asked.path.clone());
+        let root = match asked.data.kind {
+            Kind::Program => asked.path.clone(),
             Kind::Symbol => selected.clone(),
         };
-        let root = root_of(data.kind);
-        let generations: Option<Generations> = self.host.with(|sessions| {
-            sessions.get(&self.session_root).map(|session| {
-                (
-                    session.buffer_generation(),
-                    session.config_generation(),
-                    session.schema_revision(),
-                )
-            })
-        });
+        let generations = self.session_generations();
         let key = CacheKey {
-            uri: data.uri.clone(),
+            uri: asked.data.uri.clone(),
             root: root.clone(),
-            kind: data.kind,
-            offset: data.offset,
-            version: data.version,
+            kind: asked.data.kind,
+            offset: asked.data.offset,
+            version: asked.data.version,
         };
         let epoch = self.reference_cache.epoch();
         let kept = generations.and_then(|now| self.reference_cache.get(&key, now));
         let kept = match kept {
             // No other file is read: nothing can have made it old.
             Some((title, None)) => {
-                return self.respond(Response::new_ok(req.id, resolved(lens, &data, title)));
+                let lens = resolved(asked.lens, &asked.data, title);
+                return self.respond(Response::new_ok(asked.id, lens));
             }
             Some((title, Some(pass))) => Some((title, pass)),
             None => None,
         };
         let batch_key = BatchKey {
-            uri: data.uri.clone(),
-            version: data.version,
-            root: root.clone(),
+            uri: asked.data.uri.clone(),
+            version: asked.data.version,
+            root,
             generations,
             epoch,
         };
-        // The lenses of the file that the same unit counts, made as
-        // `textDocument/codeLens` makes them, from the same outline. It is
-        // made here, so no lock waits for a parse.
-        let wanted = (data.kind, data.offset);
-        let mut lenses: Vec<(Kind, u32)> = match self.documents.get(&uri) {
-            Some(doc) => self
-                .outlines
-                .get_or_compute(&uri, doc.version, || oxabl_pipeline::outline(&doc.text()))
-                .map(|symbols| lens_sites(&path, symbols))
-                .unwrap_or_default(),
-            None => Vec::new(),
-        }
-        .into_iter()
-        .map(|(kind, _, name)| (kind, name))
-        .filter(|(kind, _)| root_of(*kind) == root)
-        .collect();
-        if !lenses.contains(&wanted) {
-            lenses.push(wanted);
-        }
-        // The text, to hold the search in a test that asks for it.
-        let hold_text = oxabl_common::INJECTION_ENABLED
-            .then(|| self.documents.get(&uri).map(|doc| doc.text().to_string()))
-            .flatten();
-        let plan = Plan {
-            key: batch_key,
-            path: path.clone(),
-            lenses,
-            hold_text,
-        };
-        let cancel = self.references.start(&req.id);
+        let plan = self.lens_plan(&asked, batch_key, &selected);
+        let cancel = self.references.start(&asked.id);
         let waiter = Waiter {
-            id: req.id,
-            lens,
-            data,
+            id: asked.id,
+            lens: asked.lens,
+            data: asked.data,
             cancel,
         };
-        let job = BatchJob {
-            host: self.host.clone(),
-            session_root: self.session_root.clone(),
-            encoding: self.encoding.clone(),
-            sender: self.connection.sender.clone(),
-            in_flight: self.references.clone(),
-            cache: self.reference_cache.clone(),
-        };
+        let job = self.batch_job();
         match kept {
             Some((title, pass)) => self.lens_batches.check(
                 Check {
@@ -488,6 +405,126 @@ impl Server<'_> {
             None => self.lens_batches.join(plan, waiter, &job),
         }
         Ok(())
+    }
+
+    /// What a batch and a check need of the server.
+    fn batch_job(&self) -> BatchJob {
+        BatchJob {
+            host: self.host.clone(),
+            session_root: self.session_root.clone(),
+            encoding: self.encoding.clone(),
+            sender: self.connection.sender.clone(),
+            in_flight: self.references.clone(),
+            cache: self.reference_cache.clone(),
+            max_runners: max_runners(&self.session_root),
+        }
+    }
+
+    /// The generations of the session now, or `None` when it has none.
+    fn session_generations(&self) -> Option<Generations> {
+        self.host.with(|sessions| {
+            sessions.get(&self.session_root).map(|session| {
+                (
+                    session.buffer_generation(),
+                    session.config_generation(),
+                    session.schema_revision(),
+                )
+            })
+        })
+    }
+
+    /// The reference lens that `req` asks to resolve, or the answer to give
+    /// at once: the lens as it is when it is of another kind, or an error.
+    fn asked_lens(&self, req: Request) -> Result<AskedLens, Response> {
+        let invalid = |id, message| Response::new_err(id, ErrorCode::InvalidParams as i32, message);
+        let lens: CodeLens = serde_json::from_value(req.params).map_err(|error| {
+            invalid(
+                req.id.clone(),
+                format!("oxabl-lsp: invalid codeLens: {error}"),
+            )
+        })?;
+        let data = lens
+            .data
+            .clone()
+            .and_then(|data| serde_json::from_value::<LensData>(data).ok())
+            .filter(|data| data.oxabl == DATA_TAG);
+        let Some(data) = data else {
+            return Err(Response::new_ok(req.id, lens));
+        };
+        let Ok(uri) = data.uri.parse::<Uri>() else {
+            return Err(invalid(
+                req.id,
+                "oxabl-lsp: the lens names no file".to_string(),
+            ));
+        };
+        let Some(path) = uri_to_path(&uri).map(|path| canonical_path(&path)) else {
+            return Err(invalid(
+                req.id,
+                format!("oxabl-lsp: {} is not a file", data.uri),
+            ));
+        };
+        // Offsets of other text mean another place: the client asks again.
+        if self
+            .documents
+            .get(&uri)
+            .is_none_or(|doc| doc.version != data.version)
+        {
+            return Err(Response::new_err(
+                req.id,
+                ErrorCode::ContentModified as i32,
+                "oxabl-lsp: the text changed since the lens was made".to_string(),
+            ));
+        }
+        Ok(AskedLens {
+            id: req.id,
+            lens,
+            data,
+            uri,
+            path,
+        })
+    }
+
+    /// The batch that `asked` joins: the lenses of its file that the same
+    /// unit counts, made as `textDocument/codeLens` makes them, from the same
+    /// outline. It is made before any lock of the batches, so no lock waits
+    /// for a parse.
+    fn lens_plan(&mut self, asked: &AskedLens, key: BatchKey, selected: &Path) -> Plan {
+        let root_of = |kind: Kind| match kind {
+            Kind::Program => asked.path.as_path(),
+            Kind::Symbol => selected,
+        };
+        let wanted = (asked.data.kind, asked.data.offset);
+        let mut lenses: Vec<(Kind, u32)> = match self.documents.get(&asked.uri) {
+            Some(doc) => self
+                .outlines
+                .get_or_compute(&asked.uri, doc.version, || {
+                    oxabl_pipeline::outline(&doc.text())
+                })
+                .map(|symbols| lens_sites(&asked.path, symbols))
+                .unwrap_or_default(),
+            None => Vec::new(),
+        }
+        .into_iter()
+        .map(|(kind, _, name)| (kind, name))
+        .filter(|(kind, _)| root_of(*kind) == key.root.as_path())
+        .collect();
+        if !lenses.contains(&wanted) {
+            lenses.push(wanted);
+        }
+        // The text, to hold the search in a test that asks for it.
+        let hold_text = oxabl_common::INJECTION_ENABLED
+            .then(|| {
+                self.documents
+                    .get(&asked.uri)
+                    .map(|doc| doc.text().to_string())
+            })
+            .flatten();
+        Plan {
+            key,
+            path: asked.path.clone(),
+            lenses,
+            hold_text,
+        }
     }
 
     /// `$/cancelRequest` for `id`: a resolve that waits for a batch or for
@@ -505,9 +542,19 @@ impl Server<'_> {
     }
 }
 
+/// A reference lens that a `codeLens/resolve` asks for, with the file it
+/// names.
+struct AskedLens {
+    id: RequestId,
+    lens: CodeLens,
+    data: LensData,
+    uri: Uri,
+    path: PathBuf,
+}
+
 /// The lenses of a file: the kind, the byte the lens stands on and the byte of
 /// the name, in the order of the outline.
-fn lens_sites(path: &std::path::Path, symbols: &[OutlineSymbol]) -> Vec<(Kind, u32, u32)> {
+fn lens_sites(path: &Path, symbols: &[OutlineSymbol]) -> Vec<(Kind, u32, u32)> {
     let mut sites = Vec::new();
     if is_program(path) {
         sites.push((Kind::Program, 0, 0));
@@ -524,9 +571,25 @@ fn lens_sites(path: &std::path::Path, symbols: &[OutlineSymbol]) -> Vec<(Kind, u
 
 /// The most batches of one client that run at one time. Each batch has a
 /// runner of its own up to this bound, so a short batch does not wait for a
-/// long one. A runner mostly waits: the shared pool of the daemon bounds the
-/// work of every search.
+/// long one. The analyses of the other files of every search share the pool
+/// of the daemon, but the analysis of the unit that asks, the override check
+/// of its members and its dependency graph run on the runner: up to this
+/// many of each run at one time.
 const MAX_RUNNERS: usize = 16;
+
+/// [`MAX_RUNNERS`], or the bound that a test build finds in the path of the
+/// workspace root ([`oxabl_common::injected_bound`]).
+fn max_runners(session_root: &Path) -> usize {
+    if !oxabl_common::INJECTION_ENABLED {
+        return MAX_RUNNERS;
+    }
+    oxabl_common::injected_bound(
+        oxabl_common::panic_sites::LSP_REFERENCE_LENS_RUNNERS,
+        &session_root.to_string_lossy(),
+    )
+    .filter(|&bound| bound > 0)
+    .unwrap_or(MAX_RUNNERS)
+}
 
 /// What a cancelled resolve is told.
 const CANCELLED: &str = "oxabl-lsp: the request was cancelled";
@@ -580,6 +643,8 @@ struct BatchJob {
     sender: crossbeam_channel::Sender<Message>,
     in_flight: InFlight,
     cache: ResolveCache,
+    /// The most runners of the client ([`max_runners`]).
+    max_runners: usize,
 }
 
 impl BatchJob {
@@ -607,6 +672,15 @@ fn cancelled() -> Outcome {
     Outcome::Error(ErrorCode::RequestCanceled as i32, CANCELLED.to_string())
 }
 
+/// What a resolve is told when the thread that had it ended with a panic
+/// that no guard of a search caught.
+fn thread_failed() -> Outcome {
+    Outcome::Error(
+        ErrorCode::InternalError as i32,
+        "oxabl-lsp: the reference lens thread failed".to_string(),
+    )
+}
+
 /// One search for the lenses of a file.
 struct Batch {
     key: BatchKey,
@@ -628,13 +702,17 @@ struct BatchState {
 }
 
 impl Batch {
-    fn lock(&self) -> std::sync::MutexGuard<'_, BatchState> {
+    fn lock(&self) -> MutexGuard<'_, BatchState> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
+/// The batches and kept titles of a client. Each entry of `waiting`,
+/// `checks` and `checking` holds a resolve in flight, so their lengths are
+/// bounded by the resolves the client has in flight: a batch that waits for
+/// a runner and loses its last resolve to a cancel goes.
 #[derive(Default)]
 struct Queue {
     /// The batches that resolves can join, by key.
@@ -644,7 +722,7 @@ struct Queue {
     runners: usize,
     /// The kept titles that wait for the next check of the workspace pass.
     checks: Vec<Check>,
-    /// The kept titles of the check that runs.
+    /// The kept titles of the check that runs, the last one first.
     checking: Vec<Check>,
     /// Whether a thread checks the kept titles.
     checker: bool,
@@ -659,7 +737,7 @@ pub(crate) struct Batches {
 }
 
 impl Batches {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
+    fn lock(&self) -> MutexGuard<'_, Queue> {
         self.queue
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -669,11 +747,19 @@ impl Batches {
     fn join(&self, plan: Plan, waiter: Waiter, job: &BatchJob) {
         let wanted = (waiter.data.kind, waiter.data.offset);
         let mut queue = self.lock();
+        // A cancel that came while the checker had this resolve in hand found
+        // it nowhere; under the lock, the flag tells.
+        if waiter.cancel.load(Ordering::Relaxed) {
+            drop(queue);
+            job.send(waiter, &cancelled());
+            return;
+        }
         if let Some(batch) = queue.open.get(&plan.key).cloned() {
             let mut state = batch.lock();
             if !state.closed
                 && let Some(at) = batch.lenses.iter().position(|lens| *lens == wanted)
             {
+                assert_eq!(state.outcomes.len(), batch.lenses.len());
                 match state.outcomes[at].clone() {
                     Some(outcome) => {
                         drop(state);
@@ -698,7 +784,16 @@ impl Batches {
         });
         queue.open.insert(plan.key, Arc::clone(&batch));
         queue.waiting.push_back(batch);
-        if queue.runners >= MAX_RUNNERS {
+        self.start_runner(queue, job);
+    }
+
+    /// Start a runner for the batches that wait, unless the most runners
+    /// run. With no thread and no runner, the batches that wait are answered
+    /// with an error, since no runner will take them.
+    fn start_runner(&self, mut queue: MutexGuard<'_, Queue>, job: &BatchJob) {
+        assert!(job.max_runners > 0);
+        assert!(queue.runners <= job.max_runners);
+        if queue.waiting.is_empty() || queue.runners == job.max_runners {
             return;
         }
         let spawned = oxabl_common::stack::builder()
@@ -708,33 +803,34 @@ impl Batches {
                 let job = job.clone();
                 move || batches.run(&job)
             });
-        match spawned {
-            Ok(_) => queue.runners += 1,
-            Err(error) => {
-                // No runner: answer the batches that no runner will take.
-                let stranded: Vec<Arc<Batch>> = if queue.runners == 0 {
-                    queue.waiting.drain(..).collect()
-                } else {
-                    Vec::new()
-                };
-                for batch in &stranded {
-                    queue.open.remove(&batch.key);
-                }
-                drop(queue);
-                let outcome = Outcome::Error(
-                    ErrorCode::InternalError as i32,
-                    format!("oxabl-lsp: cannot start the analysis: {error}"),
-                );
-                for batch in stranded {
-                    let waiters = {
-                        let mut state = batch.lock();
-                        state.closed = true;
-                        std::mem::take(&mut state.waiters)
-                    };
-                    for waiter in waiters {
-                        job.send(waiter, &outcome);
-                    }
-                }
+        let error = match spawned {
+            Ok(_) => {
+                queue.runners += 1;
+                return;
+            }
+            Err(error) => error,
+        };
+        let stranded: Vec<Arc<Batch>> = if queue.runners == 0 {
+            queue.waiting.drain(..).collect()
+        } else {
+            Vec::new()
+        };
+        for batch in &stranded {
+            queue.open.remove(&batch.key);
+        }
+        drop(queue);
+        let outcome = Outcome::Error(
+            ErrorCode::InternalError as i32,
+            format!("oxabl-lsp: cannot start the analysis: {error}"),
+        );
+        for batch in stranded {
+            let waiters = {
+                let mut state = batch.lock();
+                state.closed = true;
+                std::mem::take(&mut state.waiters)
+            };
+            for waiter in waiters {
+                job.send(waiter, &outcome);
             }
         }
     }
@@ -745,9 +841,16 @@ impl Batches {
     fn check(&self, check: Check, job: BatchJob) {
         let mut queue = self.lock();
         queue.checks.push(check);
-        if queue.checker {
+        self.start_checker(queue, &job);
+    }
+
+    /// Start the thread that checks the kept titles, unless it runs or no
+    /// title waits. With no thread, the titles are counted again.
+    fn start_checker(&self, mut queue: MutexGuard<'_, Queue>, job: &BatchJob) {
+        if queue.checker || queue.checks.is_empty() {
             return;
         }
+        assert!(queue.checking.is_empty());
         let spawned = oxabl_common::stack::builder()
             .name("oxabl-reference-lens-check".to_string())
             .spawn({
@@ -759,25 +862,43 @@ impl Batches {
             queue.checker = true;
             return;
         }
-        // No thread to check: count them again.
         let checks = std::mem::take(&mut queue.checks);
         drop(queue);
         for check in checks {
-            self.join(check.plan, check.waiter, &job);
+            self.join(check.plan, check.waiter, job);
         }
     }
 
     /// Check the kept titles in rounds: one look at the workspace pass for
     /// every title that waits when the round starts.
     fn run_checks(&self, job: &BatchJob) {
+        let mut exit = CheckerExit {
+            batches: self,
+            job,
+            done: false,
+        };
         loop {
-            {
+            let texts: Vec<String> = {
                 let mut queue = self.lock();
+                assert!(queue.checker);
+                assert!(queue.checking.is_empty());
                 if queue.checks.is_empty() {
                     queue.checker = false;
+                    exit.done = true;
                     return;
                 }
-                queue.checking = std::mem::take(&mut queue.checks);
+                let mut round = std::mem::take(&mut queue.checks);
+                round.reverse();
+                let texts = round
+                    .iter()
+                    .filter_map(|check| check.plan.hold_text.clone())
+                    .collect();
+                queue.checking = round;
+                texts
+            };
+            let site = oxabl_common::panic_sites::LSP_REFERENCE_LENS_CHECK;
+            for text in &texts {
+                oxabl_common::hold_if_injected(site, text);
             }
             // Every resolve of the round cancelled: no need to know.
             let stop = || self.lock().checking.is_empty();
@@ -785,8 +906,14 @@ impl Batches {
                 oxabl_common::catch_panic(|| Pass::current(&job.host, &job.session_root, &stop))
                     .ok()
                     .flatten();
-            let round = std::mem::take(&mut self.lock().checking);
-            for check in round {
+            for text in &texts {
+                oxabl_common::panic_if_injected(site, text);
+            }
+            // One at a time, so a cancel finds the resolves still to answer.
+            loop {
+                let Some(check) = self.lock().checking.pop() else {
+                    break;
+                };
                 if current
                     .as_ref()
                     .is_some_and(|current| check.pass.same(current))
@@ -823,6 +950,11 @@ impl Batches {
                 state.closed = true;
             }
         }
+        // Only a cancel takes a resolve out of a batch that no runner has.
+        for batch in &queue.waiting {
+            let state = batch.lock();
+            assert!(state.closed || !state.waiters.is_empty());
+        }
         let reaped: Vec<Arc<Batch>> = queue
             .waiting
             .iter()
@@ -839,22 +971,38 @@ impl Batches {
                 queue.open.remove(&batch.key);
             }
         }
+        assert!(gone.len() <= 1, "two resolves with one id");
         gone
     }
 
     /// Work off the waiting batches, then end.
     fn run(&self, job: &BatchJob) {
+        let mut exit = RunnerExit {
+            batches: self,
+            job,
+            batch: None,
+            done: false,
+        };
         loop {
             let batch = {
                 let mut queue = self.lock();
+                assert!(queue.runners > 0 && queue.runners <= job.max_runners);
                 match queue.waiting.pop_front() {
                     Some(batch) => batch,
                     None => {
                         queue.runners -= 1;
+                        exit.done = true;
                         return;
                     }
                 }
             };
+            exit.batch = Some(Arc::clone(&batch));
+            if let Some(text) = &batch.hold_text {
+                oxabl_common::panic_if_injected(
+                    oxabl_common::panic_sites::LSP_REFERENCE_LENS_THREAD,
+                    text,
+                );
+            }
             if oxabl_common::catch_panic(|| run_batch(&batch, job)).is_err() {
                 let outcome = Outcome::Title(unknown("the analysis failed"));
                 let waiters = std::mem::take(&mut batch.lock().waiters);
@@ -862,21 +1010,78 @@ impl Batches {
                     job.send(waiter, &outcome);
                 }
             }
-            let mut queue = self.lock();
-            batch.lock().closed = true;
-            if queue
-                .open
-                .get(&batch.key)
-                .is_some_and(|open| Arc::ptr_eq(open, &batch))
-            {
-                queue.open.remove(&batch.key);
-            }
-            drop(queue);
             // A resolve that joined after the last answer of its lens.
-            let left = std::mem::take(&mut batch.lock().waiters);
-            for waiter in left {
-                job.send(waiter, &cancelled());
-            }
+            self.close(&batch, job, &cancelled());
+            exit.batch = None;
+        }
+    }
+
+    /// Close `batch`, take it out of the open batches, and answer each
+    /// resolve still in it with `outcome`.
+    fn close(&self, batch: &Arc<Batch>, job: &BatchJob, outcome: &Outcome) {
+        let mut queue = self.lock();
+        batch.lock().closed = true;
+        if queue
+            .open
+            .get(&batch.key)
+            .is_some_and(|open| Arc::ptr_eq(open, batch))
+        {
+            queue.open.remove(&batch.key);
+        }
+        drop(queue);
+        let left = std::mem::take(&mut batch.lock().waiters);
+        for waiter in left {
+            job.send(waiter, outcome);
+        }
+    }
+}
+
+/// The end of a runner by a panic that no guard of a search caught: its
+/// batch is answered with an error and its place goes to a new runner, so
+/// the batches that wait still run.
+struct RunnerExit<'a> {
+    batches: &'a Batches,
+    job: &'a BatchJob,
+    batch: Option<Arc<Batch>>,
+    /// The runner ended as it should.
+    done: bool,
+}
+
+impl Drop for RunnerExit<'_> {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        if let Some(batch) = self.batch.take() {
+            self.batches.close(&batch, self.job, &thread_failed());
+        }
+        let mut queue = self.batches.lock();
+        assert!(queue.runners > 0);
+        queue.runners -= 1;
+        self.batches.start_runner(queue, self.job);
+    }
+}
+
+/// The end of the checker by a panic that no guard caught: the titles of
+/// its round are answered with an error and a new checker takes the rest.
+struct CheckerExit<'a> {
+    batches: &'a Batches,
+    job: &'a BatchJob,
+    /// The checker ended as it should.
+    done: bool,
+}
+
+impl Drop for CheckerExit<'_> {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        let mut queue = self.batches.lock();
+        queue.checker = false;
+        let lost = std::mem::take(&mut queue.checking);
+        self.batches.start_checker(queue, self.job);
+        for check in lost {
+            self.job.send(check.waiter, &thread_failed());
         }
     }
 }
@@ -940,87 +1145,119 @@ fn run_batch(batch: &Batch, job: &BatchJob) {
             return;
         }
     };
+    assert_eq!(answers.len(), batch.lenses.len());
     if let Some(text) = &batch.hold_text
         && answers.iter().any(|answer| matches!(answer, Some(Ok(_))))
     {
         oxabl_common::hold_if_injected(oxabl_common::panic_sites::LSP_REFERENCE_LENS_ANSWER, text);
     }
-    // A member that overrides or implements another is also called through
-    // its supertype, which the search does not read. Any failure to tell
-    // counts as an override.
+    let mut overrides = member_overrides(batch, job, &answers);
+    finish(batch, job, |at| {
+        let answer = answers[at].take()?;
+        let overrides = overrides.remove(&at).unwrap_or(Ok(false));
+        Some(lens_outcome(batch, job, at, answer, overrides))
+    });
+}
+
+/// Whether each member lens of `batch` overrides or implements another, by
+/// the index of its lens. Such a member is also called through its
+/// supertype, which the search does not read. Any failure to tell counts as
+/// an override.
+fn member_overrides(
+    batch: &Batch,
+    job: &BatchJob,
+    answers: &[Option<Result<ReferenceAnswer, ReferenceError>>],
+) -> HashMap<usize, Result<bool, ReferenceError>> {
     let members: Vec<usize> = (0..batch.lenses.len())
         .filter(|&at| {
             batch.lenses[at].0 == Kind::Symbol
                 && matches!(&answers[at], Some(Ok(answer)) if answer.member)
         })
         .collect();
+    let mut overrides = HashMap::new();
+    if members.is_empty() {
+        return overrides;
+    }
     let offsets: Vec<u32> = members.iter().map(|&at| batch.lenses[at].1).collect();
-    let mut overrides: HashMap<usize, Result<bool, ReferenceError>> = HashMap::new();
-    if !members.is_empty() {
-        let each = oxabl_common::catch_panic(|| {
-            may_override_each(host, session_root, root, &batch.path, &offsets)
-        });
-        for (n, &at) in members.iter().enumerate() {
-            let overrides_at = match &each {
-                Ok(Ok(each)) => match each.get(n) {
-                    Some(Ok(overrides)) => Ok(*overrides),
-                    Some(Err(error @ (ReferenceError::Cancelled | ReferenceError::Modified))) => {
-                        Err(error.clone())
-                    }
-                    _ => Ok(true),
-                },
-                Ok(Err(error @ (ReferenceError::Cancelled | ReferenceError::Modified))) => {
+    let each = oxabl_common::catch_panic(|| {
+        may_override_each(
+            &job.host,
+            &job.session_root,
+            &batch.key.root,
+            &batch.path,
+            &offsets,
+        )
+    });
+    if let Ok(Ok(each)) = &each {
+        assert_eq!(each.len(), offsets.len());
+    }
+    for (n, &at) in members.iter().enumerate() {
+        let overrides_at = match &each {
+            Ok(Ok(each)) => match each.get(n) {
+                Some(Ok(overrides)) => Ok(*overrides),
+                Some(Err(error @ (ReferenceError::Cancelled | ReferenceError::Modified))) => {
                     Err(error.clone())
                 }
                 _ => Ok(true),
-            };
-            overrides.insert(at, overrides_at);
-        }
-    }
-    finish(batch, job, |at| {
-        let answer = answers[at].take()?;
-        let overrides = overrides.remove(&at).unwrap_or(Ok(false));
-        let (kind, offset) = batch.lenses[at];
-        let outcome = match (answer, overrides) {
-            (Ok(answer), Ok(overrides)) => {
-                crate::references::log_standing(
-                    &job.sender,
-                    &job.in_flight,
-                    "references and calls",
-                    &answer.gaps,
-                );
-                let volatile = answer.volatile;
-                let pass = answer.pass.clone();
-                let title = title(answer, kind, overrides, &job.encoding);
-                if !volatile
-                    && title.opens
-                    && let Some(made) = batch.key.generations
-                {
-                    let key = CacheKey {
-                        uri: batch.key.uri.clone(),
-                        root: batch.key.root.clone(),
-                        kind,
-                        offset,
-                        version: batch.key.version,
-                    };
-                    job.cache
-                        .put(key, made, batch.key.epoch, title.clone(), pass);
-                }
-                Outcome::Title(title)
-            }
-            (Ok(_), Err(error)) | (Err(error), _) => match error {
-                ReferenceError::Cancelled => cancelled(),
-                ReferenceError::Modified => Outcome::Error(
-                    ErrorCode::ContentModified as i32,
-                    "oxabl-lsp: an edit replaced this analysis".to_string(),
-                ),
-                ReferenceError::Failed(reason) => {
-                    Outcome::Title(unknown(&format!("the file gives no answer: {reason}")))
-                }
             },
+            Ok(Err(error @ (ReferenceError::Cancelled | ReferenceError::Modified))) => {
+                Err(error.clone())
+            }
+            _ => Ok(true),
         };
-        Some(outcome)
-    });
+        overrides.insert(at, overrides_at);
+    }
+    overrides
+}
+
+/// The answer of lens `at` of `batch` from its search and its override
+/// check. A title that holds is kept for the next resolve.
+fn lens_outcome(
+    batch: &Batch,
+    job: &BatchJob,
+    at: usize,
+    answer: Result<ReferenceAnswer, ReferenceError>,
+    overrides: Result<bool, ReferenceError>,
+) -> Outcome {
+    let (kind, offset) = batch.lenses[at];
+    match (answer, overrides) {
+        (Ok(answer), Ok(overrides)) => {
+            crate::references::log_standing(
+                &job.sender,
+                &job.in_flight,
+                "references and calls",
+                &answer.gaps,
+            );
+            let volatile = answer.volatile;
+            let pass = answer.pass.clone();
+            let title = title(answer, kind, overrides, &job.encoding);
+            if !volatile
+                && title.opens
+                && let Some(made) = batch.key.generations
+            {
+                let key = CacheKey {
+                    uri: batch.key.uri.clone(),
+                    root: batch.key.root.clone(),
+                    kind,
+                    offset,
+                    version: batch.key.version,
+                };
+                job.cache
+                    .put(key, made, batch.key.epoch, title.clone(), pass);
+            }
+            Outcome::Title(title)
+        }
+        (Ok(_), Err(error)) | (Err(error), _) => match error {
+            ReferenceError::Cancelled => cancelled(),
+            ReferenceError::Modified => Outcome::Error(
+                ErrorCode::ContentModified as i32,
+                "oxabl-lsp: an edit replaced this analysis".to_string(),
+            ),
+            ReferenceError::Failed(reason) => {
+                Outcome::Title(unknown(&format!("the file gives no answer: {reason}")))
+            }
+        },
+    }
 }
 
 /// Tell a test that asks for it ([`oxabl_common::count_requested`]) which

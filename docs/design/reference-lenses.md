@@ -61,13 +61,20 @@ batch does not parse the text again. The server makes the list of lenses
 before it takes the lock of the batches.
 
 Each batch has its own runner (a thread), up to 16 for each client, so a
-short batch does not wait for the end of a long one. A runner mostly waits:
-the other files are analysed on the pool of threads that every search of the
-daemon shares (`docs/design/references.md`), so the analyses in progress do
-not grow with the number of batches. A batch over the limit waits in a queue
-for a runner. The member lenses also ask whether the member overrides or
-implements another (see below). The batch asks this for all its members with
-one more analysis of the unit.
+short batch does not wait for the end of a long one. The other files are
+analysed on the pool of threads that every search of the daemon shares
+(`docs/design/references.md`), so their analyses in progress do not grow with
+the number of batches. The analysis of the unit that asks, its dependency
+graph and the override check run on the runner, so up to 16 of each run at one
+time for a client. A batch over the limit waits in a queue for a runner. The
+member lenses also ask whether the member overrides or implements another (see
+below). The batch asks this for all its members with one more analysis of the
+unit.
+
+A runner or the checker of kept titles (below) can end with a panic that no
+guard of a search catches. Then the resolves that it had get an
+`InternalError`, and a new thread takes the batches or titles that wait, so
+no resolve waits for a thread that is gone.
 
 A resolve with a kept title that read a workspace pass (see "Cost") does not
 join a batch. One thread for each client checks whether the pass of the kept
@@ -299,7 +306,12 @@ lens has alone, one search analyses each other file once for all the lenses of
 the file, a batch whose resolves are all cancelled answers each of them
 `RequestCancelled` and stops before it analyses every other file, a kept title
 and the batch of another file do not wait for two long batches, and a panic
-for one lens in a file costs only that lens; and the threads: resolves that
+for one lens in a file costs only that lens; the runners: no more than 16
+batches of a client run at one time, a batch waits while the most runners run,
+a cancel answers a resolve whose batch waits for a runner or whose kept title
+is checked before the batch or check ends, and a runner or checker that panics
+answers its resolves with an error and leaves its place to a new thread; and
+the threads: resolves that
 wait and searches that run together start no thread for each resolve and no
 new thread to analyse a file, and the threads of the searches end soon after
 them. In test builds only, a file with
@@ -307,7 +319,14 @@ them. In test builds only, a file with
 wait, a file with `OXABL-TEST-PANIC:daemon.reference-part:<name>` panics when
 a search collects the places of the referent `<name>` in it, and a source with
 `OXABL-TEST-COUNT:lsp.reference-lens` makes the server write the files that
-the search of each batch analysed to the log (`window/logMessage`). The cache
+the search of each batch analysed to the log (`window/logMessage`). A
+workspace root whose path holds
+`OXABL-TEST-BOUND:lsp.reference-lens-runners@<n>` gives each client `n`
+runners, a source with `OXABL-TEST-PANIC:lsp.reference-lens-thread` makes the
+runner of its batch panic outside the guard of the search, and a source with
+`OXABL-TEST-HOLD:lsp.reference-lens-check@<ms>` or
+`OXABL-TEST-PANIC:lsp.reference-lens-check` makes the check of its kept title
+wait before it reads the workspace pass, or panic after it. The cache
 bounds are tested in `crates/oxabl_lsp/src/reference_lens.rs`, because no
 client can see the size of the cache. The `reference-lenses` scenario of
 `clients/vscode/test/e2e` shows the lenses in a real VS Code, clicks the

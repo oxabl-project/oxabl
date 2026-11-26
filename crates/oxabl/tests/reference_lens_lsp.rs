@@ -2147,3 +2147,280 @@ fn a_panic_for_one_lens_in_a_file_costs_only_that_lens() {
     );
     assert_eq!(titles[3], exact(1), "`Stop`: {titles:#?}");
 }
+
+/// As [`workspace_of`], with the root in a directory named `name`, so that a
+/// marker in the name of the root acts.
+fn workspace_named(name: &str, files: &[(String, String)]) -> Workspace {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap().join(name);
+    let mut all: Vec<(&str, &str)> = vec![("oxabl.toml", CONFIG)];
+    all.extend(
+        files
+            .iter()
+            .map(|(name, text)| (name.as_str(), text.as_str())),
+    );
+    for (name, text) in all {
+        let path = root.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    Workspace { _dir: dir, root }
+}
+
+/// A root whose client has one runner for its lens batches.
+const ONE_RUNNER: &str = "ws-OXABL-TEST-BOUND:lsp.reference-lens-runners@1";
+
+/// The index in `seen` of the answer to `id`.
+fn answer_at(seen: &[Value], id: u64) -> Option<usize> {
+    seen.iter()
+        .position(|message| message["id"] == json!(id) && message.get("method").is_none())
+}
+
+/// Make the workspace pass current with a find references request that
+/// analyses no held file: no caller of these classes names `Stop`.
+fn make_the_pass(session: &mut Session, ws: &Workspace, name: &str) {
+    let path = ws.path(&format!("app/{name}.cls"));
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(find_references(session, &path, &text, "Stop()").0, 0);
+}
+
+#[test]
+fn a_cancel_answers_a_resolve_whose_batch_waits_for_a_runner() {
+    let mut files = Vec::new();
+    held_class(
+        &mut files,
+        "A",
+        1,
+        "/* OXABL-TEST-HOLD:daemon.reference-unit@3000 */",
+    );
+    held_class(&mut files, "B", 0, "");
+    let ws = workspace_named(ONE_RUNNER, &files);
+    let mut session = start(&ws);
+    let a = open_class(&mut session, &ws, "A", "");
+    let b = open_class(&mut session, &ws, "B", "");
+    make_the_pass(&mut session, &ws, "B");
+
+    // The one runner works the batch of `A`; the batch of `B` waits for it.
+    let long = send_resolve(&mut session, &a[0]);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let queued = send_resolve(&mut session, &b[2]);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    session.send(json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": queued}}));
+    let seen = messages_until(&session, std::time::Duration::from_secs(60), |seen| {
+        answer_to(seen, long).is_some() && answer_to(seen, queued).is_some()
+    });
+    let answer = answer_to(&seen, queued).unwrap();
+    assert_eq!(
+        answer["error"]["code"],
+        json!(-32800),
+        "a cancelled resolve gave {answer}"
+    );
+    assert!(
+        answer_at(&seen, queued) < answer_at(&seen, long),
+        "the cancel of a resolve whose batch waits for a runner was answered only after the batch before it: {seen:#?}"
+    );
+    assert!(answer_to(&seen, long).unwrap().get("error").is_none());
+}
+
+#[test]
+fn a_batch_waits_while_the_most_runners_run() {
+    let mut files = Vec::new();
+    held_class(
+        &mut files,
+        "A",
+        1,
+        "/* OXABL-TEST-HOLD:daemon.reference-unit@3000 */",
+    );
+    held_class(&mut files, "B", 0, "");
+    let ws = workspace_named(ONE_RUNNER, &files);
+    let mut session = start(&ws);
+    let a = open_class(&mut session, &ws, "A", "");
+    let b = open_class(&mut session, &ws, "B", "");
+    make_the_pass(&mut session, &ws, "B");
+
+    let long = send_resolve(&mut session, &a[0]);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let next = send_resolve(&mut session, &b[2]);
+    let seen = messages_until(&session, std::time::Duration::from_secs(60), |seen| {
+        answer_to(seen, long).is_some() && answer_to(seen, next).is_some()
+    });
+    assert!(
+        answer_at(&seen, long) < answer_at(&seen, next),
+        "a batch ran while the one runner of the client was busy: {seen:#?}"
+    );
+    assert_eq!(title(&answer_to(&seen, next).unwrap()["result"]), exact(0));
+}
+
+/// A class `app.<name>` with one method `Go<name>`, so that no other class
+/// shares a name with it, and `callers` programs that call it, with `marker`
+/// in each. Its lenses are the class and the method.
+fn lone_class(files: &mut Vec<(String, String)>, name: &str, callers: usize, marker: &str) {
+    files.push((
+        format!("app/{name}.cls"),
+        format!(
+            "CLASS app.{name}:\n    METHOD PUBLIC VOID Go{name}():\n    END METHOD.\nEND CLASS.\n"
+        ),
+    ));
+    for n in 0..callers {
+        files.push((
+            format!("{name}-{n}.p"),
+            format!(
+                "{marker}\nDEFINE VARIABLE o AS CLASS app.{name} NO-UNDO.\n\
+                 o = NEW app.{name}().\no:Go{name}().\n"
+            ),
+        ));
+    }
+}
+
+#[test]
+fn no_more_than_sixteen_batches_of_a_client_run_at_one_time() {
+    let mut files = Vec::new();
+    let held: Vec<String> = (b'a'..=b'q').map(|c| format!("K{}", c as char)).collect();
+    for name in &held {
+        lone_class(
+            &mut files,
+            name,
+            1,
+            "/* OXABL-TEST-HOLD:daemon.reference-unit@3000 */",
+        );
+    }
+    lone_class(&mut files, "Z", 0, "");
+    let ws = workspace_of(&files);
+    let mut session = start(&ws);
+    let lensed: Vec<Vec<Value>> = held
+        .iter()
+        .map(|name| open_class(&mut session, &ws, name, ""))
+        .collect();
+    let z = open_class(&mut session, &ws, "Z", "");
+    assert_eq!(z.len(), 2);
+    // The workspace pass, with no held file analysed.
+    let z_path = ws.path("app/Z.cls");
+    let z_text = std::fs::read_to_string(&z_path).unwrap();
+    assert_eq!(find_references(&mut session, &z_path, &z_text, "GoZ").0, 0);
+
+    // Seventeen long batches: sixteen run, one waits, and so does `Z`.
+    let long: Vec<u64> = lensed
+        .iter()
+        .map(|lenses| send_resolve(&mut session, &lenses[1]))
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let last = send_resolve(&mut session, &z[1]);
+    let seen = messages_until(&session, std::time::Duration::from_secs(120), |seen| {
+        answer_to(seen, last).is_some()
+    });
+    assert_eq!(title(&answer_to(&seen, last).unwrap()["result"]), exact(0));
+    assert!(
+        long.iter().any(|&id| answer_to(&seen, id).is_some()),
+        "an eighteenth batch ran while seventeen batches were in progress: {seen:#?}"
+    );
+    let more = messages_until(&session, std::time::Duration::from_secs(120), |more| {
+        long.iter()
+            .all(|&id| answer_to(&seen, id).or(answer_to(more, id)).is_some())
+    });
+    for &id in &long {
+        let answer = answer_to(&seen, id).or(answer_to(&more, id)).unwrap();
+        assert_eq!(title(&answer["result"]), exact(1));
+    }
+}
+
+#[test]
+fn a_cancel_answers_a_resolve_whose_kept_title_is_checked() {
+    let mut files = Vec::new();
+    held_class(&mut files, "C", 1, "");
+    let ws = workspace_of(&files);
+    let mut session = start(&ws);
+    let c = open_class(
+        &mut session,
+        &ws,
+        "C",
+        "/* OXABL-TEST-HOLD:lsp.reference-lens-check@3000 */\n",
+    );
+    let (first, _) = resolve_at_once(&mut session, &c[2..3]);
+    assert_eq!(title(&first[0]), exact(1));
+
+    // The kept title waits in its check of the workspace pass.
+    let kept = send_resolve(&mut session, &c[2]);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    session.send(json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": kept}}));
+    let seen = messages_until(&session, std::time::Duration::from_secs(30), |seen| {
+        answer_to(seen, kept).is_some()
+    });
+    let answer = answer_to(&seen, kept).unwrap();
+    assert_eq!(
+        answer["error"]["code"],
+        json!(-32800),
+        "a cancelled resolve in the check of its kept title gave {answer}"
+    );
+}
+
+#[test]
+fn a_runner_that_panics_answers_its_batch_and_frees_its_place() {
+    let mut files = Vec::new();
+    held_class(&mut files, "P", 0, "");
+    held_class(&mut files, "B", 0, "");
+    let ws = workspace_named(ONE_RUNNER, &files);
+    let mut session = start(&ws);
+    let p = open_class(
+        &mut session,
+        &ws,
+        "P",
+        "/* OXABL-TEST-PANIC:lsp.reference-lens-thread */\n",
+    );
+    let b = open_class(&mut session, &ws, "B", "");
+
+    let failed = send_resolve(&mut session, &p[2]);
+    let seen = messages_until(&session, std::time::Duration::from_secs(30), |seen| {
+        answer_to(seen, failed).is_some()
+    });
+    let answer = answer_to(&seen, failed).unwrap();
+    assert_eq!(
+        answer["error"]["code"],
+        json!(-32603),
+        "the resolve of a runner that panicked gave {answer}"
+    );
+    // The one runner of the client is free again.
+    let next = send_resolve(&mut session, &b[2]);
+    let seen = messages_until(&session, std::time::Duration::from_secs(30), |seen| {
+        answer_to(seen, next).is_some()
+    });
+    assert_eq!(title(&answer_to(&seen, next).unwrap()["result"]), exact(0));
+}
+
+#[test]
+fn a_checker_that_panics_answers_its_round_and_the_next_title_is_checked() {
+    let mut files = Vec::new();
+    held_class(&mut files, "C", 1, "");
+    held_class(&mut files, "D", 1, "");
+    let ws = workspace_of(&files);
+    let mut session = start(&ws);
+    let c = open_class(
+        &mut session,
+        &ws,
+        "C",
+        "/* OXABL-TEST-PANIC:lsp.reference-lens-check */\n",
+    );
+    let d = open_class(&mut session, &ws, "D", "");
+    let (first, _) = resolve_at_once(&mut session, &[c[2].clone(), d[2].clone()]);
+    assert_eq!(title(&first[0]), exact(1));
+    assert_eq!(title(&first[1]), exact(1));
+
+    let failed = send_resolve(&mut session, &c[2]);
+    let seen = messages_until(&session, std::time::Duration::from_secs(30), |seen| {
+        answer_to(seen, failed).is_some()
+    });
+    let answer = answer_to(&seen, failed).unwrap();
+    assert_eq!(
+        answer["error"]["code"],
+        json!(-32603),
+        "the kept title of a checker that panicked gave {answer}"
+    );
+    let kept = send_resolve(&mut session, &d[2]);
+    let seen = messages_until(&session, std::time::Duration::from_secs(30), |seen| {
+        answer_to(seen, kept).is_some()
+    });
+    assert_eq!(title(&answer_to(&seen, kept).unwrap()["result"]), exact(1));
+    assert!(
+        searched_files(&seen).is_none(),
+        "the kept title made a new search"
+    );
+}
