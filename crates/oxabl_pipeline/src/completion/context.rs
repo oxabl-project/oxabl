@@ -110,7 +110,7 @@ pub(crate) fn is_word_byte(byte: u8) -> bool {
 }
 
 /// A character of a path: a word, `/`, `\` and `.`.
-fn is_path_byte(byte: u8) -> bool {
+pub(super) fn is_path_byte(byte: u8) -> bool {
     is_word_byte(byte) || matches!(byte, b'/' | b'\\' | b'.')
 }
 

@@ -167,6 +167,20 @@ pub struct Lexer<'a> {
     /// Normalized spelling of the word currently being scanned when UNIX's
     /// backslash escape syntax occurred inside it.
     normalized_word: Option<OxablAtom>,
+
+    /// The byte a lexer made by [`Lexer::starting_at`] started at. With the
+    /// test-only `test-counters` feature, it counts the bytes it read when it
+    /// is dropped, not the bytes of the source.
+    started_at: Option<usize>,
+}
+
+#[cfg(feature = "test-counters")]
+impl Drop for Lexer<'_> {
+    fn drop(&mut self) {
+        if let Some(from) = self.started_at {
+            LEXED_BYTES.fetch_add(self.offset() - from, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 impl<'a> Lexer<'a> {
@@ -182,6 +196,28 @@ impl<'a> Lexer<'a> {
             in_directive: false,
             finished: false,
             normalized_word: None,
+            started_at: None,
+        }
+    }
+
+    /// A lexer that starts at byte `from` of `source`, as if the text before
+    /// it had been lexed. Its tokens have the offsets of the whole `source`.
+    /// `from` must be a char boundary at which no `&SCOPED-DEFINE` or
+    /// `&GLOBAL-DEFINE` value is open: the end of a token that no such
+    /// directive precedes on its line, or of the `PreprocEnd` that closes it.
+    pub fn starting_at(source: &'a str, from: usize) -> Self {
+        assert!(source.is_char_boundary(from), "from is not a char boundary");
+        #[cfg(feature = "test-counters")]
+        {
+            LEXES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Self {
+            source,
+            chars: source[from..].chars(),
+            in_directive: false,
+            finished: false,
+            normalized_word: None,
+            started_at: Some(from),
         }
     }
 

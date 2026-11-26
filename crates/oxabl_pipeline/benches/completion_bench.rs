@@ -1,7 +1,9 @@
 //! Code completion in a large procedure file: the 10,000 lines of
-//! `semantic_tokens_bench`. A request lexes the current text, places the
-//! cursor in the base and collects the items; it never analyses when a base
-//! exists. `fresh` reads a base of the current text; `stale` reads a base of
+//! `semantic_tokens_bench`. A request lexes what differs from the tokens of
+//! its base (nothing, when the text is the base's), places the cursor in the
+//! base and collects the items; it never analyses when a base exists.
+//! `request_fresh` and `request_stale` are the whole request of the daemon: it asks whether the
+//! request needs a base, then answers. `fresh` reads a base of the current text; `stale` reads a base of
 //! the text before a one-line insert in the middle of the file. The contexts
 //! are a statement start inside a procedure, the words after `DEFINE`, an
 //! expression (the names in scope and the built-in functions), the records
@@ -14,7 +16,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use oxabl_pipeline::completion::{CompletionBase, CompletionRequest, FreshListing, complete};
+use oxabl_pipeline::completion::{
+    CompletionBase, CompletionRequest, FreshListing, Prior, complete, lex, wants_base,
+};
 use oxabl_pipeline::{LintPipeline, PipelineConfig};
 use oxabl_schema::test_support::schema_from_df;
 use oxabl_style::KeywordCase;
@@ -124,6 +128,7 @@ fn bench_completion(c: &mut Criterion) {
             config: &config,
             listing: &listing,
         };
+        let base_tokens = lex(&text);
         let ask = |request: &CompletionRequest<'_>, base_text: &str| {
             let navigation = handle
                 .navigation_with(&expansion, Arc::clone(&model), &none)
@@ -133,6 +138,7 @@ fn bench_completion(c: &mut Criterion) {
                 text: base_text,
                 fragment: false,
                 stale: false,
+                tokens: Some(&base_tokens),
             };
             complete(request, Some(&base)).map_or(0, |list| list.items.len())
         };
@@ -156,6 +162,22 @@ fn bench_completion(c: &mut Criterion) {
         group.bench_function(format!("stale/{name}"), |b| {
             b.iter(|| black_box(ask(&stale, &text)))
         });
+        // The whole request of the daemon.
+        let prior = Prior {
+            text: &text,
+            tokens: &base_tokens,
+        };
+        for (kind, request) in [("fresh", &request), ("stale", &stale)] {
+            if !matches!(*name, "define" | "expression") {
+                continue;
+            }
+            group.bench_function(format!("request_{kind}/{name}"), |b| {
+                b.iter(|| {
+                    black_box(wants_base(request, Some(prior)));
+                    black_box(ask(request, &text))
+                })
+            });
+        }
     }
     group.finish();
 }
@@ -203,6 +225,7 @@ fn bench_large_directory(c: &mut Criterion) {
             config: &config,
             listing: &listing,
         };
+        let tokens = lex(&text);
         let ask = || {
             let navigation = handle
                 .navigation_with(&expansion, Arc::clone(&model), &none)
@@ -212,6 +235,7 @@ fn bench_large_directory(c: &mut Criterion) {
                 text: &text,
                 fragment: false,
                 stale: false,
+                tokens: Some(&tokens),
             };
             complete(&request, Some(&base)).map_or(0, |list| list.items.len())
         };

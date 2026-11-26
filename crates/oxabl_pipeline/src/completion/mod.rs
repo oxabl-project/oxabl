@@ -19,14 +19,18 @@ mod paths;
 mod rank;
 mod records;
 mod snippets;
+mod tokens;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use oxabl_lexer::{Kind, Token};
+use oxabl_lexer::Kind;
 use oxabl_semantic::{ScopeId, ScopeKind};
 use oxabl_style::KeywordCase;
 use oxabl_workspace::{DirEntry, FileSystem};
+
+pub use oxabl_lexer::Token;
+pub use tokens::Prior;
 
 use crate::keyword_docs::KEYWORD_DOCS;
 use crate::{Navigation, PipelineConfig};
@@ -101,6 +105,23 @@ pub struct CompletionBase<'b, 's, 'a> {
     /// document (the root of an include, or another include): its names can
     /// be out of date.
     pub stale: bool,
+    /// The tokens of `text`, as [`lex`] gives them. A request lexes only what
+    /// differs from them. `None`: the request lexes the whole current text.
+    pub tokens: Option<&'b [Token]>,
+}
+
+impl CompletionBase<'_, '_, '_> {
+    fn prior(&self) -> Option<Prior<'_>> {
+        self.tokens.map(|tokens| Prior {
+            text: self.text,
+            tokens,
+        })
+    }
+}
+
+/// The tokens of `text`, for [`CompletionBase::tokens`].
+pub fn lex(text: &str) -> Vec<Token> {
+    oxabl_lexer::tokenize(text)
 }
 
 /// The answer to a [`CompletionRequest`]. Offsets are bytes of the current
@@ -272,8 +293,8 @@ pub fn complete(
     base: Option<&CompletionBase<'_, '_, '_>>,
 ) -> Option<CompletionList> {
     let text = request.text;
-    let tokens = oxabl_lexer::tokenize(text);
     let cursor = request.offset.min(text.len() as u32);
+    let tokens = tokens::of_request(text, cursor, base.and_then(CompletionBase::prior));
     let found = context::find(text, &tokens, cursor)?;
     if let Some(trigger) = request.trigger
         && !found.context.takes_trigger(trigger)
@@ -353,10 +374,13 @@ fn collector(context: &Context) -> Option<Collector> {
 /// whatever the base), and when the context reads no analysis (the tables of a
 /// database after `FIND FIRST shop.`, the include files of a procedure file):
 /// then the caller makes no base and asks with none.
-pub fn wants_base(request: &CompletionRequest<'_>) -> bool {
+///
+/// `prior` is an older analysis' text and tokens, when the caller has one: the
+/// request then lexes only what the edit changed.
+pub fn wants_base(request: &CompletionRequest<'_>, prior: Option<Prior<'_>>) -> bool {
     let text = request.text;
-    let tokens = oxabl_lexer::tokenize(text);
     let cursor = request.offset.min(text.len() as u32);
+    let tokens = tokens::of_request(text, cursor, prior);
     context::find(text, &tokens, cursor).is_some_and(|found| {
         request
             .trigger

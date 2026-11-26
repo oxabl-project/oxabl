@@ -35,8 +35,8 @@ document highlights.
 
 1. The language server finds the open document, the byte offset of the cursor
    and the selected include context (`docs/design/include-context.md`).
-2. The daemon lexes the current text and finds the word and the statement
-   window. A cursor in a comment, or in a string outside a `{...}`
+2. The daemon takes the tokens of the current text (below) and finds the word
+   and the statement window. A cursor in a comment, or in a string outside a `{...}`
    reference, gives `null`.
 3. The daemon reads the window and finds the context. No context gives `null`.
 4. The daemon takes the newest base of the document (fresh, else stale, else
@@ -81,7 +81,8 @@ build (`cargo bench -p oxabl_pipeline --bench semantic_tokens_bench`,
 `semantic_tokens/analysis`: 99 ms on a loaded machine; lex 2 ms, parse 2 ms,
 semantic passes 90 ms). So the request cannot wait for an analysis of the text
 that the last key made. It reads the newest base that exists and maps the
-cursor into it. Only the lexer runs on the current text (about 2 ms).
+cursor into it. The current text is lexed only where it differs from the base's
+text (see "Word and window").
 
 ### Fresh, stale and cold
 
@@ -229,8 +230,28 @@ its use.
 
 ### Word and window
 
-The daemon lexes the whole current text (`oxabl_lexer::tokenize`, about 2 ms
-for 10,000 lines). Lexing from the start keeps comments and strings right.
+A base keeps the tokens of its text (`oxabl_daemon::completion::Base`: lexed
+once, in the refresh that makes the base). A request takes its tokens from
+them (`oxabl_pipeline::completion::tokens`):
+
+- The text is the base's text: the request lexes nothing.
+- The text is newer: the request keeps the tokens of the base that end before
+  the line above the first changed byte, and lexes from there
+  (`Lexer::starting_at`) up to the end of the changed bytes, the end of the
+  word and the two tokens after it. The lexer reads past the end of a token
+  only on its own line (and one line more after a `~` at a line end), so
+  these tokens are the ones a full lex gives. A `&SCOPED-DEFINE` or
+  `&GLOBAL-DEFINE` that no `PreprocEnd` has closed moves the start back to it,
+  because a new lexer does not know its mode.
+- No base: the request lexes the whole text (`oxabl_lexer::tokenize`). The
+  first request of a document does this once, to ask whether it needs a base.
+
+The tokens of a request are always the first tokens of a full lex of the
+text, so comments and strings are right. `completion_tokens` (a test of
+`oxabl_pipeline`) compares the answers with the tokens of the base and with a
+full lex, and counts the bytes that a request lexes; the unit test of
+`tokens.rs` tries an edit of many kinds at each byte of texts that depend on
+their context.
 
 - The three `{` contexts (below) are checked first, also inside a string,
   because the preprocessor expands `{1}` and `{&name}` in strings. Then a
@@ -953,8 +974,8 @@ extension's. With completion:
 ## The budget
 
 A completion in a 10,000-line file answers within 100 ms when a base exists.
-The request path lexes the current text (about 2 ms), compares it with the
-base text, maps the cursor, collects at most a few thousand candidates and
+The request path lexes what the current text changed in the base's text,
+compares the two texts, maps the cursor, collects at most a few thousand candidates and
 renders at most 200 items. It never runs a semantic analysis when a base
 exists.
 
@@ -964,24 +985,31 @@ It is measured in two ways:
   it). The file is the 10,000-line file of `semantic_tokens_bench`. The
   benches are `fresh/<context>` (the base is of the text the request reads)
   and `stale/<context>` (the base is of the text before a one-line insert above
-  the cursor: lex both texts, compare, map and collect). Each must stay under
+  the cursor: lex the change, compare, map and collect). The benches
+  `request_fresh/<context>` and `request_stale/<context>` (`define` and
+  `expression`) are the whole request of the daemon: `wants_base`, then the
+  answer. Each must stay under
   20 ms in a release build. Each later step adds its contexts (`obj:`).
 
   | Context | Fresh | Stale |
   | --- | --- | --- |
-  | `statement`: a statement start in a procedure (`FI`), keywords, snippets and names | 2.7 ms | 5.6 ms |
-  | `define`: after `DEFINE ` | 2.4 ms | 5.3 ms |
-  | `expression`: `total = c`, names and built-in functions | 2.6 ms | 5.5 ms |
-  | `find_first`: after `FIND FIRST `, buffers, temp-tables and tables | 2.7 ms | 5.4 ms |
-  | `qualified`: after `DISPLAY Customer.`, the fields | 2.4 ms | 5.3 ms |
-  | `where`: after `WHERE Customer.CustNum > `, fields and values, with the check for a field another record has | 3.1 ms | 6.0 ms |
-  | `run`: after `RUN `, 721 procedures and 40 programs | 2.6 ms | 5.4 ms |
+  | `statement`: a statement start in a procedure (`FI`), keywords, snippets and names | 0.6 ms | 1.0 ms |
+  | `define`: after `DEFINE ` | 0.05 ms | 0.5 ms |
+  | `expression`: `total = c`, names and built-in functions | 0.25 ms | 1.8 ms |
+  | `find_first`: after `FIND FIRST `, buffers, temp-tables and tables | 0.22 ms | 2.7 ms |
+  | `qualified`: after `DISPLAY Customer.`, the fields | 0.02 ms | 0.5 ms |
+  | `where`: after `WHERE Customer.CustNum > `, fields and values, with the check for a field another record has | 0.7 ms | 1.2 ms |
+  | `run`: after `RUN `, 721 procedures and 40 programs | 0.2 ms | 0.7 ms |
   | `run_large`: after `RUN ` in a small file, with an include path entry of 20,000 programs named three times; no listing cache | 8.7 ms | |
   | `run_large_word`: the same after `RUN prog1` | 8.7 ms | |
 
-  Measured on a quiet machine (load average 2 to 5), release build. A stale
-  base lexes the base text too, to find a token that opens or closes a scope
-  in the changed text; that is most of the difference.
+  Measured on a quiet machine, release build (wall time of criterion; the
+  `run_large` rows are bound by the directory listing, not by lexing). Before a
+  base kept its tokens, a request lexed the 10,000 lines (2.2 to 4.6 ms fresh),
+  and a stale one lexed the base text too, to find a token that opens or
+  closes a scope in the changed text (4.6 to 6.2 ms). The whole request of the
+  daemon (`request_fresh/define`, `request_stale/define`) went from 5.2 ms and
+  9.0 ms to 0.04 ms and 0.8 ms.
 - A black-box test over stdio (`crates/oxabl/tests/completion_budget_lsp.rs`)
   shows that the request path does not wait for an analysis: the refresh of a
   source with the marker `OXABL-TEST-HOLD:completion.refresh` waits three
