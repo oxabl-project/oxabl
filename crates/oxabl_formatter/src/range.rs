@@ -26,6 +26,7 @@ use std::ops::Range;
 
 use oxabl_ast::{Span, Statement, StatementKind};
 use oxabl_common::{InternalPanic, catch_panic, panic_if_injected, panic_sites};
+use oxabl_lexer::Token;
 use oxabl_parser::Program;
 use oxabl_style::StyleGuide;
 
@@ -117,7 +118,7 @@ pub fn try_format_ranges(
         panic_if_injected(panic_sites::FORMAT, source);
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
-        format_ranges(source, &program, style, ranges)
+        format_ranges_with_tokens(source, &tokens, &program, style, ranges)
     }) {
         Ok(Ok(edits)) => Ok(edits),
         Ok(Err(bail)) => Err(RangeFailure::Bail(bail)),
@@ -137,10 +138,22 @@ pub fn format_ranges(
     style: &StyleGuide,
     ranges: &[Range<usize>],
 ) -> Result<Vec<RangeEdit>, RangeBail> {
-    let formatted = format_with_lines(source, program, style).map_err(RangeBail::File)?;
-    let lines = Lines::new(source);
     let tokens = oxabl_lexer::tokenize(source);
-    let code = Code::new(&tokens, source.len());
+    format_ranges_with_tokens(source, &tokens, program, style, ranges)
+}
+
+/// [`format_ranges`] for a caller that holds the tokens of `source`
+/// (`oxabl_lexer::tokenize(source)`, the tokens `program` was parsed from).
+fn format_ranges_with_tokens(
+    source: &str,
+    tokens: &[Token],
+    program: &Program,
+    style: &StyleGuide,
+    ranges: &[Range<usize>],
+) -> Result<Vec<RangeEdit>, RangeBail> {
+    let formatted = format_with_lines(source, tokens, program, style).map_err(RangeBail::File)?;
+    let lines = Lines::new(source);
+    let code = Code::new(tokens, source.len());
 
     // Top-level statements and comments are in source order and do not
     // overlap, so each range looks only at those near it.
@@ -296,7 +309,7 @@ pub fn format_ranges(
         at = edit.end;
     }
     candidate.push_str(&source[at..]);
-    if !guard::preserves_with_input_tokens(source, &tokens, &candidate) {
+    if !guard::preserves_with_input_tokens(source, tokens, &candidate) {
         return Err(RangeBail::SemanticGuardTripped);
     }
     Ok(edits)
@@ -420,7 +433,7 @@ struct Code {
 }
 
 impl Code {
-    fn new(tokens: &[oxabl_lexer::Token], len: usize) -> Code {
+    fn new(tokens: &[Token], len: usize) -> Code {
         Code {
             spans: tokens
                 .iter()

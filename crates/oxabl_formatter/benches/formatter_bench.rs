@@ -1,12 +1,14 @@
 //! Format hot-path benchmark (U10 / S6).
 //!
-//! Times `format()` — attach + print + normalize + guard — over a synthetic
-//! ABL fixture (CC-1: no corpus, no PII). Parsing happens once outside the
-//! timed loop, so the measurement isolates the formatter engine. CodSpeed CI
+//! Times the formatter engine — attach + print + normalize + guard — over a
+//! synthetic ABL fixture (CC-1: no corpus, no PII). Lexing and parsing happen
+//! once outside the timed loop. `synthetic_mixed` calls `format()`, which lexes
+//! the source itself; `synthetic_mixed_with_tokens` calls `format_with_tokens()`
+//! with the tokens the caller already holds, as the pipeline does. CodSpeed CI
 //! auto-discovers this `[[bench]]` target.
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use oxabl_formatter::format;
+use oxabl_formatter::{format, format_with_tokens};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_style::StyleGuide;
@@ -46,6 +48,17 @@ fn bench_format(c: &mut Criterion) {
     group.bench_function("synthetic_mixed", |b| {
         b.iter(|| {
             let out = format(black_box(&source), black_box(&program), black_box(&style));
+            black_box(out)
+        })
+    });
+    group.bench_function("synthetic_mixed_with_tokens", |b| {
+        b.iter(|| {
+            let out = format_with_tokens(
+                black_box(&source),
+                black_box(&tokens),
+                black_box(&program),
+                black_box(&style),
+            );
             black_box(out)
         })
     });

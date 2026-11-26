@@ -88,6 +88,28 @@ const _: () = assert!(std::mem::size_of::<Token>() <= 48);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<TokenValue>() <= 24);
 
+/// The lexers built and the bytes they were given, counted only with the
+/// test-only `test-counters` feature.
+#[cfg(feature = "test-counters")]
+static LEXES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "test-counters")]
+static LEXED_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `(lexers built, bytes of source they were given)` in this process, or
+/// `None` without the test-only `test-counters` feature. A test takes the
+/// counts before and after a call and compares them, so that a pipeline that
+/// lexes a text again fails it.
+#[doc(hidden)]
+pub fn lex_counts() -> Option<(usize, usize)> {
+    #[cfg(feature = "test-counters")]
+    return Some((
+        LEXES.load(std::sync::atomic::Ordering::Relaxed),
+        LEXED_BYTES.load(std::sync::atomic::Ordering::Relaxed),
+    ));
+    #[cfg(not(feature = "test-counters"))]
+    None
+}
+
 pub struct Lexer<'a> {
     /// Source Text
     source: &'a str,
@@ -110,6 +132,11 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a str) -> Self {
+        #[cfg(feature = "test-counters")]
+        {
+            LEXES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            LEXED_BYTES.fetch_add(source.len(), std::sync::atomic::Ordering::Relaxed);
+        }
         Self {
             source,
             chars: source.chars(),
