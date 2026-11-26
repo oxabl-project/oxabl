@@ -34,6 +34,7 @@ use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1014,6 +1015,29 @@ enum WorkspacePreparation {
     ),
 }
 
+/// The thread count a workspace pass is limited to; 0 means no limit.
+static PASS_JOBS_LIMIT: AtomicUsize = AtomicUsize::new(0);
+
+/// Limit every workspace pass of this process to `jobs` threads; 0 removes the
+/// limit, which is the state of a daemon.
+///
+/// Only a benchmark calls this. CodSpeed's simulation counts the instructions of
+/// the thread that runs the benchmark and none of a worker's, so a bench of the
+/// pass sets 1 and the pass then runs on the calling thread, where CodSpeed
+/// counts all of it. The graph is the same for any count.
+#[doc(hidden)]
+pub fn limit_pass_jobs(jobs: usize) {
+    PASS_JOBS_LIMIT.store(jobs, Ordering::Relaxed);
+}
+
+/// The threads a workspace pass uses: the cores of the machine, or the limit.
+fn pass_jobs() -> usize {
+    match PASS_JOBS_LIMIT.load(Ordering::Relaxed) {
+        0 => std::thread::available_parallelism().map_or(1, usize::from),
+        limit => limit,
+    }
+}
+
 #[cfg(test)]
 fn build_workspace(
     root: &Path,
@@ -1098,7 +1122,7 @@ fn build_workspace_from(
     let context = pass::PassContext {
         config: &config,
         fs: &fs,
-        jobs: std::thread::available_parallelism().map_or(1, usize::from),
+        jobs: pass_jobs(),
         collect: &collect,
         progress,
     };
