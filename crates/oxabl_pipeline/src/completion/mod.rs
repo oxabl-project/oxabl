@@ -579,6 +579,13 @@ impl Engine<'_, '_, '_, '_> {
                         let typed = word.rfind(['/', '\\']).map_or(word, |at| &word[at + 1..]);
                         rank::quality(typed, last_part(&candidate.label))?
                     }
+                    // A field that a statement qualifies ranks by its own name,
+                    // not by the name of its record.
+                    ItemKind::Field => candidate
+                        .label
+                        .rsplit_once('.')
+                        .and_then(|(_, field)| rank::quality(word, field))
+                        .or_else(|| rank::quality(word, &candidate.label))?,
                     _ => rank::quality(word, &candidate.label)?,
                 };
                 let quality = if word.is_empty() {

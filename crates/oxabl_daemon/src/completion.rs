@@ -73,8 +73,9 @@ struct Slot {
 }
 
 /// How long a directory listing of `RUN` and `{` is kept. A request comes at
-/// each key, and the same directory is listed for each; a file created or
-/// deleted shows in the list after this.
+/// each key, and the same directory is listed for each. A file event drops
+/// the listings it changes at once; a change with no event (a directory, or
+/// a file the client does not watch) shows after this.
 const LISTING_TTL: Duration = Duration::from_secs(3);
 
 /// The most directory listings kept.
@@ -83,7 +84,14 @@ const MAX_LISTINGS: usize = 256;
 /// The directory listings of the recent requests, each kept for
 /// [`LISTING_TTL`].
 #[derive(Default)]
-struct Listings(Mutex<HashMap<PathBuf, Listed>>);
+struct Listings(Mutex<ListingMap>);
+
+#[derive(Default)]
+struct ListingMap {
+    /// Counts the drops, so a listing that a drop overtook is not kept.
+    epoch: u64,
+    listed: HashMap<PathBuf, Listed>,
+}
 
 /// When a directory was listed, and its entries (`None`: it cannot be listed).
 type Listed = (Instant, Option<Arc<[DirEntry]>>);
@@ -97,24 +105,37 @@ struct CachedListing<'c> {
 impl DirListing for CachedListing<'_> {
     fn list(&self, dir: &Path) -> Option<Arc<[DirEntry]>> {
         let now = Instant::now();
+        let epoch;
         {
-            let cache = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((at, listing)) = cache.get(dir)
-                && now.duration_since(*at) < LISTING_TTL
-            {
-                return listing.clone();
+            let mut cache = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
+            match cache.listed.get(dir) {
+                Some((at, listing)) if now.duration_since(*at) < LISTING_TTL => {
+                    return listing.clone();
+                }
+                // Freed when found expired.
+                Some(_) => {
+                    cache.listed.remove(dir);
+                }
+                None => {}
             }
+            epoch = cache.epoch;
         }
         // Listed with no lock held: a slow directory does not stop the others.
         let listing = sorted_listing(self.fs, dir);
         let mut cache = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.len() >= MAX_LISTINGS {
-            cache.retain(|_, (at, _)| now.duration_since(*at) < LISTING_TTL);
-            if cache.len() >= MAX_LISTINGS {
-                cache.clear();
-            }
+        if cache.epoch != epoch {
+            return listing;
         }
-        cache.insert(dir.to_path_buf(), (now, listing.clone()));
+        // Every insert frees the other listings that expired.
+        cache
+            .listed
+            .retain(|_, (at, _)| now.duration_since(*at) < LISTING_TTL);
+        if cache.listed.len() >= MAX_LISTINGS {
+            cache.listed.clear();
+        }
+        cache
+            .listed
+            .insert(dir.to_path_buf(), (now, listing.clone()));
         listing
     }
 }
@@ -143,14 +164,25 @@ impl Bases {
         self.slots().retain(|key, _| key.document != document);
     }
 
+    /// Drop the directory listings that a change of `paths` makes wrong: the
+    /// listing of the directory that holds each path, and the listings
+    /// of the directories under it.
+    pub fn forget_listings(&self, paths: &[PathBuf]) {
+        let mut cache = self.listings.0.lock().unwrap_or_else(|e| e.into_inner());
+        cache.epoch += 1;
+        cache.listed.retain(|dir, _| {
+            !paths
+                .iter()
+                .any(|path| dir.starts_with(path) || path.parent() == Some(dir.as_path()))
+        });
+    }
+
     /// Drop every base and listing: the configuration or the schema changed.
     pub fn clear(&self) {
         self.slots().clear();
-        self.listings
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        let mut cache = self.listings.0.lock().unwrap_or_else(|e| e.into_inner());
+        cache.epoch += 1;
+        cache.listed.clear();
     }
 
     /// The newest base of `key` that was made under `generation`.

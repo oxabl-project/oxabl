@@ -222,10 +222,8 @@ its use.
 | The newest base of each open document and include context | `oxabl_daemon::completion::Bases` | Document closed, configuration or schema changed, include context changed |
 | The class listing of the include paths | One per session (`ClassListing`) | A watched `.cls` file created or deleted, a change of `oxabl.toml` or of the include paths, or 60 seconds for directories outside the watched folders |
 | The bases that resolve may read | The two newest bases of each document, by base id | When a newer base replaces them |
+| The directory listings of `RUN` and `{` | `Listings` in `oxabl_daemon::completion`, at most 256 directories | A watched file created, changed or deleted in the directory (`workspace/didChangeWatchedFiles`), a change of the configuration or schema, or 3 seconds. A listing found older than that is freed and read again, never used |
 | Keyword tables and snippets | Static data | Never |
-
-The directory listings of `RUN` and `{` are not cached: one request lists one
-directory for each include path entry.
 
 ## Find the context
 
@@ -679,10 +677,15 @@ and the item has an `additionalTextEdits` entry that adds
   path entry that is named twice is read once. The daemon keeps each listing
   for three seconds (`Listings` in `oxabl_daemon::completion`, at most 256
   directories, dropped with the bases), so the requests of the next keys do
-  not read the disk again; a file created or deleted shows after that time.
-  The entries are filtered by the last part of the word before items are
-  made, and at most 1000 matches of one directory are offered; more make the
-  list incomplete, and the client asks again as the word grows.
+  not read the disk again. A file event drops the listing of the directory
+  of the file and the listings under it at once, so a created or deleted
+  file shows in the next answer. A change that no event reports shows after
+  three seconds. Each insert frees the listings that expired. The entries are
+  filtered by the last part of the word before items are made. At most 1000
+  matches of one directory are offered, and they are the best ranked ones
+  (the order of the final list, with the name order to break a tie), not the
+  first in the alphabet. More make the list incomplete, and the client asks
+  again as the word grows.
 
 `list_dir` returns `None` when the file system cannot list (the in-memory
 file system of a test can). `None` gives `isIncomplete: true`, never an empty
@@ -795,7 +798,9 @@ losing items. A path matches on its last part.
    `oxabl_semantic::coercion::assignable` says so. In a `WHERE`, the fields of
    the statement's records come next.
 3. Match quality: the same text (without case), then a prefix, then a match at
-   the starts of parts, then any other match.
+   the starts of parts, then any other match. A field that a `WHERE` inserts
+   with its record (`Order.CustNum`) is matched and ranked by the field name
+   first, and by the whole label only when the field name does not match.
 4. Nearness: a name of the innermost scope, then each outer scope, then
    members the class inherits, then keywords and snippets, then schema tables
    and fields, then workspace types and programs.

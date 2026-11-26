@@ -5,6 +5,7 @@
 //! entry of the document's include path. A directory that cannot be listed
 //! makes the list incomplete; it never reads as empty.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use oxabl_ast::{NodeId, Span};
 use oxabl_lexer::Kind;
 use oxabl_semantic::{NamespaceId, ScopeId};
 
-use super::rank::{self, fit, nearness};
+use super::rank::{self, Quality, fit, nearness};
 use super::{Candidate, Engine, ItemData, ItemKind, PathData};
 
 /// The names the preprocessor defines itself.
@@ -91,7 +92,7 @@ impl Engine<'_, '_, '_, '_> {
         }
         let extensions = &self.request.config.run_extensions;
         incomplete |= self.list_paths(&mut items, |name| {
-            let extension = Path::new(name).extension()?.to_str()?;
+            let extension = extension(name)?;
             (extension.eq_ignore_ascii_case("r")
                 || extensions
                     .iter()
@@ -115,9 +116,7 @@ impl Engine<'_, '_, '_, '_> {
             }
         }
         incomplete |= self.list_paths(&mut items, |name| {
-            let include = Path::new(name)
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("i"));
+            let include = extension(name).is_some_and(|ext| ext.eq_ignore_ascii_case("i"));
             Some(if include {
                 nearness::INCLUDE
             } else {
@@ -287,28 +286,67 @@ impl Engine<'_, '_, '_, '_> {
                 incomplete |= !missing(&path, &mut list);
                 continue;
             };
-            let mut matches = 0;
-            for found in listing.iter() {
-                if found.name.starts_with('.') || rank::quality(typed, &found.name).is_none() {
+            // Each match with its rank key, as the final order reads it, and
+            // its place in the listing, which is in name order.
+            let mut matches: Vec<(u32, u32)> = Vec::new();
+            for (at, found) in listing.iter().enumerate() {
+                if found.name.starts_with('.') {
                     continue;
                 }
-                let (label, kind, near) = if found.is_dir {
-                    (
-                        format!("{dir}{}/", found.name),
-                        ItemKind::Folder,
-                        nearness::PATH,
-                    )
+                let Some(quality) = rank::quality(typed, &found.name) else {
+                    continue;
+                };
+                let near = if found.is_dir {
+                    nearness::PATH
                 } else {
                     let Some(near) = keep(&found.name) else {
                         continue;
                     };
-                    (format!("{dir}{}", found.name), ItemKind::File, near)
+                    near
                 };
-                if matches == MAX_MATCHES {
-                    incomplete = true;
-                    break;
+                let inner = u32::from(quality == Quality::Inner);
+                matches.push((
+                    inner << 16 | (quality as u32) << 8 | u32::from(near),
+                    at as u32,
+                ));
+            }
+            // The cap keeps the matches that rank first, not the first in the
+            // alphabet: every match of a rank before the last one kept, and
+            // the first of that rank in name order.
+            if matches.len() > MAX_MATCHES {
+                let mut counts: Vec<(u32, usize)> = Vec::new();
+                for (key, _) in &matches {
+                    match counts.iter_mut().find(|(known, _)| known == key) {
+                        Some((_, count)) => *count += 1,
+                        None => counts.push((*key, 1)),
+                    }
                 }
-                matches += 1;
+                counts.sort_unstable();
+                let (mut last, mut room) = (0, MAX_MATCHES);
+                for (key, count) in counts {
+                    last = key;
+                    if count >= room {
+                        break;
+                    }
+                    room -= count;
+                }
+                matches.retain(|(key, _)| match key.cmp(&last) {
+                    Ordering::Less => true,
+                    Ordering::Equal if room > 0 => {
+                        room -= 1;
+                        true
+                    }
+                    _ => false,
+                });
+                incomplete = true;
+            }
+            for (key, at) in matches {
+                let (found, near) = (&listing[at as usize], (key & 0xff) as u8);
+                let (label, kind) = if found.is_dir {
+                    (format!("{dir}{}/", found.name), ItemKind::Folder)
+                } else {
+                    (format!("{dir}{}", found.name), ItemKind::File)
+                };
                 if !seen.insert(label.clone()) {
                     continue;
                 }
@@ -332,10 +370,18 @@ impl Engine<'_, '_, '_, '_> {
     }
 }
 
-/// The most entries of one directory that match the word and are offered.
-/// More make the list incomplete, and the client asks again as the word
-/// grows.
+/// The most entries of one directory that match the word and are offered:
+/// the best ranked. More make the list incomplete, and the client asks again
+/// as the word grows.
 const MAX_MATCHES: usize = 1000;
+
+/// The extension of a file name from a listing, as `Path::extension` reads it
+/// for a name with no separator, without its cost.
+fn extension(name: &str) -> Option<&str> {
+    name.rsplit_once('.')
+        .filter(|(stem, _)| !stem.is_empty())
+        .map(|(_, ext)| ext)
+}
 
 /// Whether `dir` is known not to exist: its parent lists, and holds no entry
 /// of its name. An entry that is a file (a procedure library) cannot be

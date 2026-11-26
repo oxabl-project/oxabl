@@ -282,7 +282,7 @@ opt-in (`with_define_record`), so only the bases of completion pay for it.
 `{&` replays the directives with a stack for each name. The listings of
 `RUN` and `{` are bound: once per directory in a request, kept three seconds
 in the daemon, filtered by the word, at most 1000 matches of a directory.
-Black-box tests of the review: `crates/oxabl/tests/completion_review2_lsp.rs`.
+Black-box tests of the review: `crates/oxabl/tests/completion_cases_lsp.rs`.
 
 Verify: `cargo test -p oxabl_preprocessor -p oxabl_analyze -p oxabl_pipeline -p oxabl_daemon`
 and the test file; clippy. Break: list directories with `None` treated as
