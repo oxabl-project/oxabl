@@ -30,73 +30,8 @@ jobs:
         with:
           toolchain: stable
           save-registry: true
-      - run: cargo check --workspace
-      # A third-party action can hang or change under us: every workflow and
-      # local action uses only first-party actions, local ones, or the few
-      # named here. The first test keeps the check from reading nothing.
-      - name: Workflows use only allowed actions
-        run: |
-          uses=$(grep -rhoE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^[:space:]#]+' .github/workflows .github/actions \
-            | sed -E 's/.*uses:[[:space:]]*//' | sort -u)
-          if ! grep -qx './.github/actions/setup-rust' <<<"$uses"; then
-            echo "no step uses ./.github/actions/setup-rust, so the check read nothing" >&2
-            exit 1
-          fi
-          bad=$(grep -vE '^(\./\.github/actions/|actions/[a-z-]+(/[a-z-]+)?@|CodSpeedHQ/action@|pnpm/action-setup@|googleapis/release-please-action@)' <<<"$uses" || true)
-          if [ -n "$bad" ]; then
-            echo "actions not on the allowlist in this job:" >&2
-            echo "$bad" >&2
-            exit 1
-          fi
-      # The fake AVM stands in for Progress, so it must not share a codec with oxabl.
-      - name: The fake AVM depends on no oxabl crate
-        run: |
-          if cargo tree -p oxabl_fake_avm --prefix none | tail -n +2 | grep '^oxabl'; then
-            echo "oxabl_fake_avm must not depend on an oxabl crate" >&2
-            exit 1
-          fi
-      # The remote cache sits behind the remote-cache feature of the umbrella
-      # crate, so that no other build carries the network and crypto stack.
-      - name: Only the remote-cache feature reaches the oxabl-cache client
-        run: |
-          if cargo tree -p oxabl_build --prefix none | grep '^oxabl-cache'; then
-            echo "oxabl_build must not depend on an oxabl-cache crate" >&2
-            exit 1
-          fi
-          if cargo tree -p oxabl -e normal,build --prefix none | grep '^oxabl-cache'; then
-            echo "oxabl without the remote-cache feature must not depend on an oxabl-cache crate" >&2
-            exit 1
-          fi
-      # LSP counts only LF, CRLF and CR as line breaks. ropey's unicode_lines
-      # also counts U+2028, NEL and FF, and any crate that enables it turns it
-      # on for the language server too.
-      - name: No build turns on ropey's unicode_lines
-        run: |
-          tree=$(cargo tree --workspace --all-features -e features -i ropey)
-          if ! grep -q '^ropey v' <<<"$tree"; then
-            echo "cargo tree did not list ropey, so the gate checked nothing" >&2
-            exit 1
-          fi
-          if grep unicode_lines <<<"$tree"; then
-            echo "ropey's unicode_lines moves every LSP position after a U+2028, NEL or FF" >&2
-            exit 1
-          fi
-      # The self-update feature of the umbrella crate is the only way to the HTTP
-      # and TLS stack besides the remote cache, so a plain `cargo install oxabl`
-      # carries no network or crypto code.
-      - name: Only the self-update and remote-cache features reach the network stack
-        run: |
-          pattern='^(reqwest|hyper|hyper-rustls|hyper-util|rustls|rustls-webpki|tokio|tokio-rustls|ring|aws-lc-rs|aws-lc-sys) '
-          if cargo tree -p oxabl -e normal,build --prefix none | grep -E "$pattern"; then
-            echo "oxabl without the self-update and remote-cache features must not depend on an HTTP or TLS crate" >&2
-            exit 1
-          fi
-          if cargo tree -p oxabl_build -e normal,build --prefix none | grep -E "$pattern"; then
-            echo "oxabl_build must not depend on an HTTP or TLS crate" >&2
-            exit 1
-          fi
-          # Positive control: the check above would pass for any pattern.
-          cargo tree -p oxabl --features self-update -e normal,build --prefix none | grep -Eq '^reqwest '
+      # The steps are in xtask/src/jobs.rs.
+      - run: cargo xtask ci check
 
   test:
     name: Test
@@ -107,7 +42,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
-      - run: cargo test --workspace
+      - run: cargo xtask ci test
 
   remote-cache:
     name: Remote cache
@@ -119,22 +54,13 @@ jobs:
         with:
           toolchain: stable
       # The tests start the real cache server and drive its admin tool and member
-      # command line, built at the revision that Cargo.toml pins. The script builds
+      # command line, built at the revision that Cargo.toml pins. The job builds
       # them only when the cached directory does not hold that revision.
       - uses: actions/cache@v6
         with:
           path: ~/oxabl-cache-bin
           key: oxabl-cache-bin-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'scripts/remote-cache-binaries.sh') }}
-      - name: Build the cache server, the admin tool and the member command line
-        run: ./scripts/remote-cache-binaries.sh ~/oxabl-cache-bin
-      - name: Test the remote cache
-        run: |
-          export OXABL_CACHE_SERVER_BIN="$HOME/oxabl-cache-bin/bin/oxabl-cache-server"
-          export OXABL_CACHE_ADMIN_BIN="$HOME/oxabl-cache-bin/bin/oxabl-cache-admin"
-          export OXABL_CACHE_BIN="$HOME/oxabl-cache-bin/bin/oxabl-cache"
-          cargo test -p oxabl --features remote-cache --locked \
-            --test build_remote_cache --test build_remote_faults --test build_remote_trust \
-            --test build_remote_fetch_volume --test build_remote_fetch_tree
+      - run: cargo xtask ci remote-cache
 
   self-update:
     name: Self-update
@@ -148,8 +74,7 @@ jobs:
           components: clippy
       # The tests copy the built binary and update the copy from a fake GitHub
       # on a loopback port.
-      - run: cargo test -p oxabl --features self-update --locked --test self_update
-      - run: cargo clippy -p oxabl --all-targets --features remote-cache,self-update --locked -- -D warnings
+      - run: cargo xtask ci self-update
 
   install-script:
     name: Install script
@@ -160,13 +85,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
-      - run: shellcheck scripts/install.sh
-      # The tests run the script against a fake GitHub on a loopback port. dash
-      # is /bin/sh on Ubuntu, so this runs the script as a plain POSIX shell.
-      - name: Run the script with dash
-        run: OXABL_TEST_SH=/bin/dash cargo test -p oxabl --locked --test install_script
-      - name: Run the script with bash
-        run: OXABL_TEST_SH=/bin/bash cargo test -p oxabl --locked --test install_script
+      - run: cargo xtask ci install-script
 
   musl-binary:
     name: Static Linux binary
@@ -180,12 +99,10 @@ jobs:
           key: oxabl-musl-${{ hashFiles('Cargo.lock', 'scripts/build-musl.sh') }}
           restore-keys: oxabl-musl-
       # The release workflow publishes this binary. A change that breaks the static
-      # build fails here, before a release. The binary must start in the usual
-      # OpenEdge image (glibc 2.35) and must not need a shared library.
-      - run: ./scripts/build-musl.sh dist
+      # build fails here, before a release.
+      - run: cargo xtask ci musl-binary
         env:
           OXABL_MUSL_CACHE: ${{ runner.temp }}/oxabl-musl
-      - run: ./scripts/check-musl.sh dist/oxabl-x86_64-unknown-linux-musl
 
   fmt:
     name: Format
@@ -197,7 +114,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt
-      - run: cargo fmt --all -- --check
+      - run: cargo xtask ci fmt
 
   clippy:
     name: Clippy
@@ -209,7 +126,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo xtask ci clippy
 
   fuzz-targets:
     name: Fuzz targets
@@ -224,8 +141,7 @@ jobs:
       # The cargo-fuzz targets are outside the workspace, so the jobs above do not
       # build them. This keeps them compiling; running them needs nightly and
       # cargo-fuzz (fuzz/README.md).
-      - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
-      - run: cargo clippy --manifest-path fuzz/Cargo.toml --bins -- -D warnings
+      - run: cargo xtask ci fuzz-targets
 
   wasm:
     name: WebAssembly client
@@ -237,7 +153,7 @@ jobs:
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
-      - run: cargo build -p oxabl_wasm --target wasm32-unknown-unknown --release
+      - run: cargo xtask ci wasm
 
   schema-drift:
     name: Schema drift
@@ -249,11 +165,8 @@ jobs:
         with:
           toolchain: stable
       # The VS Code client's oxabl.toml JSON Schema is generated from the Rust
-      # config structs. Regenerate it and fail if the committed copy has drifted.
-      - name: Regenerate schema
-        run: cargo run -p oxabl -- schema > clients/vscode/schemas/oxabl.schema.json
-      - name: Assert no drift
-        run: git diff --exit-code -- clients/vscode/schemas/oxabl.schema.json
+      # config structs. The job regenerates it and fails if the committed copy has drifted.
+      - run: cargo xtask ci schema-drift
 
   grammar-drift:
     name: Grammar drift
@@ -264,33 +177,14 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
-      # The extension's TextMate grammar is generated from
-      # resources/abl.tmLanguage.template.json and the keyword data. Regenerate
-      # it and fail if the committed copy has drifted.
-      - name: Regenerate grammar
-        run: cargo run -p oxabl_codegen -- grammar
-      - name: Assert no drift
-        run: git diff --exit-code -- clients/vscode/syntaxes/
-      # Hover's statement and function documentation table is generated from
-      # the same keyword data.
-      - name: Regenerate keyword docs
-        run: cargo run -p oxabl_codegen -- keyword-docs
-      - name: Assert no keyword docs drift
-        run: git diff --exit-code -- crates/oxabl_pipeline/src/keyword_docs.rs
-      # The server's completion snippets are generated from the extension's
-      # snippets file.
-      - name: Regenerate completion snippets
-        run: cargo run -p oxabl_codegen -- snippets
-      - name: Assert no completion snippets drift
-        run: git diff --exit-code -- crates/oxabl_pipeline/src/completion/snippets.rs
+      # The grammar, the keyword docs and the completion snippets are generated.
+      # The job regenerates each and fails if a committed copy has drifted.
+      - run: cargo xtask ci grammar-drift
 
   vscode-client:
     name: VS Code client
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: clients/vscode
     steps:
       - uses: actions/checkout@v6
       # Node must be set up BEFORE pnpm/action-setup: action-setup runs pnpm
@@ -302,16 +196,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11
-      - run: pnpm install --frozen-lockfile
-      - name: Typecheck
-        run: pnpm run check
-      - name: Test
-        run: pnpm test
-      - name: Grammar tests
-        run: pnpm run test:grammar
-      # The release workflow publishes the VSIX this script builds.
-      - name: Package
-        run: bash scripts/package-vsix.sh dist
+      - run: cargo xtask ci vscode-client
       - uses: actions/upload-artifact@v4
         with:
           name: oxabl-vscode-vsix
@@ -322,38 +207,29 @@ jobs:
     name: VS Code end-to-end
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    defaults:
-      run:
-        working-directory: clients/vscode
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
-      # The outline scenario runs the real language server.
-      - name: Build oxabl
-        working-directory: .
-        run: cargo build -p oxabl --locked
+      # Node must be set up BEFORE pnpm/action-setup: action-setup runs pnpm
+      # under the ambient Node, and pnpm 11 requires Node >= 22.13. This matches
+      # the dev toolchain (Node 22 + pnpm 11).
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
         with:
           version: 11
-      - run: pnpm install --frozen-lockfile
       # The suite downloads the VS Code version pinned in test/e2e/lib/vscode.mjs.
       - uses: actions/cache@v6
         with:
           path: clients/vscode/.vscode-test
           key: vscode-test-${{ runner.os }}-${{ hashFiles('clients/vscode/test/e2e/lib/vscode.mjs') }}
-      # The packaged VSIX in a real VS Code: highlighting, the Markdown
-      # injection, the missing-binary warning, the self-update against a
-      # fake GitHub API and the outline from the real server.
-      - run: |
-          mkdir -p /tmp/oxrt
-          xvfb-run -a pnpm run test:e2e
+      # The job builds oxabl (the outline scenario runs the real language server), then
+      # runs the packaged VSIX in a real VS Code.
+      - run: cargo xtask ci vscode-e2e
         env:
-          OXABL_E2E_OXABL: ${{ github.workspace }}/target/debug/oxabl
           OXABL_E2E_RUNTIME: /tmp/oxrt
       - uses: actions/upload-artifact@v4
         if: always()
