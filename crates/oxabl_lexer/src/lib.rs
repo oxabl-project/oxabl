@@ -32,6 +32,8 @@ pub use kind::Kind;
 /// measurably regressed it. The `Iterator` impl reuses the same
 /// `read_next_token`, and a test asserts the two stay byte-identical.
 pub fn tokenize(source: &str) -> Vec<Token> {
+    #[cfg(feature = "test-counters")]
+    TOKENIZES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut lexer = Lexer::new(source);
     // Pre-allocate based on source length to avoid repeated realloc/mmap calls.
     // ABL source averages ~1 token per 5–8 bytes; dividing by 5 is conservative
@@ -88,6 +90,30 @@ const _: () = assert!(std::mem::size_of::<Token>() <= 48);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<TokenValue>() <= 24);
 
+/// The lexers built, the bytes they were given and the calls of [`tokenize`],
+/// counted only with the test-only `test-counters` feature.
+#[cfg(feature = "test-counters")]
+static LEXES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "test-counters")]
+static LEXED_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "test-counters")]
+static TOKENIZES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `(lexers built, bytes of source they were given, calls of tokenize)` in this
+/// process. A test takes the counts before and after a call and compares them,
+/// so that a pipeline that lexes a text again, or collects the tokens of a short
+/// text again, fails it. Only with the test-only `test-counters` feature.
+#[cfg(feature = "test-counters")]
+#[doc(hidden)]
+pub fn lex_counts() -> (usize, usize, usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        LEXES.load(Relaxed),
+        LEXED_BYTES.load(Relaxed),
+        TOKENIZES.load(Relaxed),
+    )
+}
+
 pub struct Lexer<'a> {
     /// Source Text
     source: &'a str,
@@ -110,6 +136,11 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a str) -> Self {
+        #[cfg(feature = "test-counters")]
+        {
+            LEXES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            LEXED_BYTES.fetch_add(source.len(), std::sync::atomic::Ordering::Relaxed);
+        }
         Self {
             source,
             chars: source.chars(),

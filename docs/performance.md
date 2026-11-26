@@ -21,8 +21,10 @@ reads the disk, but outside the measured part.
 | --- | --- | --- |
 | `check/file` | `resources/lsp_bench.p` and its two includes | `oxabl check <file>`: the lint run, then the format check, on a new pipeline |
 | `check/workspace` | the 300 roots of the generated `ci` workspace: no finding, no drift | `oxabl check <dir>`: one pipeline for the walk |
-| `check/workspace_include_findings` | the same, with 100 unused variables in each hot include (42,700 findings in includes, about 140 for each root) | `oxabl check <dir>` where shared includes have findings: the fold of include findings (`IncludeRows::add` in `oxabl_analyze` is 11.9% of the bench, the hash of its key 7.6%) |
+| `check/workspace_include_findings` | the same, with 100 unused variables in each hot include (42,700 findings in includes, about 140 for each root) | `oxabl check <dir>` where shared includes have findings: the fold of include findings (`IncludeRows::add` in `oxabl_analyze`). Each row has 1 expansion, so no finding joins an earlier row. `oxabl check` of this workspace with the release binary: `IncludeRows::add` was 7.4% of the run with a key of a path and a message, and is 1.3% with a key of plain data |
+| `check/include_findings_repeated` | one root with 60 procedures that each include a file of 100 unused variables: 100 rows with 60 expansions each | the fold where a finding joins an earlier row (5,900 of the 6,000 findings). `IncludeRows::add` is 6.7% of `oxabl check` of the same input with the old key and 2.0% with the new one. That gain is too small for CodSpeed to report as a change |
 | `format/file_end_to_end` | `lsp_bench.p` | `oxabl format`, Format Document: `FormatPipeline::format` from the text |
+| `format/synthetic_mixed`, `format/synthetic_mixed_with_tokens` | a synthetic program of 40 repeated units | the formatter engine on a parsed tree: `format()` lexes the source itself, `format_with_tokens()` takes the tokens of the caller, as the pipeline does. The lex and parse are outside the timed loop |
 | `navigation/definitions` | `lsp_bench.p` | one go to definition request: expansion, analysis, query |
 | `navigation/links` | the `ci` root with the most includes | one document links request |
 | `workspace_symbols/query` | the `ci` workspace, on disk | one `oxabl/symbolSearch` request after the workspace pass |
@@ -134,6 +136,22 @@ the counts (CI uses the newest stable). Then re-measure with
 `cargo test -p oxabl_bench --test alloc_budget -- --nocapture` and set the
 budgets to the printed numbers.
 
+`crates/oxabl_bench/tests/include_rows_alloc.rs` guards the allocations of the
+fold of the findings in includes. It lints a root that includes a file of
+unused variables, and counts the allocations of the lint run for two kinds of
+finding:
+
+| Finding | Limit | Now | With the old key (a cloned path and message) |
+| --- | --- | --- | --- |
+| makes a row (50 and 250 findings, one expansion) | 9 | 8.6 | 10.6 |
+| joins the row of an earlier expansion (2 and 6 expansions of 50 findings) | 7 | 6.8 | 9.8 |
+
+The guard counts allocations only. A slower hash or a longer key that
+allocates nothing does not fail it. Find that cost with callgrind on
+`oxabl check` (see "The command line"), and with the benches
+`check/workspace_include_findings` and `check/include_findings_repeated`. A gain
+of the size of this one is below the threshold of CodSpeed.
+
 ### Type sizes
 
 A `const` assertion holds the size of each type that a file has many of:
@@ -236,12 +254,13 @@ less work, which look like a gain.
 - `tokenize` and `parse_program` show the share of the run and the calls, as
   "N full + M small". A call is full when its caller pays, for each call, at
   least a tenth of what the most expensive caller pays: a lex or parse of a
-  whole file. The formatter also lexes short pieces of text many times
-  (`blanks::normalize`); these are the small calls. So on one file, "5 full"
-  means that the command lexes the file five times. In a walk, the count is
-  not a number for each root: the index lexes and parses the includes too
-  (`index_parsed`), so read the callers. `callgrind_summary.py` without `--row` names each full
-  caller with its calls and its share.
+  whole file. Some passes lex short pieces of text many times (the resolve
+  pass, and the formatter's `apply_end_type`); these are the small calls. So
+  on one file, "5 full" means that the command lexes the file five times. In a
+  walk, the count is not a number for each root: the index lexes and parses
+  the includes too (`index_parsed`), so read the callers.
+  `callgrind_summary.py` without `--row` names each full caller with its calls
+  and its share.
 - When the C library has no symbols, `memcpy` shows as an address. Its cost is
   then in the column `unnamed libc self`.
 
@@ -309,6 +328,23 @@ are rough:
 | `format --check src` (`-j 1` under callgrind) | 0.01 s | 30 MB | 4.0 MB | 160,963 | 362 M | 47.7% (900 full) | 16.4% (300 full) |
 | `conformance -j 1 big.p` | 0.04 s | 53 MB | 41.1 MB | 74,854 | 160 M | 43.3% (1 full) | 46.2% (1 full) |
 | `explain lsp_bench.p` | 0.01 s | 18 MB | 7.0 MB | 25,059 | 46.4 M | 17.0% (1 full) | 20.0% (1 full) |
+
+The rows above are from before the formatter took the tokens of its caller
+(`format_with_tokens`), and before `check` built each file's line table once.
+For this change alone, from commit `2285153` on the same machine and
+toolchain: `check lsp_bench.p` goes from 103.6 M to 94.5 M instructions
+(`tokenize`: 4 full calls, 0 small), and `format --check src` goes from 355.8 M
+to 288.6 M (600 full calls instead of 900). The warm run of `check/file` makes
+44,318 allocations (27.2 MB requested, peak 9.7 MB) and `format/file_end_to_end`
+makes 19,710 (14.9 MB, peak 8.9 MB); the memory table above has the numbers
+from before.
+
+The test-only feature `test-counters` of `oxabl_lexer` counts the lexers and
+the calls of `tokenize`. Cargo unifies a feature of a dev-dependency over a
+workspace build, so a workspace-wide build, such as `cargo test --workspace` or
+the CodSpeed CPU build, has it on. Its cost is up to three atomic additions
+for each lexer, which is very small, and a build of the shipped binary does
+not have it.
 
 On the `erp` workspace (7,000 roots, 16 cores, a loaded machine, before the
 generated text was made format-clean), `oxabl check src` took 23.3 s with a

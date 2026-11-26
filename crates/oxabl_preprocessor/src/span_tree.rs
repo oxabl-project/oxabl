@@ -261,6 +261,45 @@ pub struct ElidedReference {
     pub within: Option<FileSpan>,
 }
 
+/// What a define directive does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefineDirective {
+    /// `&GLOBAL-DEFINE`: the name holds to the end of the compilation unit.
+    Global,
+    /// `&SCOPED-DEFINE`: the name holds to the end of the file that writes it.
+    Scoped,
+    /// `&UNDEFINE`.
+    Undefine,
+}
+
+/// One `&GLOBAL-DEFINE`, `&SCOPED-DEFINE` or `&UNDEFINE` that the run
+/// carried out, in a branch that was taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefineSite {
+    /// The name as written.
+    pub name: String,
+    pub directive: DefineDirective,
+    /// The value after expansion; empty for `&UNDEFINE`.
+    pub value: String,
+    /// The directive, in the coordinates of the file that wrote it.
+    pub site: FileSpan,
+    /// The include or substitution site whose text holds the directive;
+    /// `None` in the file being processed.
+    pub within: Option<FileSpan>,
+}
+
+/// The arguments of one include expansion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeArguments {
+    /// The file id of the expansion's text.
+    pub file: FileId,
+    /// The positional arguments `{1}`, `{2}`, ..., in order. A named argument
+    /// takes a place too.
+    pub positional: Vec<String>,
+    /// The named arguments `&name=value`, in order.
+    pub named: Vec<(String, String)>,
+}
+
 /// The preprocessed representation of a source file.
 ///
 /// Contains the virtual span tree, the preprocessor variable state after
@@ -304,6 +343,14 @@ pub struct PreprocessedFile {
     /// text, in the order they were met. [`Self::elided_offsets`] places
     /// them in the expanded text.
     pub elided: Vec<ElidedReference>,
+    /// Every define and undefine the run carried out, at any depth, in the
+    /// order they were met. [`Self::define_offsets`] places them in the
+    /// expanded text. Empty unless the run recorded them
+    /// ([`crate::Preprocessor::with_define_record`]).
+    pub defines: Vec<DefineSite>,
+    /// The arguments of each include expansion that has any. Empty unless the
+    /// run recorded them ([`crate::Preprocessor::with_define_record`]).
+    pub include_arguments: Vec<IncludeArguments>,
     /// Non-fatal diagnostics accumulated during preprocessing.
     ///
     /// Fatal diagnostics bail out with `Err` from [`crate::Preprocessor::process`].
@@ -339,6 +386,8 @@ impl PreprocessedFile {
             missed_expansion: false,
             text_losses: Vec::new(),
             elided: Vec::new(),
+            defines: Vec::new(),
+            include_arguments: Vec::new(),
             diagnostics,
             sources,
         }
@@ -381,27 +430,7 @@ impl PreprocessedFile {
         if self.elided.is_empty() {
             return Vec::new();
         }
-        type Key = (FileId, u32);
-        let mut by_start: FxHashMap<Key, Vec<usize>> = FxHashMap::default();
-        let mut by_end: FxHashMap<Key, Vec<usize>> = FxHashMap::default();
-        for (i, e) in self.elided.iter().enumerate() {
-            by_start
-                .entry((e.site.file, e.site.span.start))
-                .or_default()
-                .push(i);
-            by_end
-                .entry((e.site.file, e.site.span.end))
-                .or_default()
-                .push(i);
-        }
-        let mut walk = ElidedWalk {
-            by_start,
-            by_end,
-            includes: FxHashMap::default(),
-            found: vec![None; self.elided.len()],
-            cursor: 0,
-        };
-        walk.nodes(&self.tree);
+        let walk = self.walk(self.elided.iter().map(|e| e.site));
         let mut out: Vec<u32> = self
             .elided
             .iter()
@@ -413,13 +442,71 @@ impl PreprocessedFile {
                         let w = e.within?;
                         walk.includes
                             .get(&(w.file, w.span.start, w.span.end))
-                            .copied()
+                            .map(|(start, _)| *start)
                     })
                     .unwrap_or(0)
             })
             .collect();
         out.sort_unstable();
         out
+    }
+
+    /// Where each of [`Self::defines`] lies in [`Self::to_text`], and where
+    /// the file that writes it ends there (`u32::MAX` for the file being
+    /// processed), in the order of [`Self::defines`].
+    pub fn define_offsets(&self) -> Vec<(u32, u32)> {
+        if self.defines.is_empty() {
+            return Vec::new();
+        }
+        let walk = self.walk(self.defines.iter().map(|define| define.site));
+        self.defines
+            .iter()
+            .zip(&walk.found)
+            .map(|(define, found)| {
+                let region = define.within.and_then(|w| {
+                    walk.includes
+                        .get(&(w.file, w.span.start, w.span.end))
+                        .copied()
+                });
+                let at = found
+                    .or_else(|| region.map(|(start, _)| start))
+                    .unwrap_or(0);
+                let end = match define.within {
+                    None => u32::MAX,
+                    Some(_) => region.map_or(u32::MAX, |(_, end)| end),
+                };
+                (at, end)
+            })
+            .collect()
+    }
+
+    /// Walk the tree once and find where each of `sites` lies between the
+    /// text before and after it in its file, and where the text of each
+    /// include site starts and ends.
+    fn walk(&self, sites: impl ExactSizeIterator<Item = FileSpan>) -> ElidedWalk {
+        type Key = (FileId, u32);
+        let mut by_start: FxHashMap<Key, Vec<usize>> = FxHashMap::default();
+        let mut by_end: FxHashMap<Key, Vec<usize>> = FxHashMap::default();
+        let count = sites.len();
+        for (i, site) in sites.enumerate() {
+            by_start
+                .entry((site.file, site.span.start))
+                .or_default()
+                .push(i);
+            by_end
+                .entry((site.file, site.span.end))
+                .or_default()
+                .push(i);
+        }
+        let mut walk = ElidedWalk {
+            by_start,
+            by_end,
+            includes: FxHashMap::default(),
+            found: vec![None; count],
+            cursor: 0,
+        };
+        walk.nodes(&self.tree);
+        walk
     }
 
     /// Produce the logical source text for lexing.
@@ -480,8 +567,8 @@ struct ElidedWalk {
     /// Elided references by the file and offset where they start, and end.
     by_start: FxHashMap<(FileId, u32), Vec<usize>>,
     by_end: FxHashMap<(FileId, u32), Vec<usize>>,
-    /// Where the text of each include site starts.
-    includes: FxHashMap<(FileId, u32, u32), u32>,
+    /// Where the text of each include site starts and ends.
+    includes: FxHashMap<(FileId, u32, u32), (u32, u32)>,
     found: Vec<Option<u32>>,
     cursor: u32,
 }
@@ -498,9 +585,12 @@ impl ElidedWalk {
                 SpanNode::Include { site, children, .. } => {
                     let key = (site.file, site.span.start);
                     self.place(true, key, self.cursor);
-                    self.includes
-                        .insert((site.file, site.span.start, site.span.end), self.cursor);
+                    let start = self.cursor;
                     self.nodes(children);
+                    self.includes.insert(
+                        (site.file, site.span.start, site.span.end),
+                        (start, self.cursor),
+                    );
                     self.place(false, (site.file, site.span.end), self.cursor);
                 }
             }

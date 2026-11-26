@@ -43,8 +43,8 @@ use oxabl_common::{
 use oxabl_lexer::{Token, tokenize};
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{
-    BranchState, IfBranch, Preprocessor, ResolvedInclude, SkippedInclude, SkippedText, SpanNode,
-    TextLoss, UnreadableInclude, UnresolvedInclude,
+    BranchState, DefineDirective, IfBranch, IncludeArguments, Preprocessor, ResolvedInclude,
+    SkippedInclude, SkippedText, SpanNode, TextLoss, UnreadableInclude, UnresolvedInclude,
 };
 use oxabl_schema::Schema;
 use oxabl_semantic::{
@@ -52,6 +52,7 @@ use oxabl_semantic::{
     analyze_file_untyped,
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig, is_include_fragment};
+use rustc_hash::FxHashMap;
 
 /// Which pipeline stage produced a diagnostic. Lets the CLI route preprocessor
 /// diagnostics to its own JSON channel while parse/semantic/lint feed the
@@ -394,6 +395,25 @@ pub struct IncludeOrigin {
     pub site: Span,
 }
 
+/// One `&GLOBAL-DEFINE`, `&SCOPED-DEFINE` or `&UNDEFINE` the expansion
+/// carried out, placed in the expanded text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacedDefine {
+    /// The name as written.
+    pub name: String,
+    pub directive: DefineDirective,
+    /// The value after expansion; empty for `&UNDEFINE`.
+    pub value: String,
+    /// The directive, in the bytes of the file that writes it.
+    pub site: FileSpan,
+    /// Where the directive lies in the expanded text.
+    pub offset: u32,
+    /// Where the directive stops to hold in the expanded text: the end of
+    /// the file that writes a `&SCOPED-DEFINE`, `u32::MAX` for the root and
+    /// for the other directives.
+    pub scope_end: u32,
+}
+
 /// The preprocessed root buffer in owned, `Update`-trivial form.
 ///
 /// Holds the expanded text, a flattened virtual→real offset table (the only
@@ -490,6 +510,10 @@ pub struct ExpandedFile {
     /// The offsets of `elided_offsets` that are includes that did not
     /// arrive, sorted.
     elided_include_offsets: Vec<u32>,
+    /// The defines and undefines, at any depth, in the order they were met.
+    defines: Vec<PlacedDefine>,
+    /// The arguments of each include expansion that has any.
+    include_arguments: Vec<IncludeArguments>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -671,6 +695,19 @@ impl ExpandedFile {
     /// arrive. Sorted. Statements the include held may sit there.
     pub fn elided_include_offsets(&self) -> &[u32] {
         &self.elided_include_offsets
+    }
+
+    /// The defines and undefines the expansion carried out, at any depth, in
+    /// the order they were met. Empty unless the expansion recorded them
+    /// ([`ExpandOptions::record_defines`]).
+    pub fn defines(&self) -> &[PlacedDefine] {
+        &self.defines
+    }
+
+    /// The arguments of the include expansion whose text has id `file`.
+    /// `None` for an expansion with no argument, and for the root.
+    pub fn include_arguments(&self, file: FileId) -> Option<&IncludeArguments> {
+        self.include_arguments.iter().find(|args| args.file == file)
     }
 
     /// The root file's id. A span or offset in this id is in the root's own bytes.
@@ -1050,23 +1087,25 @@ impl ExpandedFile {
         chain
     }
 
-    /// For each include expansion, which expansion of its file it is (from 1)
-    /// and how many expansions that file has.
-    fn include_occurrences(&self) -> Vec<(u32, u32)> {
-        let mut seen: HashMap<&Path, u32> = HashMap::new();
-        let nth: Vec<u32> = self
+    /// For each include expansion, which expansion of its file it is (from 1),
+    /// how many expansions that file has, and a number for the file that is the
+    /// same for every expansion of it.
+    fn include_occurrences(&self) -> Vec<(u32, u32, u32)> {
+        let mut files: FxHashMap<&Path, (u32, u32)> = FxHashMap::default();
+        let nth: Vec<(u32, u32)> = self
             .included
             .iter()
             .map(|entry| {
-                let count = seen.entry(entry.path.as_path()).or_default();
+                let next_file = files.len() as u32;
+                let (file, count) = files.entry(entry.path.as_path()).or_insert((next_file, 0));
                 *count += 1;
-                *count
+                (*file, *count)
             })
             .collect();
         self.included
             .iter()
             .zip(nth)
-            .map(|(entry, nth)| (nth, seen[entry.path.as_path()]))
+            .map(|(entry, (file, nth))| (nth, files[entry.path.as_path()].1, file))
             .collect()
     }
 }
@@ -1141,6 +1180,43 @@ pub fn expand_source_tracking(
     predefined: &PreprocessorConfig,
     mode: PreprocessMode,
 ) -> Result<ExpandedFile, Vec<Diagnostic>> {
+    expand_source_recording(
+        root,
+        name,
+        source,
+        fs,
+        include_paths,
+        predefined,
+        ExpandOptions {
+            mode,
+            record_defines: false,
+        },
+    )
+}
+
+/// How [`expand_source_recording`] expands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpandOptions {
+    pub mode: PreprocessMode,
+    /// Record the defines and the include arguments
+    /// ([`ExpandedFile::defines`], [`ExpandedFile::include_arguments`]). Only
+    /// code completion reads them, so only its expansion pays for them.
+    pub record_defines: bool,
+}
+
+/// [`expand_source_tracking`] with [`ExpandOptions`].
+pub fn expand_source_recording(
+    root: FileId,
+    name: Option<&str>,
+    source: &str,
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    predefined: &PreprocessorConfig,
+    ExpandOptions {
+        mode,
+        record_defines,
+    }: ExpandOptions,
+) -> Result<ExpandedFile, Vec<Diagnostic>> {
     if mode == PreprocessMode::Off {
         return Ok(ExpandedFile {
             text: source.to_string(),
@@ -1170,6 +1246,8 @@ pub fn expand_source_tracking(
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
+            defines: Vec::new(),
+            include_arguments: Vec::new(),
             root,
         });
     }
@@ -1181,6 +1259,7 @@ pub fn expand_source_tracking(
     let pp = Preprocessor::new(&recorder, include_paths)
         .with_predefined(predefined)
         .with_branch_tracking(mode == PreprocessMode::TrackBranches)
+        .with_define_record(record_defines)
         .with_includer_unknown(name.is_some_and(|name| is_include_fragment(Path::new(name))));
     let processed = match name {
         Some(name) => pp.process_named(root, name, source),
@@ -1345,6 +1424,23 @@ pub fn expand_source_tracking(
                 text_losses: pf.text_losses.clone(),
                 elided_offsets: pf.elided_offsets(),
                 elided_include_offsets: pf.elided_include_offsets(),
+                defines: pf
+                    .defines
+                    .iter()
+                    .zip(pf.define_offsets())
+                    .map(|(define, (offset, file_end))| PlacedDefine {
+                        name: define.name.clone(),
+                        directive: define.directive,
+                        value: define.value.clone(),
+                        site: define.site,
+                        offset,
+                        scope_end: match define.directive {
+                            DefineDirective::Scoped => file_end,
+                            DefineDirective::Global | DefineDirective::Undefine => u32::MAX,
+                        },
+                    })
+                    .collect(),
+                include_arguments: pf.include_arguments.clone(),
                 root,
             })
         }
@@ -2070,14 +2166,31 @@ pub fn database_hints_from_expanded(
     oxabl_lint::hints::database_hints(&program.statements, &ctx, &shared, kinds)
 }
 
+/// Where a finding sits and what it is, apart from its message: the fold key of
+/// [`IncludeRows`]. It holds plain data, so a lookup hashes a few integers and
+/// two short static strings and allocates nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct RowKey {
+    /// The number of the include file, the same for each expansion of it.
+    file: u32,
+    start: u32,
+    end: u32,
+    code: &'static str,
+    severity: &'static str,
+}
+
 /// Builds [`CollectedDiagnostics::include_origin`], folding findings that agree
 /// on path, span, code, severity and message into one row.
 #[derive(Default)]
 struct IncludeRows {
-    seen: HashMap<(PathBuf, u32, u32, &'static str, &'static str, String), usize>,
-    /// Per include expansion, which expansion of its file it is and how many
-    /// that file has. Counted on the first row.
-    occurrences: Vec<(u32, u32)>,
+    /// The newest row of each key. Rows of one key differ in their message, and
+    /// are linked through `older`.
+    newest: FxHashMap<RowKey, usize>,
+    /// For each row of `include_origin`, the next older row of its key.
+    older: Vec<Option<usize>>,
+    /// Per include expansion, which expansion of its file it is, how many that
+    /// file has, and the number of that file. Counted on the first row.
+    occurrences: Vec<(u32, u32, u32)>,
 }
 
 impl IncludeRows {
@@ -2097,32 +2210,35 @@ impl IncludeRows {
         if self.occurrences.is_empty() {
             self.occurrences = expanded.include_occurrences();
         }
-        let (occurrence, occurrences) = self.occurrences[include as usize];
+        let (occurrence, occurrences, path_id) = self.occurrences[include as usize];
         let occurrence = IncludeOccurrence {
             chain: expanded.include_chain(include),
             occurrence,
             occurrences,
         };
-        let path = expanded.included[include as usize].path.clone();
-        let key = (
-            path.clone(),
-            span.start,
-            span.end,
-            d.code.0,
-            d.severity.as_str(),
-            d.message.clone(),
-        );
-        if let Some(&row) = self.seen.get(&key) {
-            out.include_origin[row].expansions.push(occurrence);
-            return;
+        let key = RowKey {
+            file: path_id,
+            start: span.start,
+            end: span.end,
+            code: d.code.0,
+            severity: d.severity.as_str(),
+        };
+        let mut candidate = self.newest.get(&key).copied();
+        while let Some(row) = candidate {
+            if out.include_origin[row].diagnostic.message == d.message {
+                out.include_origin[row].expansions.push(occurrence);
+                return;
+            }
+            candidate = self.older[row];
         }
         d.span = FileSpan { file, span };
         d.labels.retain_mut(|label| resolve_label(label, expanded));
-        self.seen.insert(key, out.include_origin.len());
+        let row = out.include_origin.len();
+        self.older.push(self.newest.insert(key, row));
         out.include_origin.push(IncludeOriginDiagnostic {
             diagnostic: d,
             source,
-            path,
+            path: expanded.included[include as usize].path.clone(),
             expansions: vec![occurrence],
         });
     }
@@ -2537,6 +2653,8 @@ mod tests {
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
+            defines: Vec::new(),
+            include_arguments: Vec::new(),
             root: ROOT,
         }
     }
@@ -2566,7 +2684,7 @@ mod tests {
             .collect();
         assert_eq!(
             expanded.include_occurrences(),
-            [(1, 3), (1, 1), (2, 3), (3, 3)]
+            [(1, 3, 0), (1, 1, 1), (2, 3, 0), (3, 3, 0)]
         );
     }
 
