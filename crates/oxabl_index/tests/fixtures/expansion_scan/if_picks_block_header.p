@@ -1,0 +1,8 @@
+&IF DEFINED(a) &THEN
+FOR EACH t WHERE t.a = 1:
+&ELSE
+FOR EACH t:
+&ENDIF
+  DISPLAY t.
+END.
+{shared.i}

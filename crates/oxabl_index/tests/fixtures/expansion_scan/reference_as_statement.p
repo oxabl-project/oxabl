@@ -1,0 +1,2 @@
+{&setup}
+MESSAGE 1.

@@ -1,0 +1,10 @@
+&IF DEFINED(a) &THEN
+DO WHILE TRUE:
+&ELSEIF DEFINED(b) &THEN
+REPEAT:
+&ELSE
+DO:
+&ENDIF
+  x = 1.
+END.
+{shared.i}

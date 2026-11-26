@@ -1,0 +1,6 @@
+&SCOPED-DEFINE x 1
+&IF DEFINED(x) &THEN
+{a.i}
+&ELSE
+{b.i}
+&ENDIF

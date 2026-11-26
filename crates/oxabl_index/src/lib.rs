@@ -55,6 +55,7 @@ pub mod calls;
 mod closure;
 pub mod declared;
 mod deps;
+mod expansion_scan;
 mod facts;
 pub mod hierarchy;
 mod producers;
@@ -345,18 +346,11 @@ impl KnownValues {
 }
 
 /// Whether [`index_file`] may read the facts of `source` from its expanded text:
-/// a superset of the files it expands, found with a parse and no declare pass.
+/// a superset of the files it expands. A class or interface header answers from
+/// the tokens; any other file is parsed.
 pub(crate) fn may_be_expanded(source: &str) -> bool {
     let tokens = oxabl_lexer::tokenize(source);
-    let program = Parser::new(&tokens, source).parse_program();
-    !program.is_ok()
-        || only_includes(&program.statements)
-        || program.statements.iter().any(|stmt| {
-            matches!(
-                stmt.kind,
-                StatementKind::Class { .. } | StatementKind::Interface { .. }
-            )
-        })
+    expansion_scan::may_declare_a_type(&tokens) || expansion_scan::parsed(source, &tokens)
 }
 
 /// The expanded text of `source`, the file at `path`, with its includes read as
