@@ -2,9 +2,12 @@
 //! each file once: at most one parse of the text as written and at most one
 //! expansion. It runs only when a file asks for a producer.
 //!
-//! A test build of the binary counts the parses and expansions of the scan for
-//! each file and prints them when `OXABL_TEST_TALLY` is set. All fixtures are
-//! synthetic ABL written for this file.
+//! A test build of the binary prints the programs it parsed when
+//! `OXABL_TEST_PARSES` is set, and the expansions of the scan for each file
+//! when `OXABL_TEST_TALLY` is set. The consumer of the trees asks for a name
+//! that no file produces, so the scan is the only difference between a run
+//! that asks and one that does not: nothing is indexed to confirm a producer.
+//! All fixtures are synthetic ABL written for this file.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -26,14 +29,15 @@ fn write(root: &Path, path: &str, contents: &str) {
 const CONFIG: &str = "[workspace]\nname = \"p\"\n[workspace.sources]\n\
                       include_paths = [\".\", \"inc\"]\n";
 
-const CONSUMER: &str = "DEFINE SHARED VARIABLE v-a AS INTEGER NO-UNDO.\n\
-                        DEFINE SHARED VARIABLE v-b AS INTEGER NO-UNDO.\n\
-                        DEFINE SHARED VARIABLE v-c AS INTEGER NO-UNDO.\n\
-                        MESSAGE v-a v-b v-c.\n";
+/// Asks for a `SHARED` name that no file of the trees produces.
+const ASKING: &str = "DEFINE SHARED VARIABLE v-none AS INTEGER NO-UNDO.\nMESSAGE v-none.\n";
+
+/// The same file with a name of its own: it asks for nothing.
+const NOT_ASKING: &str = "DEFINE VARIABLE v-none AS INTEGER NO-UNDO.\nMESSAGE v-none.\n";
 
 /// A producer of each kind the scan treats differently, and files that
 /// produce nothing.
-fn tree(consumer: bool) -> TempDir {
+fn tree(consumer: &str) -> TempDir {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     write(root, "oxabl.toml", CONFIG);
@@ -66,9 +70,7 @@ fn tree(consumer: bool) -> TempDir {
     );
     // No `{` and no `NEW SHARED`: neither parsed nor expanded.
     write(root, "src/quiet.p", "MESSAGE \"quiet\".\n");
-    if consumer {
-        write(root, "src/consumer.p", CONSUMER);
-    }
+    write(root, "src/consumer.p", consumer);
     dir
 }
 
@@ -80,6 +82,7 @@ fn check(dir: &Path, jobs: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxabl"))
         .current_dir(dir)
         .env("OXABL_TEST_TALLY", "1")
+        .env("OXABL_TEST_PARSES", "1")
         .args(["check", "--no-format", "-j", jobs, "src"])
         .stdout(Stdio::from(file("out")))
         .stderr(Stdio::from(file("err")))
@@ -136,6 +139,17 @@ fn tally_of(out: &Output) -> BTreeMap<(String, String), usize> {
         .collect()
 }
 
+/// The programs a run parsed.
+fn parses(out: &Output) -> usize {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("oxabl-test: parses: "))
+        .unwrap_or_else(|| panic!("the test build printed no count; stderr:\n{stderr}"))
+        .parse()
+        .unwrap()
+}
+
 fn count(tally: &BTreeMap<(String, String), usize>, file: &str, event: &str) -> usize {
     tally
         .get(&(file.to_string(), event.to_string()))
@@ -145,13 +159,28 @@ fn count(tally: &BTreeMap<(String, String), usize>, file: &str, event: &str) -> 
 
 #[test]
 fn the_scan_parses_and_expands_each_file_at_most_once() {
-    let dir = tree(true);
+    let asking = tree(ASKING);
+    let quiet = tree(NOT_ASKING);
     for jobs in ["1", "4"] {
-        let tally = tally(dir.path(), jobs);
+        let without = check(quiet.path(), jobs);
+        let with = check(asking.path(), jobs);
+        for out in [&without, &with] {
+            assert_eq!(out.status.code(), Some(0), "-j {jobs}");
+        }
+        // The programs the scan parses, one for each file that needs it: the
+        // text of `written.p` for its own definition, and `only-inc.p` and
+        // `spliced.p` to know whether the index may read them expanded. A class
+        // header says that from its tokens (`Thing.cls`), and `quiet.p` has no
+        // `{` and no `NEW SHARED`.
+        assert_eq!(
+            parses(&with) - parses(&without),
+            3,
+            "-j {jobs}: parses of the scan"
+        );
+        let tally = tally_of(&with);
         for ((file, event), n) in &tally {
             assert!(*n <= 1, "-j {jobs}: {file} {event} {n} times: {tally:?}");
         }
-        // The control: the scan ran, and expanded the files it must.
         for file in ["only-inc.p", "spliced.p", "Thing.cls"] {
             assert_eq!(
                 count(&tally, file, "index.expand"),
@@ -159,24 +188,23 @@ fn the_scan_parses_and_expands_each_file_at_most_once() {
                 "-j {jobs}: {file}: {tally:?}"
             );
         }
-        assert_eq!(count(&tally, "written.p", "index.parse"), 1, "{tally:?}");
         assert_eq!(count(&tally, "written.p", "index.expand"), 0, "{tally:?}");
-        assert_eq!(count(&tally, "quiet.p", "index.parse"), 0, "{tally:?}");
+        assert_eq!(count(&tally, "quiet.p", "index.expand"), 0, "{tally:?}");
     }
 }
 
 #[test]
 fn a_walk_with_no_shared_consumer_does_not_scan() {
-    let dir = tree(false);
+    let dir = tree(NOT_ASKING);
     let quiet = tally(dir.path(), "1");
     assert!(quiet.is_empty(), "{quiet:?}");
     // The control: the same tree with a consumer scans.
-    write(dir.path(), "src/consumer.p", CONSUMER);
+    write(dir.path(), "src/consumer.p", ASKING);
     assert!(!tally(dir.path(), "1").is_empty());
 }
 
 /// A definition with a `TRIGGERS` phrase holds a `DEFINE` of its own. The scan
-/// of a walk with a consumer must end, and parse that file once.
+/// of a walk with a consumer must end.
 #[test]
 fn a_producer_that_holds_a_define_does_not_hang_the_scan() {
     let dir = TempDir::new().unwrap();
@@ -204,7 +232,6 @@ fn a_producer_that_holds_a_define_does_not_hang_the_scan() {
         assert_eq!(out.status.code(), alone.status.code(), "-j {jobs}");
         assert_eq!(out.stdout, alone.stdout, "-j {jobs}");
         let tally = tally_of(&out);
-        assert_eq!(count(&tally, "written.p", "index.parse"), 1, "{tally:?}");
         assert_eq!(
             count(&tally, "through-include.p", "index.expand"),
             1,

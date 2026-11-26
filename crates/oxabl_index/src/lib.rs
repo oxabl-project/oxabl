@@ -55,6 +55,7 @@ pub mod calls;
 mod closure;
 pub mod declared;
 mod deps;
+mod expansion_scan;
 mod facts;
 pub mod hierarchy;
 mod producers;
@@ -345,14 +346,15 @@ impl KnownValues {
 }
 
 /// Whether [`index_file`] may read the facts of `source` from its expanded text:
-/// a superset of the files it expands, found with a parse and no declare pass.
+/// a superset of the files it expands. A class or interface header answers from
+/// the tokens; any other file is parsed.
 pub(crate) fn may_be_expanded(source: &str) -> bool {
     may_be_expanded_tokens(source, &oxabl_lexer::tokenize(source))
 }
 
 /// [`may_be_expanded`] of `source` with its tokens.
 pub(crate) fn may_be_expanded_tokens(source: &str, tokens: &[Token]) -> bool {
-    may_be_expanded_parsed(&parse(tokens, source))
+    expansion_scan::may_declare_a_type(tokens) || expansion_scan::parsed(source, tokens)
 }
 
 /// [`may_be_expanded`] of a text already parsed.
@@ -365,12 +367,6 @@ pub(crate) fn may_be_expanded_parsed(program: &Program) -> bool {
                 StatementKind::Class { .. } | StatementKind::Interface { .. }
             )
         })
-}
-
-/// The whole-file parse of the index. Test builds count it.
-pub(crate) fn parse(tokens: &[Token], source: &str) -> Program {
-    oxabl_common::test_tally::count("index.parse");
-    Parser::new(tokens, source).parse_program()
 }
 
 /// The names the declare pass gives the `NEW [GLOBAL] SHARED` flags in
@@ -470,7 +466,7 @@ impl<'s> Written<'s> {
     /// `None` when the parse recovered an error.
     fn parse(source: &'s str) -> Option<Self> {
         let tokens = oxabl_lexer::tokenize(source);
-        let program = parse(&tokens, source);
+        let program = Parser::new(&tokens, source).parse_program();
         program.is_ok().then_some(Written {
             source,
             tokens,

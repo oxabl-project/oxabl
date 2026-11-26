@@ -313,14 +313,38 @@ the facts of each listed file and keeps only a file that defines the name,
 so the answer does not change. `oxabl::pipeline::definitions_in` and
 `SharedProducers::producers_of` give this superset to a library caller.
 
-`crates/oxabl/tests/check_producer_scan.rs` counts the parses and expansions
-of the scan for each file. A test build prints them when `OXABL_TEST_TALLY` is
-set (`oxabl_common::test_tally`). The test fails when the scan parses or
-expands a file two times, when it scans a walk with no consumer, and when a
-run does not end in 60 seconds. A producer with a `TRIGGERS` phrase is the
-input of that last test. The first check of `oxabl check --watch`
-(`watch_cli.rs`) and the workspace pass of the daemon (`workspace_symbol_lsp.rs`)
-have the same input and must end.
+`crates/oxabl/tests/check_producer_scan.rs` runs `oxabl check` over a tree
+twice: with a file that asks for a producer, and with a file that does not.
+The difference in parses is the parses of the scan, and the test wants one
+for each file that needs it. A test build also counts the expansions of each
+file of the scan (`oxabl_common::test_tally`, `OXABL_TEST_TALLY`), and the test
+wants at most one. It fails when a walk with no consumer scans, and when a run
+does not end in 60 seconds. A producer with a `TRIGGERS` phrase is the input
+of that last test. The first check of `oxabl check --watch` (`watch_cli.rs`)
+and the workspace pass of the daemon (`workspace_symbol_lsp.rs`) have the
+same input and must end.
+
+## Guards in test builds
+
+A cost that came back is hard to see in a bench, so a test build of `oxabl`
+counts it and a black-box test reads the count. A shipped build counts
+nothing. Each test runs small inputs and wants a count that does not grow with
+the work.
+
+| Count | Where | Printed when | Test |
+| --- | --- | --- | --- |
+| line tables built (`SourceMap::built`) | `oxabl_common`, feature `test-panics` | `OXABL_TEST_SOURCE_MAPS` is set | `crates/oxabl/tests/check_source_maps.rs` |
+| calls of `parse_program` (`parse_count`) | `oxabl_parser`, feature `test-counters` | `OXABL_TEST_PARSES` is set | `crates/oxabl/tests/check_producer_prefilter.rs`, `check_producer_scan.rs` |
+| expansions of each file of the producer scan | `oxabl_common::test_tally`, feature `test-panics` | `OXABL_TEST_TALLY` is set | `crates/oxabl/tests/check_producer_scan.rs` |
+
+`check_producer_prefilter.rs` runs `oxabl check` over 3 and 6 roots of one
+shape, with one `SHARED` consumer, and reads the parses of one more root. A
+class root costs 1 parse (the lint of its expanded unit). A procedure root
+with an include costs 2: the lint, and the producer scan, which must know if
+the text as written parses. The producer scan reads a class or interface
+header from the tokens (`oxabl_index::expansion_scan`). It cannot read more
+from them: an include, a reference or a directive can mend a text that does
+not parse as written, and the scan must then send the file to its expansion.
 
 ## CodSpeed
 

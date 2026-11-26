@@ -296,7 +296,7 @@ fn candidates_in(path: &Path, source: &str, includes: &IncludeContext<'_>) -> Ve
     let mut tokens = oxabl_lexer::tokenize(source);
     let mut names = Vec::new();
     let expanded = if written_says {
-        let program = crate::parse(&tokens, source);
+        let program = Parser::new(&tokens, source).parse_program();
         // The text as written answers when it parses, unless the index reads
         // the expanded text; and when the expanded text does not parse, the
         // index falls back to it. So its names are kept in both cases.
@@ -322,7 +322,7 @@ fn candidates_in(path: &Path, source: &str, includes: &IncludeContext<'_>) -> Ve
             // does not, the index reads the text as written, and the names
             // found so far stand as extra candidates.
             let whole = oxabl_lexer::tokenize(&text);
-            let program = crate::parse(&whole, &text);
+            let program = Parser::new(&whole, &text).parse_program();
             if program.is_ok() {
                 names.extend(crate::declared_shared(&program.statements, &text));
             }
@@ -570,8 +570,9 @@ fn is_procedure_abbreviation(word: &str) -> bool {
 
 /// Whether [`index_file_at`] can find a shared definition in `source`, the file
 /// at `path`: a superset test. A file whose text does not say `NEW SHARED` or
-/// `NEW GLOBAL` is parsed only when it holds a `{`, and expanded only when
-/// `index_file_at` may expand it.
+/// `NEW GLOBAL` is read only when it holds a `{`, and expanded only when
+/// `index_file_at` may expand it: a class or interface header says so from the
+/// tokens, and any other file is parsed ([`crate::expansion_scan`]).
 ///
 /// A definition the index reads from the text as written says the two words
 /// there. Text expansion can only bring them together through a `{...}`
@@ -753,6 +754,101 @@ mod tests {
         assert!(found > 1000, "the parts make definitions: {found}");
     }
 
+    /// Texts as written that do not parse, which the expansion mends: an
+    /// include or a directive holds the other half of a block or a statement,
+    /// and the include holds a `NEW SHARED` definition. The prefilter passes
+    /// each one the indexer finds a definition in.
+    #[test]
+    fn the_prefilter_passes_every_file_that_expansion_mends() {
+        const DEFINITION: &str = "DEFINE NEW SHARED VARIABLE gv AS INTEGER NO-UNDO.\n";
+        // (the root around `{m.i}`, the include after the definition)
+        const MENDS: [(&str, &str, &str); 13] = [
+            ("FOR EACH t:\n  DISPLAY t.\n", "\n", "END.\n"),
+            ("DO:\n  x = 1.\n", "\n", "END.\n"),
+            ("REPEAT:\n  x = 1.\n", "\n", "END.\n"),
+            ("PROCEDURE p:\n  x = 1.\n", "\n", "END PROCEDURE.\n"),
+            (
+                "FUNCTION f RETURNS INTEGER ():\n  RETURN 1.\n",
+                "\n",
+                "END FUNCTION.\n",
+            ),
+            ("", "\n  x = 1.\nEND.\n", "DO:\n"),
+            ("", "\n  x = 1.\nEND.\n", "FOR EACH t:\n"),
+            ("", "\n  NO-UNDO.\n", "DEFINE VARIABLE y AS INTEGER\n"),
+            ("x = obj:\n", "\n", "Name.\n"),
+            ("x = obj:", "\n", "Name.\n"),
+            ("MESSAGE 1\n", "\n", ".\n"),
+            ("DEFINE VARIABLE y AS INTEGER\n", "\n", "NO-UNDO.\n"),
+            ("CASE x:\n  WHEN 1 THEN y = 1.\n", "\n", "END CASE.\n"),
+        ];
+        const DIRECTIVE_MENDS: [&str; 3] = [
+            "&IF DEFINED(a) &THEN\nFOR EACH t WHERE t.a = 1:\n&ELSE\nFOR EACH t:\n&ENDIF\n  DISPLAY t.\nEND.\n",
+            "&IF DEFINED(x) &THEN\nDO:\n&ENDIF\n  x = 1.\n&IF DEFINED(x) &THEN\nEND.\n&ENDIF\n",
+            "&IF DEFINED(a) &THEN\nDO WHILE TRUE:\n&ELSEIF DEFINED(b) &THEN\nREPEAT:\n&ELSE\nDO:\n&ENDIF\n  x = 1.\nEND.\n",
+        ];
+        const PREFIXES: [&str; 4] = [
+            "",
+            "/* header */\n",
+            "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n",
+            "&SCOPED-DEFINE a 1\n",
+        ];
+        const SUFFIXES: [&str; 2] = ["", "MESSAGE 1.\n"];
+        let include_paths = [PathBuf::from("/")];
+        let predefined = PreprocessorConfig::default();
+        let path = Path::new("/r.p");
+        let mut cases = Vec::new();
+        for prefix in PREFIXES {
+            for suffix in SUFFIXES {
+                for (before, after, include) in MENDS {
+                    cases.push((
+                        format!("{prefix}{before}{{m.i}}{after}{suffix}"),
+                        format!("{DEFINITION}{include}"),
+                    ));
+                }
+                for text in DIRECTIVE_MENDS {
+                    cases.push((
+                        format!("{prefix}{text}{{m.i}}\n{suffix}"),
+                        DEFINITION.into(),
+                    ));
+                    cases.push((
+                        format!("{prefix}{{m.i}}\n{text}{suffix}"),
+                        DEFINITION.into(),
+                    ));
+                }
+            }
+        }
+        let mut found = 0;
+        let mut missed = Vec::new();
+        for (root, include) in &cases {
+            let fs = fs_with(&[("/r.p", root), ("/m.i", include)]);
+            let includes = IncludeContext {
+                fs: &fs,
+                include_paths: &include_paths,
+                root_relative_paths: &[],
+                predefined: &predefined,
+            };
+            let facts = index_file_at(IndexedFileId::new(1), path, root, &includes).0;
+            if facts.shared_definitions.is_empty() {
+                continue;
+            }
+            found += 1;
+            if !may_define_shared(path, root, &includes) {
+                missed.push(root.as_str());
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "{} missed:\n{}",
+            missed.len(),
+            missed.join("\n--\n")
+        );
+        assert!(
+            found * 2 >= cases.len(),
+            "only {found} of {} mends make a producer",
+            cases.len()
+        );
+    }
+
     fn build(fs: &InMemoryFileSystem, files: &[PathBuf]) -> SharedProducers {
         let predefined = PreprocessorConfig::default();
         SharedProducers::build(files, &in_fs(fs, &predefined))
@@ -875,6 +971,14 @@ mod tests {
             "{gone.i}\nDEFINE VARIABLE v-own AS INTEGER NO-UNDO.",
             "DEFINE {head.i} VARIABLE v-b AS INTEGER NO-UNDO.",
             "CLASS c:\n{defs.i}\nEND CLASS.",
+            "{plain.i}\n/* note */\n{defs.i}",
+            "// header\n{defs.i}\n/* tail */",
+            "&SCOPED-DEFINE x 1\n{defs.i}",
+            "x = .\n{defs.i}",
+            "END.\n{defs.i}",
+            "DEFINE VARIABLE v-c AS {plain.i}.\n{defs.i}",
+            "&IF DEFINED(a) &THEN\nFOR EACH t WHERE t.a = 1:\n&ELSE\nFOR EACH t:\n&ENDIF\n  DISPLAY t.\nEND.\n{defs.i}\n",
+            "&IF DEFINED(x) &THEN\nDO:\n&ENDIF\n x = 1.\n&IF DEFINED(x) &THEN\nEND.\n&ENDIF\n{defs.i}",
         ] {
             let fs = fs_with(&[
                 ("/f.p", source),
@@ -933,6 +1037,47 @@ mod tests {
             assert_eq!(
                 definitions_in(Path::new("/f.p"), &includes),
                 want,
+                "{source}"
+            );
+        }
+    }
+
+    /// A file the scan reads expanded, whose expanded text does not parse or
+    /// whose class header the index does not take for a file-level type: the
+    /// index finds no definition, the map lists the file, and no answer
+    /// changes.
+    #[test]
+    fn a_file_the_index_finds_nothing_in_may_be_listed() {
+        let include_paths = [PathBuf::from("/")];
+        let predefined = PreprocessorConfig::default();
+        for source in [
+            "&IF TRUE &THEN\nCLASS c:\n{defs.i}\nEND CLASS.\n&ENDIF",
+            "x = obj:\n{defs.i}\n",
+            "PROCEDURE p:\n{defs.i}\n",
+        ] {
+            let fs = fs_with(&[
+                ("/f.p", source),
+                (
+                    "/defs.i",
+                    "DEFINE NEW SHARED VARIABLE v-a AS INTEGER NO-UNDO.",
+                ),
+            ]);
+            let includes = IncludeContext {
+                fs: &fs,
+                include_paths: &include_paths,
+                root_relative_paths: &[],
+                predefined: &predefined,
+            };
+            assert!(
+                index_file_at(IndexedFileId::new(0), Path::new("/f.p"), source, &includes)
+                    .0
+                    .shared_definitions
+                    .is_empty(),
+                "{source}"
+            );
+            assert_eq!(
+                definitions_in(Path::new("/f.p"), &includes),
+                [IndexName::new("v-a")],
                 "{source}"
             );
         }

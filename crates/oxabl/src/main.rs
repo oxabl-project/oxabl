@@ -699,11 +699,17 @@ fn main() -> ExitCode {
     }
     // Every command may parse ABL: give it a stack of known size, not `ulimit -s`.
     let code = oxabl_common::stack::run(|| dispatch(cli));
-    // Test builds only: a test reads how many line tables the command built.
+    // Test builds only: a test reads how many line tables the command built, and
+    // how many programs it parsed.
     if std::env::var_os("OXABL_TEST_SOURCE_MAPS").is_some()
         && let Some(built) = SourceMap::built()
     {
         eprintln!("oxabl-test: source maps built: {built}");
+    }
+    if std::env::var_os("OXABL_TEST_PARSES").is_some()
+        && let Some(parses) = oxabl_parser::parse_count()
+    {
+        eprintln!("oxabl-test: parses: {parses}");
     }
     // Test builds only: what each labelled piece of work did, such as the
     // expansions of each file in the scan for `SHARED` producers.
