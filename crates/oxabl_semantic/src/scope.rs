@@ -167,8 +167,8 @@ impl BindingMap {
     /// Iterate over every `(name, SymbolId)` pair. Order is unspecified.
     pub fn iter(&self) -> BindingIter<'_> {
         match self {
-            BindingMap::Small(vec) => BindingIter::Small(vec.iter()),
-            BindingMap::Large(map) => BindingIter::Large(map.iter()),
+            BindingMap::Small(vec) => BindingIter(BindingIterInner::Small(vec.iter())),
+            BindingMap::Large(map) => BindingIter(BindingIterInner::Large(map.iter())),
         }
     }
 
@@ -185,7 +185,11 @@ impl BindingMap {
 }
 
 /// The iterator of [`BindingMap::iter`].
-pub enum BindingIter<'a> {
+#[derive(Clone)]
+pub struct BindingIter<'a>(BindingIterInner<'a>);
+
+#[derive(Clone)]
+enum BindingIterInner<'a> {
     Small(std::slice::Iter<'a, (OxablAtom, SymbolId)>),
     Large(std::collections::hash_map::Iter<'a, OxablAtom, SymbolId>),
 }
@@ -195,19 +199,23 @@ impl<'a> Iterator for BindingIter<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            BindingIter::Small(it) => it.next().map(|(n, s)| (n, *s)),
-            BindingIter::Large(it) => it.next().map(|(n, s)| (n, *s)),
+        match &mut self.0 {
+            BindingIterInner::Small(it) => it.next().map(|(n, s)| (n, *s)),
+            BindingIterInner::Large(it) => it.next().map(|(n, s)| (n, *s)),
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        match self {
-            BindingIter::Small(it) => it.size_hint(),
-            BindingIter::Large(it) => it.size_hint(),
+        match &self.0 {
+            BindingIterInner::Small(it) => it.size_hint(),
+            BindingIterInner::Large(it) => it.size_hint(),
         }
     }
 }
+
+impl ExactSizeIterator for BindingIter<'_> {}
+
+impl std::iter::FusedIterator for BindingIter<'_> {}
 
 /// The binding maps of one [`Scope`]: one for each namespace that binds a
 /// name, in namespace order. Most scopes bind no name, so this holds no map
@@ -245,12 +253,13 @@ impl ScopeBindings {
 /// One scope in the tree.
 #[derive(Debug, Clone)]
 pub struct Scope {
-    pub kind: ScopeKind,
-    pub parent: Option<ScopeId>,
+    // Read-only: `ScopeTree::children` is keyed by these three.
+    kind: ScopeKind,
+    parent: Option<ScopeId>,
     /// The AST node that introduced this scope. For `ScopeKind::File`,
     /// this is [`NodeId::PROGRAM`]; for everything else it's the node id
     /// of the statement that opened the scope.
-    pub owner_node: NodeId,
+    owner_node: NodeId,
     /// The bindings of the namespaces this scope binds a name in.
     pub bindings: ScopeBindings,
     /// The text the scope covers: the span of its owner statement, which holds
@@ -280,6 +289,23 @@ impl Scope {
         }
     }
 
+    #[inline]
+    pub fn kind(&self) -> ScopeKind {
+        self.kind
+    }
+
+    /// The enclosing scope, or `None` for the file scope.
+    #[inline]
+    pub fn parent(&self) -> Option<ScopeId> {
+        self.parent
+    }
+
+    /// The AST node that opened this scope.
+    #[inline]
+    pub fn owner_node(&self) -> NodeId {
+        self.owner_node
+    }
+
     /// Look up `name` in the requested namespace of this scope only — does
     /// not walk parents.
     #[inline]
@@ -295,22 +321,79 @@ impl Scope {
     }
 }
 
-/// How many scope records the searches of a [`ScopeTree`] read in this
-/// process, counted only with the test-only `test-counts` feature.
-#[cfg(feature = "test-counts")]
-static SCOPES_READ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The storage of a [`ScopeTree`]. Every read of a record goes through it and
+/// its vector is private, so the test-only count sees a scan wherever it sits.
+mod records {
+    use super::{Scope, ScopeId};
 
-#[inline]
-fn count_scopes_read(_n: usize) {
-    #[cfg(feature = "test-counts")]
-    SCOPES_READ.fetch_add(_n, std::sync::atomic::Ordering::Relaxed);
+    /// How many scope records [`super::ScopeTree`] read in this process,
+    /// counted only with the test-only `test-counts` feature in a build with
+    /// debug assertions. A bench build (`cargo build --benches` turns the
+    /// feature on for the whole workspace) has none, so the count never runs
+    /// in measured code.
+    #[cfg(all(feature = "test-counts", debug_assertions))]
+    static READ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    #[inline]
+    fn count(_n: usize) {
+        #[cfg(all(feature = "test-counts", debug_assertions))]
+        READ.fetch_add(_n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(super) fn read() -> Option<usize> {
+        #[cfg(all(feature = "test-counts", debug_assertions))]
+        return Some(READ.load(std::sync::atomic::Ordering::Relaxed));
+        #[cfg(not(all(feature = "test-counts", debug_assertions)))]
+        None
+    }
+
+    #[derive(Debug, Clone)]
+    pub(super) struct Records(Vec<Scope>);
+
+    impl Records {
+        pub(super) fn new(root: Scope) -> Self {
+            Records(vec![root])
+        }
+
+        pub(super) fn push(&mut self, scope: Scope) -> ScopeId {
+            let id = ScopeId(self.0.len() as u32);
+            self.0.push(scope);
+            id
+        }
+
+        pub(super) fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        #[inline]
+        pub(super) fn get(&self, id: ScopeId) -> &Scope {
+            count(1);
+            &self.0[id.raw() as usize]
+        }
+
+        #[inline]
+        pub(super) fn get_mut(&mut self, id: ScopeId) -> &mut Scope {
+            count(1);
+            &mut self.0[id.raw() as usize]
+        }
+
+        #[inline]
+        pub(super) fn iter(&self) -> impl DoubleEndedIterator<Item = (ScopeId, &Scope)> {
+            self.0.iter().enumerate().map(|(i, s)| {
+                count(1);
+                (ScopeId(i as u32), s)
+            })
+        }
+    }
 }
+
+use records::Records;
 
 /// Arena of scopes with a fixed root. Scopes are never removed; the tree
 /// grows monotonically during the declare pass.
 #[derive(Debug, Clone)]
 pub struct ScopeTree {
-    scopes: Vec<Scope>,
+    scopes: Records,
     /// The first scope pushed for each parent, owner node and kind, so a pass
     /// finds the scope of a statement without a scan.
     children: FxHashMap<(ScopeId, NodeId, ScopeKind), ScopeId>,
@@ -321,12 +404,12 @@ impl ScopeTree {
     /// already created.
     pub fn new() -> Self {
         ScopeTree {
-            scopes: vec![Scope::new(
+            scopes: Records::new(Scope::new(
                 ScopeKind::File,
                 None,
                 NodeId::PROGRAM,
                 VirtualSpan::new(0, u32::MAX),
-            )],
+            )),
             children: FxHashMap::default(),
         }
     }
@@ -339,8 +422,8 @@ impl ScopeTree {
         owner_node: NodeId,
         span: VirtualSpan,
     ) -> ScopeId {
-        let id = ScopeId(self.scopes.len() as u32);
-        self.scopes
+        let id = self
+            .scopes
             .push(Scope::new(kind, Some(parent), owner_node, span));
         self.children
             .entry((parent, owner_node, kind))
@@ -350,20 +433,24 @@ impl ScopeTree {
 
     /// The first scope of `kind` pushed under `parent` for `owner_node`.
     pub fn child(&self, parent: ScopeId, owner_node: NodeId, kind: ScopeKind) -> Option<ScopeId> {
-        count_scopes_read(1);
-        self.children.get(&(parent, owner_node, kind)).copied()
+        let id = self.children.get(&(parent, owner_node, kind)).copied()?;
+        debug_assert!(
+            {
+                let s = self.scopes.get(id);
+                s.parent == Some(parent) && s.owner_node == owner_node && s.kind == kind
+            },
+            "a scope changed its parent, owner or kind after push"
+        );
+        Some(id)
     }
 
-    /// How many scope records the searches of every tree read in this process
-    /// (`iter`, `innermost_at`, `child`), or `None` without the test-only
-    /// `test-counts` feature, so a test can see that this count grows with the
-    /// number of scopes and not with its square.
+    /// How many scope records every tree read in this process, or `None`
+    /// unless the test-only `test-counts` feature is on in a build with debug
+    /// assertions. A test sees that this count grows with the number of
+    /// scopes and not with its square.
     #[doc(hidden)]
     pub fn scopes_read() -> Option<usize> {
-        #[cfg(feature = "test-counts")]
-        return Some(SCOPES_READ.load(std::sync::atomic::Ordering::Relaxed));
-        #[cfg(not(feature = "test-counts"))]
-        None
+        records::read()
     }
 
     /// The innermost scope whose span holds `offset`. A scope is pushed after
@@ -372,19 +459,19 @@ impl ScopeTree {
     pub fn innermost_at(&self, offset: u32) -> ScopeId {
         self.scopes
             .iter()
-            .enumerate()
             .rev()
-            .inspect(|_| count_scopes_read(1))
             .find(|(_, scope)| scope.span.start <= offset && offset < scope.span.end)
-            .map_or(ScopeId::ROOT, |(id, _)| ScopeId(id as u32))
+            .map_or(ScopeId::ROOT, |(id, _)| id)
     }
 
     pub fn get(&self, id: ScopeId) -> &Scope {
-        &self.scopes[id.raw() as usize]
+        self.scopes.get(id)
     }
 
+    /// The scope's bindings and span. Its parent, owner and kind stay as
+    /// `push` set them.
     pub fn get_mut(&mut self, id: ScopeId) -> &mut Scope {
-        &mut self.scopes[id.raw() as usize]
+        self.scopes.get_mut(id)
     }
 
     pub fn len(&self) -> usize {
@@ -392,14 +479,11 @@ impl ScopeTree {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.scopes.is_empty()
+        self.scopes.len() == 0
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (ScopeId, &Scope)> {
-        self.scopes.iter().enumerate().map(|(i, s)| {
-            count_scopes_read(1);
-            (ScopeId(i as u32), s)
-        })
+        self.scopes.iter()
     }
 
     /// The scope a `DEFINE` statement, `FUNCTION` or `PROCEDURE` at `scope`
@@ -411,22 +495,20 @@ impl ScopeTree {
     /// The root file scope is var-transparent-free, so this always terminates.
     pub fn var_binding_scope(&self, scope: ScopeId) -> ScopeId {
         self.ancestors(scope)
-            .find(|id| !self.scopes[id.raw() as usize].kind.is_var_transparent())
+            .find(|id| !self.scopes.get(*id).kind.is_var_transparent())
             .unwrap_or(ScopeId::ROOT)
     }
 
     /// Walk from `scope` up through parents, yielding each id in order.
     pub fn ancestors(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> + '_ {
-        std::iter::successors(Some(scope), move |cur| {
-            self.scopes[cur.raw() as usize].parent
-        })
+        std::iter::successors(Some(scope), move |cur| self.scopes.get(*cur).parent)
     }
 
     /// Resolve `name` in namespace `ns`, walking parents. Returns the first
     /// binding encountered (shadowing preserves ABL semantics).
     pub fn resolve(&self, scope: ScopeId, ns: NamespaceId, name: &OxablAtom) -> Option<SymbolId> {
         for id in self.ancestors(scope) {
-            if let Some(sym) = self.scopes[id.raw() as usize].get_in(ns, name) {
+            if let Some(sym) = self.scopes.get(id).get_in(ns, name) {
                 return Some(sym);
             }
         }

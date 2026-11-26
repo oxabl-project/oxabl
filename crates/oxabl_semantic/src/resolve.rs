@@ -5266,8 +5266,8 @@ impl<'a> ResolveWalker<'a> {
                 self.tree
                     .iter()
                     .find(|(_, s)| {
-                        s.owner_node == declaration
-                            && matches!(s.kind, ScopeKind::Class | ScopeKind::Interface)
+                        s.owner_node() == declaration
+                            && matches!(s.kind(), ScopeKind::Class | ScopeKind::Interface)
                     })
                     .map(|(id, _)| id)
             })
@@ -8400,7 +8400,7 @@ mod tests {
             .expect("field CustNum should be declared");
         assert_eq!(cust_num.kind, SymbolKind::Field);
         assert_eq!(
-            tree.get(cust_num.declared_in).kind,
+            tree.get(cust_num.declared_in).kind(),
             ScopeKind::TempTable,
             "temp-table fields must bind in a TempTable scope, not program scope"
         );
@@ -8453,7 +8453,7 @@ mod tests {
             .iter()
             .filter(|(_, s)| s.kind == SymbolKind::Field && s.name == fold_atom("line-code"))
             .map(|(_, s)| {
-                assert_eq!(tree.get(s.declared_in).kind, ScopeKind::TempTable);
+                assert_eq!(tree.get(s.declared_in).kind(), ScopeKind::TempTable);
                 s.declared_in
             })
             .collect();
@@ -8544,9 +8544,9 @@ mod tests {
         // Procedure scope exists.
         let proc_scope = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Procedure)
+            .find(|(_, s)| s.kind() == ScopeKind::Procedure)
             .expect("procedure scope");
-        assert_eq!(proc_scope.1.owner_node, stmt(StatementKind::Empty).id);
+        assert_eq!(proc_scope.1.owner_node(), stmt(StatementKind::Empty).id);
     }
 
     #[test]
@@ -8577,7 +8577,7 @@ mod tests {
         })]);
         let c = find_symbol(&tree, &symbols, NamespaceId::Types, "Foo").unwrap();
         assert_eq!(c.kind, SymbolKind::Class);
-        assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::Class));
+        assert!(tree.iter().any(|(_, s)| s.kind() == ScopeKind::Class));
     }
 
     #[test]
@@ -8628,7 +8628,7 @@ mod tests {
                 body: vec![],
             })],
         })]);
-        assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::Method));
+        assert!(tree.iter().any(|(_, s)| s.kind() == ScopeKind::Method));
     }
 
     #[test]
@@ -8647,7 +8647,7 @@ mod tests {
                 body: vec![],
             })],
         })]);
-        assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::Constructor));
+        assert!(tree.iter().any(|(_, s)| s.kind() == ScopeKind::Constructor));
     }
 
     #[test]
@@ -8661,7 +8661,7 @@ mod tests {
             use_widget_pool: false,
             body: vec![stmt(StatementKind::Destructor { body: vec![] })],
         })]);
-        assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::Destructor));
+        assert!(tree.iter().any(|(_, s)| s.kind() == ScopeKind::Destructor));
     }
 
     #[test]
@@ -8681,8 +8681,8 @@ mod tests {
         })]);
         let p = find_symbol(&tree, &symbols, NamespaceId::Values, "Name").unwrap();
         assert_eq!(p.kind, SymbolKind::Property);
-        assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::PropertyGet));
-        assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::PropertySet));
+        assert!(tree.iter().any(|(_, s)| s.kind() == ScopeKind::PropertyGet));
+        assert!(tree.iter().any(|(_, s)| s.kind() == ScopeKind::PropertySet));
     }
 
     #[test]
@@ -8700,8 +8700,8 @@ mod tests {
             get_span: None,
             set_span: None,
         })]);
-        assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::PropertyGet));
-        assert!(!tree.iter().any(|(_, s)| s.kind == ScopeKind::PropertySet));
+        assert!(tree.iter().any(|(_, s)| s.kind() == ScopeKind::PropertyGet));
+        assert!(!tree.iter().any(|(_, s)| s.kind() == ScopeKind::PropertySet));
     }
 
     #[test]
@@ -8713,7 +8713,7 @@ mod tests {
         })]);
         let catch_scope = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Catch)
+            .find(|(_, s)| s.kind() == ScopeKind::Catch)
             .expect("catch scope");
         let e = catch_scope.1.get_in(NamespaceId::Values, &fold_atom("e"));
         assert!(e.is_some());
@@ -8746,7 +8746,7 @@ mod tests {
         assert!(find_symbol(&tree, &symbols, NamespaceId::Values, "i").is_none());
         let block = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Block)
+            .find(|(_, s)| s.kind() == ScopeKind::Block)
             .unwrap()
             .1;
         let counter = block.get_in(NamespaceId::Values, &fold_atom("i")).unwrap();
@@ -8799,7 +8799,7 @@ mod tests {
         // The block scope holds no `i` binding of its own.
         let block = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Block)
+            .find(|(_, s)| s.kind() == ScopeKind::Block)
             .unwrap()
             .1;
         assert!(block.get_in(NamespaceId::Values, &fold_atom("i")).is_none());
@@ -8818,7 +8818,7 @@ mod tests {
         assert!(find_symbol(&tree, &symbols, NamespaceId::Buffers, "Customer").is_none());
         let block = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Block)
+            .find(|(_, s)| s.kind() == ScopeKind::Block)
             .unwrap()
             .1;
         assert!(
@@ -8860,7 +8860,7 @@ mod tests {
         // ...and NOT in the block scope itself (it was hoisted out).
         let block = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Block)
+            .find(|(_, s)| s.kind() == ScopeKind::Block)
             .unwrap()
             .1;
         assert!(
@@ -8927,7 +8927,7 @@ mod tests {
         })]);
         let fn_scope = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Function)
+            .find(|(_, s)| s.kind() == ScopeKind::Function)
             .unwrap()
             .1;
         assert!(
@@ -9486,7 +9486,7 @@ mod tests {
                 action: OnAction::Block(Box::new(stmt(StatementKind::Block(vec![])))),
             },
         })]);
-        assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::Trigger));
+        assert!(tree.iter().any(|(_, s)| s.kind() == ScopeKind::Trigger));
     }
 
     #[test]
@@ -9501,7 +9501,7 @@ mod tests {
         })]);
         assert!(
             tree.iter()
-                .any(|(_, s)| s.kind == ScopeKind::TriggerProcedure)
+                .any(|(_, s)| s.kind() == ScopeKind::TriggerProcedure)
         );
     }
 
@@ -9535,7 +9535,7 @@ mod tests {
         // Function scope exists; `local` must be inside it.
         let fn_scope = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Function)
+            .find(|(_, s)| s.kind() == ScopeKind::Function)
             .unwrap()
             .1;
         assert!(
@@ -9603,7 +9603,7 @@ mod tests {
         // Method scope holds both the parameter and the local.
         let method = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Method)
+            .find(|(_, s)| s.kind() == ScopeKind::Method)
             .unwrap()
             .1;
         assert!(
@@ -9641,7 +9641,7 @@ mod tests {
         })]);
         let class_scope = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Class)
+            .find(|(_, s)| s.kind() == ScopeKind::Class)
             .unwrap();
         let m = class_scope
             .1
@@ -9673,7 +9673,7 @@ mod tests {
         })]);
         let class_scope = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Class)
+            .find(|(_, s)| s.kind() == ScopeKind::Class)
             .unwrap();
         let m = class_scope
             .1
@@ -9707,7 +9707,7 @@ mod tests {
         })]);
         let class_scope = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Class)
+            .find(|(_, s)| s.kind() == ScopeKind::Class)
             .unwrap()
             .1;
         let p = class_scope
@@ -10084,7 +10084,7 @@ mod tests {
         // No block-scope shadow of `x`.
         let block = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Block)
+            .find(|(_, s)| s.kind() == ScopeKind::Block)
             .unwrap()
             .1;
         assert!(
@@ -10526,7 +10526,7 @@ mod tests {
         let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
         let block = tree
             .iter()
-            .find(|(_, s)| s.kind == ScopeKind::Block)
+            .find(|(_, s)| s.kind() == ScopeKind::Block)
             .expect("block scope")
             .1;
         let bsym = block
@@ -12669,7 +12669,7 @@ mod block_definition_tests {
         let mut found: Vec<(String, ScopeKind)> = symbols
             .iter()
             .filter(|(_, sym)| kinds.contains(&sym.kind))
-            .map(|(_, sym)| (sym.name.to_string(), tree.get(sym.declared_in).kind))
+            .map(|(_, sym)| (sym.name.to_string(), tree.get(sym.declared_in).kind()))
             .collect();
         found.sort_by(|a, b| a.0.cmp(&b.0));
         found

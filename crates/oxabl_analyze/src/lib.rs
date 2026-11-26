@@ -404,12 +404,12 @@ fn write_scopes_and_symbols(out: &mut String, sem: &Semantic) {
             out,
             "  [{:>2}] {:<14} parent={:<3} owner={:>4} bindings={}",
             id.raw(),
-            format!("{:?}", s.kind),
-            match s.parent {
+            format!("{:?}", s.kind()),
+            match s.parent() {
                 Some(p) => p.raw().to_string(),
                 None => "—".into(),
             },
-            s.owner_node.as_u32(),
+            s.owner_node().as_u32(),
             s.bindings.iter().map(|(_, b)| b.len()).sum::<usize>(),
         )
         .ok();
@@ -470,9 +470,9 @@ fn scopes_json(sem: &Semantic) -> Value {
         .iter()
         .map(|(id, s)| ScopeRow {
             id: id.raw(),
-            kind: scope_kind_str(s.kind),
-            parent: s.parent.map(ScopeId::raw),
-            owner_node: s.owner_node.as_u32(),
+            kind: scope_kind_str(s.kind()),
+            parent: s.parent().map(ScopeId::raw),
+            owner_node: s.owner_node().as_u32(),
             bindings: s
                 .bindings
                 .iter()
