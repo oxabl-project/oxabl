@@ -32,7 +32,9 @@ Each file gives one part to a pass (`crates/oxabl_daemon/src/pass.rs`):
 - its rows of the graph (`oxabl_pipeline::FilePart`): the subjects it depends
   on, with the kind and the span of each edge, the references it could not
   resolve, why its edge set is incomplete, and its dynamic calls;
-- its rows of the symbol search;
+- its rows of the symbol search, which the pass keeps one by one and shares
+  with the next pass (a row of a file that was not analysed again is not
+  copied);
 - its inputs: the paths that its analysis read, the paths it looked for and
   did not find, and the directories it listed;
 - when the pass built the map of `SHARED` producers (below): the `SHARED` names
@@ -46,6 +48,14 @@ the hash (BLAKE3) of the text and the disk stamp before the read.
 
 The daemon keeps the parts of the last pass. `ReverseGraph::from_parts` joins
 them into the graph that `ReverseGraph::build_with` gives for the same text.
+The daemon also keeps the graph of the last pass. After an edit,
+`ReverseGraph::updated` starts from that graph and replaces the rows of the
+files that were analysed again, and of the files that are gone, in the lists of
+only the subjects that those files name now or named before. Every other list
+of rows is shared with the earlier graph. The graph is equal to the one that
+`from_parts` gives (`an_updated_graph_is_the_graph_of_the_whole_join` compares
+them after 300 edits). When two files have one normalised path, the join is the
+whole join.
 
 ### The map of `SHARED` producers
 
@@ -149,8 +159,27 @@ files run analyses 3 files, and the next find references takes 1.4 s and 2.5
 CPU seconds, against 8.2 s and 80 CPU seconds with a full pass. An edit of a
 program that 570 files read analyses 571 files (2.8 s, 15.5 CPU seconds).
 The kept parts take about 55 MB, as many after an edit as after the cold pass.
-The schema key (`ConfigKey`) takes 15 ms to build on the 1,230 tables of the
-`erp` schema.
+The schema key (`ConfigKey`) took 15 ms to build on the 1,230 tables of the
+`erp` schema, because the hasher gave BLAKE3 a few bytes at a time. It gives
+the bytes in blocks of 16 KiB now (`BufferedBlake3`).
+
+What a pass costs after the analysis, whatever the edit, is the fixed cost.
+The parts of it, on the `edit_pass` bench (`crates/oxabl_daemon/benches/edit_pass_bench.rs`,
+1,200 roots, an edit of a program that two files run, about 29 ms before and
+about 17 ms after, on one thread):
+
+- the join of the graph from all the parts: 7 ms, now 2 ms;
+- the walk for the files of the workspace: 4 ms, now 0.7 ms. The walk asks for
+  the canonical path of each file only when it met a symbolic link, because
+  without a link no file has a second spelling;
+- the rows of the symbol search are shared and no longer copied at each pass;
+- the size estimate of the graph, 1.3 ms, is made when `oxabl/reindex` asks
+  and not at each pass;
+- what is left is in system calls and in the copy of the table of kept parts:
+  the check of each input (3 ms), the stamps of the tracked files (1.3 ms), the
+  stamps that the next freshness check reads (1.3 ms), and the configuration
+  (a pass resolves `oxabl.toml` and the schema again, which is needed to see a
+  change that no client reported).
 
 ## Tests
 

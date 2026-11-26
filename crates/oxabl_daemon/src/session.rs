@@ -100,6 +100,7 @@ pub fn canonical_root(root: impl AsRef<Path>) -> std::io::Result<PathBuf> {
 /// whose directory is missing too keeps its lexically normalised spelling — no
 /// worse than the key it had before, and still the key a lexical caller would use.
 pub fn canonical_path(path: &Path) -> PathBuf {
+    oxabl_common::test_tally::count("session.canonical");
     if let Ok(resolved) = std::fs::canonicalize(path) {
         return resolved;
     }
@@ -256,7 +257,7 @@ impl WorkspaceProgress {
 #[derive(Clone)]
 pub(crate) struct WorkspaceSnapshot {
     pub graph: Arc<ReverseGraph>,
-    pub symbols: Arc<Vec<SymbolRow>>,
+    pub symbols: Arc<Vec<Arc<SymbolRow>>>,
     pub files: Arc<Vec<FileStamp>>,
     pub config: Arc<PipelineConfig>,
     /// The session state this pass was built against, kept whole.
@@ -268,7 +269,6 @@ pub(crate) struct WorkspaceSnapshot {
     /// comparison would match forever and no later query would ever rebuild (R3).
     pub generations: SessionGenerations,
     pub pass_millis: u64,
-    pub graph_bytes: u64,
     /// Why this snapshot was already behind the moment it landed, if it was.
     ///
     /// The carrier for a staleness the file stamps cannot see. A pass installed

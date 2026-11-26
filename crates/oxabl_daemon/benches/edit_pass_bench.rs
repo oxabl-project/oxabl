@@ -10,6 +10,9 @@
 //! - `edit_pass/shared_include`: the edited file is a hot include that
 //!   hundreds of the roots read.
 //! - `edit_pass/no_edit`: no edit between two calls. The stored pass is current.
+//! - `edit_pass/leaf_large_schema`: as `leaf`, on a workspace whose schema has
+//!   1,230 tables. What a pass does for a schema, whatever the edit, is the
+//!   difference from `leaf`.
 //!
 //! The edit is the one an editor makes: `Session::set_buffer` with new text for
 //! a file that is open. Each call of the setup makes new text, so each iteration
@@ -44,13 +47,19 @@ use oxabl_daemon::SessionHost;
 use oxabl_daemon::methods::{limit_pass_jobs, reference_graph};
 use oxabl_daemon::session::canonical_root;
 
+/// The tables of the schema of `leaf_large_schema`: those of a large real
+/// schema.
+const LARGE_SCHEMA_TABLES: usize = 1_230;
+
 /// The roots that read `h0.i`: a hot include of the `ci` preset.
 const SHARED_INCLUDE: &str = "inc/hot/h0.i";
 
 /// The `ci` preset with `NEW SHARED` producers and their consumers, so the
 /// pass builds the map of producers as it does on a real workspace. A new
 /// workspace, so the pinned `ci` workspace of the other benches does not move.
-fn knobs() -> Knobs {
+/// `tables` is the size of its schema; `None` keeps the preset's.
+fn knobs(tables: Option<usize>) -> Knobs {
+    let preset = Preset::Ci.knobs();
     Knobs {
         programs: 1_100,
         classes: 100,
@@ -59,7 +68,8 @@ fn knobs() -> Knobs {
         shared_producers: 40,
         shared_vars: 4,
         shared_consumers: 20,
-        ..Preset::Ci.knobs()
+        tables: tables.unwrap_or(preset.tables),
+        ..preset
     }
 }
 
@@ -158,7 +168,7 @@ impl Fixture {
 
 fn edit_pass_benchmarks(c: &mut Criterion) {
     limit_pass_jobs(1);
-    let workspace = generate(&knobs());
+    let workspace = generate(&knobs(None));
     assert_eq!(workspace.roots().count(), 1_200);
     let leaf_path = leaf(&workspace).path.clone();
     let shared = workspace
@@ -177,11 +187,14 @@ fn edit_pass_benchmarks(c: &mut Criterion) {
     // A pass over 1,200 files takes tens of milliseconds at the least.
     group.sample_size(10);
 
-    for (name, edited_path) in [
-        ("leaf", leaf_path.as_str()),
-        ("shared_include", SHARED_INCLUDE),
+    let large = generate(&knobs(Some(LARGE_SCHEMA_TABLES)));
+    let large_leaf_path = leaf(&large).path.clone();
+    for (name, edited_workspace, edited_path) in [
+        ("leaf", &workspace, leaf_path.as_str()),
+        ("shared_include", &workspace, SHARED_INCLUDE),
+        ("leaf_large_schema", &large, large_leaf_path.as_str()),
     ] {
-        let fixture = Fixture::new(&workspace, edited_path);
+        let fixture = Fixture::new(edited_workspace, edited_path);
         let tracked = fixture.pass();
         assert!(tracked >= 1_200, "{name}: the pass tracks {tracked} files");
         let mut edits = 0_u64;

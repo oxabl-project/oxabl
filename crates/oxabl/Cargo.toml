@@ -39,7 +39,7 @@ notify = { version = "8", optional = true }
 notify-debouncer-full = { version = "0.6", optional = true }
 ctrlc = { version = "3", features = ["termination"], optional = true }
 lsp-server = { version = "0.7", optional = true }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", optional = true }
 schemars = { version = "0.8", optional = true }
 # `self-update` only. Both are already in the lock through the remote cache's
