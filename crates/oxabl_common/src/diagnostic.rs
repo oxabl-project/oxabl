@@ -144,10 +144,27 @@ pub struct SourceResolver<'a> {
     file: FileId,
     path: String,
     source: &'a str,
-    map: SourceMap,
+    map: Lines<'a>,
     /// Other files that labels may point into: id, display path, and the line
     /// table of the text when it is known.
-    others: Vec<(FileId, String, Option<SourceMap>)>,
+    others: Vec<(FileId, String, Option<Lines<'a>>)>,
+}
+
+/// A line table the resolver built, or one the caller shares between resolvers.
+enum Lines<'a> {
+    Built(SourceMap),
+    Shared(&'a SourceMap),
+}
+
+impl std::ops::Deref for Lines<'_> {
+    type Target = SourceMap;
+
+    fn deref(&self) -> &SourceMap {
+        match self {
+            Lines::Built(map) => map,
+            Lines::Shared(map) => map,
+        }
+    }
 }
 
 impl<'a> SourceResolver<'a> {
@@ -157,7 +174,24 @@ impl<'a> SourceResolver<'a> {
             file,
             path: path.into(),
             source,
-            map: SourceMap::new(source),
+            map: Lines::Built(SourceMap::new(source)),
+            others: Vec::new(),
+        }
+    }
+
+    /// [`new`](Self::new) with the line table of `source` already built, so a
+    /// caller that renders many resolvers over one text scans it once.
+    pub fn with_map(
+        file: FileId,
+        path: impl Into<String>,
+        source: &'a str,
+        map: &'a SourceMap,
+    ) -> Self {
+        SourceResolver {
+            file,
+            path: path.into(),
+            source,
+            map: Lines::Shared(map),
             others: Vec::new(),
         }
     }
@@ -170,8 +204,24 @@ impl<'a> SourceResolver<'a> {
         path: impl Into<String>,
         source: Option<&str>,
     ) -> Self {
+        self.others.push((
+            file,
+            path.into(),
+            source.map(|text| Lines::Built(SourceMap::new(text))),
+        ));
+        self
+    }
+
+    /// [`with_file`](Self::with_file) with the line table of the file's text
+    /// already built.
+    pub fn with_file_map(
+        mut self,
+        file: FileId,
+        path: impl Into<String>,
+        map: Option<&'a SourceMap>,
+    ) -> Self {
         self.others
-            .push((file, path.into(), source.map(SourceMap::new)));
+            .push((file, path.into(), map.map(Lines::Shared)));
         self
     }
 

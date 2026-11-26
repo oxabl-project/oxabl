@@ -2684,6 +2684,7 @@ version = "1.5.0"
 dependencies = [
  "codspeed-criterion-compat",
  "glob",
+ "memchr",
  "oxabl_ast",
  "serde",
  "serde_json",
