@@ -1,6 +1,7 @@
 //! The formatter lexes a file once for its caller and once for the candidate it
-//! prints, and no more. A full lex that comes back costs 7% of `oxabl check`
-//! on a file and the same share of `oxabl format`.
+//! prints, and no more. A candidate that is the source is not lexed. A full lex
+//! that comes back costs 7% of `oxabl check` on a file and the same share of
+//! `oxabl format`.
 //!
 //! A test build of `oxabl_lexer` (the `test-counters` feature) counts the lexers
 //! built and the bytes they were given. The counters belong to the process, so
@@ -93,6 +94,17 @@ fn the_formatter_lexes_the_source_once_and_the_candidate_once() {
     let out = out.unwrap();
     assert_eq!(lexes, 1, "format_with_tokens must lex the candidate only");
     assert_eq!(bytes, out.len());
+
+    // A file that is already formatted: the candidate is the same text, so it
+    // is not lexed again.
+    let clean = try_format_source(&tight(), &style).unwrap();
+    let (out, lexes, bytes, _) = counted(|| try_format_source(&clean, &style).unwrap());
+    assert_eq!(out, clean, "the fixture must be formatted already");
+    assert_eq!(
+        lexes, 1,
+        "try_format_source must not lex a candidate that is the source"
+    );
+    assert_eq!(bytes, clean.len());
 
     // A range: the source, the whole-file candidate for the layout, and the
     // candidate of the edits.

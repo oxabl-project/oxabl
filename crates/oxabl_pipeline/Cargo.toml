@@ -22,6 +22,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_pipeline"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+memchr = "2"
 oxabl_effects = { path = "../oxabl_effects", version = "0.3.10" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.5" }
 oxabl_parser = { path = "../oxabl_parser", version = "5.0.1" }
@@ -104,4 +105,8 @@ harness = false
 
 [[bench]]
 name = "signature_bench"
+harness = false
+
+[[bench]]
+name = "references_bench"
 harness = false

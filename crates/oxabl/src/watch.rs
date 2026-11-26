@@ -206,9 +206,13 @@ fn cycle(
     // Scanned when a file first asks for a `SHARED` producer, not before; with
     // diagnostics off nothing asks, so nothing scans the walk.
     let producers = LintPipeline::new(&config, &fs).deferred_producers(&indexed, opts.jobs);
+    // A file that many roots reach is indexed once for the pass, not once
+    // for each thread. Made again every pass, so the next pass sees the edit.
+    let facts = oxabl_pipeline::SharedFacts::default();
     let lint = LintPipeline::new(&config, &fs)
         .with_preprocess(opts.preprocess)
-        .with_deferred_producers(&producers);
+        .with_deferred_producers(&producers)
+        .with_shared_facts(&facts);
     // TX004 asks for the summaries of its callees. Build them once for the
     // whole walk and share them, as each handle would otherwise build its own
     // from the one file it happens to see first. Rebuilt every pass, so the
@@ -247,7 +251,8 @@ fn cycle(
             || {
                 let handle = LintPipeline::new(&config, &fs)
                     .with_preprocess(opts.preprocess)
-                    .with_deferred_producers(&producers);
+                    .with_deferred_producers(&producers)
+                    .with_shared_facts(&facts);
                 match &summaries {
                     Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
                     None => handle,
@@ -310,7 +315,8 @@ fn cycle(
         || {
             let handle = LintPipeline::new(&config, &fs)
                 .with_preprocess(opts.preprocess)
-                .with_deferred_producers(&producers);
+                .with_deferred_producers(&producers)
+                .with_shared_facts(&facts);
             match &summaries {
                 Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
                 None => handle,

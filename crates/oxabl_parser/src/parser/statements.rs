@@ -3881,9 +3881,9 @@ impl Parser<'_> {
             // re-slicing between the quotes: an ABL literal may carry a
             // translation/width suffix (`RUN "my-proc.p":U.`), whose bytes fall
             // inside the token extent, so a raw slice would yield `my-proc.p":`.
-            let name = match &token.value {
-                TokenValue::String(s) => s.to_string(),
-                _ => self.source[token.start + 1..token.end - 1].to_string(),
+            let name = match token.text(self.source) {
+                Some(text) => text.to_string(),
+                None => self.source[token.start + 1..token.end - 1].to_string(),
             };
             // The span keeps the quotes (and any suffix) the name drops, so a
             // diagnostic underlines the literal exactly as it was written.
@@ -6384,9 +6384,9 @@ impl Parser<'_> {
     /// Parse an include file reference as a statement: {file.i} or {file.i args}
     fn parse_include_reference_statement(&mut self) -> ParseResult<Statement> {
         let token = self.advance().clone();
-        let path_and_args = match &token.value {
-            TokenValue::String(s) => s.to_string(),
-            _ => self.source[token.start + 1..token.end - 1]
+        let path_and_args = match token.text(self.source) {
+            Some(text) => text.to_string(),
+            None => self.source[token.start + 1..token.end - 1]
                 .trim()
                 .to_string(),
         };
@@ -8992,8 +8992,8 @@ impl Parser<'_> {
         let name = self.parse_annotation_name("Expected annotation attribute name")?;
         self.expect_kind(Kind::Equals, "Expected '=' after annotation attribute name")?;
         let token = self.peek().clone();
-        let value = match (token.kind, &token.value) {
-            (Kind::StringLiteral, TokenValue::String(v)) => AnnotationValue::String(v.to_string()),
+        let value = match (token.kind, token.text(self.source)) {
+            (Kind::StringLiteral, Some(text)) => AnnotationValue::String(text.to_string()),
             (Kind::Eof | Kind::Invalid | Kind::Comma | Kind::RightParen | Kind::Period, _) => {
                 return Err(ParseError {
                     message: "Expected annotation attribute value".to_string(),

@@ -2893,6 +2893,7 @@ name = "oxabl_pipeline"
 version = "4.1.0"
 dependencies = [
  "codspeed-criterion-compat",
+ "memchr",
  "oxabl_analyze",
  "oxabl_ast",
  "oxabl_common",
@@ -5198,6 +5199,10 @@ dependencies = [
  "serde",
  "zeroize",
 ]
+
+[[package]]
+name = "xtask"
+version = "0.0.0"
 
 [[package]]
 name = "yoke"

@@ -29,6 +29,7 @@ members = [
     "crates/oxabl_build_remote",
     "crates/oxabl_fake_avm",
     "crates/oxabl_bench",
+    "xtask",
 ]
 resolver = "2"
 

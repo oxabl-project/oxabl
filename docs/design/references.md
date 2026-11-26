@@ -53,13 +53,18 @@ the request waits, so the request never stops an edit. One request analyses at
 most 2000 other files (`oxabl_daemon::references::MAX_UNITS`). The files that
 declare the referent come first, so the limit never cuts them.
 
-At most two searches over other files run at one time
-(`oxabl_daemon::references::MAX_SEARCHES`); a later one waits. A request takes
-its place only after the workspace graph is ready, so a request that waits for
-a workspace pass holds no place. A `$/cancelRequest` stops a request while it
-waits for the pass (the pass goes on and is kept for later requests), while it
-waits for a place, and between two files. The request answers
-`RequestCancelled`.
+The other files of every search are analysed on one pool of threads, as many
+as `available_parallelism`, that the whole daemon shares
+(`oxabl_daemon::references`). The searches take turns, one file at a time, so
+the number of analyses in progress does not grow with the number of requests,
+and a short search does not wait for the end of a long one. A request that
+waits for its search holds no analysis thread, and a request that waits for a
+workspace pass holds no place in the pool. A thread of the pool that has had
+no work for 5 seconds ends. The allocator keeps the memory that a thread freed
+until the thread ends, so this gives the memory of a large search back soon
+after it. A `$/cancelRequest` stops a request while it waits for the pass (the
+pass goes on and is kept for later requests), and between two files. The
+request answers `RequestCancelled`.
 
 The search starts from a current workspace pass. It reuses a walk for added
 files for at most one second (a poll of `oxabl/freshness` reuses one for two),
@@ -242,8 +247,8 @@ most visible place that it can without a message on every request:
 
 Each request analyses the unit that asks again (expand, parse, resolve; no type
 check). A search over other files analyses each of them the same way, on
-`available_parallelism` threads, and reads the outline of each file a
-resolution names once per file. A lookup of the name at an offset, of the call
+the shared pool, and reads the outline of each file a resolution names once
+per file. A lookup of the name at an offset, of the call
 that holds a `RUN` name and of the routine that holds a call is a binary
 search; the declared symbols and each callee's item are built once per
 request. A referent that every use writes in full (a variable, a routine, a
@@ -259,8 +264,11 @@ outgoing calls of a program with N variables and N calls take 0.10 to 0.16 s
 for N = 2,000 and 0.9 to 1.2 s for N = 16,000 (release, a loaded machine), and
 the test `outgoing_calls_cost_about_linear_time_in_the_calls` fails when 16
 times the calls cost more than 40 times the time. Nothing is memoized between
-requests. The
-first request that searches other files waits for the workspace pass that
+requests. The reference lenses of a file share one search: each other file
+is analysed once for all of them (`docs/design/reference-lenses.md`), and the
+targets of its sites and the places of its declarations are found once for
+all the declarations (`oxabl_pipeline::ReferenceMemo`). The first request
+that searches other files waits for the workspace pass that
 `workspace/symbol` and `oxabl/impact` also wait for.
 
 Measured with a release build on 16 threads, over a generated workspace of

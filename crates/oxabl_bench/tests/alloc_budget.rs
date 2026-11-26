@@ -109,12 +109,13 @@ fn parse_of_sp2k_df_stays_in_budget() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-// Measured on 20,311 tokens: 0.008 allocations and 61 bytes for each token in
-// the lex, 0.58 allocations and 194 bytes for each token in the parse.
-const LEX_ALLOCATIONS: u64 = 169;
-const LEX_BYTES: u64 = 1_245_667;
+// Measured on 20,311 tokens: one allocation (the token vector) and 61 bytes for
+// each token in the lex, 0.58 allocations and 194 bytes for each token in the
+// parse.
+const LEX_ALLOCATIONS: u64 = 1;
+const LEX_BYTES: u64 = 1_241_136;
 const PARSE_ALLOCATIONS: u64 = 11_877;
-const PARSE_BYTES: u64 = 3_943_096;
+const PARSE_BYTES: u64 = 3_942_288;
 
 // The parse of `sp2k.df` (the strings the model keeps, and no string for a
 // keyword or an attribute word).

@@ -106,8 +106,9 @@ export async function referenceLenses(ctx) {
     // count on the lens, and the rows are the places themselves.
     const clickLens = async (text) => {
       await page.locator(".monaco-editor .codelens-decoration a", { hasText: text }).first().click();
-      const found = await until("the references view", async () => (await peek(page)) !== null);
-      const view = found ? await peek(page) : null;
+      // The view opens empty and fills when the editor has laid out its list: wait for the rows.
+      await until("the references view", async () => (await peek(page))?.rows.length > 0);
+      const view = (await peek(page)) ?? null;
       await page.keyboard.press("Escape");
       await until("the references view closed", async () => (await peek(page)) === null);
       return view;

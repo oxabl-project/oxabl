@@ -126,8 +126,8 @@ compares the allocations and the bytes with a budget:
 
 | Stage | Allocations | Bytes |
 | --- | --- | --- |
-| lex | 169 | 1,245,667 |
-| parse | 11,877 | 3,943,096 |
+| lex | 1 | 1,241,136 |
+| parse | 11,877 | 3,942,288 |
 
 The counts are the same on each run of one toolchain. The test fails when a
 number is more than 0.5% above its budget. It also fails when a number is more
@@ -576,6 +576,25 @@ the CodSpeed CPU build, has it on. Its cost is up to three atomic additions
 for each lexer, which is very small, and a build of the shipped binary does
 not have it.
 
+The test-only feature `test-counters` of `oxabl_parser` counts the calls of
+`parse_program` and the bytes that their tokens cover. A test build of `oxabl`
+prints the bytes lexed and parsed when `OXABL_TEST_LEX_PARSE` is set
+(`crates/oxabl/tests/check_lex_parse_counts.rs`). As for the lexer, Cargo
+unifies the feature of the dev-dependency over a workspace build, so the
+CodSpeed CPU build has it on. Its cost is two relaxed atomic additions for each
+`parse_program`, and a build of the shipped binary does not have it.
+`docs/design/shared-unit.md` lists what each stage of `check` lexes and parses,
+and the plan to do it once for each text.
+
+The first slice of that plan (one `SharedFacts` for the indexes of the threads
+of a walk, no lex of a format candidate that is the source, and no second lex
+of the expanded text in the resolve pass), from commit `89ab4c3` on one
+machine: `check lsp_bench.p` goes from 94.9 M to 80.2 M instructions, `check
+big.p` from 1,191.6 M to 1,130.3 M, and `check -j 1 src` on the `ci` workspace
+from 1,171.4 M to 1,077.9 M. On a real workspace of about 10,400 roots (16
+threads), the CPU time goes from 183–186 s to 168–171 s and the peak RSS from
+886–932 MB to 701–719 MB.
+
 On the `erp` workspace (10,386 roots, 12 cores, a machine with other work on
 it), the release binary of `oxabl check src` took 22.4 s and 237 CPU-seconds
 (22.8 ms for each root), with a peak RSS of 719 MB. The system-allocator binary
@@ -630,3 +649,38 @@ in-process benches do not report findings, so only `cli.sh` shows it.
 in `SourceMap::new`, which `LabelPlaces::resolver` builds for each include
 finding when it is reported. `check/workspace_include_findings` runs the fold
 of the findings, not their report, so it does not show this cost.
+
+### The global atom set on many threads
+
+`string_cache` keeps every atom of more than seven bytes in one global set of
+4,096 lists. A new atom (`OxablAtom::from`) takes the lock of one list and
+walks it, and each entry is a cache miss. The atoms of the index stay alive
+for the whole run, so on a large workspace each list holds many entries, and
+the walk costs much more on 16 threads than one thread shows. Measure it at
+the default `-j` with `perf`; `task-clock:u` works where the hardware events
+do not:
+
+```sh
+perf record -e task-clock:u -F 199 -o check.data oxabl check src
+perf report -i check.data --no-children --sort symbol --stdio | grep dynamic_set
+```
+
+The lexer interned the text of each string literal, date constant and include
+reference, and each root lexed its includes again. Now the token keeps the
+place of the text (`TokenValue::Text`). Release build, 16 threads, three runs
+of `oxabl check` each:
+
+| Workspace | `Set::insert` (perf, self) | User CPU | Wall |
+| --- | --- | --- | --- |
+| a large real-world codebase kept outside the repository | 3.03% to 1.94% | −2.0% | −1.5% |
+| generated `erp` | 1.54% to 1.35% | 261.4 s to 259.8 s | 19.5 s to 19.4 s |
+
+With `-j 1` under callgrind: `check big.p` 1,196 M to 1,176 M instructions (the older tables above predate
+several changes and give other numbers for the same command),
+`check lsp_bench.p` 94.7 M to 93.6 M, `check -j 1 src` of `ci` about 1%
+fewer (1,166 M to 1,158 M in one build pair), `conformance -j 1 big.p` 160.0 M to 158.9 M.
+
+The rest of `Set::insert` comes from the names that the semantic passes fold
+and intern (`fold_atom`), and from `IndexName::new`. A cache of atoms in front
+of the set, for each thread or for the process, did not lower the CPU: its own
+lookup is a cache miss too, and the atoms it keeps make the lists longer.

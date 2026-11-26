@@ -8,9 +8,9 @@
 //! - **keywords / operators / punctuation** → compare `Kind` only. Recasing
 //!   (`define`→`DEFINE`) and abbreviation expansion (`def`→`DEFINE`) keep the
 //!   same `Kind` and carry no value, so they never trip.
-//! - **literals** → compare `(Kind, TokenValue)`, so a changed literal value
-//!   trips.
-//! - **identifiers and preprocessor/include refs** (all `TokenValue::None`) →
+//! - **literals** → compare `(Kind, TokenValue)`, with the text of a string or
+//!   date literal read from each source, so a changed literal value trips.
+//! - **identifiers and preprocessor/include refs** (no value to compare) →
 //!   compare **source text byte-for-byte**. Without this, identifier corruption
 //!   (`cust-num`→`custnum`, or one identifier swapped for another) would be
 //!   invisible because both sides are `(Identifier, None)` (Fable finding 1).
@@ -32,7 +32,26 @@ use oxabl_lexer::{Kind, Token, TokenValue, tokenize};
 struct Tok<'a> {
     kind: Kind,
     text: &'a str,
-    value: TokenValue,
+    value: Value<'a>,
+}
+
+/// The value of a token, with the text of a [`TokenValue::Text`] read from
+/// its source, because the two sources place it at different offsets.
+enum Value<'a> {
+    /// `None` is a text that could not be read. It equals nothing, so the
+    /// guard fails closed.
+    Text(Option<&'a str>),
+    Other(&'a TokenValue),
+}
+
+impl PartialEq for Value<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Text(Some(a)), Value::Text(Some(b))) => a == b,
+            (Value::Other(a), Value::Other(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 fn is_literal(kind: Kind) -> bool {
@@ -109,13 +128,16 @@ fn literal_tab_columns(src: &str, toks: &[Token]) -> Vec<u8> {
 /// Build the comparison stream from `src` and a pre-computed token slice,
 /// dropping trivia. Borrows the tokens rather than owning them so the caller can
 /// share one tokenization of the input across the printer and this guard.
-fn stream_from<'a>(src: &'a str, toks: &[Token]) -> Vec<Tok<'a>> {
+fn stream_from<'a>(src: &'a str, toks: &'a [Token]) -> Vec<Tok<'a>> {
     toks.iter()
         .filter(|t| t.kind != Kind::Comment && t.kind != Kind::Eof)
         .map(|t| Tok {
             kind: t.kind,
             text: &src[t.start..t.end],
-            value: t.value.clone(),
+            value: match t.value {
+                TokenValue::Text { .. } => Value::Text(t.text(src)),
+                ref other => Value::Other(other),
+            },
         })
         .collect()
 }
@@ -153,6 +175,11 @@ pub(crate) fn preserves_with_input_tokens(
     input_tokens: &[Token],
     candidate: &str,
 ) -> bool {
+    // The same text lexes to the same tokens, so it preserves itself: a file
+    // that is already formatted is not lexed again.
+    if candidate == input {
+        return true;
+    }
     let candidate_tokens = tokenize(candidate);
     compare(
         &stream_from(input, input_tokens),
@@ -199,6 +226,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_unreadable_text_equals_nothing() {
+        assert!(Value::Text(None) != Value::Text(None));
+        assert!(Value::Text(Some("a")) == Value::Text(Some("a")));
+        assert!(Value::Text(Some("a")) != Value::Text(Some("b")));
+        assert!(Value::Text(Some("a")) != Value::Text(None));
+    }
+
+    #[test]
     fn identical_streams_pass() {
         let s = "DEFINE VARIABLE x AS INTEGER.";
         assert!(preserves(s, s));
@@ -241,6 +276,17 @@ mod tests {
     #[test]
     fn literal_value_change_trips() {
         assert!(!preserves("x = 1.", "x = 2."));
+    }
+
+    #[test]
+    fn string_literal_change_trips() {
+        assert!(!preserves("MESSAGE \"abc\".", "MESSAGE \"abd\"."));
+        assert!(!preserves("d = 1/2/2026.", "d = 1/3/2026."));
+    }
+
+    #[test]
+    fn a_moved_string_literal_passes() {
+        assert!(preserves("MESSAGE \"abc\".", "MESSAGE   \"abc\"."));
     }
 
     #[test]
