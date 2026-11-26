@@ -281,6 +281,22 @@ pub struct FilePart {
 }
 
 impl FilePart {
+    /// The rows of the part: a subject, the kind and the span.
+    fn edge_rows(&self) -> &[EdgeRow] {
+        match &self.outcome {
+            Ok(named) => &named.rows,
+            Err(_) => &[],
+        }
+    }
+
+    /// The references of the part that did not resolve.
+    fn unresolved_refs(&self) -> &[UnresolvedReference] {
+        match &self.outcome {
+            Ok(named) => &named.unresolved,
+            Err(_) => &[],
+        }
+    }
+
     /// The analysed file, normalised.
     pub fn file(&self) -> &Path {
         &self.file
@@ -403,14 +419,37 @@ impl Subjects {
     }
 }
 
+/// Order the rows of one subject, and keep one row for each file and kind: the
+/// first, which has the lowest span start.
+fn sort_dependents(rows: &mut Vec<Dependent>) {
+    rows.sort_by(|a, b| {
+        (a.file.as_path(), a.kind, a.span.map(|s| s.start)).cmp(&(
+            b.file.as_path(),
+            b.kind,
+            b.span.map(|s| s.start),
+        ))
+    });
+    rows.dedup_by(|a, b| a.file == b.file && a.kind == b.kind);
+}
+
+/// Order the unresolved references of one name, and drop the repeats.
+fn sort_unresolved(rows: &mut Vec<UnresolvedRow>) {
+    rows.sort_by(|a, b| {
+        (a.file.as_path(), a.reference.name.as_str())
+            .cmp(&(b.file.as_path(), b.reference.name.as_str()))
+    });
+    rows.dedup();
+}
+
 /// The whole workspace's edges, inverted.
 #[derive(Debug, PartialEq)]
 pub struct ReverseGraph {
-    /// Subject → the files that depend on it.
-    dependents: HashMap<Subject, Vec<Dependent>>,
+    /// Subject → the files that depend on it. The rows of a subject are shared
+    /// with the graph that [`updated`](Self::updated) starts from.
+    dependents: HashMap<Subject, Arc<Vec<Dependent>>>,
     /// Every unresolved reference in the workspace, keyed by folded name, so a
     /// query can find the references that *should* have reached its subject.
-    unresolved_by_name: HashMap<String, Vec<UnresolvedRow>>,
+    unresolved_by_name: HashMap<String, Arc<Vec<UnresolvedRow>>>,
     /// Files the pass could not analyse at all.
     unanalysed: Vec<Unanalysed>,
     /// Files analysed whose edge set reports itself incomplete.
@@ -420,6 +459,9 @@ pub struct ReverseGraph {
     unnameable: Vec<UnnameableEdge>,
     /// Normalised paths of every file the pass covered.
     files: Vec<PathBuf>,
+    /// Whether the files of the pass had distinct normalised paths, so that
+    /// each part is the only one for its path.
+    distinct_files: bool,
     /// Total resolved edges, for the ratio below.
     edge_count: usize,
     /// Total unresolved references.
@@ -641,15 +683,153 @@ impl ReverseGraph {
         graph
     }
 
+    /// The graph [`from_parts`](Self::from_parts) gives for `parts`, from the
+    /// graph `previous` that an earlier join of other parts gave, at a cost
+    /// that grows with the parts that changed and not with all of them.
+    ///
+    /// `removed` are the parts of `previous` that `parts` does not hold as
+    /// they were: the parts of a file that was analysed again and of a file
+    /// that is gone. `added` are the parts of `parts` that `previous` did not
+    /// hold as they are. The rows of every other file are the rows of
+    /// `previous`, and a list of rows that no change reaches is shared with it.
+    ///
+    /// When two files have one normalised path, a row cannot be told from the
+    /// row of the other file, and the join is the whole join.
+    pub fn updated(
+        previous: &ReverseGraph,
+        pipeline: &LintPipeline<'_>,
+        files: &[PathBuf],
+        parts: &[&FilePart],
+        removed: &[&FilePart],
+        added: &[&FilePart],
+    ) -> Self {
+        let mut graph = Self::empty(pipeline, files);
+        if !graph.distinct_files || !previous.distinct_files {
+            for part in parts {
+                graph.absorb(part);
+            }
+            graph.sort();
+            return graph;
+        }
+        graph.dependents = previous.dependents.clone();
+        graph.unresolved_by_name = previous.unresolved_by_name.clone();
+        for part in parts {
+            graph.absorb_totals(part);
+        }
+        let changed: HashSet<&Path> = removed
+            .iter()
+            .chain(added)
+            .map(|part| part.file.as_path())
+            .collect();
+        graph.replace_dependents(&changed, removed, added);
+        graph.replace_unresolved(&changed, removed, added);
+        graph.sort_totals();
+        graph
+    }
+
+    /// Replace the rows of the files in `changed` in `dependents`.
+    fn replace_dependents(
+        &mut self,
+        changed: &HashSet<&Path>,
+        removed: &[&FilePart],
+        added: &[&FilePart],
+    ) {
+        let mut fresh: HashMap<&Subject, Vec<Dependent>> = HashMap::new();
+        for part in added {
+            for (subject, kind, span) in part.edge_rows() {
+                fresh.entry(subject).or_default().push(Dependent {
+                    file: part.file.clone(),
+                    kind: *kind,
+                    span: *span,
+                });
+            }
+        }
+        let mut touched: HashSet<&Subject> = fresh.keys().copied().collect();
+        touched.extend(
+            removed
+                .iter()
+                .flat_map(|part| part.edge_rows())
+                .map(|row| &*row.0),
+        );
+        for subject in touched {
+            let mut rows: Vec<Dependent> = self
+                .dependents
+                .get(subject)
+                .map(|kept| {
+                    kept.iter()
+                        .filter(|row| !changed.contains(row.file.as_path()))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            rows.extend(fresh.remove(subject).unwrap_or_default());
+            sort_dependents(&mut rows);
+            if rows.is_empty() {
+                self.dependents.remove(subject);
+            } else {
+                self.dependents.insert(subject.clone(), Arc::new(rows));
+            }
+        }
+    }
+
+    /// Replace the rows of the files in `changed` in `unresolved_by_name`.
+    fn replace_unresolved(
+        &mut self,
+        changed: &HashSet<&Path>,
+        removed: &[&FilePart],
+        added: &[&FilePart],
+    ) {
+        let mut fresh: HashMap<String, Vec<UnresolvedRow>> = HashMap::new();
+        for part in added {
+            for reference in part.unresolved_refs() {
+                fresh
+                    .entry(reference.name.to_ascii_lowercase())
+                    .or_default()
+                    .push(UnresolvedRow {
+                        file: part.file.clone(),
+                        reference: reference.clone(),
+                    });
+            }
+        }
+        let mut touched: HashSet<String> = fresh.keys().cloned().collect();
+        touched.extend(
+            removed
+                .iter()
+                .flat_map(|part| part.unresolved_refs())
+                .map(|reference| reference.name.to_ascii_lowercase()),
+        );
+        for name in touched {
+            let mut rows: Vec<UnresolvedRow> = self
+                .unresolved_by_name
+                .get(&name)
+                .map(|kept| {
+                    kept.iter()
+                        .filter(|row| !changed.contains(row.file.as_path()))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            rows.extend(fresh.remove(&name).unwrap_or_default());
+            sort_unresolved(&mut rows);
+            if rows.is_empty() {
+                self.unresolved_by_name.remove(&name);
+            } else {
+                self.unresolved_by_name.insert(name, Arc::new(rows));
+            }
+        }
+    }
+
     /// A graph over `files` with nothing absorbed yet.
     fn empty(pipeline: &LintPipeline<'_>, files: &[PathBuf]) -> Self {
+        let files: Vec<PathBuf> = files.iter().map(|p| normalize_lexically(p)).collect();
         ReverseGraph {
             dependents: HashMap::new(),
             unresolved_by_name: HashMap::new(),
             unanalysed: Vec::new(),
             degraded: Vec::new(),
             unnameable: Vec::new(),
-            files: files.iter().map(|p| normalize_lexically(p)).collect(),
+            distinct_files: files.windows(2).all(|pair| pair[0] < pair[1]),
+            files,
             edge_count: 0,
             unresolved_count: 0,
             include_roots: pipeline
@@ -696,6 +876,42 @@ impl ReverseGraph {
 
     /// Invert one file's named edge set into the graph.
     fn absorb(&mut self, part: &FilePart) {
+        self.absorb_totals(part);
+        let Ok(named) = &part.outcome else { return };
+        let file = &part.file;
+        for (subject, kind, span) in &named.rows {
+            let row = Dependent {
+                file: file.clone(),
+                kind: *kind,
+                span: *span,
+            };
+            match self.dependents.get_mut(&**subject) {
+                Some(rows) => Arc::make_mut(rows).push(row),
+                None => {
+                    self.dependents
+                        .insert(Subject::clone(subject), Arc::new(vec![row]));
+                }
+            }
+        }
+        for reference in &named.unresolved {
+            let row = UnresolvedRow {
+                file: file.clone(),
+                reference: reference.clone(),
+            };
+            let name = reference.name.to_ascii_lowercase();
+            match self.unresolved_by_name.get_mut(&name) {
+                Some(rows) => Arc::make_mut(rows).push(row),
+                None => {
+                    self.unresolved_by_name.insert(name, Arc::new(vec![row]));
+                }
+            }
+        }
+    }
+
+    /// What a part adds to the graph apart from its rows of dependents and of
+    /// unresolved references: its counts, its calls, and the files that need a
+    /// remark.
+    fn absorb_totals(&mut self, part: &FilePart) {
         let FilePart { file, outcome } = part;
         let named = match outcome {
             Ok(named) => named,
@@ -726,26 +942,7 @@ impl ReverseGraph {
             });
         }
         self.edge_count += named.named;
-        for (subject, kind, span) in &named.rows {
-            self.dependents
-                .entry(Subject::clone(subject))
-                .or_default()
-                .push(Dependent {
-                    file: file.clone(),
-                    kind: *kind,
-                    span: *span,
-                });
-        }
-        for reference in &named.unresolved {
-            self.unresolved_count += 1;
-            self.unresolved_by_name
-                .entry(reference.name.to_ascii_lowercase())
-                .or_default()
-                .push(UnresolvedRow {
-                    file: file.clone(),
-                    reference: reference.clone(),
-                });
-        }
+        self.unresolved_count += named.unresolved.len();
     }
 
     /// The subject an edge target names, or `None` when the target cannot be tied
@@ -767,22 +964,16 @@ impl ReverseGraph {
     /// identically and a rendered answer does not reshuffle between queries.
     fn sort(&mut self) {
         for rows in self.dependents.values_mut() {
-            rows.sort_by(|a, b| {
-                (a.file.as_path(), a.kind, a.span.map(|s| s.start)).cmp(&(
-                    b.file.as_path(),
-                    b.kind,
-                    b.span.map(|s| s.start),
-                ))
-            });
-            rows.dedup_by(|a, b| a.file == b.file && a.kind == b.kind);
+            sort_dependents(Arc::make_mut(rows));
         }
         for rows in self.unresolved_by_name.values_mut() {
-            rows.sort_by(|a, b| {
-                (a.file.as_path(), a.reference.name.as_str())
-                    .cmp(&(b.file.as_path(), b.reference.name.as_str()))
-            });
-            rows.dedup();
+            sort_unresolved(Arc::make_mut(rows));
         }
+        self.sort_totals();
+    }
+
+    /// Put the lists that [`absorb_totals`](Self::absorb_totals) fills in order.
+    fn sort_totals(&mut self) {
         self.unanalysed.sort();
         self.unanalysed.dedup();
         self.degraded.sort();
@@ -799,7 +990,11 @@ impl ReverseGraph {
     /// so this returns a [`Dependents`] rather than an `Option` or a `Result`.
     pub fn dependents(&self, subject: &Subject) -> Dependents {
         Dependents {
-            dependents: self.dependents.get(subject).cloned().unwrap_or_default(),
+            dependents: self
+                .dependents
+                .get(subject)
+                .map(|rows| rows.to_vec())
+                .unwrap_or_default(),
             unresolved: self.unresolved_naming(subject),
         }
     }
@@ -914,7 +1109,7 @@ impl ReverseGraph {
             let Some(rows) = self.dependents.get(&current) else {
                 continue;
             };
-            for row in rows {
+            for row in rows.iter() {
                 if !seen.insert(row.file.clone()) {
                     continue;
                 }
@@ -981,7 +1176,11 @@ impl ReverseGraph {
 
     /// Every unresolved reference in the workspace, whatever it named.
     pub fn all_unresolved(&self) -> Vec<&UnresolvedRow> {
-        let mut rows: Vec<&UnresolvedRow> = self.unresolved_by_name.values().flatten().collect();
+        let mut rows: Vec<&UnresolvedRow> = self
+            .unresolved_by_name
+            .values()
+            .flat_map(|rows| rows.iter())
+            .collect();
         rows.sort_by(|a, b| {
             (a.file.as_path(), a.reference.name.as_str())
                 .cmp(&(b.file.as_path(), b.reference.name.as_str()))
