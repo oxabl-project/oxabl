@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -1629,8 +1630,8 @@ struct CheckJsonFileCount {
 /// can be read by another root. `scope` says so in the data.
 #[derive(Serialize)]
 struct CheckJsonIncludeFinding {
-    path: String,
-    root: String,
+    path: Arc<str>,
+    root: Arc<str>,
     scope: &'static str,
     code: String,
     severity: &'static str,
@@ -1660,7 +1661,7 @@ struct CheckJsonExpansion {
 
 #[derive(Serialize)]
 struct CheckJsonChainStep {
-    path: String,
+    path: Arc<str>,
     /// The reference, in the bytes of the file that wrote it. Omitted when the
     /// reference sits in `{&name}` substitution text.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2358,7 +2359,7 @@ impl CheckPass<'_> {
         self.json_output || self.summary
     }
 
-    fn run(&self, lint: &LintPipeline<'_>, texts: &mut IncludeTexts, task: &Task<'_>) -> Unit {
+    fn run(&self, lint: &LintPipeline<'_>, texts: &mut IncludeFiles, task: &Task<'_>) -> Unit {
         if task.fragment {
             self.fragment(lint, task.file, task.indexed_path)
         } else {
@@ -2369,7 +2370,7 @@ impl CheckPass<'_> {
     fn root(
         &self,
         lint: &LintPipeline<'_>,
-        texts: &mut IncludeTexts,
+        texts: &mut IncludeFiles,
         file: &Path,
         indexed_path: &Path,
     ) -> Unit {
@@ -2481,7 +2482,7 @@ impl CheckPass<'_> {
     fn diagnose(
         &self,
         lint: &LintPipeline<'_>,
-        texts: &mut IncludeTexts,
+        texts: &mut IncludeFiles,
         file: &Path,
         indexed_path: &Path,
         source: &str,
@@ -2563,18 +2564,24 @@ impl CheckPass<'_> {
             report_findings(self, &display, indexed_path, &root, reported, None, unit);
 
             if self.include_findings {
-                let mut shown = result.include_origin().to_vec();
-                if self.no_lint {
-                    shown.retain(|d| d.source != oxabl_analyze::DiagnosticSource::Lint);
-                }
-                report_include_findings(
-                    &display,
-                    &root,
-                    &shown,
-                    &result.diagnostics().label_files,
-                    texts,
-                    self.quiet(),
-                    unit,
+                let no_lint = self.no_lint;
+                let shown = result
+                    .include_origin()
+                    .iter()
+                    .filter(|d| !no_lint || d.source != oxabl_analyze::DiagnosticSource::Lint);
+                oxabl_common::test_tally::within(
+                    || display.clone(),
+                    || {
+                        report_include_findings(
+                            &display,
+                            &root,
+                            shown,
+                            &result.diagnostics().label_files,
+                            texts,
+                            self.quiet(),
+                            unit,
+                        )
+                    },
                 );
             }
 
@@ -2679,7 +2686,7 @@ fn run_ordered<'a>(
     run_lint: &LintPipeline<'a>,
     own_lint: impl Fn() -> LintPipeline<'a> + Sync,
     tasks: &[Task<'_>],
-    work: impl Fn(&LintPipeline<'_>, &mut IncludeTexts, &Task<'_>) -> Unit + Sync,
+    work: impl Fn(&LintPipeline<'_>, &mut IncludeFiles, &Task<'_>) -> Unit + Sync,
     absorb: impl FnMut(Unit),
 ) {
     // The calling thread's pipeline is not `Sync`, so it travels in the serial
@@ -2687,8 +2694,8 @@ fn run_ordered<'a>(
     in_task_order(
         jobs,
         tasks,
-        (Err(run_lint), IncludeTexts::new(decoding)),
-        || (Ok(own_lint()), IncludeTexts::new(decoding)),
+        (Err(run_lint), IncludeFiles::new(decoding)),
+        || (Ok(own_lint()), IncludeFiles::new(decoding)),
         |(lint, texts), task| {
             let lint = match lint {
                 Ok(own) => &*own,
@@ -2945,34 +2952,41 @@ fn summarize(
 ) -> CheckJsonSummary {
     let mut rules: HashMap<&str, usize> = HashMap::new();
     // A file goes by its canonical path and is shown as first spelled: an
-    // include row and a fragment row spell one file two ways.
-    let mut canonical: HashMap<&str, PathBuf> = HashMap::new();
-    let mut files: HashMap<PathBuf, (&str, usize)> = HashMap::new();
-    let mut seen: HashSet<(PathBuf, &str, u32, u32)> = HashSet::new();
+    // include row and a fragment row spell one file two ways. Each canonical
+    // path has an id, so a row costs no path clone.
+    let mut spelled: HashMap<&str, usize> = HashMap::new();
+    let mut ids: HashMap<PathBuf, usize> = HashMap::new();
+    // The first spelling of each id and its count.
+    let mut files: Vec<(&str, usize)> = Vec::new();
+    let mut seen: HashSet<(usize, &str, u32, u32)> = HashSet::new();
     let rows = diagnostics
         .iter()
         .map(|d| (false, d.code.as_str(), d.path.as_str(), &d.span))
         .chain(
             include_diagnostics
                 .iter()
-                .map(|d| (true, d.code.as_str(), d.path.as_str(), &d.span)),
+                .map(|d| (true, d.code.as_str(), &*d.path, &d.span)),
         );
     let mut findings = 0;
     for (in_include, code, path, span) in rows {
-        let key = canonical
-            .entry(path)
-            .or_insert_with(|| canonical_or_self(Path::new(path)))
-            .clone();
+        let id = *spelled.entry(path).or_insert_with(|| {
+            let next = ids.len();
+            *ids.entry(canonical_or_self(Path::new(path)))
+                .or_insert(next)
+        });
         // A finding in an include counts once, whatever the number of
         // includers and whether the fragment's own run reports it too.
-        if !seen.insert((key.clone(), code, span.start, span.end)) && in_include {
+        if !seen.insert((id, code, span.start, span.end)) && in_include {
             continue;
         }
         findings += 1;
         *rules.entry(code).or_default() += 1;
-        files.entry(key).or_insert((path, 0)).1 += 1;
+        if id == files.len() {
+            files.push((path, 0));
+        }
+        files[id].1 += 1;
     }
-    let files: HashMap<&str, usize> = files.into_values().collect();
+    let files: HashMap<&str, usize> = files.into_iter().collect();
     fn ranked(counts: HashMap<&str, usize>) -> Vec<(String, usize)> {
         let mut rows: Vec<(String, usize)> = counts
             .into_iter()
@@ -3029,26 +3043,67 @@ fn render_summary(summary: &CheckJsonSummary) -> String {
     out
 }
 
-/// Include files read for `--include-findings`, each at most once per worker.
-struct IncludeTexts {
-    decoding: SourceDecoding,
-    texts: HashMap<PathBuf, Option<Rc<Lines<'static>>>>,
+/// An include file seen by `--include-findings`: its text, and its spelling
+/// for a relative and for an absolute root.
+struct IncludeFile {
+    text: Option<Rc<Lines<'static>>>,
+    spelled: [Option<Arc<str>>; 2],
 }
 
-impl IncludeTexts {
+/// Include files read for `--include-findings`, each read and spelled at most
+/// once per worker, however many findings and chain steps name it.
+struct IncludeFiles {
+    decoding: SourceDecoding,
+    index: HashMap<PathBuf, usize>,
+    files: Vec<IncludeFile>,
+    /// The working directory, asked for on the first relative spelling.
+    cwd: OnceCell<Option<PathBuf>>,
+}
+
+impl IncludeFiles {
     fn new(decoding: SourceDecoding) -> Self {
-        IncludeTexts {
+        IncludeFiles {
             decoding,
-            texts: HashMap::new(),
+            index: HashMap::new(),
+            files: Vec::new(),
+            cwd: OnceCell::new(),
         }
     }
 
-    fn get(&mut self, path: &Path) -> Option<Rc<Lines<'static>>> {
-        self.texts
-            .entry(path.to_path_buf())
-            .or_insert_with(|| read_source(path, self.decoding).ok().map(Lines::new))
-            .clone()
+    /// The spelling of `path` in a report whose root prints as `root`
+    /// (`display_path::spell`), and the text of the file, from one lookup.
+    fn get_spelled(&mut self, path: &Path, root: &str) -> (Arc<str>, Option<Rc<Lines<'static>>>) {
+        let relative = Path::new(root).is_relative();
+        let cwd = relative
+            .then(|| self.cwd.get_or_init(display_path::normalized_cwd))
+            .and_then(Option::as_deref);
+        let file = include_file(&mut self.index, &mut self.files, self.decoding, path);
+        let spelled = file.spelled[usize::from(relative)]
+            .get_or_insert_with(|| display_path::spell_from(path, relative, cwd).into());
+        (Arc::clone(spelled), file.text.clone())
     }
+}
+
+/// The file at `path`, read the first time. One hash of the path.
+fn include_file<'a>(
+    index: &mut HashMap<PathBuf, usize>,
+    files: &'a mut Vec<IncludeFile>,
+    decoding: SourceDecoding,
+    path: &Path,
+) -> &'a mut IncludeFile {
+    let at = match index.get(path) {
+        Some(&at) => at,
+        None => {
+            let text = read_source(path, decoding).ok().map(Lines::new);
+            files.push(IncludeFile {
+                text,
+                spelled: [None, None],
+            });
+            index.insert(path.to_path_buf(), files.len() - 1);
+            files.len() - 1
+        }
+    };
+    &mut files[at]
 }
 
 /// Write `text` to `out` in the encoding `stored` was read in, so `--stdout`
@@ -3084,25 +3139,26 @@ fn site_label(path: &str, text: Option<&Lines<'_>>, at: Option<oxabl_ast::Span>)
 ///
 /// Positions come from the physical include file, read from disk. A file that
 /// cannot be read keeps its byte span and loses line and column.
-fn report_include_findings(
+fn report_include_findings<'a>(
     root: &str,
     root_source: &Rc<Lines<'_>>,
-    found: &[oxabl_analyze::IncludeOriginDiagnostic],
+    found: impl Iterator<Item = &'a oxabl_analyze::IncludeOriginDiagnostic>,
     label_files_of_root: &[oxabl_analyze::LabelFile],
-    texts: &mut IncludeTexts,
+    texts: &mut IncludeFiles,
     json_output: bool,
     unit: &mut Unit,
 ) {
-    if found.is_empty() {
+    let mut found = found.peekable();
+    if found.peek().is_none() {
         return;
     }
     let labels = label_files(root, label_files_of_root);
+    let root_name: Arc<str> = root.into();
     for finding in found {
-        let display = display_path::spell(&finding.path, root);
-        let diagnostic = finding.diagnostic.clone();
-        let text = texts.get(&finding.path);
+        let (display, text) = texts.get_spelled(&finding.path, root);
+        let diagnostic = &finding.diagnostic;
         let mut places = LabelPlaces::new(
-            (diagnostic.span.file, display.clone(), text.clone()),
+            (diagnostic.span.file, display.to_string(), text.clone()),
             &labels,
         );
         places
@@ -3111,18 +3167,18 @@ fn report_include_findings(
         if !json_output {
             let resolver = places.resolver();
             unit.output.out(render_diagnostics(
-                std::slice::from_ref(&diagnostic),
+                std::slice::from_ref(diagnostic),
                 &resolver,
             ));
             for expansion in &finding.expansions {
                 // Each site is in the file that wrote it: the root, then the
                 // include before it in the chain.
-                let mut previous: (String, Option<Rc<Lines<'_>>>) =
-                    (root.to_string(), Some(Rc::clone(root_source)));
+                let mut previous: (Arc<str>, Option<Rc<Lines<'_>>>) =
+                    (Arc::clone(&root_name), Some(Rc::clone(root_source)));
                 let mut via = Vec::new();
                 for step in &expansion.chain {
                     via.push(site_label(&previous.0, previous.1.as_deref(), step.site));
-                    previous = (display_path::spell(&step.path, root), texts.get(&step.path));
+                    previous = texts.get_spelled(&step.path, root);
                 }
                 let nth = if expansion.occurrences > 1 {
                     format!(
@@ -3141,7 +3197,7 @@ fn report_include_findings(
         }
         let resolved = text
             .as_deref()
-            .map(|text| position::resolve_diagnostic(text.map(), &diagnostic));
+            .map(|text| position::resolve_diagnostic(text.map(), diagnostic));
         let expansions = finding
             .expansions
             .iter()
@@ -3155,9 +3211,10 @@ fn report_include_findings(
                             (Some(text), Some(at)) => Some(text.map().lookup(at.start as usize)),
                             _ => None,
                         };
-                        previous = texts.get(&step.path);
+                        let (path, text) = texts.get_spelled(&step.path, root);
+                        previous = text;
                         CheckJsonChainStep {
-                            path: display_path::spell(&step.path, root),
+                            path,
                             site: step.site.map(|at| CheckJsonSpan {
                                 start: at.start,
                                 end: at.end,
@@ -3176,7 +3233,7 @@ fn report_include_findings(
             .collect();
         unit.include_diagnostics.push(CheckJsonIncludeFinding {
             path: display,
-            root: root.to_string(),
+            root: Arc::clone(&root_name),
             scope: "compilation-unit",
             code: diagnostic.code.0.to_string(),
             severity: diagnostic.severity.as_str(),
@@ -3189,7 +3246,7 @@ fn report_include_findings(
             },
             start: resolved.map(|r| r.start.into()),
             end: resolved.map(|r| r.end.into()),
-            related: places.rows(&diagnostic),
+            related: places.rows(diagnostic),
             expansions,
         });
     }

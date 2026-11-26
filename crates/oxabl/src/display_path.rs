@@ -7,14 +7,26 @@ use std::path::{Component, Path, PathBuf};
 /// shown relative to the working directory, lexically (`..` where it sits
 /// outside). An absolute root keeps `path` absolute.
 pub fn spell(path: &Path, root: &str) -> String {
+    let relative = Path::new(root).is_relative();
+    let cwd = relative.then(normalized_cwd).flatten();
+    spell_from(path, relative, cwd.as_deref())
+}
+
+/// The working directory in the form [`spell_from`] takes, or `None` when the
+/// system gives none. A caller that spells many paths asks once.
+pub fn normalized_cwd() -> Option<PathBuf> {
+    std::env::current_dir().ok().map(|cwd| normalize(&cwd))
+}
+
+/// [`spell`] with the root's kind and the working directory already known:
+/// `relative` for a relative root, `cwd` from [`normalized_cwd`].
+pub fn spell_from(path: &Path, relative: bool, cwd: Option<&Path>) -> String {
+    oxabl_common::test_tally::count("display.spell");
     let path = normalize(path);
-    if !Path::new(root).is_relative() {
-        return path.display().to_string();
-    }
-    let Ok(cwd) = std::env::current_dir() else {
+    let Some(cwd) = cwd.filter(|_| relative) else {
         return path.display().to_string();
     };
-    relative_to(&normalize(&cwd), &path)
+    relative_to(cwd, &path)
         .unwrap_or(path)
         .display()
         .to_string()
