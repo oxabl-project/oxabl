@@ -1847,9 +1847,13 @@ fn run_check(
     // a producer starts the scan and waits for all of it; the other files do
     // not wait, and a walk in which no file asks scans nothing.
     let producers = LintPipeline::new(&config, &fs).deferred_producers(&indexed, jobs);
+    // Each thread has an index of its own, but a file that many roots reach is
+    // indexed once for the run, by the first thread that reaches it.
+    let facts = oxabl_pipeline::SharedFacts::default();
     let lint = LintPipeline::new(&config, &fs)
         .with_preprocess(preprocess)
-        .with_deferred_producers(&producers);
+        .with_deferred_producers(&producers)
+        .with_shared_facts(&facts);
     // The format pipeline is built from the resolved style and nothing else, so
     // it *cannot* see expanded macro text however this walk is configured (R4).
     let format = FormatPipeline::new(config.style.clone());
@@ -1914,6 +1918,7 @@ fn run_check(
             LintPipeline::new(&config, &fs)
                 .with_preprocess(preprocess)
                 .with_deferred_producers(&producers)
+                .with_shared_facts(&facts)
         });
     pools.prepare();
     let judge = |include: &Path, result: oxabl_pipeline::LintResult| pools.judge(include, result);
@@ -1986,7 +1991,8 @@ fn run_check(
             || {
                 let handle = LintPipeline::new(&config, &fs)
                     .with_preprocess(preprocess)
-                    .with_deferred_producers(&producers);
+                    .with_deferred_producers(&producers)
+                    .with_shared_facts(&facts);
                 match &summaries {
                     Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
                     None => handle,

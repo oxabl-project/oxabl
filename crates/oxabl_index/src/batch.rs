@@ -12,7 +12,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use oxabl_lexer::oxabl_atom::OxablAtom;
@@ -82,6 +82,68 @@ pub struct BatchIndex<'a> {
     /// The internal procedures the files of [`ProducerSource::Files`] define,
     /// read once on the first question about them.
     procedure_names: OnceLock<FxHashSet<Box<str>>>,
+    /// Where a file is indexed and its id minted when other indexes of the run
+    /// share the work. See [`SharedFacts`].
+    shared_facts: Option<&'a SharedFacts>,
+}
+
+/// The facts of the files that the indexes of one run read, shared by them.
+///
+/// A walk on several threads gives each thread an index of its own, because
+/// one index for all threads makes them wait on its lock. Each thread then
+/// reads, parses and declares every file that its own files reach, so a file
+/// that many files `RUN` or inherit from is indexed once for each thread.
+/// Give each index of the run a borrow of one `SharedFacts`
+/// ([`BatchIndex::with_shared_facts`]): a file is then indexed once for the
+/// run, by the first index that reaches it, and an index that reaches it
+/// meanwhile waits for that one. Each index still keeps its own answers, so
+/// what it answers does not change. One file also has one
+/// [`IndexedFileId`] in every index of the run.
+///
+/// The key is the normalized path alone. So, as the memo of an index does,
+/// it assumes that no file changes during the run, and it must be shared only
+/// by indexes with the same configuration (file system, include paths,
+/// preprocessor names).
+#[derive(Debug)]
+pub struct SharedFacts {
+    files: Mutex<FxHashMap<PathBuf, Arc<Pending>>>,
+    next_file_id: AtomicU32,
+}
+
+impl Default for SharedFacts {
+    fn default() -> Self {
+        SharedFacts {
+            files: Mutex::default(),
+            next_file_id: AtomicU32::new(1),
+        }
+    }
+}
+
+impl SharedFacts {
+    /// The slot where the file at `key` is indexed, made now with a new id
+    /// if no index of the run has reached the file yet.
+    fn slot(&self, key: &Path) -> Arc<Pending> {
+        let mut files = self.files.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(slot) = files.get(key) {
+            return Arc::clone(slot);
+        }
+        let slot = Arc::new(Pending {
+            id: IndexedFileId::new(self.next_file_id.fetch_add(1, Ordering::Relaxed)),
+            facts: OnceLock::new(),
+        });
+        files.insert(key.to_path_buf(), Arc::clone(&slot));
+        slot
+    }
+
+    /// How many files the run has indexed or is indexing.
+    pub fn len(&self) -> usize {
+        self.files.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// Whether no index of the run has reached a file yet.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// What the scan of [`ProducerSource::Files`] found.
@@ -216,7 +278,18 @@ impl<'a> BatchIndex<'a> {
             }),
             known: OnceLock::new(),
             procedure_names: OnceLock::new(),
+            shared_facts: None,
         }
+    }
+
+    /// Index each file once for the whole run, in `facts`, which the other
+    /// indexes of the run share. See [`SharedFacts`].
+    ///
+    /// Apply before any lookup.
+    #[must_use]
+    pub fn with_shared_facts(mut self, facts: &'a SharedFacts) -> Self {
+        self.shared_facts = Some(facts);
+        self
     }
 
     /// Try `extensions`, in order, for a `RUN` target written without one,
@@ -661,7 +734,7 @@ impl<'a> BatchIndex<'a> {
         if let Some(hit) = self.memo_read().facts.get(&key) {
             return Arc::clone(hit.attributed(self.fs));
         }
-        let pending = match self.memo().claim(&key) {
+        let pending = match self.memo().claim(&key, self.shared_facts) {
             Ok(hit) => return Arc::clone(hit.attributed(self.fs)),
             Err(pending) => pending,
         };
@@ -813,7 +886,7 @@ impl<'a> BatchIndex<'a> {
                     Err(known) => {
                         seeded.insert(known);
                     }
-                    Ok((key, source, seen)) => match memo.claim(&key) {
+                    Ok((key, source, seen)) => match memo.claim(&key, self.shared_facts) {
                         Ok(known) => {
                             seeded.insert(known.value().file);
                         }
@@ -968,19 +1041,31 @@ impl Pending {
 impl Memo {
     /// The facts of `key` if it is indexed, otherwise the slot it is indexed
     /// in, claimed now if no lookup has claimed it yet. The claim mints the id,
-    /// so ids follow the order in which lookups first reach files.
-    fn claim(&mut self, key: &Path) -> Result<Observed<Arc<FileFacts>>, Arc<Pending>> {
+    /// so ids follow the order in which lookups first reach files. With
+    /// `shared`, the slot and its id are the run's: another index may have
+    /// indexed the file already, or may be indexing it.
+    fn claim(
+        &mut self,
+        key: &Path,
+        shared: Option<&SharedFacts>,
+    ) -> Result<Observed<Arc<FileFacts>>, Arc<Pending>> {
         if let Some(hit) = self.facts.get(key) {
             return Ok(hit.clone());
         }
         if let Some(pending) = self.pending.get(key) {
             return Err(Arc::clone(pending));
         }
-        let pending = Arc::new(Pending {
-            id: IndexedFileId::new(self.next_file_id),
-            facts: OnceLock::new(),
-        });
-        self.next_file_id += 1;
+        let pending = match shared {
+            Some(shared) => shared.slot(key),
+            None => {
+                let pending = Arc::new(Pending {
+                    id: IndexedFileId::new(self.next_file_id),
+                    facts: OnceLock::new(),
+                });
+                self.next_file_id += 1;
+                pending
+            }
+        };
         self.pending.insert(key.to_path_buf(), Arc::clone(&pending));
         Err(pending)
     }
