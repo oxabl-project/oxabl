@@ -144,6 +144,10 @@ oxabl_analyze = { path = "../oxabl_analyze", version = "4.5.0" }
 oxabl_common = { path = "../oxabl_common", version = "1.5.0", features = [
     "test-panics",
 ] }
+# Counts the parses of a test build (`OXABL_TEST_PARSES`).
+oxabl_parser = { path = "../oxabl_parser", version = "5.0.1", features = [
+    "test-counters",
+] }
 oxabl_schema = { path = "../oxabl_schema", version = "0.6.1" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "3.7.1" }
 # The shared cross-client parity fixture table (R19). A dev-dependency feature

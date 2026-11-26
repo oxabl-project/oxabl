@@ -1,0 +1,4 @@
+{header.i}
+  METHOD PUBLIC VOID run():
+  END METHOD.
+END CLASS.

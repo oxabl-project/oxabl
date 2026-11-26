@@ -1,0 +1,2 @@
+DEFINE VARIABLE y AS INTEGER
+{tail.i}
