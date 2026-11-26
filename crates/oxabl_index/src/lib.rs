@@ -346,15 +346,11 @@ impl KnownValues {
 }
 
 /// Whether [`index_file`] may read the facts of `source` from its expanded text:
-/// a superset of the files it expands, found from the tokens, with a parse
-/// only when they do not say.
+/// a superset of the files it expands. A class or interface header answers from
+/// the tokens; any other file is parsed.
 pub(crate) fn may_be_expanded(source: &str) -> bool {
     let tokens = oxabl_lexer::tokenize(source);
-    match expansion_scan::scan(source, &tokens) {
-        expansion_scan::Scan::Yes => true,
-        expansion_scan::Scan::No => false,
-        expansion_scan::Scan::Unsure => expansion_scan::parsed(source, &tokens),
-    }
+    expansion_scan::may_declare_a_type(&tokens) || expansion_scan::parsed(source, &tokens)
 }
 
 /// The expanded text of `source`, the file at `path`, with its includes read as

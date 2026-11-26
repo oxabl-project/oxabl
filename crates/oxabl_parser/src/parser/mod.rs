@@ -472,6 +472,7 @@ impl<'a> Parser<'a> {
     const PRESIZED_STATEMENTS: usize = 64;
 
     pub fn parse_program(&mut self) -> Program {
+        crate::count_parse();
         // Every top-level statement ends at a period, so the capped period
         // count sizes the list without reallocating large statements as it
         // grows. Nested statements make it an overestimate; the slack is
