@@ -219,7 +219,7 @@ impl Engine<'_, '_, '_, '_> {
         let atom = fold_atom(name);
         for id in tree.ancestors(base::scope_at(base, virt)) {
             let held = tree.get(id);
-            let members = matches!(held.kind, ScopeKind::Class | ScopeKind::Interface);
+            let members = matches!(held.kind(), ScopeKind::Class | ScopeKind::Interface);
             let Some(sym) = held.get_in(NamespaceId::Buffers, &atom) else {
                 continue;
             };
@@ -323,8 +323,12 @@ impl Engine<'_, '_, '_, '_> {
             return incomplete;
         };
         let schema = self.schema();
-        let mut own: Vec<SymbolId> = tree.get(scope).bindings[NamespaceId::Values.index()]
-            .iter()
+        let mut own: Vec<SymbolId> = tree
+            .get(scope)
+            .bindings
+            .get(NamespaceId::Values)
+            .into_iter()
+            .flat_map(|map| map.iter())
             .map(|(_, sym)| sym)
             .collect();
         own.sort_unstable_by_key(|sym| sym.raw());
@@ -532,7 +536,8 @@ impl Engine<'_, '_, '_, '_> {
         let mut out = Vec::new();
         for place in &mapped.places {
             for id in tree.ancestors(base::scope_at(base, *place)) {
-                for (_, sym) in tree.get(id).bindings[NamespaceId::Buffers.index()].iter() {
+                let buffers = tree.get(id).bindings.get(NamespaceId::Buffers);
+                for (_, sym) in buffers.into_iter().flat_map(|map| map.iter()) {
                     out.push(symbols.record_source(sym).map(|source| match source {
                         RecordSource::Schema(table) => Record::Table(table),
                         RecordSource::TempTable(temp_table) => Record::TempTable(temp_table),

@@ -33,6 +33,10 @@ use crate::session::canonical_path;
 /// not wait for it.
 pub const REFRESH_SITE: &str = "completion.refresh";
 
+/// The hold-marker site of the first, synchronous base of a document, for the
+/// tests that show a request needs no base.
+pub const BASE_SITE: &str = "completion.base";
+
 /// Which base: a document, and the root it is analysed in when that is not
 /// the document itself.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -374,6 +378,7 @@ fn own_base(bases: &Arc<Bases>, query: &CompletionQuery) -> Option<(Arc<Base>, b
         }
         return Some((base, false));
     }
+    oxabl_common::hold_if_injected(BASE_SITE, &query.text);
     let base = Arc::new(make_own_base(
         &query.config,
         &query.path,

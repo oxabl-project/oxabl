@@ -7,6 +7,8 @@ mod panic_guard;
 mod source_map;
 pub mod stack;
 mod test_counts;
+#[doc(hidden)]
+pub mod test_tally;
 mod virtual_span;
 
 pub use blank_lines::blank_lines_between;

@@ -41,11 +41,15 @@ impl Engine<'_, '_, '_, '_> {
             Some((base, _)) => {
                 let semantic = &base.navigation.model.semantic;
                 let symbols = &semantic.symbols;
-                let mut procedures: Vec<_> = semantic.scope_tree.get(ScopeId::ROOT).bindings
-                    [NamespaceId::Procedures.index()]
-                .iter()
-                .map(|(_, sym)| sym)
-                .collect();
+                let mut procedures: Vec<_> = semantic
+                    .scope_tree
+                    .get(ScopeId::ROOT)
+                    .bindings
+                    .get(NamespaceId::Procedures)
+                    .into_iter()
+                    .flat_map(|map| map.iter())
+                    .map(|(_, sym)| sym)
+                    .collect();
                 procedures.sort_unstable_by_key(|sym| sym.raw());
                 for sym in procedures {
                     let symbol = symbols.get(sym);

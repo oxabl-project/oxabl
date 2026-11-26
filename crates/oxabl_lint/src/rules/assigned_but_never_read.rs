@@ -176,11 +176,11 @@ struct Visitor<'a> {
 fn opened_scopes(sem: &Semantic) -> FxHashMap<NodeId, Vec<(ScopeId, ScopeKind)>> {
     let mut opened: FxHashMap<NodeId, Vec<(ScopeId, ScopeKind)>> = FxHashMap::default();
     for (id, scope) in sem.scope_tree.iter() {
-        if scope.parent.is_some() {
+        if scope.parent().is_some() {
             opened
-                .entry(scope.owner_node)
+                .entry(scope.owner_node())
                 .or_default()
-                .push((id, scope.kind));
+                .push((id, scope.kind()));
         }
     }
     opened
@@ -199,7 +199,7 @@ impl Visitor<'_> {
         let child = self.opened.get(&owner).and_then(|scopes| {
             scopes
                 .iter()
-                .find(|(id, k)| *k == kind && self.sem.scope_tree.get(*id).parent == Some(parent))
+                .find(|(id, k)| *k == kind && self.sem.scope_tree.get(*id).parent() == Some(parent))
         });
         if let Some(&(id, _)) = child {
             self.scope = id;

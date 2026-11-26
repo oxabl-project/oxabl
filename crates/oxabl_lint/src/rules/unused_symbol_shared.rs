@@ -114,29 +114,29 @@ fn in_skipped_method(scope: ScopeId, tree: &ScopeTree, symbols: &SymbolTable) ->
         let s = tree.get(id);
         // Parameter declared inside an INTERFACE body — any method there
         // has no body; skip its parameters.
-        if s.kind == ScopeKind::Interface {
+        if s.kind() == ScopeKind::Interface {
             return true;
         }
-        if s.kind == ScopeKind::Method {
+        if s.kind() == ScopeKind::Method {
             // Look up the Method symbol whose declaration NodeId matches
             // this scope's owner, and check its ABSTRACT flag.
             if let Some((_, msym)) = symbols.iter().find(|(_, sym)| {
-                sym.kind == SymbolKind::Function && sym.declaration == s.owner_node
+                sym.kind == SymbolKind::Function && sym.declaration == s.owner_node()
             }) && msym.flags.contains(SymbolFlags::ABSTRACT)
             {
                 return true;
             }
         }
-        if s.kind == ScopeKind::Procedure
+        if s.kind() == ScopeKind::Procedure
             && symbols.iter().any(|(_, sym)| {
                 sym.kind == SymbolKind::Procedure
-                    && sym.declaration == s.owner_node
+                    && sym.declaration == s.owner_node()
                     && sym.flags.contains(SymbolFlags::PROTOTYPE)
             })
         {
             return true;
         }
-        cur = s.parent;
+        cur = s.parent();
     }
     false
 }

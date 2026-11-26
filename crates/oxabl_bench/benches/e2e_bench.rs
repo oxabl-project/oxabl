@@ -14,6 +14,10 @@
 //! - `check/include_findings_repeated`: one root that includes a file of 100
 //!   unused variables in each of 60 procedures, so 100 rows have 60 expansions
 //!   each and the fold of include findings is a large share of the run.
+//! - `producers/scan`: the scan for `NEW SHARED` producers, as the first
+//!   `SHARED` question of a run makes it, over 600 files of six kinds
+//!   (`fixtures::shared_producers`): written definitions, one with a `TRIGGERS`
+//!   phrase, a file of an include, consumers, classes and files not read.
 //! - `format/file_end_to_end`: `FormatPipeline::format` from the source text
 //!   of `lsp_bench.p`, as `oxabl format` and Format Document call it.
 //! - `navigation/definitions`: one go to definition request on `lsp_bench.p`:
@@ -63,8 +67,8 @@ fn check_walk(
     roots: &[(PathBuf, String)],
 ) -> usize {
     let paths: Vec<PathBuf> = roots.iter().map(|(path, _)| path.clone()).collect();
-    let producers = LintPipeline::new(config, fs).shared_producers(&paths);
-    let lint = LintPipeline::new(config, fs).with_shared_producers(&producers);
+    let producers = LintPipeline::new(config, fs).deferred_producers(&paths, 1);
+    let lint = LintPipeline::new(config, fs).with_deferred_producers(&producers);
     roots
         .iter()
         .map(|(path, source)| check_root(&lint, format, path, source).0)
@@ -129,6 +133,27 @@ fn bench_check_and_format(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_producer_scan(c: &mut Criterion) {
+    let mut group = c.benchmark_group("producers");
+    group.sample_size(10);
+    let (fs, config, paths) = fixtures::shared_producers(600);
+    let scan = || LintPipeline::new(&config, &fs).shared_producers(&paths);
+    let map = scan();
+    // 100 files of each of two written kinds, and 100 of an include.
+    assert_eq!(
+        map.producers_of(&oxabl_semantic::IndexName::new("sp-trig1")),
+        [PathBuf::from("/sp/t1.p")]
+    );
+    assert_eq!(
+        map.producers_of(&oxabl_semantic::IndexName::new("sp-included"))
+            .len(),
+        100
+    );
+    assert_eq!(map.len(), 100 * 2 + 100 + 2, "{map:?}");
+    bench(&mut group, "producers", "scan", || scan().len());
+    group.finish();
+}
+
 fn bench_navigation(c: &mut Criterion) {
     let mut group = c.benchmark_group("navigation");
     group.sample_size(10);
@@ -179,5 +204,10 @@ fn bench_navigation(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_check_and_format, bench_navigation);
+criterion_group!(
+    benches,
+    bench_check_and_format,
+    bench_producer_scan,
+    bench_navigation
+);
 criterion_main!(benches);

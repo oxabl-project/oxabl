@@ -1299,8 +1299,8 @@ impl Navigation<'_, '_> {
     fn scopes_its_block(&self, symbol: &oxabl_semantic::Symbol) -> bool {
         let scope = self.model.semantic.scope_tree.get(symbol.declared_in);
         symbol.kind == SymbolKind::Buffer
-            && scope.kind == ScopeKind::Block
-            && scope.owner_node == symbol.declaration
+            && scope.kind() == ScopeKind::Block
+            && scope.owner_node() == symbol.declaration
     }
 
     /// Whether a buffer's name is the name of the table it reads, so the name at
