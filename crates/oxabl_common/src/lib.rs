@@ -1,4 +1,5 @@
 mod blank_lines;
+pub mod counters;
 mod diagnostic;
 mod file_id;
 mod file_span;

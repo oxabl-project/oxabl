@@ -259,6 +259,25 @@ python3 -I scripts/bench/callgrind_summary.py target/check.out      # the summar
 
 To count only one stage, use `--toggle-collect='*parse_program*'`.
 
+## Guards in test builds
+
+A cost that came back is hard to see in a bench, so a test build of `oxabl`
+counts it and a black-box test reads the count. The test build has the
+`test-panics` feature of `oxabl_common`. A build with no such feature counts
+nothing. Each test runs a small input and wants a count that does not grow with
+the work.
+
+| Count | Where | Test |
+| --- | --- | --- |
+| line tables built (`SourceMap::built`) | `oxabl_common` | `crates/oxabl/tests/check_source_maps.rs` |
+| parses that decide if a file may need its text expanded (`counters::expansion_parses`) | `oxabl_index::expansion_scan` | `crates/oxabl/tests/check_producer_prefilter.rs` |
+
+Both counts print on stderr when `OXABL_TEST_SOURCE_MAPS` is set. The producer
+scan reads the tokens of a file with a `{` and parses it only when the tokens
+do not say. A root whose includes stand as whole statements costs no parse. A
+root with an include or a directive inside a statement, or with a brace in a
+string or a comment, still costs one.
+
 ## CodSpeed
 
 The job `codspeed` uses the Simulation instrument: it runs each bench one time
@@ -282,9 +301,9 @@ times: read them on CodSpeed. The memory numbers are of the warm run.
 
 | Bench | Allocations | Bytes requested | Peak |
 | --- | --- | --- | --- |
-| `check/file` | 44,569 | 28.5 MB | 10.9 MB |
-| `check/workspace` | 618,870 | 457.1 MB | 3.1 MB |
-| `check/workspace_include_findings` | 1,070,457 | 684.4 MB | 3.2 MB |
+| `check/file` | 32,692 | 24.5 MB | 10.9 MB |
+| `check/workspace` | 616,308 | 455.8 MB | 3.1 MB |
+| `check/workspace_include_findings` | 1,067,895 | 683.1 MB | 3.2 MB |
 | `format/file_end_to_end` | 19,961 | 16.2 MB | 10.1 MB |
 | `navigation/definitions` | 27,690 | 13.7 MB | 5.6 MB |
 | `navigation/links` | 7,198 | 5.3 MB | 2.4 MB |

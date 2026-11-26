@@ -353,8 +353,10 @@ fn is_procedure_abbreviation(word: &str) -> bool {
 
 /// Whether [`index_file_at`] can find a shared definition in `source`, the file
 /// at `path`: a superset test. A file whose text does not say `NEW SHARED` or
-/// `NEW GLOBAL` is parsed only when it holds a `{`, and expanded only when
-/// `index_file_at` may expand it.
+/// `NEW GLOBAL` is read only when it holds a `{`, and expanded only when
+/// `index_file_at` may expand it. The tokens of such a file say whether it may
+/// be expanded; only a file with a shape they do not know is parsed
+/// ([`crate::expansion_scan`]).
 ///
 /// A definition the index reads from the text as written says the two words
 /// there. Text expansion can only bring them together through a `{...}`
@@ -621,6 +623,13 @@ mod tests {
             "{gone.i}\nDEFINE VARIABLE v-own AS INTEGER NO-UNDO.",
             "DEFINE {head.i} VARIABLE v-b AS INTEGER NO-UNDO.",
             "CLASS c:\n{defs.i}\nEND CLASS.",
+            "&IF TRUE &THEN\nCLASS c:\n{defs.i}\nEND CLASS.\n&ENDIF",
+            "{plain.i}\n/* note */\n{defs.i}",
+            "// header\n{defs.i}\n/* tail */",
+            "&SCOPED-DEFINE x 1\n{defs.i}",
+            "x = .\n{defs.i}",
+            "END.\n{defs.i}",
+            "DEFINE VARIABLE v-c AS {plain.i}.\n{defs.i}",
         ] {
             let fs = fs_with(&[
                 ("/f.p", source),
