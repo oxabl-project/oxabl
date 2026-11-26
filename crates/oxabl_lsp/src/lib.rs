@@ -143,7 +143,7 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
     let mut notices = Vec::new();
     // One limit for every attempt below, so the wait for a daemon never exceeds it.
     let mut progress = StartProgress::new(connection, &init, start_limit(&workspace_root));
-    let (daemon, daemon_threads, answer) = loop {
+    let ((daemon, daemon_threads, answer), daemon_pid) = loop {
         let registration = match find_or_start_daemon(&workspace_root, &mut notices, &mut progress)
         {
             Ok(registration) => registration,
@@ -174,7 +174,7 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
                 )));
         }
         match initialize_daemon(&registration, &first) {
-            Ok(joined) => break joined,
+            Ok(joined) => break (joined, registration.pid),
             Err(refusal) if attempt < ATTEMPTS => {
                 // A daemon that refused this client and stays is not exiting: asking it
                 // again gets the same answer.
@@ -195,7 +195,8 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
         }
     };
     drop(progress);
-    let outcome = editor_send(connection, answer).and_then(|()| proxy_messages(connection, daemon));
+    let outcome = editor_send(connection, answer)
+        .and_then(|()| proxy_messages(connection, daemon, daemon_pid));
     daemon_threads.shutdown();
     outcome
 }
@@ -806,7 +807,7 @@ fn build_suffix(build: &str) -> String {
 /// The daemon is dropped before the function returns, so its writer ends; the caller
 /// then shuts the socket down, which ends the daemon-to-editor thread.
 #[cfg(unix)]
-fn proxy_messages(editor: &Connection, daemon: Connection) -> Result<()> {
+fn proxy_messages(editor: &Connection, daemon: Connection, daemon_pid: u32) -> Result<()> {
     let Connection {
         sender: to_daemon,
         receiver: from_daemon,
@@ -817,9 +818,9 @@ fn proxy_messages(editor: &Connection, daemon: Connection) -> Result<()> {
         .name("oxabl-lsp-to-editor".to_string())
         .spawn(move || {
             let outcome = (|| loop {
-                let message = from_daemon
-                    .recv()
-                    .context("the daemon exited during the editor session")?;
+                let Ok(message) = from_daemon.recv() else {
+                    return Err(daemon_gone(daemon_pid));
+                };
                 to_editor
                     .send(with_null_result(message))
                     .context("the editor connection closed")?;
@@ -832,7 +833,9 @@ fn proxy_messages(editor: &Connection, daemon: Connection) -> Result<()> {
             recv(editor.receiver) -> message => {
                 let message = message.context("the editor connection closed")?;
                 let exiting = matches!(&message, Message::Notification(notification) if notification.method == "exit");
-                to_daemon.send(message).context("the daemon exited during the editor session")?;
+                if to_daemon.send(message).is_err() {
+                    return Err(daemon_gone(daemon_pid));
+                }
                 if exiting {
                     return Ok(());
                 }
@@ -841,6 +844,39 @@ fn proxy_messages(editor: &Connection, daemon: Connection) -> Result<()> {
                 return outcome.unwrap_or_else(|_| Err(anyhow::anyhow!("the proxy thread ended")));
             }
         }
+    }
+}
+
+/// The error for a daemon connection that ended during the editor session: the
+/// daemon exited, or it is still running and closed this connection.
+///
+/// A daemon that exits closes its sockets before the process is gone, so the process
+/// gets a short time to go. A zombie (an exited child not yet reaped) has exited.
+#[cfg(unix)]
+fn daemon_gone(pid: u32) -> anyhow::Error {
+    let running = || {
+        oxabl_daemon::registry::process_is_alive(pid)
+            && !std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|stat| {
+                    stat.rsplit_once(')')
+                        .map(|(_, rest)| rest.trim_start().starts_with('Z'))
+                })
+                .unwrap_or(false)
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    let mut alive = running();
+    while alive && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        alive = running();
+    }
+    if alive {
+        anyhow::anyhow!(
+            "the oxabl daemon (pid {pid}) closed the connection to this editor during the \
+             session; the daemon's stderr may say why"
+        )
+    } else {
+        anyhow::anyhow!("the daemon exited during the editor session (pid {pid})")
     }
 }
 

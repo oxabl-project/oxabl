@@ -455,17 +455,19 @@ pub struct ClientThreads {
 }
 
 impl ClientThreads {
-    /// Wait for both threads, so a response is not cut off by an early return.
+    /// Wait for the framing threads, so a response is not cut off by an early return.
     pub fn join(self) {
         self.threads.join();
     }
 
-    /// Close both socket directions, then wait for the framing threads.
+    /// Let the writer write the frames already sent (for a short time at most), then
+    /// close both socket directions and wait for the framing threads.
     ///
     /// Dropping the channel pair cannot wake a reader blocked on the socket. The
     /// control clone makes that read return, which lets both peers observe the
     /// disconnect and prevents a teardown deadlock.
     pub fn shutdown(mut self) {
+        self.threads.finish();
         if let Some(stream) = self.control.take() {
             let _ = stream.shutdown(Shutdown::Both);
         }
@@ -473,12 +475,12 @@ impl ClientThreads {
     }
 }
 
-/// Build a [`Connection`] over `stream`, with a reader and a writer thread.
+/// Build a [`Connection`] over `stream`, with its framing threads.
 ///
 /// This is the part the transport crate keeps to itself for TCP. `Message::read` and
 /// `Message::write` are public, and `Connection`'s channel fields are public, so the
-/// framing is reused rather than reimplemented — only the socket type differs. The
-/// reader never waits on the consumer; see [`transport`].
+/// framing is reused rather than reimplemented — only the socket type differs.
+/// Neither a read nor a send waits on the other side; see [`transport`].
 pub fn connection_over(stream: UnixStream) -> (Connection, ClientThreads) {
     let (write_half, control, overflow) =
         match (stream.try_clone(), stream.try_clone(), stream.try_clone()) {
@@ -488,10 +490,11 @@ pub fn connection_over(stream: UnixStream) -> (Connection, ClientThreads) {
             // rather than panicking a thread that is holding no lock.
             _ => return closed_connection(),
         };
-    let close = move || {
+    let peer = peer_name(&stream);
+    let close: transport::Close = Arc::new(move || {
         let _ = overflow.shutdown(Shutdown::Both);
-    };
-    match transport::spawn(stream, write_half, close) {
+    });
+    match transport::spawn(stream, write_half, transport::Outbound::Queued, close, peer) {
         Ok((connection, threads)) => (
             connection,
             ClientThreads {
@@ -503,6 +506,16 @@ pub fn connection_over(stream: UnixStream) -> (Connection, ClientThreads) {
     }
 }
 
+/// The process at the other end of `stream`, for a log line.
+fn peer_name(stream: &UnixStream) -> String {
+    #[cfg(target_os = "linux")]
+    if let Ok(credentials) = rustix::net::sockopt::socket_peercred(stream) {
+        return format!("the peer with pid {}", credentials.pid.as_raw_nonzero());
+    }
+    let _ = stream;
+    "a peer whose pid is not known".to_string()
+}
+
 /// A connection whose channels are already closed, for the unserveable stream above.
 fn closed_connection() -> (Connection, ClientThreads) {
     let (sender, _dead_rx) = bounded(0);
@@ -510,10 +523,7 @@ fn closed_connection() -> (Connection, ClientThreads) {
     (
         Connection { sender, receiver },
         ClientThreads {
-            threads: transport::Threads {
-                reader: thread::spawn(|| {}),
-                writer: thread::spawn(|| {}),
-            },
+            threads: transport::Threads::ended(),
             control: None,
         },
     )
