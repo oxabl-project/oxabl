@@ -1357,3 +1357,42 @@ fn a_create_that_fails_at_the_end_of_the_text_has_its_error_at_the_create() {
         run.json()["diagnostics"]
     );
 }
+
+/// A Prolint suppression at class level expands to nothing.
+const SUPPRESSED_BASE: &str = "CLASS app.Named:\n\
+                               {&_proparse_ prolint-nowarn(varusage)}\n\
+                               DEFINE PRIVATE VARIABLE v AS INTEGER NO-UNDO.\n\
+                               METHOD PUBLIC CHARACTER GetName():\n\
+                               RETURN \"\".\n\
+                               END METHOD.\n\
+                               END CLASS.\n";
+
+const SUPPRESSED_CHILD: &str = "CLASS app.NamedChild INHERITS app.Named:\nEND CLASS.\n";
+
+const SUPPRESSED_USER: &str = "DEFINE VARIABLE o AS app.NamedChild NO-UNDO.\n\
+                               DEFINE VARIABLE i AS INTEGER NO-UNDO.\n\
+                               i = o:GetName().\n";
+
+#[test]
+fn a_preprocessor_reference_in_a_class_keeps_the_type_of_its_inherited_method() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("app/Named.cls"), SUPPRESSED_BASE);
+    write(&tmp.path().join("app/NamedChild.cls"), SUPPRESSED_CHILD);
+    let user = tmp.path().join("user.p");
+    write(&user, SUPPRESSED_USER);
+    let run = check([
+        Path::new("--no-format").as_os_str(),
+        Path::new("-I").as_os_str(),
+        tmp.path().as_os_str(),
+        user.as_os_str(),
+    ]);
+    assert!(
+        run.stdout.contains("LINT0004")
+            && run
+                .stdout
+                .contains("cannot assign `CHARACTER` to `INTEGER`"),
+        "the type mismatch is found: {}\n{}",
+        run.stdout,
+        run.stderr
+    );
+}
