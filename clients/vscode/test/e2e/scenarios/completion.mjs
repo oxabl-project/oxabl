@@ -106,6 +106,40 @@ export async function completion(ctx) {
       lines.some((l) => l.includes("do transaction on error undo, throw:")),
       `lines: ${lines.join(" | ")}`,
     );
+
+    // 3. A `.` that ends a statement opens the field list with no row selected, so Enter writes
+    // a new line and not a field name (`editor.suggest.selectionMode` of the `[abl]` defaults).
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Control+A");
+    await page.keyboard.press("Delete");
+    await page.keyboard.type(FILES["main.p"]);
+    await page.keyboard.press("Control+End");
+    await page.keyboard.type("display Customer");
+    await sleep(500);
+    let shown = false;
+    // The list opens from the trigger character alone; type it again until the server answers.
+    for (let attempt = 0; attempt < 10 && !shown; attempt++) {
+      await page.keyboard.type(".");
+      shown = await waitFor(
+        "CustNum after the trigger character",
+        async () => (await rowTexts(page)).some((t) => t.startsWith("CustNum")),
+        { timeout: 3_000, interval: 200 },
+      ).then(
+        () => true,
+        () => false,
+      );
+      if (!shown) await page.keyboard.press("Backspace");
+    }
+    check(`${name}: typing display Customer. shows the fields`, shown, `rows: ${(await rowTexts(page)).join(" | ")}`);
+    await page.keyboard.press("Enter");
+    await sleep(500);
+    const after = await visible(page);
+    check(
+      `${name}: Enter after the trigger character writes a new line, not a field`,
+      after.some((l) => l.trimEnd() === "display Customer.") && !after.some((l) => /Customer\.\w/.test(l)),
+      `lines: ${after.join(" | ")}`,
+    );
+    await screenshot(page, `${name}-trigger-enter`);
   } finally {
     await vs.close();
     await sleep(1500);

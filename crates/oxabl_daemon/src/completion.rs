@@ -17,13 +17,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use oxabl_pipeline::completion::{
-    CompletionBase, CompletionList, CompletionRequest, complete, keyword_documentation,
-    symbol_documentation, wants_base,
+    CompletionBase, CompletionList, CompletionRequest, DirListing, complete, keyword_documentation,
+    path_documentation, sorted_listing, symbol_documentation, table_documentation, wants_base,
 };
 use oxabl_pipeline::{Expansion, LintPipeline, Navigation, NavigationModel};
-use oxabl_workspace::FileSystem;
+use oxabl_workspace::{DirEntry, FileSystem};
 
 use crate::db::{AnalysisConfig, OverlayFs, spelled_as_expanded};
 use crate::session::canonical_path;
@@ -71,10 +72,79 @@ struct Slot {
     refreshing: Option<u64>,
 }
 
+/// How long a directory listing of `RUN` and `{` is kept. A request comes at
+/// each key, and the same directory is listed for each. A file event drops
+/// the listings it changes at once; a change with no event (a directory, or
+/// a file the client does not watch) shows after this.
+const LISTING_TTL: Duration = Duration::from_secs(3);
+
+/// The most directory listings kept.
+const MAX_LISTINGS: usize = 256;
+
+/// The directory listings of the recent requests, each kept for
+/// [`LISTING_TTL`].
+#[derive(Default)]
+struct Listings(Mutex<ListingMap>);
+
+#[derive(Default)]
+struct ListingMap {
+    /// Counts the drops, so a listing that a drop overtook is not kept.
+    epoch: u64,
+    listed: HashMap<PathBuf, Listed>,
+}
+
+/// When a directory was listed, and its entries (`None`: it cannot be listed).
+type Listed = (Instant, Option<Arc<[DirEntry]>>);
+
+/// A [`DirListing`] that reads [`Listings`] before the file system.
+struct CachedListing<'c> {
+    fs: &'c dyn FileSystem,
+    cache: &'c Listings,
+}
+
+impl DirListing for CachedListing<'_> {
+    fn list(&self, dir: &Path) -> Option<Arc<[DirEntry]>> {
+        let now = Instant::now();
+        let epoch;
+        {
+            let mut cache = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
+            match cache.listed.get(dir) {
+                Some((at, listing)) if now.duration_since(*at) < LISTING_TTL => {
+                    return listing.clone();
+                }
+                // Freed when found expired.
+                Some(_) => {
+                    cache.listed.remove(dir);
+                }
+                None => {}
+            }
+            epoch = cache.epoch;
+        }
+        // Listed with no lock held: a slow directory does not stop the others.
+        let listing = sorted_listing(self.fs, dir);
+        let mut cache = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.epoch != epoch {
+            return listing;
+        }
+        // Every insert frees the other listings that expired.
+        cache
+            .listed
+            .retain(|_, (at, _)| now.duration_since(*at) < LISTING_TTL);
+        if cache.listed.len() >= MAX_LISTINGS {
+            cache.listed.clear();
+        }
+        cache
+            .listed
+            .insert(dir.to_path_buf(), (now, listing.clone()));
+        listing
+    }
+}
+
 /// The completion bases of one session.
 #[derive(Default)]
 pub struct Bases {
     slots: Mutex<HashMap<BaseKey, Slot>>,
+    listings: Listings,
     /// Numbers the bases in the order their analysis started.
     sequence: AtomicU64,
 }
@@ -94,9 +164,25 @@ impl Bases {
         self.slots().retain(|key, _| key.document != document);
     }
 
-    /// Drop every base: the configuration or the schema changed.
+    /// Drop the directory listings that a change of `paths` makes wrong: the
+    /// listing of the directory that holds each path, and the listings
+    /// of the directories under it.
+    pub fn forget_listings(&self, paths: &[PathBuf]) {
+        let mut cache = self.listings.0.lock().unwrap_or_else(|e| e.into_inner());
+        cache.epoch += 1;
+        cache.listed.retain(|dir, _| {
+            !paths
+                .iter()
+                .any(|path| dir.starts_with(path) || path.parent() == Some(dir.as_path()))
+        });
+    }
+
+    /// Drop every base and listing: the configuration or the schema changed.
     pub fn clear(&self) {
         self.slots().clear();
+        let mut cache = self.listings.0.lock().unwrap_or_else(|e| e.into_inner());
+        cache.epoch += 1;
+        cache.listed.clear();
     }
 
     /// The newest base of `key` that was made under `generation`.
@@ -204,7 +290,11 @@ pub fn compute_completion(
     bases: &Arc<Bases>,
     query: &CompletionQuery,
 ) -> Result<CompletionAnswer, String> {
-    fn request<'q>(query: &'q CompletionQuery, path: &'q Path) -> CompletionRequest<'q> {
+    fn request<'q>(
+        query: &'q CompletionQuery,
+        path: &'q Path,
+        listing: &'q dyn DirListing,
+    ) -> CompletionRequest<'q> {
         CompletionRequest {
             text: &query.text,
             offset: query.offset,
@@ -212,13 +302,20 @@ pub fn compute_completion(
             keyword_case: query.config.pipeline.style.keyword_case,
             snippets: query.snippets,
             trigger: query.trigger,
+            config: &query.config.pipeline,
+            listing,
         }
     }
-    // A position that asks for nothing needs no base: a `.` that ends a
-    // statement must not start an analysis.
-    if !wants_base(&request(query, &query.path)) {
+    let listing = CachedListing {
+        fs: &*query.config.fs,
+        cache: &bases.listings,
+    };
+    let listing: &dyn DirListing = &listing;
+    // A position that reads no analysis needs no base: a `.` that ends a
+    // statement must not start one.
+    if !wants_base(&request(query, &query.path, listing)) {
         return Ok(CompletionAnswer {
-            list: None,
+            list: complete(&request(query, &query.path, listing), None),
             base: 0,
         });
     }
@@ -230,7 +327,7 @@ pub fn compute_completion(
         let list = match query.key.root {
             // The root no longer reads the include: no list.
             Some(_) => None,
-            None => complete(&request(query, &query.path), None),
+            None => complete(&request(query, &query.path, listing), None),
         };
         return Ok(CompletionAnswer { list, base: 0 });
     };
@@ -246,7 +343,7 @@ pub fn compute_completion(
             fragment,
             stale,
         };
-        complete(&request(query, &document), Some(&completion))
+        complete(&request(query, &document, listing), Some(&completion))
     })
     .flatten();
     Ok(CompletionAnswer {
@@ -297,7 +394,7 @@ fn make_own_base(
     id: u64,
     generation: (u64, u32),
 ) -> Option<Base> {
-    let run = config.lint_pipeline();
+    let run = config.lint_pipeline().with_define_record(true);
     let handle = run.with_file(path);
     let expansion = handle.expand(&text);
     let model = handle.navigation_model(&expansion)?;
@@ -446,7 +543,8 @@ fn make_context_base(
     let root_text = fs.read(root).ok()?;
     let run = LintPipeline::new(&config.pipeline, &fs)
         .with_preprocess(config.preprocess)
-        .with_branch_tracking(true);
+        .with_branch_tracking(true)
+        .with_define_record(true);
     let handle = run.with_file(root);
     let expansion = handle.expand(&root_text);
     if !reads(&expansion, path) {
@@ -485,16 +583,24 @@ fn with_base<T>(base: &Base, answer: impl FnOnce(&Navigation<'_, '_>) -> T) -> O
 }
 
 /// What `completionItem/resolve` asks for one item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveQuery {
     /// An entry of the keyword documentation index.
     Doc(u16),
     /// A symbol of base `base`.
     Symbol { base: u64, symbol: u32 },
+    /// A table of the schema of base `base`, by its raw id.
+    Table { base: u64, table: u32 },
+    /// Field `field` of a table of the schema of base `base`.
+    Field { base: u64, table: u32, field: u32 },
+    /// A program or include file, as the item writes it, under an include
+    /// path entry.
+    Path { path: String, entry: PathBuf },
 }
 
 /// The Markdown documentation of an item. `None` when there is none, or the
-/// base of a symbol is no longer kept. Unguarded: run it inside a panic guard.
+/// base of a symbol or a table is no longer kept. Unguarded: run it inside a
+/// panic guard.
 pub fn compute_resolve(bases: &Bases, query: ResolveQuery) -> Option<String> {
     match query {
         ResolveQuery::Doc(doc) => keyword_documentation(doc),
@@ -502,6 +608,15 @@ pub fn compute_resolve(bases: &Bases, query: ResolveQuery) -> Option<String> {
             let base = bases.by_id(base)?;
             with_base(&base, |navigation| symbol_documentation(navigation, symbol)).flatten()
         }
+        ResolveQuery::Table { base, table } => {
+            let base = bases.by_id(base)?;
+            table_documentation(&base.config.pipeline.schema, table, None)
+        }
+        ResolveQuery::Field { base, table, field } => {
+            let base = bases.by_id(base)?;
+            table_documentation(&base.config.pipeline.schema, table, Some(field))
+        }
+        ResolveQuery::Path { path, entry } => Some(path_documentation(&path, &entry)),
     }
 }
 

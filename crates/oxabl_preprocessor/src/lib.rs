@@ -5,9 +5,9 @@ mod var_table;
 
 pub use preprocessor::{MAX_INCLUDE_DEPTH, Preprocessor};
 pub use span_tree::{
-    BranchDirective, BranchState, ElidedKind, ElidedReference, IfBranch, PreprocessedFile,
-    ResolvedInclude, SkippedBranch, SkippedInclude, SkippedText, SpanNode, TextLoss, TextLossKind,
-    UnreadableInclude, UnresolvedInclude,
+    BranchDirective, BranchState, DefineDirective, DefineSite, ElidedKind, ElidedReference,
+    IfBranch, IncludeArguments, PreprocessedFile, ResolvedInclude, SkippedBranch, SkippedInclude,
+    SkippedText, SpanNode, TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
 };
 pub use var_table::PreprocVarTable;
 // Re-exported so a caller can describe the compile environment without also

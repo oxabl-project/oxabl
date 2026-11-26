@@ -71,16 +71,25 @@ statements that are valid in the scope at the cursor, the snippets of the VS Cod
 where their body is valid (only for a client with `snippetSupport`), and the names in scope.
 After `DEFINE` it holds the modifiers that may still come and what `DEFINE` defines. In an
 expression it holds the names in scope and the built-in functions, with the names whose type
-fits an assignment first. Keywords are in the case of `keyword_case`; `Preserve` follows the
+fits an assignment first. After `FIND FIRST`, `FOR EACH`, `CREATE` and the other record
+positions it holds the buffers, temp-tables and tables. After `Customer.` it holds the fields of
+the record, with type and format; after a database name (the file name of its `.df`), its
+tables. In a `WHERE` the fields of the statement's records come first, with their record
+when another record in reach has a field of that name. After `RUN` it holds the
+internal procedures and the programs and directories on the include path; after `{` the
+include files and, in an include of a selected root, its arguments; after `{&` the
+preprocessor names that are defined at the cursor. Keywords are in the case of `keyword_case`; `Preserve` follows the
 typed word, then the nearest keyword before it, then upper case. Where oxabl does not know the
 context (a comment, a string, right after a statement end, a keyword option in the middle of a
 statement) the answer is `null`. A list that can miss items has `isIncomplete: true`: a stale
-analysis, a parse error before the statement, an include analysed alone, a cut list.
+analysis, a parse error before the statement, an include analysed alone, a cut list, no schema
+or no include path, a directory that cannot be listed.
 
 A request never waits for an analysis once the document has one: it reads the newest analysis
 and maps the cursor into it, and a newer analysis is made in the background. A request that a
 newer one replaced before it started, or that the client cancelled, answers `RequestCanceled`.
-Resolve adds Markdown documentation: the keyword's page, or the hover of a name's declaration.
+Resolve adds Markdown documentation: the keyword's page, the hover of a name's declaration, the
+schema text of a table or field, or the path of a program or include file.
 See `docs/design/completion.md`.
 
 ## Database inlay hints
