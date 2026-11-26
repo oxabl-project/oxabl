@@ -359,7 +359,9 @@ impl Listener {
                     // would be the flood the daemon is already under.
                     if !reported_spawn_failure {
                         reported_spawn_failure = true;
-                        eprintln!(
+                        use std::io::Write as _;
+                        let _ = writeln!(
+                            std::io::stderr(),
                             "oxabl daemon: refusing a client on {} because a thread \
                              could not be started ({error}). Still serving the clients \
                              already connected; raise the process or thread limit.",

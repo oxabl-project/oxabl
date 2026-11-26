@@ -200,6 +200,30 @@ pub const TEST_HOLD_MARKER: &str = "OXABL-TEST-HOLD";
 /// `OXABL-TEST-LIMIT@<ms>` in the text the caller passes to [`injected_limit`].
 pub const TEST_LIMIT_MARKER: &str = "OXABL-TEST-LIMIT";
 
+/// The marker that ends the process with `abort` at a site, as a stack overflow does
+/// and no panic guard can stop: `OXABL-TEST-ABORT:<site>` in the source.
+pub const TEST_ABORT_MARKER: &str = "OXABL-TEST-ABORT";
+
+/// Write 512 KiB of filler and then a line to stderr, and abort the process, when
+/// `source` carries this `site`'s [`TEST_ABORT_MARKER`]. The filler fills the pipes
+/// on the way to a slow reader, so a copy that is behind loses the last line. A
+/// no-op without the test-only `test-panics` feature.
+#[inline]
+pub fn abort_if_injected(site: &str, source: &str) {
+    #[cfg(feature = "test-panics")]
+    if source.contains(&format!("{TEST_ABORT_MARKER}:{site}")) {
+        let filler = format!("{}\n", "-".repeat(1023));
+        for _ in 0..512 {
+            eprint!("{filler}");
+        }
+        eprintln!("injected test abort at {site}");
+        std::process::abort();
+    }
+
+    #[cfg(not(feature = "test-panics"))]
+    let _ = (site, source);
+}
+
 /// The limit that `source` asks for with [`TEST_LIMIT_MARKER`], in test builds only.
 /// Always `None` unless the test-only `test-panics` feature is enabled.
 #[inline]

@@ -579,7 +579,11 @@ fn freshness(
             .spawn(move || {
                 let _busy = busy;
                 if let Err(error) = run_claimed_workspace_pass(&host, &root, progress) {
-                    eprintln!("oxabl daemon: workspace pass failed: {error}");
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "oxabl daemon: workspace pass failed: {error}"
+                    );
                 }
             })
             .map_err(MethodError::internal)?;

@@ -200,6 +200,32 @@ impl Session {
         self.stops_daemon = false;
     }
 
+    /// Read the stderr pipe of a session started with [`Launch::stderr_pipe`] until
+    /// every writer has closed it or `limit` has passed, 4 KiB every 10 ms, as a slow
+    /// reader does.
+    pub fn read_stderr_slowly(&mut self, limit: Duration) -> String {
+        let mut pipe = self
+            .stderr_pipe
+            .take()
+            .expect("a session with a stderr pipe");
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = pipe.read(&mut chunk) {
+                if n == 0 || tx.send(chunk[..n].to_vec()).is_err() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let deadline = Instant::now() + limit;
+        let mut text = Vec::new();
+        while let Ok(bytes) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            text.extend_from_slice(&bytes);
+        }
+        String::from_utf8_lossy(&text).into_owned()
+    }
+
     /// What `oxabl lsp` and its daemon wrote to stderr so far.
     pub fn stderr(&self) -> String {
         std::fs::read_to_string(&self.stderr).unwrap_or_default()

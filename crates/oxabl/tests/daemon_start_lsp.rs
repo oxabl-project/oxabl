@@ -331,24 +331,34 @@ fn a_daemon_that_exits_while_its_registration_is_unreadable_is_reported_at_once(
         assert!(Instant::now() < deadline, "the daemon binds its socket");
         std::thread::sleep(Duration::from_millis(20));
     }
-    // The daemon holds for 4 s from about now, then exits.
-    let bound = Instant::now();
     let directory = socket.parent().unwrap();
     std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
     let changed = started.elapsed();
 
+    // The daemon holds for 4 s, then writes its panic and exits. The time is measured
+    // from that line, so a slow start of the daemon does not count.
+    let deadline = Instant::now() + Duration::from_secs(40);
+    while !session.stderr().contains("injected test panic") {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon panics: {}",
+            session.stderr()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let panicked = Instant::now();
     let status = session.wait_exit(Duration::from_secs(40));
-    let ended = bound.elapsed();
+    let ended = panicked.elapsed();
     let stderr = session.stderr();
     assert!(
         changed < Duration::from_secs(3),
         "the test changed the directory {changed:?} after the start, too late to test it"
     );
     assert!(status.is_some_and(|status| !status.success()), "{stderr}");
-    // A wait that missed the exit would go on for 2 s more after it.
+    // A wait that missed the exit goes on for 2 s or more after it.
     assert!(
-        ended < Duration::from_millis(5500),
-        "`oxabl lsp` ended {ended:?} after the daemon bound its socket, not at its exit"
+        ended < Duration::from_millis(1500),
+        "`oxabl lsp` ended {ended:?} after the daemon wrote its panic, not at its exit"
     );
     let verdict = stderr
         .lines()
@@ -450,6 +460,21 @@ fn a_restarted_daemon_outlives_the_client_that_started_it() {
     let _daemon = KillOnDrop(pid);
     first.end_client();
     drop(first);
+    // The daemon sees that the reader of its stderr has gone and writes to
+    // `/dev/null` from then on.
+    #[cfg(target_os = "linux")]
+    {
+        let fd = format!("/proc/{pid}/fd/2");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::fs::read_link(&fd).ok() != Some("/dev/null".into()) {
+            assert!(
+                Instant::now() < deadline,
+                "the daemon moves its stderr to /dev/null: {:?}",
+                std::fs::read_link(&fd)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 
     let (mut second, _) =
         Session::launch_with(&root, json!({}), launch(), |_| {}).await_initialize();
@@ -481,4 +506,36 @@ fn a_restarted_daemon_outlives_the_client_that_started_it() {
         "client B is still served after the daemon wrote to a closed stderr: {answer}"
     );
     assert!(alive(pid), "the daemon still runs");
+}
+
+/// A daemon that aborts, as on a stack overflow that no panic guard can stop, still
+/// gets its last line to the editor's log, also when the editor reads slowly: stderr
+/// is written at once, not through a copy that the abort ends.
+#[test]
+fn the_last_line_of_a_daemon_that_aborts_reaches_the_editor() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = workspace(parent.path(), "ws");
+    let launch = Launch {
+        stderr_pipe: true,
+        ..Launch::default()
+    };
+    let (mut session, _) =
+        Session::launch_with(&root, json!({}), launch, |_| {}).await_initialize();
+    let path = root.join("aborts.p");
+    session.open(
+        &path,
+        &format!("/* OXABL-TEST-ABORT:lsp.diagnostics */\n{MAIN}"),
+    );
+    let stderr = session.read_stderr_slowly(Duration::from_secs(30));
+    let status = session.wait_exit(Duration::from_secs(10));
+    let tail = &stderr[stderr.len().saturating_sub(400)..];
+    assert!(
+        status.is_some_and(|status| !status.success()),
+        "`oxabl lsp` ends when its daemon aborts: {tail}"
+    );
+    assert!(
+        stderr.contains("injected test abort at lsp.diagnostics"),
+        "the last line of the daemon reaches the editor ({} bytes read): {tail}",
+        stderr.len()
+    );
 }

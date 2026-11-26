@@ -952,15 +952,11 @@ fn run_daemon(
             return ExitCode::FAILURE;
         }
     };
-    // From here the daemon may outlive the process that started it and holds its
-    // stderr. A start failure above is still written directly, so it is never lost.
-    let _stderr = match oxabl_daemon::stderr::StderrGuard::install() {
-        Ok(guard) => Some(guard),
-        Err(error) => {
-            eprintln!("oxabl daemon: stderr is not guarded against a closed reader: {error}");
-            None
-        }
-    };
+    // From here the daemon may outlive the process that started it and reads its
+    // stderr.
+    if let Err(error) = oxabl_daemon::stderr::watch() {
+        eprintln!("oxabl daemon: stderr is not watched for a closed reader: {error}");
+    }
     listener.set_idle_timeout(idle_timeout);
     let dispatch = std::sync::Arc::new(oxabl_daemon::default_dispatch());
     let host = std::sync::Arc::new(oxabl_daemon::SessionHost::new());
@@ -977,7 +973,12 @@ fn run_daemon(
                         request,
                         host.clone(),
                     ) {
-                        eprintln!("oxabl daemon: LSP client failed: {error}");
+                        use std::io::Write as _;
+                        // A closed stderr must not end the other clients' sessions.
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "oxabl daemon: LSP client failed: {error}"
+                        );
                     }
                 }
                 first => {
