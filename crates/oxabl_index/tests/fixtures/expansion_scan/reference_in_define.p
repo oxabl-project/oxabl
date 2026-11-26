@@ -1,0 +1,3 @@
+&SCOPED-DEFINE kind INTEGER
+DEFINE VARIABLE x AS {&kind} NO-UNDO.
+x = 1.

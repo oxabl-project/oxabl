@@ -349,6 +349,27 @@ python3 -I scripts/bench/callgrind_summary.py target/check.out      # the summar
 
 To count only one stage, use `--toggle-collect='*parse_program*'`.
 
+## Guards in test builds
+
+A cost that came back is hard to see in a bench, so a test build of `oxabl`
+counts it and a black-box test reads the count. A shipped build counts
+nothing. Each test runs small inputs and wants a count that does not grow with
+the work.
+
+| Count | Where | Printed when | Test |
+| --- | --- | --- | --- |
+| line tables built (`SourceMap::built`) | `oxabl_common`, feature `test-panics` | `OXABL_TEST_SOURCE_MAPS` is set | `crates/oxabl/tests/check_source_maps.rs` |
+| calls of `parse_program` (`parse_count`) | `oxabl_parser`, feature `test-counters` | `OXABL_TEST_PARSES` is set | `crates/oxabl/tests/check_producer_prefilter.rs` |
+
+`check_producer_prefilter.rs` runs `oxabl check` over 3 and 6 roots of one
+shape and reads the parses of one more root. A class root costs 1 parse (the
+lint of its expanded unit). A procedure root with an include costs 2: the
+lint, and the producer scan, which must know if the text as written parses.
+The producer scan reads a class or interface header from the tokens
+(`oxabl_index::expansion_scan`). It cannot read more from them: an include, a
+reference or a directive can mend a text that does not parse as written, and
+the scan must then send the file to its expansion.
+
 ## CodSpeed
 
 The job `codspeed` uses the Simulation instrument: it runs each bench one time

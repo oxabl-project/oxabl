@@ -1,0 +1,2 @@
+DEFINE VARIABLE {1} AS {2} NO-UNDO.
+{1} = {3}.
