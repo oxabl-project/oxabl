@@ -257,6 +257,23 @@ impl Session {
         self.stdin.flush().unwrap();
     }
 
+    /// Write `messages` from another thread, without waiting for any answer, as an
+    /// editor does. A server that stops reading its input then cannot stop the
+    /// test, which still reads the answers with its own time limit.
+    pub fn send_detached(&mut self, messages: Vec<Value>) -> thread::JoinHandle<()> {
+        use std::os::fd::AsFd;
+        let mut input = std::fs::File::from(self.stdin.as_fd().try_clone_to_owned().unwrap());
+        thread::spawn(move || {
+            for message in messages {
+                let body = message.to_string();
+                let frame = format!("Content-Length: {}\r\n\r\n{body}", body.len());
+                if input.write_all(frame.as_bytes()).is_err() {
+                    return;
+                }
+            }
+        })
+    }
+
     pub fn open(&mut self, path: &Path, text: &str) {
         self.send(json!({
             "jsonrpc": "2.0", "method": "textDocument/didOpen",
