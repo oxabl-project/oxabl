@@ -10,15 +10,14 @@
 
 #![cfg(unix)]
 
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
 
-use oxabl_daemon_protocol::{Registration, canonical_root, registration_path_in};
 use serde_json::{Value, json};
+use session::{Session, file_uri, is_running};
+
+#[path = "lsp/session.rs"]
+mod session;
 
 const OXABL_BIN: &str = env!("CARGO_BIN_EXE_oxabl");
 
@@ -226,161 +225,16 @@ fn check_analyses_a_nest_just_under_the_limits() {
     }
 }
 
-/// One `oxabl lsp` session over pipes, with its daemon under a private runtime
-/// directory.
-struct Session {
-    child: Child,
-    stdin: ChildStdin,
-    messages: mpsc::Receiver<Value>,
-    registration: PathBuf,
-    _base: tempfile::TempDir,
-}
-
-impl Session {
-    fn start(root: &Path) -> Session {
-        let base = tempfile::tempdir().unwrap();
-        let registration = registration_path_in(
-            &base.path().join("oxabl").join("daemon"),
-            &canonical_root(root).unwrap(),
-        );
-        // No core dump from a daemon that crashes: it inherits the limit.
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(r#"ulimit -c 0 && exec "$@""#)
-            .arg("sh")
-            .arg(OXABL_BIN)
-            .arg("lsp")
-            .env("XDG_RUNTIME_DIR", base.path())
-            .env("XDG_CACHE_HOME", base.path())
-            .env("HOME", base.path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let stdin = child.stdin.take().unwrap();
-        let mut stdout = child.stdout.take().unwrap();
-        let (tx, messages) = mpsc::channel();
-        thread::spawn(move || {
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 8192];
-            while let Ok(n) = stdout.read(&mut chunk) {
-                if n == 0 {
-                    return;
-                }
-                buf.extend_from_slice(&chunk[..n]);
-                while let Some((body, used)) = take_message(&buf) {
-                    buf.drain(..used);
-                    if tx.send(body).is_err() {
-                        return;
-                    }
-                }
-            }
-        });
-        let mut session = Session {
-            child,
-            stdin,
-            messages,
-            registration,
-            _base: base,
-        };
-        session.send(json!({
-            "jsonrpc": "2.0", "id": 0, "method": "initialize",
-            "params": {
-                "processId": null,
-                "rootUri": format!("file://{}", root.display()),
-                "capabilities": {}
-            }
-        }));
-        session.wait_for(|m| m["id"] == json!(0));
-        session.send(json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}));
-        session
-    }
-
-    fn send(&mut self, message: Value) {
-        let body = message.to_string();
-        write!(self.stdin, "Content-Length: {}\r\n\r\n{body}", body.len()).unwrap();
-        self.stdin.flush().unwrap();
-    }
-
-    fn open(&mut self, path: &Path, text: &str) {
-        self.send(json!({
-            "jsonrpc": "2.0", "method": "textDocument/didOpen",
-            "params": {"textDocument": {
-                "uri": format!("file://{}", path.display()),
-                "languageId": "abl", "version": 1, "text": text
-            }}
-        }));
-    }
-
-    fn wait_for(&self, wanted: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match self.messages.recv_timeout(left) {
-                Ok(message) if wanted(&message) => return message,
-                Ok(_) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    panic!("no awaited message from `oxabl lsp` in 60 s")
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    panic!("`oxabl lsp` closed its output: the session or its daemon died")
-                }
-            }
-        }
-    }
-
-    /// The diagnostics published for `path`.
-    fn diagnostics(&self, path: &Path) -> Vec<Value> {
-        let uri = format!("file://{}", path.display());
-        let published = self.wait_for(|m| {
-            m["method"] == json!("textDocument/publishDiagnostics") && m["params"]["uri"] == uri
-        });
-        published["params"]["diagnostics"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    fn daemon_pid(&self) -> u32 {
-        let registration: Registration =
-            serde_json::from_slice(&std::fs::read(&self.registration).unwrap()).unwrap();
-        registration.pid
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        if let Ok(bytes) = std::fs::read(&self.registration)
-            && let Ok(registration) = serde_json::from_slice::<Registration>(&bytes)
-        {
-            signal(registration.pid, 15);
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn signal(pid: u32, signal: i32) -> i32 {
-    unsafe extern "C" {
-        fn kill(pid: i32, signal: i32) -> i32;
-    }
-    // Only the daemon registered under the test's private runtime directory.
-    unsafe { kill(pid as i32, signal) }
-}
-
-fn take_message(buf: &[u8]) -> Option<(Value, usize)> {
-    let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
-    let header = std::str::from_utf8(&buf[..header_end]).ok()?;
-    let length: usize = header
-        .split("\r\n")
-        .find_map(|line| line.strip_prefix("Content-Length:"))?
-        .trim()
-        .parse()
-        .ok()?;
-    let end = header_end + 4 + length;
-    let body = buf.get(header_end + 4..end)?;
-    Some((serde_json::from_slice(body).ok()?, end))
+/// The diagnostics published for `path`.
+fn diagnostics(session: &Session, path: &Path) -> Vec<Value> {
+    let uri = file_uri(path);
+    let published = session.wait_for(|m| {
+        m["method"] == json!("textDocument/publishDiagnostics") && m["params"]["uri"] == uri
+    });
+    published["params"]["diagnostics"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn messages_of(diagnostics: &[Value]) -> Vec<String> {
@@ -405,7 +259,7 @@ fn the_daemon_survives_a_deep_document_and_one_just_under_the_limit() {
         &deep,
         &format!("{}MESSAGE 1.\n", "IF TRUE THEN ".repeat(5000)),
     );
-    let messages = messages_of(&session.diagnostics(&deep));
+    let messages = messages_of(&diagnostics(&session, &deep));
     assert!(
         messages.iter().any(|m| m.contains(DEPTH_ERROR)),
         "expected the nesting error, got {messages:?}"
@@ -421,15 +275,14 @@ fn the_daemon_survives_a_deep_document_and_one_just_under_the_limit() {
             "END.\n".repeat(250)
         ),
     );
-    let messages = messages_of(&session.diagnostics(&under));
+    let messages = messages_of(&diagnostics(&session, &under));
     assert!(
         !messages.iter().any(|m| m.contains(DEPTH_ERROR)),
         "a nest under the limit was refused: {messages:?}"
     );
 
-    assert_eq!(
-        signal(session.daemon_pid(), 0),
-        0,
+    assert!(
+        session.daemon_pid().is_some_and(is_running),
         "the daemon is gone after the deep documents"
     );
 }
