@@ -193,6 +193,7 @@ Generates:
 - To reproduce one failed CI job, run that job: `cargo xtask ci <job>`.
 - `cargo xtask ci --changed --list` prints the jobs that the changed paths select; CI uses it to pick the jobs of a pull request. `--lint-only` keeps only the lint jobs.
 - Rebase onto `origin/master` once, when the work is done. Do not update an open pull request because another one merged.
+- After a rebase with a conflict, run `cargo xtask lost-content ORIG_HEAD HEAD [--base origin/master]`. It prints each place where the new head removes words that the old head kept, and exits non-zero. Name each conflicted file in the report.
 - An agent opens the pull request and waits for its checks. An agent never merges and never puts a pull request in the merge queue.
 - The selection is in `xtask/src/changed.rs`. A file or directory of `crates/oxabl/tests/` must belong to exactly one area there (`AREAS`, or `SHARED`); a test in `xtask` fails when it has none or two. A new crate needs no entry: the areas follow the crate dependencies.
 - With no job names and no `--changed` it runs every job in order. A job stops at its first failed step. The run goes on with the next job. The summary lists each step as PASS, FAIL or SKIP with its time and its log under `target/xtask-ci/logs/`. The exit status is non-zero when any step failed or was skipped.
