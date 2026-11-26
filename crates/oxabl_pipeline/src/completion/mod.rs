@@ -15,23 +15,27 @@ mod case;
 mod context;
 mod keywords;
 mod names;
+mod paths;
 mod rank;
+mod records;
 mod snippets;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use oxabl_lexer::{Kind, Token};
 use oxabl_semantic::{ScopeId, ScopeKind};
 use oxabl_style::KeywordCase;
+use oxabl_workspace::{DirEntry, FileSystem};
 
-use crate::Navigation;
 use crate::keyword_docs::KEYWORD_DOCS;
+use crate::{Navigation, PipelineConfig};
 use base::Mapped;
 use case::Case;
 use context::{Context, Found};
 use keywords::{Keyword, Place};
 use names::Wanted;
-use rank::{Quality, nearness};
+use rank::{Quality, fit, nearness};
 
 /// The most items one answer holds. A longer list is cut after ranking and is
 /// incomplete.
@@ -53,6 +57,35 @@ pub struct CompletionRequest<'r> {
     /// The character the person typed that made the client ask, when it
     /// asked for that reason.
     pub trigger: Option<char>,
+    /// The configuration of the document: the include paths and the
+    /// extensions of `RUN`, and the schema when no base is read.
+    pub config: &'r PipelineConfig,
+    /// What lists the directories of the include paths.
+    pub listing: &'r dyn DirListing,
+}
+
+/// The entries of a directory, for the paths of `RUN` and `{`.
+pub trait DirListing {
+    /// The entries of `dir`, sorted by name; `None` when they cannot be
+    /// listed (as [`FileSystem::list_dir`]), never for an empty directory.
+    fn list(&self, dir: &Path) -> Option<Arc<[DirEntry]>>;
+}
+
+/// A [`DirListing`] that lists each directory through a file system when it
+/// is asked, with no cache.
+pub struct FreshListing<'f>(pub &'f dyn FileSystem);
+
+impl DirListing for FreshListing<'_> {
+    fn list(&self, dir: &Path) -> Option<Arc<[DirEntry]>> {
+        sorted_listing(self.0, dir)
+    }
+}
+
+/// The entries of `dir` that `fs` lists, sorted by name.
+pub fn sorted_listing(fs: &dyn FileSystem, dir: &Path) -> Option<Arc<[DirEntry]>> {
+    let mut entries = fs.list_dir(dir)?;
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Some(entries.into())
 }
 
 /// The analysis completion reads, with the text of the document it was made
@@ -126,13 +159,31 @@ pub enum ItemKind {
 }
 
 /// What resolve reads for an item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ItemData {
     None,
     /// An entry of the keyword documentation index.
     Doc(u16),
     /// A symbol of the base the item came from, by its raw id.
     Symbol(u32),
+    /// A table of the base's schema, by its raw id.
+    Table(u32),
+    /// Field `field` (its place in the table) of table `table` of the base's
+    /// schema.
+    Field {
+        table: u32,
+        field: u32,
+    },
+    /// A program or include file. Boxed, so the other items stay small.
+    Path(Box<PathData>),
+}
+
+/// A program or include file of an item: its path as the item writes it,
+/// and the include path entry it is under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathData {
+    pub path: String,
+    pub entry: PathBuf,
 }
 
 /// An item before it is ranked.
@@ -143,7 +194,8 @@ struct Candidate {
     insert: String,
     snippet: bool,
     data: ItemData,
-    fits: bool,
+    /// How well the item fits the place: [`fit`].
+    fit: u8,
     nearness: u8,
 }
 
@@ -157,7 +209,7 @@ impl Candidate {
             detail: keyword.title.map(str::to_string),
             snippet: false,
             data: keyword_doc(keyword).map_or(ItemData::None, ItemData::Doc),
-            fits: false,
+            fit: fit::OTHER,
             nearness: nearness::KEYWORD,
         }
     }
@@ -189,6 +241,29 @@ pub fn symbol_documentation(navigation: &Navigation<'_, '_>, symbol: u32) -> Opt
     navigation.symbol_hover(oxabl_semantic::SymbolId::new(symbol))
 }
 
+/// The documentation of table `table` (raw id) of `schema`, or of its field
+/// at place `field`, as hover shows them.
+pub fn table_documentation(
+    schema: &oxabl_schema::Schema,
+    table: u32,
+    field: Option<u32>,
+) -> Option<String> {
+    let table = schema.get_by_id(oxabl_schema::TableId::new(table))?;
+    Some(match field {
+        None => crate::schema_hover::table_markdown(table),
+        Some(at) => crate::schema_hover::field_markdown(table, table.fields.get(at as usize)?),
+    })
+}
+
+/// The documentation of a program or include file: its path relative to the
+/// include path entry `entry`.
+pub fn path_documentation(path: &str, entry: &Path) -> String {
+    format!(
+        "`{path}`\n\nIn the include path entry `{}`",
+        entry.display()
+    )
+}
+
 /// The items for `request`. `base` is the analysis of the document, `None`
 /// when none could be made. `None` when oxabl does not know what the cursor
 /// needs.
@@ -207,14 +282,22 @@ pub fn complete(
     }
     let word = &text[found.word_start as usize..cursor as usize];
     let case = Case::of(request.keyword_case, word, text, &tokens, found.before);
+    // Inside a `{...}` reference the cursor has no place of its own: the
+    // reference is where the text before it ends.
+    let (at, reference) = if found.context.in_reference() {
+        (found.window_start, true)
+    } else {
+        (cursor, false)
+    };
     let mapped = match base {
         Some(base) => Some(base::map(
             base,
             request.path,
             text,
             &tokens,
-            cursor,
+            at,
             found.window_start,
+            reference,
         )?),
         None => None,
     };
@@ -242,20 +325,34 @@ fn collector(context: &Context) -> Option<Collector> {
             Context::DefineKeywords { modifiers } => engine.define_keywords(modifiers),
             _ => None,
         },
-        Context::Values { .. } | Context::Where => |engine, _| engine.names(Wanted::Values),
+        Context::Values { .. } => |engine, _| engine.names(Wanted::Values),
+        Context::Where => |engine, _| engine.where_names(),
         Context::Records(_) => |engine, context| match context {
             Context::Records(after) => engine.names(Wanted::Records(*after)),
             _ => None,
         },
+        Context::Qualified { .. } => |engine, context| match context {
+            Context::Qualified {
+                qualifier,
+                after_record,
+            } => engine.qualified(*qualifier, *after_record),
+            _ => None,
+        },
+        Context::Run => |engine, _| engine.run_targets(),
+        Context::IncludeFiles => |engine, _| engine.include_files(),
+        Context::PreprocessorNames => |engine, _| engine.preprocessor_names(),
+        Context::IncludeArguments => |engine, _| engine.include_arguments(),
         // The other contexts have no collector yet.
         _ => return None,
     })
 }
 
-/// Whether `request` can have an answer, so the caller needs a base for it.
-/// False when the text at the cursor asks for nothing completion answers, or
-/// when the trigger character does not start the context: then the answer is
-/// `null` whatever the base, and the caller makes none.
+/// Whether the answer to `request` reads a base, so the caller needs one.
+/// False when the text at the cursor asks for nothing completion answers, when
+/// the trigger character does not start the context (the answer is `null`
+/// whatever the base), and when the context reads no analysis (the tables of a
+/// database after `FIND FIRST shop.`, the include files of a procedure file):
+/// then the caller makes no base and asks with none.
 pub fn wants_base(request: &CompletionRequest<'_>) -> bool {
     let text = request.text;
     let tokens = oxabl_lexer::tokenize(text);
@@ -265,6 +362,11 @@ pub fn wants_base(request: &CompletionRequest<'_>) -> bool {
             .trigger
             .is_none_or(|trigger| found.context.takes_trigger(trigger))
             && collector(&found.context).is_some()
+            && match found.context {
+                Context::Qualified { after_record, .. } => !after_record,
+                Context::IncludeFiles => is_include(request.path),
+                _ => true,
+            }
     })
 }
 
@@ -360,10 +462,10 @@ impl Engine<'_, '_, '_, '_> {
                         label: snippet.prefix.to_string(),
                         kind: ItemKind::Snippet,
                         detail: Some(snippet.description.to_string()),
-                        insert: self.case.render_snippet(snippet.body),
+                        insert: self.table_choice(snippet, self.case.render_snippet(snippet.body)),
                         snippet: true,
                         data: ItemData::None,
-                        fits: false,
+                        fit: fit::OTHER,
                         nearness: nearness::KEYWORD,
                     }),
             );
@@ -471,18 +573,28 @@ impl Engine<'_, '_, '_, '_> {
         let mut ranked: Vec<(String, Candidate)> = candidates
             .into_iter()
             .filter_map(|candidate| {
-                let quality = rank::quality(word, &candidate.label)?;
+                let quality = match candidate.kind {
+                    // A path matches on its last part.
+                    ItemKind::File | ItemKind::Folder => {
+                        let typed = word.rfind(['/', '\\']).map_or(word, |at| &word[at + 1..]);
+                        rank::quality(typed, last_part(&candidate.label))?
+                    }
+                    // A field that a statement qualifies ranks by its own name,
+                    // not by the name of its record.
+                    ItemKind::Field => candidate
+                        .label
+                        .rsplit_once('.')
+                        .and_then(|(_, field)| rank::quality(word, field))
+                        .or_else(|| rank::quality(word, &candidate.label))?,
+                    _ => rank::quality(word, &candidate.label)?,
+                };
                 let quality = if word.is_empty() {
                     Quality::Other
                 } else {
                     quality
                 };
-                let sort = rank::sort_text(
-                    candidate.fits,
-                    quality,
-                    candidate.nearness,
-                    &candidate.label,
-                );
+                let sort =
+                    rank::sort_text(candidate.fit, quality, candidate.nearness, &candidate.label);
                 Some((sort, candidate))
             })
             .collect();
@@ -508,6 +620,13 @@ impl Engine<'_, '_, '_, '_> {
             cursor,
         }
     }
+}
+
+/// The last part of a path: after its last `/` or `\`, without a `/` at its
+/// end.
+fn last_part(path: &str) -> &str {
+    let path = path.strip_suffix(['/', '\\']).unwrap_or(path);
+    path.rfind(['/', '\\']).map_or(path, |at| &path[at + 1..])
 }
 
 fn is_include(path: &Path) -> bool {

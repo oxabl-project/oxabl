@@ -30,6 +30,15 @@ pub(crate) struct Mapped {
 }
 
 impl Mapped {
+    /// Whether `span` of file `file` touches the bytes of the base's own
+    /// text that the current text changed.
+    pub(crate) fn touches_changed(&self, file: FileId, span: oxabl_ast::Span) -> bool {
+        let Some((from, to)) = self.changed else {
+            return false;
+        };
+        self.ids.contains(&file) && span.start < to && from < span.end
+    }
+
     /// Whether the base declares a name at expanded byte `virt` in text that
     /// the current text changed.
     pub(crate) fn in_changed(&self, base: &CompletionBase<'_, '_, '_>, virt: u32) -> bool {
@@ -46,6 +55,8 @@ impl Mapped {
 /// Place the cursor at byte `cursor` and the window at `window_start` of
 /// `text` in `base`. `None` when the cursor has no place in the analysed text:
 /// an `&IF` branch the preprocessor did not take, or text the expansion lost.
+/// With `reference`, the cursor is the `{` of a reference that the expansion
+/// replaced: its place is right after the byte before it.
 pub(crate) fn map(
     base: &CompletionBase<'_, '_, '_>,
     path: &Path,
@@ -53,6 +64,7 @@ pub(crate) fn map(
     tokens: &[Token],
     cursor: u32,
     window_start: u32,
+    reference: bool,
 ) -> Option<Mapped> {
     let ids = base
         .navigation
@@ -92,10 +104,31 @@ pub(crate) fn map(
             .iter()
             .flat_map(|id| base.navigation.expanded.expanded_offsets(*id, at))
             .collect();
-        if !found.is_empty() || at == 0 || at as usize != old.len() {
+        if !found.is_empty() || !(reference || at as usize == old.len()) {
             return found;
         }
-        // The end of the text is the place after its last byte.
+        if at == 0 {
+            // A reference at the start of the file: where its text starts.
+            if !reference {
+                return found;
+            }
+            let expanded = &base.navigation.expanded;
+            return ids
+                .iter()
+                .filter_map(|id| {
+                    if *id == expanded.root_file() {
+                        return Some(0);
+                    }
+                    expanded
+                        .include_expansions()
+                        .iter()
+                        .find(|expansion| expansion.file == Some(*id))
+                        .map(|expansion| expansion.expanded.start)
+                })
+                .collect();
+        }
+        // The end of the text, and a reference, are the place after the byte
+        // before.
         ids.iter()
             .flat_map(|id| base.navigation.expanded.expanded_offsets(*id, at - 1))
             .map(|place| place + 1)

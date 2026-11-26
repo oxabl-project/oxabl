@@ -36,8 +36,14 @@ pub(crate) enum Context {
     Members,
     Records(RecordsAfter),
     /// A name joined to `.`: the fields of a record or the tables of a
-    /// database.
-    Qualified,
+    /// database. `qualifier` is the bytes of the name before the `.` (which
+    /// can hold dots itself, as `shop.Customer`); `after_record` is true right
+    /// after a record keyword (`FIND FIRST shop.`), where only a database
+    /// name qualifies.
+    Qualified {
+        qualifier: (u32, u32),
+        after_record: bool,
+    },
     /// An expression in the `WHERE` of a record phrase.
     Where,
     /// The target of `RUN`.
@@ -56,12 +62,20 @@ pub(crate) enum Context {
 }
 
 impl Context {
+    /// The cursor is inside a `{...}` reference, which the expansion replaced.
+    pub(crate) fn in_reference(&self) -> bool {
+        matches!(
+            self,
+            Context::PreprocessorNames | Context::IncludeArguments | Context::IncludeFiles
+        )
+    }
+
     /// Whether a client that asks because the person typed `trigger` gets a
     /// list here: each trigger character asks for the contexts it starts.
     pub(crate) fn takes_trigger(&self, trigger: char) -> bool {
         match trigger {
             ':' => *self == Context::Members,
-            '.' => *self == Context::Qualified,
+            '.' => matches!(self, Context::Qualified { .. }),
             '{' => matches!(self, Context::IncludeFiles | Context::IncludeArguments),
             '&' => *self == Context::PreprocessorNames,
             '/' => matches!(self, Context::Run | Context::IncludeFiles),
@@ -93,6 +107,11 @@ pub(crate) struct Found {
 /// A character of a word.
 pub(crate) fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'#' | b'$' | b'%')
+}
+
+/// A character of a path: a word, `/`, `\` and `.`.
+fn is_path_byte(byte: u8) -> bool {
+    is_word_byte(byte) || matches!(byte, b'/' | b'\\' | b'.')
 }
 
 /// What the text asks for at byte `cursor`. `None` when oxabl does not know:
@@ -130,18 +149,28 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
         && !in_kind(tokens, open as u32, Kind::Comment)
     {
         let inside = &bytes[open + 1..cursor_at];
+        let mut word_start = open + 1;
         let context = if inside.first() == Some(&b'&') {
             if !inside[1..].iter().all(|b| is_word_byte(*b)) {
                 return None;
             }
+            word_start += 1;
             Context::PreprocessorNames
         } else if !inside.is_empty() && inside.iter().all(u8::is_ascii_digit) {
             Context::IncludeArguments
-        } else {
+        } else if inside.iter().all(|b| is_path_byte(*b)) {
             Context::IncludeFiles
+        } else {
+            // The arguments of an include reference.
+            return None;
         };
+        let mut end = cursor_at;
+        while end < bytes.len() && is_path_byte(bytes[end]) {
+            end += 1;
+        }
         return Some(Found {
-            word_start: open as u32 + 1,
+            word_start: word_start as u32,
+            word_end: end as u32,
             ..found(context, open as u32, false)
         });
     }
@@ -180,14 +209,58 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
                 };
             }
             b'.' => {
-                let joined = start >= 2 && is_word_byte(bytes[start - 2]);
-                return joined.then(|| found(Context::Qualified, start as u32, false));
+                return qualified(text, tokens, start)
+                    .map(|(context, window_start, reaches)| found(context, window_start, reaches));
             }
             _ => {}
         }
     }
 
-    // The statement window.
+    let window = statement_window(text, tokens, before)?;
+    let window_start = window
+        .tokens
+        .first()
+        .map_or(start as u32, |at| tokens[*at].start as u32);
+    let reaches_start = !window.boundary && !window.tokens.is_empty();
+    let context = classify(text, tokens, &window.tokens, start)?;
+    if context == Context::Run {
+        // The word of `RUN` is the whole path.
+        let path_from = path_start(bytes, start);
+        let mut end = cursor_at;
+        while end < bytes.len()
+            && (is_path_byte(bytes[end]) && bytes[end] != b'.'
+                || bytes[end] == b'.' && bytes.get(end + 1).is_some_and(|b| is_word_byte(*b)))
+        {
+            end += 1;
+        }
+        return Some(Found {
+            word_start: path_from as u32,
+            word_end: end as u32,
+            ..found(context, window_start, reaches_start)
+        });
+    }
+    Some(Found {
+        after_branch: window.after_branch && window.tokens.is_empty(),
+        ..found(context, window_start, reaches_start)
+    })
+}
+
+/// The tokens of a statement window, from the statement start up to (not
+/// with) token `before`.
+struct Window {
+    tokens: Vec<usize>,
+    /// A statement end closes the window on the left; without one it reaches
+    /// the start of the text.
+    boundary: bool,
+    /// The window starts after `THEN`, `ELSE` or `OTHERWISE`.
+    after_branch: bool,
+}
+
+/// The statement window that ends before token `before`. `None` when it
+/// holds an include or macro reference: oxabl cannot read the statement as
+/// the compiler sees it.
+fn statement_window(text: &str, tokens: &[Token], before: usize) -> Option<Window> {
+    let bytes = text.as_bytes();
     let mut window: Vec<usize> = Vec::new();
     let mut boundary = false;
     let mut after_branch = false;
@@ -223,10 +296,6 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
         }
     }
     window.reverse();
-    let window_start = window
-        .first()
-        .map_or(start as u32, |at| tokens[*at].start as u32);
-    let reaches_start = !boundary && !window.is_empty();
     if window.iter().any(|at| {
         matches!(
             tokens[*at].kind,
@@ -235,11 +304,48 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
     }) {
         return None;
     }
-    let context = classify(text, tokens, &window, start)?;
-    Some(Found {
-        after_branch: after_branch && window.is_empty(),
-        ..found(context, window_start, reaches_start)
+    Some(Window {
+        tokens: window,
+        boundary,
+        after_branch,
     })
+}
+
+/// The context of a word after `name.`, whose word starts at `start`, the
+/// start of its statement window, and whether the window reaches the start of
+/// the text. `None` when the text before the `.` is not a name.
+fn qualified(text: &str, tokens: &[Token], start: usize) -> Option<(Context, u32, bool)> {
+    let bytes = text.as_bytes();
+    let dot = start - 1;
+    let mut from = dot;
+    while from > 0 && (is_word_byte(bytes[from - 1]) || bytes[from - 1] == b'.') {
+        from -= 1;
+    }
+    // A name starts with a letter or `_`, and has no empty part.
+    let name = &text[from..dot];
+    if !name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        || name.split('.').any(str::is_empty)
+    {
+        return None;
+    }
+    let before = tokens.partition_point(|token| token.end <= from && token.kind != Kind::Eof);
+    let window = statement_window(text, tokens, before)?;
+    let window_start = window
+        .tokens
+        .first()
+        .map_or(from as u32, |at| tokens[*at].start as u32);
+    let after_record = matches!(
+        classify(text, tokens, &window.tokens, from),
+        Some(Context::Records(after)) if after != RecordsAfter::Like
+    );
+    Some((
+        Context::Qualified {
+            qualifier: (from as u32, dot as u32),
+            after_record,
+        },
+        window_start,
+        !window.boundary && !window.tokens.is_empty(),
+    ))
 }
 
 /// The row of the context table that the window ends with.
@@ -610,7 +716,27 @@ mod tests {
             context("DEFINE BUFFER b FOR TEMP-TABLE |"),
             Some(Records(RecordsAfter::BufferForTempTable))
         );
-        assert_eq!(context("x = Customer.|"), Some(Qualified));
+        assert_eq!(
+            context("x = Customer.|"),
+            Some(Qualified {
+                qualifier: (4, 12),
+                after_record: false
+            })
+        );
+        assert_eq!(
+            context("FIND FIRST shop.|"),
+            Some(Qualified {
+                qualifier: (11, 15),
+                after_record: true
+            })
+        );
+        assert_eq!(
+            context("DISPLAY shop.Customer.Na|"),
+            Some(Qualified {
+                qualifier: (8, 21),
+                after_record: false
+            })
+        );
         assert_eq!(context("obj:|"), Some(Members));
         assert_eq!(context("FIND FIRST c WHERE |"), Some(Where));
         assert_eq!(context("FIND FIRST c WHERE c.x = |"), Some(Where));
@@ -667,6 +793,12 @@ mod tests {
         assert_eq!(context("{inc.i} |"), None);
         assert_eq!(context("x = {&y} + |"), None);
         assert_eq!(context("x = 1.\n/|"), None, "the start of a comment");
+        assert_eq!(context("x = 1.|"), None, "a number is no qualifier");
+        assert_eq!(
+            context("{inc/x.i arg|"),
+            None,
+            "the arguments of an include"
+        );
         assert_eq!(context("x = 1.\n*|"), None);
         assert_eq!(context("x = -|"), Some(Context::Values { target: None }));
     }

@@ -17,7 +17,7 @@ use oxabl_semantic::{
 };
 
 use super::context::RecordsAfter;
-use super::rank::nearness;
+use super::rank::{fit, nearness};
 use super::{Candidate, CompletionBase, Engine, ItemData, ItemKind, base};
 use crate::keyword_docs::{DocKind, KEYWORD_DOCS};
 
@@ -37,13 +37,23 @@ impl Engine<'_, '_, '_, '_> {
     /// some. With several places of the cursor (an include the root reads
     /// twice), the names are the ones every place has.
     pub(super) fn names(&self, wanted: Wanted) -> Option<(Vec<Candidate>, bool)> {
+        self.names_with(wanted, None)
+    }
+
+    /// [`Self::names`], with the type the place expects when the caller knows
+    /// it.
+    pub(super) fn names_with(
+        &self,
+        wanted: Wanted,
+        expected: Option<&ResolvedType>,
+    ) -> Option<(Vec<Candidate>, bool)> {
         let (base, mapped) = self.based()?;
         let mut incomplete = self.base_incomplete();
         if mapped.scope_changed {
             return Some((Vec::new(), true));
         }
         let mut lists = mapped.places.iter().map(|place| {
-            let (names, class_incomplete) = self.names_at(base, *place, wanted);
+            let (names, class_incomplete) = self.names_at(base, *place, wanted, expected);
             incomplete |= class_incomplete;
             names
         });
@@ -58,7 +68,7 @@ impl Engine<'_, '_, '_, '_> {
         if !matches!(wanted, Wanted::Records(_)) {
             names.extend(self.value_keywords(base, mapped.places[0], wanted));
         }
-        names.extend(self.tables(base, wanted));
+        names.extend(self.tables(wanted));
         if wanted != Wanted::StatementStart && !base.navigation.run.config().schema_loaded {
             incomplete |= matches!(wanted, Wanted::Records(_));
         }
@@ -72,12 +82,13 @@ impl Engine<'_, '_, '_, '_> {
         base: &CompletionBase<'_, '_, '_>,
         virt: u32,
         wanted: Wanted,
+        expected: Option<&ResolvedType>,
     ) -> (Vec<Candidate>, bool) {
         let semantic = &base.navigation.model.semantic;
         let tree = &semantic.scope_tree;
         let symbols = &semantic.symbols;
         let scope = base::scope_at(base, virt);
-        let expected = match &self.found.context {
+        let expected = expected.cloned().or_else(|| match &self.found.context {
             super::Context::Values {
                 target: Some(token),
             } => {
@@ -88,7 +99,7 @@ impl Engine<'_, '_, '_, '_> {
                     .filter(known)
             }
             _ => None,
-        };
+        });
         let namespaces: &[NamespaceId] = match wanted {
             Wanted::Values => &[
                 NamespaceId::Values,
@@ -276,6 +287,7 @@ impl Engine<'_, '_, '_, '_> {
             (Some(expected), Some(ty)) => assignable(ty, expected, ClassLattice::new(symbols)),
             _ => false,
         };
+        let fit = if fits { fit::FITS } else { fit::OTHER };
         Some(Candidate {
             insert: label.clone(),
             label,
@@ -283,13 +295,13 @@ impl Engine<'_, '_, '_, '_> {
             detail,
             snippet: false,
             data: ItemData::Symbol(sym.raw()),
-            fits,
+            fit,
             nearness: nearness::SCOPE,
         })
     }
 
     /// The name of `symbol` as its declaration writes it.
-    fn spelling<'t>(
+    pub(super) fn spelling<'t>(
         &self,
         base: &'t CompletionBase<'_, '_, '_>,
         symbol: &Symbol,
@@ -352,7 +364,7 @@ impl Engine<'_, '_, '_, '_> {
                             detail: Some(doc.title.to_string()),
                             snippet: false,
                             data: ItemData::Doc(at as u16),
-                            fits: false,
+                            fit: fit::OTHER,
                             nearness: nearness::KEYWORD,
                         }
                     }),
@@ -371,49 +383,6 @@ impl Engine<'_, '_, '_, '_> {
             .find(|(_, symbol)| symbol.declaration == owner && symbol.kind == SymbolKind::Class)
             .and_then(|(sym, _)| semantic.symbols.supertypes(sym))
             .is_some_and(|supertypes| supertypes.inherits.is_some())
-    }
-
-    /// The tables of the schema a position takes. A table of the OpenEdge
-    /// metaschema (`_file`, ...) only when the word starts with `_`.
-    fn tables(&self, base: &CompletionBase<'_, '_, '_>, wanted: Wanted) -> Vec<Candidate> {
-        if matches!(wanted, Wanted::Records(RecordsAfter::BufferForTempTable)) {
-            return Vec::new();
-        }
-        let config = base.navigation.run.config();
-        let schema = &config.schema;
-        let word = &self.request.text[self.found.word_start as usize..self.request.offset as usize];
-        let mut items: Vec<Candidate> = schema
-            .tables()
-            .map(|(_, table)| table)
-            .filter(|table| !table.name.as_ref().starts_with('_') || word.starts_with('_'))
-            .map(|table| Candidate {
-                label: table.display_name.clone(),
-                insert: table.display_name.clone(),
-                kind: ItemKind::Struct,
-                detail: Some("Database table".to_string()),
-                snippet: false,
-                data: ItemData::None,
-                fits: false,
-                nearness: nearness::SCHEMA,
-            })
-            .collect();
-        if word.starts_with('_') && schema.metaschema_enabled() {
-            items.extend(
-                oxabl_schema::metaschema()
-                    .tables()
-                    .map(|(_, table)| Candidate {
-                        label: table.display_name.clone(),
-                        insert: table.display_name.clone(),
-                        kind: ItemKind::Struct,
-                        detail: Some("Database table".to_string()),
-                        snippet: false,
-                        data: ItemData::None,
-                        fits: false,
-                        nearness: nearness::SCHEMA,
-                    }),
-            );
-        }
-        items
     }
 }
 
