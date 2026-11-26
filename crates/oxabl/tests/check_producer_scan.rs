@@ -9,9 +9,13 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
+
+/// A run of `oxabl check` that must end within this time.
+const LIMIT: Duration = Duration::from_secs(60);
 
 fn write(root: &Path, path: &str, contents: &str) {
     let path = root.join(path);
@@ -68,16 +72,53 @@ fn tree(consumer: bool) -> TempDir {
     dir
 }
 
-/// The counts of the scan, by file name and event, of `oxabl check -j <jobs>`.
-fn tally(dir: &Path, jobs: &str) -> BTreeMap<(String, String), usize> {
-    let out = Command::new(env!("CARGO_BIN_EXE_oxabl"))
+/// `oxabl check -j <jobs>` in `dir`. The test fails, and the process is
+/// killed, when it does not end within [`LIMIT`].
+fn check(dir: &Path, jobs: &str) -> Output {
+    let capture = TempDir::new().unwrap();
+    let file = |name: &str| fs::File::create(capture.path().join(name)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxabl"))
         .current_dir(dir)
         .env("OXABL_TEST_TALLY", "1")
         .args(["check", "--no-format", "-j", jobs, "src"])
-        .output()
+        .stdout(Stdio::from(file("out")))
+        .stderr(Stdio::from(file("err")))
+        .spawn()
         .unwrap();
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > LIMIT {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("oxabl check -j {jobs} did not end within {LIMIT:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Output {
+        status,
+        stdout: fs::read(capture.path().join("out")).unwrap(),
+        stderr: fs::read(capture.path().join("err")).unwrap(),
+    }
+}
+
+/// The counts of the scan, by file name and event, of `oxabl check -j <jobs>`.
+fn tally(dir: &Path, jobs: &str) -> BTreeMap<(String, String), usize> {
+    let out = check(dir, jobs);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    tally_of(&out)
+}
+
+/// The counts a run printed.
+fn tally_of(out: &Output) -> BTreeMap<(String, String), usize> {
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
     stderr
         .lines()
         .filter_map(|line| line.strip_prefix("oxabl-test: tally "))
@@ -132,4 +173,42 @@ fn a_walk_with_no_shared_consumer_does_not_scan() {
     // The control: the same tree with a consumer scans.
     write(dir.path(), "src/consumer.p", CONSUMER);
     assert!(!tally(dir.path(), "1").is_empty());
+}
+
+/// A definition with a `TRIGGERS` phrase holds a `DEFINE` of its own. The scan
+/// of a walk with a consumer must end, and parse that file once.
+#[test]
+fn a_producer_that_holds_a_define_does_not_hang_the_scan() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(root, "oxabl.toml", CONFIG);
+    let trigger = "DEFINE NEW SHARED VARIABLE v-a AS CHARACTER NO-UNDO\n\
+                   VIEW-AS FILL-IN\n\
+                   TRIGGERS:\n\
+                   ON LEAVE DO:\n\
+                   DEFINE VARIABLE v-b AS INTEGER NO-UNDO.\n\
+                   END.\n\
+                   END TRIGGERS.\n";
+    write(root, "inc/trig.i", trigger);
+    write(root, "src/written.p", trigger);
+    write(root, "src/through-include.p", "{trig.i}\n");
+    // The output of the walk with no consumer, which does not scan.
+    let alone = check(root, "1");
+    write(
+        root,
+        "src/consumer.p",
+        "DEFINE SHARED VARIABLE v-a AS CHARACTER NO-UNDO.\nMESSAGE v-a.\n",
+    );
+    for jobs in ["1", "4"] {
+        let out = check(root, jobs);
+        assert_eq!(out.status.code(), alone.status.code(), "-j {jobs}");
+        assert_eq!(out.stdout, alone.stdout, "-j {jobs}");
+        let tally = tally_of(&out);
+        assert_eq!(count(&tally, "written.p", "index.parse"), 1, "{tally:?}");
+        assert_eq!(
+            count(&tally, "through-include.p", "index.expand"),
+            1,
+            "{tally:?}"
+        );
+    }
 }
