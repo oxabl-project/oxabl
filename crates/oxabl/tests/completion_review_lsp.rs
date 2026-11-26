@@ -327,7 +327,11 @@ fn a_period_at_a_statement_end_answers_without_an_analysis() {
         ));
     }
     text.push_str("DEFINE VARIABLE x AS INTEGER NO-UNDO.\nx = 1.|");
+    let small = ws.open_marked("small.p", "DEFINE VARIABLE y AS INTEGER NO-UNDO.\ny = 1.|");
     let cursor = ws.open_marked("large.p", &text);
+    // A request on another document answers after the server has read the
+    // large one, so the clock below does not count the transfer of its text.
+    ws.complete_at("small.p", small, Some(".")).assert_null();
     let started = Instant::now();
     let answer = ws.complete_at("large.p", cursor, Some("."));
     let took = started.elapsed();

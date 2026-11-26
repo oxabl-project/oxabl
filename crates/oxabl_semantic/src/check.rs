@@ -802,18 +802,15 @@ impl<'a> CheckWalker<'a> {
         }
     }
 
-    /// Linear-search for the unique child scope of `parent` created by
-    /// declare with `owner_node == stmt.id && kind == kind`.
+    /// The child scope of `parent` that declare made with
+    /// `owner_node == stmt.id && kind == kind`.
     fn find_child_scope(
         &self,
         parent: ScopeId,
         stmt: &Statement,
         kind: ScopeKind,
     ) -> Option<ScopeId> {
-        self.tree
-            .iter()
-            .find(|(_, s)| s.parent == Some(parent) && s.owner_node == stmt.id && s.kind == kind)
-            .map(|(id, _)| id)
+        self.tree.child(parent, stmt.id, kind)
     }
 }
 

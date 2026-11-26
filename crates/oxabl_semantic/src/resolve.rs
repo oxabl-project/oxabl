@@ -44,10 +44,10 @@ use crate::index::ImportCandidate;
 use crate::inherited::{ChainStart, InheritedBinding, InheritedRecords, chain_records};
 use crate::symbol::RecordSource;
 use crate::{
-    AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
-    LocateKind, Located, MemberDescriptor, MemberParam, MemberRecord, MemberType, NamespaceId,
-    NodeIndexVec, ResolvedType, ScopeId, ScopeKind, ScopeTree, Site, SiteTarget, SupertypeRef,
-    Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
+    AnalysisContext, BindingMap, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName,
+    IndexedFileId, LocateKind, Located, MemberDescriptor, MemberParam, MemberRecord, MemberType,
+    NamespaceId, NodeIndexVec, ResolvedType, ScopeId, ScopeKind, ScopeTree, Site, SiteTarget,
+    SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
     WorkspaceIndex, builtins, diagnostics, resolve_span,
 };
 
@@ -845,8 +845,9 @@ impl<'a> Walker<'a> {
                 // minted at block scope.
                 let atom = fold_atom(&buffer.name);
                 if let Some(existing) = self.tree.resolve(scope, NamespaceId::Buffers, &atom) {
-                    self.tree.get_mut(bs).bindings[NamespaceId::Buffers.index()]
-                        .insert(atom, existing);
+                    self.tree
+                        .get_mut(bs)
+                        .bind(NamespaceId::Buffers, atom, existing);
                 } else {
                     let table_id = self.schema_table_id(buffer);
                     self.declare(
@@ -1370,7 +1371,7 @@ impl<'a> Walker<'a> {
             table_id,
         };
         let id = self.symbols.insert(symbol);
-        self.tree.get_mut(scope).bindings[ns.index()].insert(atom, id);
+        self.tree.get_mut(scope).bind(ns, atom, id);
         if !self.arm_path.is_empty() {
             self.decl_arms.insert(id, self.arm_path.clone());
         }
@@ -5558,7 +5559,8 @@ impl<'a> ResolveWalker<'a> {
         let mut opaque = false;
         for sid in self.tree.ancestors(scope) {
             let mut records: SmallVec<[RecordSource; 4]> = SmallVec::new();
-            for (_name, bsym) in self.tree.get(sid).bindings[NamespaceId::Buffers.index()].iter() {
+            let buffers = self.tree.get(sid).bindings.get(NamespaceId::Buffers);
+            for (_name, bsym) in buffers.into_iter().flat_map(BindingMap::iter) {
                 match self.symbols.record_source(bsym) {
                     Some(r) if !records.contains(&r) => records.push(r),
                     Some(_) => {}
@@ -7357,14 +7359,11 @@ impl<'a> ResolveWalker<'a> {
         sym
     }
 
-    /// Linear-search for the unique child scope of `parent` created by the
-    /// declare pass with `owner_node == owner && kind == kind`. Returns
-    /// `None` if no such scope exists (error recovery, skipped body).
+    /// The child scope of `parent` that the declare pass made with
+    /// `owner_node == owner && kind == kind`. Returns `None` if no such scope
+    /// exists (error recovery, skipped body).
     fn find_child_scope(&self, parent: ScopeId, owner: NodeId, kind: ScopeKind) -> Option<ScopeId> {
-        self.tree
-            .iter()
-            .find(|(_, s)| s.parent == Some(parent) && s.owner_node == owner && s.kind == kind)
-            .map(|(id, _)| id)
+        self.tree.child(parent, owner, kind)
     }
 
     fn bump_count(&mut self, sym: SymbolId, mode: AccessMode) {

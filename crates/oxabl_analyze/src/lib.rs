@@ -409,7 +409,7 @@ fn write_scopes_and_symbols(out: &mut String, sem: &Semantic) {
                 None => "—".into(),
             },
             s.owner_node.as_u32(),
-            s.bindings.iter().map(|b| b.len()).sum::<usize>(),
+            s.bindings.iter().map(|(_, b)| b.len()).sum::<usize>(),
         )
         .ok();
     }
@@ -475,9 +475,7 @@ fn scopes_json(sem: &Semantic) -> Value {
             bindings: s
                 .bindings
                 .iter()
-                .enumerate()
-                .flat_map(|(ns_idx, map)| {
-                    let ns = namespace_from_index(ns_idx);
+                .flat_map(|(ns, map)| {
                     map.iter().map(move |(name, sym)| BindingRow {
                         namespace: namespace_str(ns),
                         name: name.as_ref().to_string(),
@@ -963,10 +961,6 @@ fn namespace_str(ns: NamespaceId) -> &'static str {
         NamespaceId::Events => "events",
         NamespaceId::WidgetHandles => "widget_handles",
     }
-}
-
-fn namespace_from_index(i: usize) -> NamespaceId {
-    NamespaceId::ALL[i]
 }
 
 fn symbol_kind_str(k: SymbolKind) -> &'static str {

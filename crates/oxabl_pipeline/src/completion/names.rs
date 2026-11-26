@@ -115,8 +115,11 @@ impl Engine<'_, '_, '_, '_> {
                 class_incomplete = true;
             }
             for ns in namespaces {
-                let mut bound: Vec<(&str, SymbolId)> = held.bindings[ns.index()]
-                    .iter()
+                let mut bound: Vec<(&str, SymbolId)> = held
+                    .bindings
+                    .get(*ns)
+                    .into_iter()
+                    .flat_map(|map| map.iter())
                     .map(|(name, sym)| (name.as_ref(), sym))
                     .collect();
                 bound.sort_unstable_by_key(|(_, sym)| sym.raw());

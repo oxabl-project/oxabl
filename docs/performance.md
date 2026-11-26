@@ -138,7 +138,7 @@ budgets to the printed numbers.
 
 A `const` assertion holds the size of each type that a file has many of:
 `Token` (48 bytes), `TokenValue` (24), `Identifier` (32), `Literal` (40),
-`Expression` (80), `Statement` (744), `Scope` (1,464), `BindingMap` (144) and
+`Expression` (80), `Statement` (744), `Scope` (48), `BindingMap` (144) and
 `Symbol` (64). A type that grows does not compile. To see the sizes of the
 variants:
 

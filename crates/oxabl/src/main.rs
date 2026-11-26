@@ -705,6 +705,12 @@ fn main() -> ExitCode {
     {
         eprintln!("oxabl-test: source maps built: {built}");
     }
+    // Test builds only: a test reads how many scope records the searches read.
+    if std::env::var_os("OXABL_TEST_SCOPES_READ").is_some()
+        && let Some(read) = oxabl_semantic::ScopeTree::scopes_read()
+    {
+        eprintln!("oxabl-test: scope records read: {read}");
+    }
     if after {
         self_update::schedule_if_due();
     }
