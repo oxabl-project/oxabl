@@ -13,8 +13,12 @@
 //! `Field::extras` as opaque `(name, value)` pairs so they round-trip into
 //! any future formatter or schema inspector.
 
+use std::borrow::Cow;
+use std::sync::Arc;
+
 use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan};
+use oxabl_lexer::oxabl_atom::OxablAtom;
 
 use crate::atom::fold_atom;
 use crate::diagnostics::SCHEMA0001;
@@ -30,6 +34,7 @@ pub fn parse_df(source: &str, file_id: FileId) -> ParseOutcome {
         idx: 0,
         file_id,
         outcome: ParseOutcome::default(),
+        last_table: None,
     };
     parser.parse_dump();
     let mut outcome = parser.outcome;
@@ -68,15 +73,15 @@ pub struct SkippedDirective {
 
 #[derive(Debug)]
 pub struct PendingField {
-    pub table: oxabl_lexer::oxabl_atom::OxablAtom,
-    pub table_display: String,
+    pub table: OxablAtom,
+    pub table_display: Arc<str>,
     pub field: Field,
 }
 
 #[derive(Debug)]
 pub struct PendingIndex {
-    pub table: oxabl_lexer::oxabl_atom::OxablAtom,
-    pub table_display: String,
+    pub table: OxablAtom,
+    pub table_display: Arc<str>,
     pub index: Index,
 }
 
@@ -330,6 +335,37 @@ struct Parser<'a> {
     idx: usize,
     file_id: FileId,
     outcome: ParseOutcome,
+    /// The table the last `OF` or `ON` named: consecutive fields and indexes of
+    /// one table share its atom and its spelling.
+    last_table: Option<(OxablAtom, Arc<str>)>,
+}
+
+/// A word in upper case, held on the stack. A word longer than any keyword is
+/// empty: it equals no keyword.
+struct Upper {
+    buf: [u8; Upper::CAP],
+    len: usize,
+}
+
+impl Upper {
+    const CAP: usize = 24;
+
+    fn new(word: &str) -> Self {
+        let mut upper = Upper {
+            buf: [0; Upper::CAP],
+            len: 0,
+        };
+        if word.len() <= Upper::CAP {
+            upper.buf[..word.len()].copy_from_slice(word.as_bytes());
+            upper.buf[..word.len()].make_ascii_uppercase();
+            upper.len = word.len();
+        }
+        upper
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
 }
 
 /// Top-level directive keywords. Encountering one of these as a `Word` at
@@ -356,9 +392,10 @@ impl<'a> Parser<'a> {
                 self.idx += 1;
                 continue;
             };
-            match word.as_str() {
-                "ADD" => self.parse_add(),
-                "UPDATE" | "CHANGE" | "DROP" | "RENAME" => {
+            match word.bytes() {
+                b"ADD" => self.parse_add(),
+                b"UPDATE" | b"CHANGE" | b"DROP" | b"RENAME" => {
+                    let keyword = String::from_utf8_lossy(word.bytes()).into_owned();
                     let start = self.idx;
                     // Consume the starting keyword so skip doesn't immediately
                     // re-match on its own `line_start` and stall.
@@ -366,7 +403,7 @@ impl<'a> Parser<'a> {
                     self.skip_to_next_directive();
                     let end = self.tokens[self.idx - 1].end;
                     self.outcome.skipped.push(SkippedDirective {
-                        keyword: word,
+                        keyword,
                         source: FileSpan {
                             file: self.file_id,
                             span: Span {
@@ -389,7 +426,7 @@ impl<'a> Parser<'a> {
         // Consume `ADD`.
         self.idx += 1;
         // Optional `UNIQUE` modifier between `ADD` and `INDEX`.
-        let unique = matches!(self.peek_word_upper().as_deref(), Some("UNIQUE"));
+        let unique = self.peek_is("UNIQUE");
         if unique {
             self.idx += 1;
         }
@@ -401,20 +438,20 @@ impl<'a> Parser<'a> {
             self.skip_to_next_directive();
             return;
         };
-        match kind.as_str() {
-            "TABLE" => {
+        match kind.bytes() {
+            b"TABLE" => {
                 self.idx += 1;
                 self.parse_add_table();
             }
-            "FIELD" => {
+            b"FIELD" => {
                 self.idx += 1;
                 self.parse_add_field();
             }
-            "INDEX" => {
+            b"INDEX" => {
                 self.idx += 1;
                 self.parse_add_index(unique);
             }
-            "SEQUENCE" => {
+            b"SEQUENCE" => {
                 self.idx += 1;
                 self.parse_add_sequence();
             }
@@ -432,7 +469,7 @@ impl<'a> Parser<'a> {
             return;
         };
         // Optional `TYPE <ident>` — we ignore the value.
-        if matches!(self.peek_word_upper().as_deref(), Some("TYPE")) {
+        if self.peek_is("TYPE") {
             self.idx += 1;
             if self.peek_kind() == Some(TokKind::Word) {
                 self.idx += 1;
@@ -467,43 +504,43 @@ impl<'a> Parser<'a> {
                 self.idx += 1;
                 continue;
             };
-            match attr.as_str() {
-                "AREA" => {
+            match attr.bytes() {
+                b"AREA" => {
                     self.idx += 1;
                     t.area = self.expect_quoted().map(|(s, _)| s);
                 }
-                "DESCRIPTION" => {
+                b"DESCRIPTION" => {
                     self.idx += 1;
                     t.description = self.expect_quoted().map(|(s, _)| s);
                 }
-                "LABEL" => {
+                b"LABEL" => {
                     self.idx += 1;
                     t.label = self.expect_quoted().map(|(s, _)| s);
                 }
-                "DUMP-NAME" => {
+                b"DUMP-NAME" => {
                     self.idx += 1;
                     t.dump_name = self.expect_quoted().map(|(s, _)| s);
                 }
-                "FROZEN" => {
+                b"FROZEN" => {
                     self.idx += 1;
                     t.frozen = true;
                 }
-                "HIDDEN" => {
+                b"HIDDEN" => {
                     self.idx += 1;
                     t.hidden = true;
                 }
-                "VALEXP" => {
+                b"VALEXP" => {
                     self.idx += 1;
                     t.valexp = self.expect_quoted().map(|(s, _)| s);
                 }
-                "VALMSG" | "VALMSG-SA" | "LABEL-SA" => {
+                b"VALMSG" | b"VALMSG-SA" | b"LABEL-SA" => {
                     self.idx += 1;
                     let v = self.expect_quoted().map(|(s, _)| s);
-                    if attr == "VALMSG" {
+                    if attr.bytes() == b"VALMSG" {
                         t.valmsg = v;
                     }
                 }
-                "TABLE-TRIGGER" => self.skip_table_trigger(),
+                b"TABLE-TRIGGER" => self.skip_table_trigger(),
                 _ => self.skip_unknown_attr(),
             }
         }
@@ -532,29 +569,28 @@ impl<'a> Parser<'a> {
                 self.idx += 1;
                 continue;
             };
-            match attr.as_str() {
-                "INITIAL" => {
+            match attr.bytes() {
+                b"INITIAL" => {
                     self.idx += 1;
                     seq.initial = self.expect_i64();
                 }
-                "INCREMENT" => {
+                b"INCREMENT" => {
                     self.idx += 1;
                     seq.increment = self.expect_i64();
                 }
-                "MIN-VAL" => {
+                b"MIN-VAL" => {
                     self.idx += 1;
                     seq.min_val = self.expect_i64();
                 }
-                "MAX-VAL" => {
+                b"MAX-VAL" => {
                     self.idx += 1;
                     seq.max_val = self.expect_i64();
                 }
-                "CYCLE-ON-LIMIT" => {
+                b"CYCLE-ON-LIMIT" => {
                     self.idx += 1;
                     if self.peek_kind() == Some(TokKind::Word) && !self.tokens[self.idx].line_start
                     {
-                        seq.cycle_on_limit =
-                            matches!(self.peek_word_upper().as_deref(), Some("YES"));
+                        seq.cycle_on_limit = self.peek_is("YES");
                         self.idx += 1;
                     }
                 }
@@ -573,7 +609,7 @@ impl<'a> Parser<'a> {
             self.skip_to_next_directive();
             return;
         }
-        let Some((table_name, _)) = self.expect_quoted() else {
+        let Some((table, table_display)) = self.expect_table() else {
             self.skip_to_next_directive();
             return;
         };
@@ -582,7 +618,7 @@ impl<'a> Parser<'a> {
             return;
         }
         let data_type = match self.expect_word() {
-            Some(text) => SchemaType::classify(&text),
+            Some(text) => SchemaType::classify(text),
             None => {
                 self.skip_to_next_directive();
                 return;
@@ -611,8 +647,8 @@ impl<'a> Parser<'a> {
         };
         self.consume_field_options(&mut field);
         self.outcome.fields.push(PendingField {
-            table: fold_atom(&table_name),
-            table_display: table_name,
+            table,
+            table_display,
             field,
         });
     }
@@ -626,12 +662,12 @@ impl<'a> Parser<'a> {
                 self.idx += 1;
                 continue;
             };
-            match attr.as_str() {
-                "FORMAT" => {
+            match attr.bytes() {
+                b"FORMAT" => {
                     self.idx += 1;
                     f.format = self.expect_string_or_word();
                 }
-                "INITIAL" => {
+                b"INITIAL" => {
                     self.idx += 1;
                     let quoted = self
                         .tokens
@@ -643,66 +679,66 @@ impl<'a> Parser<'a> {
                             .push((fold_atom(Field::INITIAL_QUOTED), String::new()));
                     }
                 }
-                "LABEL" => {
+                b"LABEL" => {
                     self.idx += 1;
                     f.label = self.expect_string_or_word();
                 }
-                "DESCRIPTION" => {
+                b"DESCRIPTION" => {
                     self.idx += 1;
                     f.description = self.expect_string_or_word();
                 }
-                "HELP" => {
+                b"HELP" => {
                     self.idx += 1;
                     f.help = self.expect_string_or_word();
                 }
-                "VALEXP" => {
+                b"VALEXP" => {
                     self.idx += 1;
                     f.valexp = self.expect_string_or_word();
                 }
-                "VALMSG" => {
+                b"VALMSG" => {
                     self.idx += 1;
                     f.valmsg = self.expect_string_or_word();
                 }
-                "POSITION" => {
+                b"POSITION" => {
                     self.idx += 1;
                     f.position = self.expect_u32();
                 }
-                "ORDER" => {
+                b"ORDER" => {
                     self.idx += 1;
                     f.order = self.expect_u32();
                 }
-                "MAX-WIDTH" => {
+                b"MAX-WIDTH" => {
                     self.idx += 1;
                     f.max_width = self.expect_u32();
                 }
-                "DECIMALS" => {
+                b"DECIMALS" => {
                     self.idx += 1;
                     f.decimals = self.expect_u32();
                 }
-                "EXTENT" => {
+                b"EXTENT" => {
                     self.idx += 1;
                     f.extent = self.expect_u32();
                 }
-                "MANDATORY" => {
+                b"MANDATORY" => {
                     self.idx += 1;
                     f.mandatory = true;
                 }
-                "CASE-SENSITIVE" => {
+                b"CASE-SENSITIVE" => {
                     self.idx += 1;
                     f.case_sensitive = true;
                 }
-                "NOT-CASE-SENSITIVE" => {
+                b"NOT-CASE-SENSITIVE" => {
                     self.idx += 1;
                     f.case_sensitive = false;
                 }
-                "FIELD-TRIGGER" => self.skip_field_trigger(),
-                _ => self.collect_extra(f, &attr),
+                b"FIELD-TRIGGER" => self.skip_field_trigger(),
+                _ => self.collect_extra(f),
             }
         }
     }
 
-    fn collect_extra(&mut self, f: &mut Field, attr: &str) {
-        let attr_atom = fold_atom(attr);
+    fn collect_extra(&mut self, f: &mut Field) {
+        let attr_atom = fold_atom(self.word_text(&self.tokens[self.idx]));
         self.idx += 1;
         let value = self.collect_attr_value();
         f.extras.push((attr_atom, value));
@@ -712,23 +748,29 @@ impl<'a> Parser<'a> {
     /// logical option until we see the next attribute keyword (line_start)
     /// or next directive.
     fn collect_attr_value(&mut self) -> String {
-        let mut parts: Vec<String> = Vec::new();
+        let mut out = String::new();
+        let mut first = true;
         while self.idx < self.tokens.len() {
             let t = &self.tokens[self.idx];
             if t.line_start {
                 break;
             }
-            match t.kind {
-                TokKind::Word => parts.push(self.word_text(t).to_string()),
-                TokKind::QuotedString => parts.push(self.quoted_string_contents(t)),
+            let part = match t.kind {
+                TokKind::Word => Cow::Borrowed(self.word_text(t)),
+                TokKind::QuotedString => self.quoted_string_contents(t),
                 TokKind::LParen | TokKind::RParen | TokKind::Equals | TokKind::Comma => {
-                    parts.push(self.raw_slice(t).to_string());
+                    Cow::Borrowed(self.raw_slice(t))
                 }
                 TokKind::Dot | TokKind::Annotation => break,
+            };
+            if !first {
+                out.push(' ');
             }
+            first = false;
+            out.push_str(&part);
             self.idx += 1;
         }
-        parts.join(" ")
+        out
     }
 
     fn parse_add_index(&mut self, unique: bool) {
@@ -740,7 +782,7 @@ impl<'a> Parser<'a> {
             self.skip_to_next_directive();
             return;
         }
-        let Some((table_name, _)) = self.expect_quoted() else {
+        let Some((table, table_display)) = self.expect_table() else {
             self.skip_to_next_directive();
             return;
         };
@@ -758,8 +800,8 @@ impl<'a> Parser<'a> {
         };
         self.consume_index_options(&mut index);
         self.outcome.indexes.push(PendingIndex {
-            table: fold_atom(&table_name),
-            table_display: table_name,
+            table,
+            table_display,
             index,
         });
     }
@@ -773,38 +815,38 @@ impl<'a> Parser<'a> {
                 self.idx += 1;
                 continue;
             };
-            match attr.as_str() {
-                "AREA" => {
+            match attr.bytes() {
+                b"AREA" => {
                     self.idx += 1;
                     i.area = self.expect_quoted().map(|(s, _)| s);
                 }
-                "UNIQUE" => {
+                b"UNIQUE" => {
                     self.idx += 1;
                     i.unique = true;
                 }
-                "PRIMARY" => {
+                b"PRIMARY" => {
                     self.idx += 1;
                     i.primary = true;
                 }
-                "WORD" => {
+                b"WORD" => {
                     self.idx += 1;
                     i.word = true;
                 }
-                "INACTIVE" => {
+                b"INACTIVE" => {
                     self.idx += 1;
                     i.inactive = true;
                 }
-                "DESCRIPTION" => {
+                b"DESCRIPTION" => {
                     self.idx += 1;
                     i.description = self.expect_quoted().map(|(s, _)| s);
                 }
-                "INDEX-FIELD" => {
+                b"INDEX-FIELD" => {
                     self.idx += 1;
                     if let Some(field) = self.parse_index_field() {
                         i.fields.push(field);
                     }
                 }
-                "IS-LOCAL" => {
+                b"IS-LOCAL" => {
                     self.idx += 1;
                 }
                 _ => self.skip_unknown_attr(),
@@ -818,20 +860,20 @@ impl<'a> Parser<'a> {
         let mut abbreviated = false;
         let mut unsorted = false;
         while let Some(w) = self.peek_word_upper() {
-            match w.as_str() {
-                "ASCENDING" => {
+            match w.bytes() {
+                b"ASCENDING" => {
                     ascending = true;
                     self.idx += 1;
                 }
-                "DESCENDING" => {
+                b"DESCENDING" => {
                     ascending = false;
                     self.idx += 1;
                 }
-                "ABBREVIATED" => {
+                b"ABBREVIATED" => {
                     abbreviated = true;
                     self.idx += 1;
                 }
-                "UNSORTED" => {
+                b"UNSORTED" => {
                     unsorted = true;
                     self.idx += 1;
                 }
@@ -855,12 +897,19 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.idx).map(|t| t.kind)
     }
 
-    fn peek_word_upper(&self) -> Option<String> {
+    fn peek_word_upper(&self) -> Option<Upper> {
         let t = self.tokens.get(self.idx)?;
         if t.kind != TokKind::Word {
             return None;
         }
-        Some(self.word_text(t).to_ascii_uppercase())
+        Some(Upper::new(self.word_text(t)))
+    }
+
+    /// Whether the next token is the word `keyword` (upper case), in any case.
+    fn peek_is(&self, keyword: &str) -> bool {
+        self.tokens.get(self.idx).is_some_and(|t| {
+            t.kind == TokKind::Word && self.word_text(t).eq_ignore_ascii_case(keyword)
+        })
     }
 
     fn is_at_next_directive(&self) -> bool {
@@ -871,14 +920,35 @@ impl<'a> Parser<'a> {
             TokKind::Annotation => true,
             TokKind::Dot if t.line_start => true,
             TokKind::Word if t.line_start => {
-                let upper = self.word_text(t).to_ascii_uppercase();
-                DIRECTIVE_KEYWORDS.contains(&upper.as_str())
+                let word = self.word_text(t);
+                DIRECTIVE_KEYWORDS
+                    .iter()
+                    .any(|keyword| word.eq_ignore_ascii_case(keyword))
             }
             _ => false,
         }
     }
 
     fn expect_quoted(&mut self) -> Option<(String, FileSpan)> {
+        let (text, span) = self.expect_quoted_cow()?;
+        Some((text.into_owned(), span))
+    }
+
+    /// The table that an `OF` or `ON` names: its folded atom and its spelling.
+    fn expect_table(&mut self) -> Option<(OxablAtom, Arc<str>)> {
+        let (name, _) = self.expect_quoted_cow()?;
+        if let Some((atom, shown)) = &self.last_table
+            && **shown == *name
+        {
+            return Some((atom.clone(), Arc::clone(shown)));
+        }
+        let atom = fold_atom(&name);
+        let shown: Arc<str> = Arc::from(&*name);
+        self.last_table = Some((atom.clone(), Arc::clone(&shown)));
+        Some((atom, shown))
+    }
+
+    fn expect_quoted_cow(&mut self) -> Option<(Cow<'a, str>, FileSpan)> {
         let t = self.tokens.get(self.idx)?;
         if t.kind != TokKind::QuotedString {
             self.emit_at(
@@ -899,7 +969,7 @@ impl<'a> Parser<'a> {
         Some((text, span))
     }
 
-    fn expect_word(&mut self) -> Option<String> {
+    fn expect_word(&mut self) -> Option<&'a str> {
         let t = self.tokens.get(self.idx)?;
         if t.kind != TokKind::Word {
             self.emit_at(
@@ -908,21 +978,27 @@ impl<'a> Parser<'a> {
             );
             return None;
         }
-        let text = self.word_text(t).to_string();
+        let text = self.word_text(t);
         self.idx += 1;
         Some(text)
     }
 
     fn expect_word_ci(&mut self, expected: &str) -> bool {
-        let Some(word) = self.peek_word_upper() else {
+        let Some(t) = self
+            .tokens
+            .get(self.idx)
+            .filter(|t| t.kind == TokKind::Word)
+        else {
             self.emit_at(self.idx, format!("expected `{expected}`"));
             return false;
         };
+        let word = self.word_text(t);
         if word.eq_ignore_ascii_case(expected) {
             self.idx += 1;
             true
         } else {
-            self.emit_at(self.idx, format!("expected `{expected}`, got `{word}`"));
+            let got = word.to_ascii_uppercase();
+            self.emit_at(self.idx, format!("expected `{expected}`, got `{got}`"));
             false
         }
     }
@@ -934,7 +1010,7 @@ impl<'a> Parser<'a> {
         let t = self.tokens.get(self.idx)?;
         match t.kind {
             TokKind::QuotedString => {
-                let v = self.quoted_string_contents(t);
+                let v = self.quoted_string_contents(t).into_owned();
                 self.idx += 1;
                 Some(v)
             }
@@ -1103,11 +1179,11 @@ impl<'a> Parser<'a> {
         self.raw_slice(t)
     }
 
-    fn quoted_string_contents(&self, t: &Token) -> String {
+    fn quoted_string_contents(&self, t: &Token) -> Cow<'a, str> {
         let raw = self.raw_slice(t);
         // Strip opening/closing quote; decode `""` → `"`.
         if raw.len() < 2 || !raw.starts_with('"') {
-            return raw.to_string();
+            return Cow::Borrowed(raw);
         }
         let end = if raw.ends_with('"') && raw.len() >= 2 {
             raw.len() - 1
@@ -1116,7 +1192,7 @@ impl<'a> Parser<'a> {
         };
         let inner = &raw[1..end];
         if !inner.contains("\"\"") {
-            return inner.to_string();
+            return Cow::Borrowed(inner);
         }
         let mut out = String::with_capacity(inner.len());
         let bytes = inner.as_bytes();
@@ -1130,7 +1206,7 @@ impl<'a> Parser<'a> {
                 i += 1;
             }
         }
-        out
+        Cow::Owned(out)
     }
 }
 
@@ -1193,7 +1269,7 @@ ADD FIELD "CustNum" OF "Customer" AS integer
         );
         assert_eq!(out.fields.len(), 1);
         let pf = &out.fields[0];
-        assert_eq!(pf.table_display, "Customer");
+        assert_eq!(&*pf.table_display, "Customer");
         assert_eq!(pf.field.display_name, "CustNum");
         assert_eq!(pf.field.data_type, SchemaType::Integer);
         assert_eq!(pf.field.format.as_deref(), Some(">>,>>9"));
@@ -1239,7 +1315,7 @@ ADD UNIQUE INDEX "custnum" ON "Customer"
         );
         assert_eq!(out.indexes.len(), 1);
         let pi = &out.indexes[0];
-        assert_eq!(pi.table_display, "Customer");
+        assert_eq!(&*pi.table_display, "Customer");
         assert!(pi.index.unique);
         assert!(pi.index.primary);
         assert_eq!(pi.index.area.as_deref(), Some("Inventory"));
@@ -1447,6 +1523,6 @@ ADD FIELD "f" OF "T" AS character
         );
         assert_eq!(out.tables.len(), 1);
         assert_eq!(out.fields.len(), 1);
-        assert_eq!(out.fields[0].table_display, "T");
+        assert_eq!(&*out.fields[0].table_display, "T");
     }
 }

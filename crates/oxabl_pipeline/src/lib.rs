@@ -109,7 +109,7 @@ mod syntax;
 
 pub use config::{
     ConfigOverrides, ConfigWarning, PipelineConfig, configured_schema_files, resolve_from_config,
-    resolve_from_config_deferred,
+    resolve_from_config_deferred, set_schema_cache,
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use format_range::{RangeBail, RangeEdit, RangeFailure};
