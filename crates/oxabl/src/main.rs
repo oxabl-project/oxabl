@@ -705,6 +705,15 @@ fn main() -> ExitCode {
     {
         eprintln!("oxabl-test: source maps built: {built}");
     }
+    // Test builds only: what each labelled piece of work did, such as the
+    // expansions of each file in the scan for `SHARED` producers.
+    if std::env::var_os("OXABL_TEST_TALLY").is_some()
+        && let Some(counts) = oxabl_common::test_tally::counts()
+    {
+        for (label, event, count) in counts {
+            eprintln!("oxabl-test: tally {event} {count} {label}");
+        }
+    }
     if after {
         self_update::schedule_if_due();
     }
@@ -1812,18 +1821,15 @@ fn run_check(
     // One run handle, so one cross-file index spans the whole walk: files sharing
     // a parent class read it once, not once each. The per-file handle below is a
     // pointer copy off this one.
-    // The walk's own file list — no directory scan — scanned once, on every
-    // core, which is what lets a `DEFINE SHARED` consumer find its producer even
-    // when no `RUN` names the producing file.
-    // With diagnostics off the lint pipeline never runs, so nothing scans the walk.
-    let producers = if channels.diagnostics {
-        LintPipeline::new(&config, &fs).shared_producers_parallel(&indexed, jobs)
-    } else {
-        Default::default()
-    };
+    // The walk's own file list — no directory scan — scanned once, on `jobs`
+    // threads, which is what lets a `DEFINE SHARED` consumer find its producer
+    // even when no `RUN` names the producing file. The first file that asks for
+    // a producer starts the scan and waits for all of it; the other files do
+    // not wait, and a walk in which no file asks scans nothing.
+    let producers = LintPipeline::new(&config, &fs).deferred_producers(&indexed, jobs);
     let lint = LintPipeline::new(&config, &fs)
         .with_preprocess(preprocess)
-        .with_shared_producers(&producers);
+        .with_deferred_producers(&producers);
     // The format pipeline is built from the resolved style and nothing else, so
     // it *cannot* see expanded macro text however this walk is configured (R4).
     let format = FormatPipeline::new(config.style.clone());
@@ -1887,7 +1893,7 @@ fn run_check(
         oxabl_pipeline::IncluderPools::new(&indexed, &judged, jobs, workspace, &skip, || {
             LintPipeline::new(&config, &fs)
                 .with_preprocess(preprocess)
-                .with_shared_producers(&producers)
+                .with_deferred_producers(&producers)
         });
     pools.prepare();
     let judge = |include: &Path, result: oxabl_pipeline::LintResult| pools.judge(include, result);
@@ -1960,7 +1966,7 @@ fn run_check(
             || {
                 let handle = LintPipeline::new(&config, &fs)
                     .with_preprocess(preprocess)
-                    .with_shared_producers(&producers);
+                    .with_deferred_producers(&producers);
                 match &summaries {
                     Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
                     None => handle,

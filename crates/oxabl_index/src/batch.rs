@@ -24,7 +24,7 @@ use oxabl_workspace::{FileSystem, Observed, PreprocessorConfig, unobserved};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::facts::{ClassFacts, FileFacts};
-use crate::producers::{SharedProducers, may_define_shared, scan_procedures};
+use crate::producers::{DeferredProducers, SharedProducers, may_define_shared, scan_procedures};
 use crate::{IncludeContext, index_file_at, program_signatures_at, search};
 
 /// The generation a batch reports.
@@ -105,6 +105,9 @@ enum ProducerSource<'a> {
     /// A map built once by the caller and shared by every index that borrows it.
     /// See [`BatchIndex::with_shared_producers`].
     Shared(&'a SharedProducers),
+    /// A map built on the first lookup of any index that borrows it. See
+    /// [`BatchIndex::with_deferred_producers`].
+    Deferred(&'a DeferredProducers),
 }
 
 #[derive(Debug)]
@@ -494,6 +497,18 @@ impl<'a> BatchIndex<'a> {
         self
     }
 
+    /// [`with_shared_producers`](Self::with_shared_producers) with a map that
+    /// the first `SHARED` lookup of any index that borrows it builds, through
+    /// this index's include paths and preprocessor configuration. A lookup
+    /// waits for the whole map, so the answers are the same.
+    ///
+    /// Apply before any lookup.
+    #[must_use]
+    pub fn with_deferred_producers(mut self, producers: &'a DeferredProducers) -> Self {
+        self.producers = ProducerSource::Deferred(producers);
+        self
+    }
+
     /// A view of this index that answers as though the file at `path` did not
     /// exist, leaving the memo — and therefore the whole run's I/O — shared.
     ///
@@ -570,6 +585,9 @@ impl<'a> BatchIndex<'a> {
         match self.producers {
             ProducerSource::None => None,
             ProducerSource::Shared(map) => Some(unobserved(self.fs, || {
+                map.defines_procedure(name, &includes)
+            })),
+            ProducerSource::Deferred(map) => Some(unobserved(self.fs, || {
                 map.defines_procedure(name, &includes)
             })),
             ProducerSource::Files(files) => {
@@ -690,6 +708,13 @@ impl<'a> BatchIndex<'a> {
         match self.producers {
             ProducerSource::None => {}
             ProducerSource::Shared(map) => listed = map.producers_of(name),
+            // Built by the first lookup of any thread, outside every lock, and
+            // read by no one analysis, so what the scan reads is not observed.
+            ProducerSource::Deferred(map) => {
+                let predefined = self.predefined();
+                let includes = self.includes(&predefined);
+                listed = unobserved(self.fs, || map.map(&includes)).producers_of(name);
+            }
             // Scanned on first ask. This is the only query the list feeds, and
             // deferring it to here is what keeps a run that consumes no `SHARED`
             // name from reading the whole walk.

@@ -257,6 +257,36 @@ python3 -I scripts/bench/callgrind_summary.py target/check.out      # the summar
 
 To count only one stage, use `--toggle-collect='*parse_program*'`.
 
+## The scan for SHARED producers
+
+A `DEFINE SHARED` consumer finds its `NEW SHARED` producer in a map of the
+walk's files (`oxabl_index::producers`). `oxabl check`, `oxabl watch` and the
+daemon's workspace pass build the map when the first file asks for a
+producer (`DeferredProducers`), on the threads of `-j`. A file that asks
+nothing does not wait for the map, and a walk with no `SHARED` consumer does
+not scan. A file that asks waits until the map is complete, so no answer
+comes from a part of the map.
+
+The scan reads each file one time. A file that has no `{` and does not say
+`NEW SHARED` or `NEW GLOBAL` is not parsed. Any other file is parsed at most
+one time as written: a file that says the words, to find its own
+definitions, and a file with a `{`, to know whether the index can read it
+through its includes. Such a file is expanded one time. The names come from
+a token scan of the two texts: each `DEFINE` with `NEW` after it is parsed
+alone. The scan of the expanded text stops after the last `NEW SHARED` in
+it. There is no declare pass and no parse of the whole expanded text.
+
+The map can list a file that is not a producer: one whose expanded text does
+not parse, or one whose `NEW SHARED` definition is in a later arm of an
+`&IF` that the declare pass does not keep. The index of the consumer reads
+the facts of each listed file and keeps only a file that defines the name,
+so the answer does not change.
+
+`crates/oxabl/tests/check_producer_scan.rs` counts the parses and expansions
+of the scan for each file. A test build prints them when `OXABL_TEST_TALLY` is
+set (`oxabl_common::test_tally`). The test fails when the scan parses or
+expands a file two times, or scans a walk with no consumer.
+
 ## CodSpeed
 
 The job `codspeed` uses the Simulation instrument: it runs each bench one time

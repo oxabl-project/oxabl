@@ -60,8 +60,8 @@ fn check_walk(
     roots: &[(PathBuf, String)],
 ) -> usize {
     let paths: Vec<PathBuf> = roots.iter().map(|(path, _)| path.clone()).collect();
-    let producers = LintPipeline::new(config, fs).shared_producers(&paths);
-    let lint = LintPipeline::new(config, fs).with_shared_producers(&producers);
+    let producers = LintPipeline::new(config, fs).deferred_producers(&paths, 1);
+    let lint = LintPipeline::new(config, fs).with_deferred_producers(&producers);
     roots
         .iter()
         .map(|(path, source)| check_root(&lint, format, path, source).0)

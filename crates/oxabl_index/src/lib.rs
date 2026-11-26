@@ -79,7 +79,7 @@ pub use deps::{
     UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
 };
 pub use facts::{ClassFacts, FileFacts};
-pub use producers::{SharedProducers, definitions_in};
+pub use producers::{DeferredProducers, SharedProducers, definitions_in};
 pub use written::{ReferenceSyntax, WrittenReference, written_imports, written_references};
 
 use std::io;
@@ -91,7 +91,7 @@ use oxabl_ast::{
 };
 use oxabl_common::FileId;
 use oxabl_lexer::{Kind, Token};
-use oxabl_parser::Parser;
+use oxabl_parser::{Parser, Program};
 use oxabl_preprocessor::{PreprocessedFile, Preprocessor, SpanNode};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
@@ -267,8 +267,16 @@ pub fn index_file_with_includes(
 /// Whether [`index_file`] may read the facts of `source` from its expanded text:
 /// a superset of the files it expands, found with a parse and no declare pass.
 pub(crate) fn may_be_expanded(source: &str) -> bool {
-    let tokens = oxabl_lexer::tokenize(source);
-    let program = Parser::new(&tokens, source).parse_program();
+    may_be_expanded_tokens(source, &oxabl_lexer::tokenize(source))
+}
+
+/// [`may_be_expanded`] of `source` with its tokens.
+pub(crate) fn may_be_expanded_tokens(source: &str, tokens: &[Token]) -> bool {
+    may_be_expanded_parsed(&parse(tokens, source))
+}
+
+/// [`may_be_expanded`] of a text already parsed.
+pub(crate) fn may_be_expanded_parsed(program: &Program) -> bool {
     !program.is_ok()
         || only_includes(&program.statements)
         || program.statements.iter().any(|stmt| {
@@ -277,6 +285,37 @@ pub(crate) fn may_be_expanded(source: &str) -> bool {
                 StatementKind::Class { .. } | StatementKind::Interface { .. }
             )
         })
+}
+
+/// Whether an enum that `tokens` declare is named with an unexpanded
+/// `{&name}` reference, which makes [`index_file`] read the expanded text.
+pub(crate) fn names_an_enum_with_a_reference(tokens: &[Token], source: &str) -> bool {
+    declared_enums(IndexedFileId::new(0), tokens, source)
+        .iter()
+        .any(|class| class.descriptor.name.as_str().contains('{'))
+}
+
+/// The whole-file parse of the index. Test builds count it.
+pub(crate) fn parse(tokens: &[Token], source: &str) -> Program {
+    oxabl_common::test_tally::count("index.parse");
+    Parser::new(tokens, source).parse_program()
+}
+
+/// The names the declare pass gives the `NEW [GLOBAL] SHARED` flags in
+/// `statements`, the text of `source`: what [`index_file`] reports.
+pub(crate) fn declared_shared(statements: &[Statement], source: &str) -> Vec<IndexName> {
+    let schema = Schema::empty();
+    let ctx = AnalysisContext::new(INDEXED_FILE, source, &schema);
+    let (_scopes, symbols, _diagnostics, _schema_revision) = declare_pass(statements, &ctx);
+    symbols
+        .iter()
+        .filter(|(_, symbol)| {
+            symbol
+                .flags
+                .intersects(SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED)
+        })
+        .map(|(_, symbol)| IndexName::new(&symbol.name))
+        .collect()
 }
 
 /// The expanded text of `source`, the file at `path`, with its includes read as
@@ -323,6 +362,7 @@ struct Expansion {
 /// names (`CLASS {&fullName}:`) or spliced in from an `{include}`. `None` when
 /// the preprocessor failed outright.
 fn expand(source: &str, includes: &IncludeContext<'_>) -> Option<Expansion> {
+    oxabl_common::test_tally::count("index.expand");
     let processed = Preprocessor::new(includes.fs, includes.include_paths)
         .with_predefined(includes.predefined)
         .process(INDEXED_FILE, source)
@@ -367,7 +407,7 @@ fn included_paths(processed: &PreprocessedFile) -> Vec<PathBuf> {
 /// class or interface and names an include anywhere.
 fn index_parsed(file: IndexedFileId, source: &str) -> (FileFacts, bool) {
     let tokens = oxabl_lexer::tokenize(source);
-    let program = Parser::new(&tokens, source).parse_program();
+    let program = parse(&tokens, source);
     if !program.is_ok() {
         return (FileFacts::unparseable(file), false);
     }

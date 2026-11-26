@@ -20,24 +20,39 @@
 //! nothing but includes and directives. One with code of its own is judged by
 //! its text as written, as [`index_file`] judges it, so its producer edge is
 //! missing, on every thread and in every order alike.
+//!
+//! # Candidates, confirmed by the index
+//!
+//! The map lists the files that *may* define each name: every file that
+//! [`index_file`] finds a definition in, and possibly some more. It finds them
+//! with one parse of the text as written, at most one expansion, and a token
+//! scan, not with a full index of each file. An index that asks for a producer
+//! indexes each listed file and keeps only the ones whose facts define the
+//! name, so a file listed in excess changes no answer.
+//!
+//! [`index_file`]: crate::index_file
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use oxabl_lexer::Kind;
+use oxabl_ast::{Statement, StatementKind};
+use oxabl_lexer::{Kind, Token};
+use oxabl_parser::Parser;
 use oxabl_semantic::IndexName;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::{IncludeContext, IndexedFileId, index_file_at};
+use crate::IncludeContext;
 
-/// Which files define each `DEFINE NEW [GLOBAL] SHARED` name.
+/// Which files may define each `DEFINE NEW [GLOBAL] SHARED` name.
 ///
 /// Holds paths as given, so an index reads a producer the same way it reads any
-/// other file. A file the map lists is a producer only as far as it reads and
-/// parses: one that is unreadable or does not parse defines nothing. A file
-/// with code of its own defines only what its text as written defines, not a
-/// name an include defines for it.
+/// other file. The list of a name holds every file that [`definitions_in`]
+/// finds it in: each file whose index defines it, and possibly a few more (see
+/// the module docs). A file the map lists is a producer only as far as its
+/// index defines the name: one that is unreadable or does not parse defines
+/// nothing, and a file with code of its own defines only what its text as
+/// written defines, not a name an include defines for it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SharedProducers {
     by_name: FxHashMap<Box<str>, Vec<PathBuf>>,
@@ -67,7 +82,7 @@ impl PartialEq for ProcedureNames {
 impl Eq for ProcedureNames {}
 
 impl SharedProducers {
-    /// Scan `files` and record which of them produce each `SHARED` name.
+    /// Scan `files` and record which of them may produce each `SHARED` name.
     ///
     /// Reads every file once. For a client that wants to scan on several threads,
     /// [`definitions_in`] does one file and [`from_definitions`](Self::from_definitions)
@@ -163,42 +178,210 @@ impl SharedProducers {
             .contains(name.as_str())
     }
 
-    /// The files that define `name`, in path order.
+    /// The files that may define `name`, in path order. Index each one to know
+    /// whether it does.
     pub fn producers_of(&self, name: &IndexName) -> &[PathBuf] {
         self.by_name.get(name.as_str()).map_or(&[], Vec::as_slice)
     }
 
-    /// The number of distinct `SHARED` names with a producer.
+    /// The number of distinct `SHARED` names with a listed file.
     pub fn len(&self) -> usize {
         self.by_name.len()
     }
 
-    /// Whether no file in the set produces a `SHARED` name.
+    /// Whether no file in the set may produce a `SHARED` name.
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
     }
 }
 
-/// The `SHARED` names the file at `path` produces: none when it cannot be read or
-/// does not parse.
+/// A [`SharedProducers`] over a fixed file list that is built on the first
+/// question, not before.
 ///
-/// The same answer as indexing the file, reached without the parse for a file
-/// that cannot say `SHARED` at all: the keyword has no abbreviation, so a text
-/// without it defines no shared name, and that is nearly every file of a tree.
-/// A file `index_file` expands, such as one that is nothing but includes and
-/// directives, is judged by its expanded text. Any other file is judged by its
-/// own text, so one with code of its own whose only `SHARED` definition comes
-/// from an include is not a producer.
+/// A client that analyses many files can start them at once: a file that asks
+/// for no producer does not wait for the scan, and a run in which no file asks
+/// reads no file for it. The first question builds the whole map, on the
+/// threads given to [`new`](Self::new), and a question asked meanwhile waits
+/// for it. So every answer comes from the complete map, as if it was built
+/// first.
+///
+/// `Send + Sync`: build one per run and lend it to each thread's index with
+/// [`BatchIndex::with_deferred_producers`](crate::BatchIndex::with_deferred_producers).
+#[derive(Debug, Default)]
+pub struct DeferredProducers {
+    /// The files, in the order the scan claims them.
+    files: Vec<PathBuf>,
+    threads: usize,
+    map: OnceLock<SharedProducers>,
+    procedures: ProcedureNames,
+}
+
+impl DeferredProducers {
+    /// The map of `files`, to be scanned on `threads` threads (at least one)
+    /// when it is first asked.
+    pub fn new(files: &[PathBuf], threads: usize) -> Self {
+        DeferredProducers {
+            files: files.to_vec(),
+            threads: threads.max(1),
+            map: OnceLock::new(),
+            procedures: ProcedureNames::default(),
+        }
+    }
+
+    /// The map, built through `includes` when this is the first question.
+    /// Every caller gets the same map.
+    pub fn map(&self, includes: &IncludeContext<'_>) -> &SharedProducers {
+        self.map
+            .get_or_init(|| SharedProducers::build_parallel(&self.files, includes, self.threads))
+    }
+
+    /// The map, when a question has built it.
+    pub fn built(&self) -> Option<&SharedProducers> {
+        self.map.get()
+    }
+
+    /// [`SharedProducers::defines_procedure`] over the files, without the
+    /// scan for `SHARED` names.
+    pub fn defines_procedure(&self, name: &IndexName, includes: &IncludeContext<'_>) -> bool {
+        self.procedures
+            .0
+            .get_or_init(|| scan_procedures(&self.files, includes, self.threads))
+            .contains(name.as_str())
+    }
+}
+
+/// The `SHARED` names the file at `path` may produce: every name that indexing
+/// the file finds, and possibly some more. None when the file cannot be read.
+///
+/// A text without the words `NEW SHARED` or `NEW GLOBAL` defines no shared
+/// name, and that is nearly every file of a tree: such a file is read only
+/// when it holds a `{`, and only to know whether [`index_file`] may read it
+/// through its includes. A file that says the words is parsed once as written
+/// and its own definitions are found with a token scan. A file that
+/// [`index_file`] may read through its includes is expanded once and its
+/// expanded text is scanned too, up to its last `NEW SHARED`. Neither text
+/// gets a declare pass, and the expanded text gets no whole parse.
+///
+/// [`index_file`]: crate::index_file
 pub fn definitions_in(path: &Path, includes: &IncludeContext<'_>) -> Vec<IndexName> {
     let Ok(source) = includes.fs.read(path) else {
         return Vec::new();
     };
-    if !may_define_shared(path, &source, includes) {
+    oxabl_common::test_tally::within(
+        || path.display().to_string(),
+        || candidates_in(path, &source, includes),
+    )
+}
+
+/// [`definitions_in`] of the file at `path` with the text `source`.
+fn candidates_in(path: &Path, source: &str, includes: &IncludeContext<'_>) -> Vec<IndexName> {
+    let written_says = says_new_shared(source);
+    if !written_says && !source.contains('{') {
         return Vec::new();
     }
-    index_file_at(IndexedFileId::new(0), path, &source, includes)
-        .0
-        .shared_definitions
+    let tokens = oxabl_lexer::tokenize(source);
+    let mut names = Vec::new();
+    let expanded = if written_says {
+        let program = crate::parse(&tokens, source);
+        // The text as written answers when it parses, unless the index reads
+        // the expanded text; and when the expanded text does not parse, the
+        // index falls back to it. So its names are kept in both cases.
+        if program.is_ok() && !scan_definitions(&tokens, source, &mut names) {
+            // A statement that does not parse alone in a text that parses
+            // whole: the names of the declare pass, as the index finds them.
+            names = crate::declared_shared(&program.statements, source);
+        }
+        // A superset of the files `index_file_at` reads expanded: those it
+        // may expand, and those with an enum named by a reference.
+        crate::may_be_expanded_parsed(&program)
+            || crate::names_an_enum_with_a_reference(&tokens, source)
+    } else {
+        // Only the expanded text can say `NEW SHARED`, and the index reads it
+        // only when it may expand the file: the test `may_define_shared` makes.
+        crate::may_be_expanded_tokens(source, &tokens)
+    };
+    if expanded
+        && let Some(text) = crate::expanded_text_at(path, source, includes)
+        && let Some(last) = new_shared_said_at(&text).last()
+    {
+        // A statement that does not parse alone makes the whole expanded text
+        // fail to parse, and the index then reads the text as written.
+        scan_definitions(&tokens_through(&text, last), &text, &mut names);
+    }
+    names.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+    names.dedup();
+    names
+}
+
+/// Add to `out` the name of each `DEFINE NEW [GLOBAL] SHARED` variable,
+/// temp-table, work-table, buffer and dataset in `tokens`, the tokens of
+/// `source`: the definitions the declare pass flags as producers. Each
+/// `DEFINE` with `NEW` ahead is parsed alone, with the parser that parses it in
+/// the whole text. False when one of them does not parse alone.
+fn scan_definitions(tokens: &[Token], source: &str, out: &mut Vec<IndexName>) -> bool {
+    let mut whole = true;
+    let mut defines = tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| token.kind == Kind::Define)
+        .map(|(at, _)| at)
+        .peekable();
+    while let Some(at) = defines.next() {
+        // As the parser reads `DEFINE`: references may stand before `NEW`.
+        let new_ahead = tokens[at + 1..]
+            .iter()
+            .find(|t| {
+                !matches!(
+                    t.kind,
+                    Kind::Comment | Kind::Preprop | Kind::IncludeArgReference
+                )
+            })
+            .is_some_and(|t| t.kind == Kind::New);
+        if !new_ahead {
+            continue;
+        }
+        // Up to the next `DEFINE`, which no statement holds, or the end: the
+        // parser sees the same tokens as in the whole text and no others.
+        let end = defines.peek().map_or(tokens.len(), |next| next + 1);
+        match Parser::new(&tokens[at..end], source).parse_statement() {
+            Ok(statement) => out.extend(new_shared_name(&statement).map(IndexName::new)),
+            Err(_) => whole = false,
+        }
+    }
+    whole
+}
+
+/// The name `statement` defines when the declare pass flags it `NEW SHARED`
+/// or `NEW GLOBAL SHARED`.
+fn new_shared_name(statement: &Statement) -> Option<&str> {
+    let (name, new_shared, new_global_shared) = match &statement.kind {
+        StatementKind::VariableDeclaration {
+            name,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        }
+        | StatementKind::DefineTempTable {
+            name,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        }
+        | StatementKind::DefineBuffer {
+            name,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        }
+        | StatementKind::DefineDataset {
+            name,
+            is_new_shared,
+            is_new_global_shared,
+            ..
+        } => (name, *is_new_shared, *is_new_global_shared),
+        _ => return None,
+    };
+    (new_shared || new_global_shared).then_some(name.name.as_str())
 }
 
 /// The folded names of the internal procedures `files` define, and the files
@@ -372,42 +555,68 @@ pub(crate) fn may_define_shared(path: &Path, source: &str, includes: &IncludeCon
 /// directive, a `{...}` reference or a line continuation). A superset of the
 /// texts that hold a `NEW [GLOBAL] SHARED` definition.
 fn says_new_shared(source: &str) -> bool {
+    new_shared_said_at(source).next().is_some()
+}
+
+/// The byte offsets of the words `NEW` that [`says_new_shared`] accepts, in
+/// text order.
+fn new_shared_said_at(source: &str) -> impl Iterator<Item = usize> {
     const NEW: &[u8] = b"new";
     let bytes = source.as_bytes();
     let word = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'#' | b'$' | b'%');
     let mut at = 0;
-    while let Some(found) = bytes[at..]
-        .windows(NEW.len())
-        .position(|w| w.eq_ignore_ascii_case(NEW))
-    {
-        let start = at + found;
-        let end = start + NEW.len();
-        at = start + 1;
-        let alone = (start == 0 || !word(bytes[start - 1]) && bytes[start - 1] != b'&')
-            && bytes.get(end).is_none_or(|b| !word(*b));
-        if !alone {
-            continue;
-        }
-        let rest = &bytes[end..];
-        let next = rest
-            .iter()
-            .position(|b| !b.is_ascii_whitespace())
-            .map_or(&[][..], |skip| &rest[skip..]);
-        let starts = |w: &[u8]| next.len() >= w.len() && next[..w.len()].eq_ignore_ascii_case(w);
-        if next.is_empty()
-            || matches!(next[0], b'/' | b'{' | b'&' | b'~')
-            || starts(b"shared")
-            || starts(b"global")
+    std::iter::from_fn(move || {
+        while let Some(found) = bytes[at..]
+            .windows(NEW.len())
+            .position(|w| w.eq_ignore_ascii_case(NEW))
         {
-            return true;
+            let start = at + found;
+            let end = start + NEW.len();
+            at = start + 1;
+            let alone = (start == 0 || !word(bytes[start - 1]) && bytes[start - 1] != b'&')
+                && bytes.get(end).is_none_or(|b| !word(*b));
+            if !alone {
+                continue;
+            }
+            let rest = &bytes[end..];
+            let next = rest
+                .iter()
+                .position(|b| !b.is_ascii_whitespace())
+                .map_or(&[][..], |skip| &rest[skip..]);
+            let starts =
+                |w: &[u8]| next.len() >= w.len() && next[..w.len()].eq_ignore_ascii_case(w);
+            if next.is_empty()
+                || matches!(next[0], b'/' | b'{' | b'&' | b'~')
+                || starts(b"shared")
+                || starts(b"global")
+            {
+                return Some(start);
+            }
+        }
+        None
+    })
+}
+
+/// The tokens of `source` up to the first `DEFINE` that starts after the
+/// offset `last`, that one included, or all of them. Every `DEFINE` whose
+/// `NEW` starts at or before `last` is in them, with the tokens of its
+/// statement: no statement holds a second `DEFINE`.
+fn tokens_through(source: &str, last: usize) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    for token in oxabl_lexer::Lexer::new(source) {
+        let stop = token.kind == Kind::Define && token.start > last;
+        tokens.push(token);
+        if stop {
+            break;
         }
     }
-    false
+    tokens
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{IndexedFileId, index_file_at};
     use oxabl_workspace::{InMemoryFileSystem, PreprocessorConfig};
 
     #[test]
@@ -486,6 +695,12 @@ mod tests {
                                     }
                                     found += 1;
                                     assert!(may_define_shared(path, &text, &includes), "{text:?}");
+                                    let mut fs = InMemoryFileSystem::new();
+                                    fs.insert(path.to_path_buf(), text.as_str());
+                                    let listed = definitions_in(path, &in_fs(&fs, &predefined));
+                                    for name in &facts.shared_definitions {
+                                        assert!(listed.contains(name), "{name:?} in {text:?}");
+                                    }
                                     if !text.contains('{') {
                                         assert!(says_new_shared(&text), "{text:?}");
                                     }
@@ -649,6 +864,8 @@ mod tests {
             ("{defs.i}", &["v-a"][..]),
             ("DEFINE {head.i} VARIABLE v-b AS INTEGER NO-UNDO.", &["v-b"]),
             ("MESSAGE 2.\n{defs.i}", &[]),
+            // The last `NEW SHARED` starts a statement that goes on after it.
+            ("{two.i}", &["tt-c", "v-a"]),
         ] {
             let fs = fs_with(&[
                 ("/f.p", source),
@@ -657,6 +874,15 @@ mod tests {
                     "DEFINE NEW SHARED VARIABLE v-a AS INTEGER NO-UNDO.",
                 ),
                 ("/head.i", "NEW SHARED"),
+                (
+                    "/two.i",
+                    "DEFINE NEW SHARED VARIABLE v-a AS INTEGER NO-UNDO.\n\
+                     DEFINE VARIABLE v-b AS INTEGER NO-UNDO.\n\
+                     DEFINE NEW SHARED TEMP-TABLE tt-c NO-UNDO\n\
+                     FIELD f AS INTEGER\n\
+                     INDEX ix f.\n\
+                     MESSAGE \"done\".",
+                ),
             ]);
             let includes = IncludeContext {
                 fs: &fs,
@@ -750,6 +976,45 @@ mod tests {
         let predefined = PreprocessorConfig::default();
         other.defines_procedure(&IndexName::new("x"), &in_fs(&fs, &predefined));
         assert_eq!(map, other);
+    }
+
+    /// Questions that arrive while the map is built wait for the whole map:
+    /// none sees a part of it.
+    #[test]
+    fn every_question_to_a_deferred_map_gets_the_whole_map() {
+        let sources: Vec<(String, String)> = (0..60)
+            .map(|n| {
+                (
+                    format!("/src/f{n:02}.p"),
+                    format!("DEFINE NEW SHARED VARIABLE v-{n} AS CHARACTER NO-UNDO."),
+                )
+            })
+            .collect();
+        let listed: Vec<(&str, &str)> = sources
+            .iter()
+            .map(|(p, b)| (p.as_str(), b.as_str()))
+            .collect();
+        let fs = fs_with(&listed);
+        let files = paths(&listed);
+        let predefined = PreprocessorConfig::default();
+        let includes = in_fs(&fs, &predefined);
+        let whole = SharedProducers::build(&files, &includes);
+
+        let deferred = DeferredProducers::new(&files, 3);
+        assert!(
+            deferred.built().is_none(),
+            "nothing is read before a question"
+        );
+        let seen: Vec<SharedProducers> = std::thread::scope(|scope| {
+            let askers: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| deferred.map(&includes).clone()))
+                .collect();
+            askers.into_iter().map(|a| a.join().unwrap()).collect()
+        });
+        for map in seen {
+            assert_eq!(map, whole);
+        }
+        assert_eq!(whole.len(), 60);
     }
 
     #[test]
