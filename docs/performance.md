@@ -614,12 +614,13 @@ of `oxabl check` each:
 
 | Workspace | `Set::insert` (perf, self) | User CPU | Wall |
 | --- | --- | --- | --- |
-| private, about 14,000 files | 3.03% to 1.94% | 179.7 s to 176.1 s | 13.7 s to 13.5 s |
+| a large real-world codebase kept outside the repository | 3.03% to 1.94% | −2.0% | −1.5% |
 | generated `erp` | 1.54% to 1.35% | 261.4 s to 259.8 s | 19.5 s to 19.4 s |
 
-With `-j 1` under callgrind: `check big.p` 1,196 M to 1,176 M instructions,
-`check lsp_bench.p` 94.7 M to 93.6 M, `check -j 1 src` of `ci` 1,170 M to
-1,155 M, `conformance -j 1 big.p` 160.0 M to 158.9 M.
+With `-j 1` under callgrind: `check big.p` 1,196 M to 1,176 M instructions (the older tables above predate
+several changes and give other numbers for the same command),
+`check lsp_bench.p` 94.7 M to 93.6 M, `check -j 1 src` of `ci` about 1%
+fewer (1,166 M to 1,158 M in one build pair), `conformance -j 1 big.p` 160.0 M to 158.9 M.
 
 The rest of `Set::insert` comes from the names that the semantic passes fold
 and intern (`fold_atom`), and from `IndexName::new`. A cache of atoms in front

@@ -76,7 +76,7 @@ pub struct Token {
 
 impl Token {
     /// The text of a [`TokenValue::Text`] value in `source`, the text that
-    /// was lexed. `None` for another value, or when `source` is not that text.
+    /// was lexed. `source` must be the text that was lexed: another text gives a wrong slice, or `None` when the range does not fit it. `None` for another value.
     pub fn text<'s>(&self, source: &'s str) -> Option<&'s str> {
         match self.value {
             TokenValue::Text { start, end } => source.get(start..end),

@@ -70,7 +70,11 @@ fn main() {
                 line_number,
                 column_number,
                 display_slice,
-                token.value,
+                match token.value {
+                    oxabl_lexer::TokenValue::Text { .. } =>
+                        format!("Text({:?})", token.text(&source)),
+                    ref other => format!("{other:?}"),
+                },
                 flag
             );
         }

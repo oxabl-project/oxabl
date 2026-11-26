@@ -37,10 +37,21 @@ struct Tok<'a> {
 
 /// The value of a token, with the text of a [`TokenValue::Text`] read from
 /// its source, because the two sources place it at different offsets.
-#[derive(PartialEq)]
 enum Value<'a> {
+    /// `None` is a text that could not be read. It equals nothing, so the
+    /// guard fails closed.
     Text(Option<&'a str>),
     Other(&'a TokenValue),
+}
+
+impl PartialEq for Value<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Text(Some(a)), Value::Text(Some(b))) => a == b,
+            (Value::Other(a), Value::Other(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 fn is_literal(kind: Kind) -> bool {
@@ -208,6 +219,14 @@ fn compare(a: &[Tok], b: &[Tok]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unreadable_text_equals_nothing() {
+        assert!(Value::Text(None) != Value::Text(None));
+        assert!(Value::Text(Some("a")) == Value::Text(Some("a")));
+        assert!(Value::Text(Some("a")) != Value::Text(Some("b")));
+        assert!(Value::Text(Some("a")) != Value::Text(None));
+    }
 
     #[test]
     fn identical_streams_pass() {
