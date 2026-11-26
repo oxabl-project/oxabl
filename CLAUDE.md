@@ -20,6 +20,10 @@ This is a single-context repository. See `docs/agents/domain.md`.
 
 Oxabl is a high-performance tooling suite for Progress ABL (Advanced Business Language), written in Rust. The project aims to provide blazingly fast developer tools for ABL code (formatting, linting, parsing, etc.). This is an unofficial project with no affiliation with Progress Software.
 
+## Code style
+
+Rust code follows `docs/TIGER_STYLE.md`: safety first, then performance, then developer experience. Read it before you write or review Rust in this repository. Its lints come in with a ratchet: do not add an `#[allow]` to pass one.
+
 ## Build Commands
 
 ```bash
