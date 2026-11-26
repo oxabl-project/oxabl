@@ -12,11 +12,6 @@ pub enum Need {
         name: &'static str,
         hint: &'static str,
     },
-    /// A file that must exist.
-    File {
-        path: &'static str,
-        hint: &'static str,
-    },
     /// A rustup target of the active toolchain.
     RustTarget { name: &'static str },
 }
@@ -29,13 +24,6 @@ impl Need {
                 Some(_) => Ok(()),
                 None => Err(format!("missing tool `{name}` on PATH. {hint}")),
             },
-            Need::File { path, hint } => {
-                if Path::new(path).is_file() {
-                    Ok(())
-                } else {
-                    Err(format!("missing file `{path}`. {hint}"))
-                }
-            }
             Need::RustTarget { name } => check_rust_target(name),
         }
     }

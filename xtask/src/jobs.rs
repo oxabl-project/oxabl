@@ -4,7 +4,7 @@
 
 use crate::Context;
 use crate::checks::{self, Outcome};
-use crate::tools::Need;
+use crate::tools::{Need, find_on_path};
 use std::path::PathBuf;
 
 pub struct Job {
@@ -113,9 +113,9 @@ const SHELLCHECK: Need = Need::Tool {
     name: "shellcheck",
     hint: "Install it (`apt install shellcheck`) or run inside `mise x shellcheck@0.11.0 --`.",
 };
-const DASH: Need = Need::File {
-    path: "/bin/dash",
-    hint: "Install dash (`apt install dash`).",
+const DASH: Need = Need::Tool {
+    name: "dash",
+    hint: "Install dash (`apt install dash`) or put it on PATH.",
 };
 const DOCKER: Need = Need::Tool {
     name: "docker",
@@ -317,6 +317,11 @@ fn self_update() -> Job {
     )
 }
 
+/// The path of a shell on `PATH`; a missing shell fails its step through its `Need`.
+fn shell_path(name: &str) -> String {
+    find_on_path(name).map_or_else(|| format!("/bin/{name}"), |path| path.display().to_string())
+}
+
 fn install_script() -> Job {
     let test = |shell: &str| {
         Command::cargo(&[
@@ -338,8 +343,8 @@ fn install_script() -> Job {
             )
             .needing(SHELLCHECK),
             // dash is /bin/sh on Ubuntu, so this runs the script as a plain POSIX shell.
-            step("run the script with dash", test("/bin/dash")).needing(DASH),
-            step("run the script with bash", test("/bin/bash")).needing(BASH),
+            step("run the script with dash", test(&shell_path("dash"))).needing(DASH),
+            step("run the script with bash", test(&shell_path("bash"))).needing(BASH),
         ],
     )
 }
