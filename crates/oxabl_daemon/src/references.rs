@@ -36,48 +36,6 @@ pub const MAX_UNITS: usize = 2_000;
 /// How often a unit is analysed again after an edit cancelled its analysis.
 const ATTEMPTS: usize = 3;
 
-/// The most searches over other files that run at one time. A later one
-/// waits, so repeated requests do not multiply the analysis threads.
-pub const MAX_SEARCHES: usize = 2;
-
-/// The searches over other files that run now.
-static SEARCHES: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
-
-/// One of the [`MAX_SEARCHES`] places, given back on drop.
-struct SearchSlot;
-
-impl SearchSlot {
-    /// Wait for a place. `None` when `stop` says so while waiting.
-    fn take(stop: &dyn Fn() -> bool) -> Option<SearchSlot> {
-        let (count, freed) = &SEARCHES;
-        let mut running = count
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while *running >= MAX_SEARCHES {
-            if stop() {
-                return None;
-            }
-            running = freed
-                .wait_timeout(running, Duration::from_millis(50))
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .0;
-        }
-        *running += 1;
-        Some(SearchSlot)
-    }
-}
-
-impl Drop for SearchSlot {
-    fn drop(&mut self) {
-        let (count, freed) = &SEARCHES;
-        let mut running = count
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *running -= 1;
-        freed.notify_one();
-    }
-}
-
 /// What a references or call hierarchy request asks.
 #[derive(Debug, Clone)]
 pub enum ReferenceQuery {
@@ -221,7 +179,7 @@ pub fn answer_batch(
     session_root: &Path,
     root: &Path,
     queries: &[ReferenceQuery],
-    stop: &(dyn Fn() -> bool + Sync),
+    stop: &dyn Fn() -> bool,
 ) -> BatchAnswer {
     let every = |error: ReferenceError| BatchAnswer {
         answers: queries.iter().map(|_| Err(error.clone())).collect(),
@@ -339,31 +297,26 @@ pub fn answer_batch(
         unit_of.push(mine);
     }
     drop(at_unit);
-    let referents: Vec<(&Referent, bool)> = searches
-        .iter()
-        .map(|search| (&search.referent, search.incoming))
-        .collect();
-    let lock = if units.is_empty() {
-        None
-    } else {
-        // Taken once the graph is ready: a request that waits for a pass holds
-        // no place another request could use.
-        match SearchSlot::take(stop) {
-            Some(slot) => Some(slot),
-            None => return cancelled(),
-        }
-    };
-    let remote = search_units(host, session_root, &units, stop, |unit, at| {
+    let referents: Arc<Vec<(Referent, bool)>> = Arc::new(
+        searches
+            .iter()
+            .map(|search| (search.referent.clone(), search.incoming))
+            .collect(),
+    );
+    let units = Arc::new(units);
+    let remote = search_units(host, session_root, &units, stop, move |unit, at| {
         let (mut read, mut memo) = (HashMap::new(), ReferenceMemo::default());
         wanted[at]
             .iter()
             .map(|&s| {
-                let (referent, incoming) = referents[s];
-                (s, unit_part(unit, referent, incoming, &mut read, &mut memo))
+                let (referent, incoming) = &referents[s];
+                (
+                    s,
+                    unit_part(unit, referent, *incoming, &mut read, &mut memo),
+                )
             })
             .collect::<Vec<_>>()
     });
-    drop(lock);
     if stop() {
         return cancelled();
     }
@@ -728,59 +681,199 @@ struct Searched<T> {
 }
 
 /// Analyse each of `units` with `answer`, which also gets the unit's index,
-/// on worker threads.
-fn search_units<T: Send>(
+/// on the threads of the [`Pool`]. Stops between two units when `stop` says
+/// so; the units not analysed then have no outcome.
+fn search_units<T: Send + 'static>(
     host: &SessionHost,
     session_root: &Path,
-    units: &[PathBuf],
-    stop: &(dyn Fn() -> bool + Sync),
-    answer: impl Fn(&NavigationUnit<'_, '_, '_>, usize) -> T + Sync,
+    units: &Arc<Vec<PathBuf>>,
+    stop: &dyn Fn() -> bool,
+    answer: impl Fn(&NavigationUnit<'_, '_, '_>, usize) -> T + Send + Sync + 'static,
 ) -> Searched<T> {
-    let jobs = std::thread::available_parallelism()
-        .map_or(1, usize::from)
-        .clamp(1, units.len().max(1));
-    let next = AtomicUsize::new(0);
-    let analysed = Mutex::new(Vec::new());
-    let mut outcomes: Vec<(usize, Result<T, String>)> = std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..jobs)
-            .map(|_| {
-                let (next, answer, analysed) = (&next, &answer, &analysed);
-                oxabl_common::stack::builder()
-                    .name("oxabl-references".to_string())
-                    .spawn_scoped(scope, move || {
-                        let mut mine = Vec::new();
-                        loop {
-                            if stop() {
-                                break;
-                            }
-                            let at = next.fetch_add(1, Ordering::Relaxed);
-                            let Some(unit) = units.get(at) else { break };
-                            mine.push((at, analyse_unit(host, session_root, unit, at, answer)));
-                            analysed
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .push(unit.clone());
-                        }
-                        mine
-                    })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .flat_map(|worker| match worker {
-                Ok(worker) => worker.join().unwrap_or_else(|panic| {
-                    std::panic::resume_unwind(panic);
-                }),
-                Err(_) => Vec::new(),
-            })
-            .collect()
+    let mut searched = Searched {
+        outcomes: Vec::with_capacity(units.len()),
+        analysed: Vec::with_capacity(units.len()),
+    };
+    if units.is_empty() {
+        return searched;
+    }
+    let (sender, results) = std::sync::mpsc::channel();
+    let task = Arc::new(SearchTask {
+        host: host.clone(),
+        session_root: session_root.to_path_buf(),
+        units: Arc::clone(units),
+        next: AtomicUsize::new(0),
+        stop: AtomicBool::new(false),
+        answer: Box::new(answer),
+        results: sender,
     });
-    outcomes.sort_by_key(|(at, _)| *at);
-    Searched {
-        outcomes,
-        analysed: analysed
-            .into_inner()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    if !Pool::shared().submit(Arc::clone(&task) as Arc<dyn PoolTask>) {
+        return searched;
+    }
+    while searched.outcomes.len() < units.len() {
+        if stop() {
+            break;
+        }
+        match results.recv_timeout(Duration::from_millis(50)) {
+            Ok((at, outcome)) => {
+                searched.analysed.push(units[at].clone());
+                searched.outcomes.push((at, outcome));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    // The pool leaves the units that are left.
+    task.stop.store(true, Ordering::Relaxed);
+    searched.outcomes.sort_by_key(|(at, _)| *at);
+    searched
+}
+
+/// The threads that analyse the other files of every search of the process,
+/// [`available_parallelism`](std::thread::available_parallelism) of them. The
+/// searches share them by turns, one unit at a time, so the work in progress
+/// is bounded whatever the number of searches, and a short search is not stuck
+/// behind a long one. A thread with no work for [`Pool::IDLE`] ends.
+struct Pool {
+    state: Mutex<PoolState>,
+    work: Condvar,
+}
+
+#[derive(Default)]
+struct PoolState {
+    /// The searches with units left, in turn.
+    tasks: std::collections::VecDeque<Arc<dyn PoolTask>>,
+    threads: usize,
+}
+
+/// A search that the [`Pool`] works.
+trait PoolTask: Send + Sync {
+    /// Analyse the next unit. `false` when none is left.
+    fn step(&self) -> bool;
+}
+
+impl Pool {
+    const IDLE: Duration = Duration::from_secs(30);
+
+    fn shared() -> &'static Pool {
+        static POOL: std::sync::LazyLock<Pool> = std::sync::LazyLock::new(|| Pool {
+            state: Mutex::new(PoolState::default()),
+            work: Condvar::new(),
+        });
+        &POOL
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PoolState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Queue `task`, and start the threads that are missing. `false` when no
+    /// thread runs and none can start.
+    fn submit(&'static self, task: Arc<dyn PoolTask>) -> bool {
+        let size = std::thread::available_parallelism().map_or(1, usize::from);
+        let mut state = self.lock();
+        state.tasks.push_back(Arc::clone(&task));
+        while state.threads < size {
+            let spawned = oxabl_common::stack::builder()
+                .name("oxabl-references".to_string())
+                .spawn(move || self.work());
+            if spawned.is_err() {
+                break;
+            }
+            state.threads += 1;
+        }
+        if state.threads == 0 {
+            state.tasks.retain(|held| !Arc::ptr_eq(held, &task));
+            return false;
+        }
+        self.work.notify_all();
+        true
+    }
+
+    fn work(&self) {
+        loop {
+            let task = {
+                let mut state = self.lock();
+                loop {
+                    if let Some(task) = state.tasks.pop_front() {
+                        state.tasks.push_back(Arc::clone(&task));
+                        break task;
+                    }
+                    let (held, waited) = self
+                        .work
+                        .wait_timeout(state, Pool::IDLE)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state = held;
+                    if waited.timed_out() && state.tasks.is_empty() {
+                        state.threads -= 1;
+                        return;
+                    }
+                }
+            };
+            // A step contains the panics of its unit; a panic past that costs
+            // the unit ([`Unsent`]), not the thread or the search.
+            let more = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task.step()))
+                .unwrap_or(true);
+            if !more {
+                self.lock().tasks.retain(|held| !Arc::ptr_eq(held, &task));
+            }
+        }
+    }
+}
+
+/// One search, as the [`Pool`] works it.
+struct SearchTask<T> {
+    host: SessionHost,
+    session_root: PathBuf,
+    units: Arc<Vec<PathBuf>>,
+    next: AtomicUsize,
+    stop: AtomicBool,
+    answer: Box<UnitAnswer<T>>,
+    results: std::sync::mpsc::Sender<(usize, Result<T, String>)>,
+}
+
+/// What a search asks of each unit, with the index of the unit.
+type UnitAnswer<T> = dyn Fn(&NavigationUnit<'_, '_, '_>, usize) -> T + Send + Sync;
+
+/// Sends a failure for a unit whose analysis ended with no outcome, so that
+/// the search does not wait for it.
+struct Unsent<'a, T> {
+    at: usize,
+    results: &'a std::sync::mpsc::Sender<(usize, Result<T, String>)>,
+    sent: bool,
+}
+
+impl<T> Drop for Unsent<'_, T> {
+    fn drop(&mut self) {
+        if !self.sent {
+            let _ = self
+                .results
+                .send((self.at, Err("its analysis failed".to_string())));
+        }
+    }
+}
+
+impl<T: Send> PoolTask for SearchTask<T> {
+    fn step(&self) -> bool {
+        if self.stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        let at = self.next.fetch_add(1, Ordering::Relaxed);
+        let Some(unit) = self.units.get(at) else {
+            return false;
+        };
+        let mut unsent = Unsent {
+            at,
+            results: &self.results,
+            sent: false,
+        };
+        let outcome = analyse_unit(&self.host, &self.session_root, unit, at, &*self.answer);
+        unsent.sent = true;
+        // The search may have stopped and gone.
+        let _ = self.results.send((at, outcome));
+        true
     }
 }
 
@@ -791,11 +884,19 @@ fn analyse_unit<T>(
     session_root: &Path,
     unit: &Path,
     at: usize,
-    answer: &impl Fn(&NavigationUnit<'_, '_, '_>, usize) -> T,
+    answer: &dyn Fn(&NavigationUnit<'_, '_, '_>, usize) -> T,
 ) -> Result<T, String> {
     oxabl_common::catch_panic(|| {
         (0..ATTEMPTS)
-            .find_map(|_| analyse(host, session_root, unit, |unit| answer(unit, at)))
+            .find_map(|_| {
+                analyse(host, session_root, unit, |unit| {
+                    oxabl_common::hold_if_injected(
+                        oxabl_common::panic_sites::REFERENCE_UNIT,
+                        &unit.source,
+                    );
+                    answer(unit, at)
+                })
+            })
             .unwrap_or_else(|| Err("edits kept cancelling its analysis".to_string()))
     })
     .unwrap_or_else(|panic| Err(format!("its analysis failed: {panic}")))

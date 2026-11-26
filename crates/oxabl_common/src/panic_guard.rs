@@ -170,6 +170,10 @@ pub mod panic_sites {
     /// [`hold_if_injected`](super::hold_if_injected) and
     /// [`count_requested`](super::count_requested).
     pub const LSP_REFERENCE_LENS: &str = "lsp.reference-lens";
+    /// The analysis of one other file of a references search, for
+    /// [`hold_if_injected`](super::hold_if_injected). The marker is in that
+    /// file.
+    pub const REFERENCE_UNIT: &str = "daemon.reference-unit";
     /// The reference-count lens search after its answer, before the title is
     /// kept, for [`hold_if_injected`](super::hold_if_injected).
     pub const LSP_REFERENCE_LENS_ANSWER: &str = "lsp.answered-reference-lens";

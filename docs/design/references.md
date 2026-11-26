@@ -53,12 +53,16 @@ the request waits, so the request never stops an edit. One request analyses at
 most 2000 other files (`oxabl_daemon::references::MAX_UNITS`). The files that
 declare the referent come first, so the limit never cuts them.
 
-At most two searches over other files run at one time
-(`oxabl_daemon::references::MAX_SEARCHES`); a later one waits. A request takes
-its place only after the workspace graph is ready, so a request that waits for
-a workspace pass holds no place. A `$/cancelRequest` stops a request while it
-waits for the pass (the pass goes on and is kept for later requests), while it
-waits for a place, and between two files. The request answers
+The other files of every search are analysed on one pool of threads, as many
+as `available_parallelism`, that the whole daemon shares
+(`oxabl_daemon::references`). The searches take turns, one file at a time, so
+the number of analyses in progress does not grow with the number of requests,
+and a short search does not wait for the end of a long one. A request that
+waits for its search holds no analysis thread, and a request that waits for a
+workspace pass holds no place in the pool. A thread of the pool that has had
+no work for 30 seconds ends. A `$/cancelRequest` stops a request while it
+waits for the pass (the pass goes on and is kept for later requests), and
+between two files. The request answers
 `RequestCancelled`.
 
 The search starts from a current workspace pass. It reuses a walk for added
@@ -238,7 +242,7 @@ most visible place that it can without a message on every request:
 
 Each request analyses the unit that asks again (expand, parse, resolve; no type
 check). A search over other files analyses each of them the same way, on
-`available_parallelism` threads, and reads the outline of each file a
+the shared pool, and reads the outline of each file a
 resolution names once per file. A lookup of the name at an offset, of the call
 that holds a `RUN` name and of the routine that holds a call is a binary
 search; the declared symbols and each callee's item are built once per

@@ -1787,3 +1787,120 @@ fn one_search_analyses_each_file_once_for_all_the_lenses_of_a_file() {
     want.sort();
     assert_eq!(files, want, "the files the search analysed");
 }
+
+/// The threads of the process `pid`.
+#[cfg(target_os = "linux")]
+fn threads_of(pid: u32) -> usize {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("Threads:"))
+        .and_then(|count| count.trim().parse().ok())
+        .unwrap()
+}
+
+/// Three classes, each named by `callers` programs whose analysis in a
+/// search waits 300 ms.
+#[cfg(target_os = "linux")]
+fn held_callers_workspace(callers: usize) -> Workspace {
+    let mut files: Vec<(String, String)> = vec![("oxabl.toml".into(), CONFIG.into())];
+    for class in ["A", "B", "C"] {
+        files.push((
+            format!("app/{class}.cls"),
+            format!(
+                "CLASS app.{class}:\n\
+                 \x20   DEFINE PUBLIC PROPERTY Size AS INTEGER NO-UNDO GET. SET.\n\
+                 \x20   METHOD PUBLIC VOID Run():\n    END METHOD.\n\
+                 \x20   METHOD PUBLIC VOID Stop():\n    END METHOD.\n\
+                 END CLASS.\n"
+            ),
+        ));
+        for n in 0..callers {
+            files.push((
+                format!("{class}{n}.p"),
+                format!(
+                    "/* OXABL-TEST-HOLD:daemon.reference-unit@300 */\n\
+                     DEFINE VARIABLE o AS CLASS app.{class} NO-UNDO.\n\
+                     o = NEW app.{class}().\no:Run().\n"
+                ),
+            ));
+        }
+    }
+    let borrowed: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    Workspace::new(&borrowed)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn waiting_resolves_and_searches_hold_no_threads_of_their_own() {
+    let ws = held_callers_workspace(12);
+    let mut session = start(&ws);
+    let pid = session.daemon_pid().expect("the daemon registered");
+    let mut listed = Vec::new();
+    let mut texts = Vec::new();
+    for class in ["A", "B", "C"] {
+        let path = ws.path(&format!("app/{class}.cls"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        session.open(&path, &text);
+        listed.extend(lenses(&mut session, &path));
+        texts.push((path, text));
+    }
+    assert_eq!(listed.len(), 12);
+    // The workspace pass and the threads that analyse other files exist.
+    let (uses, _) = find_references(&mut session, &texts[0].0, &texts[0].1, "Stop()");
+    assert_eq!(uses, 0);
+    let before = threads_of(pid);
+
+    // Twelve resolves of three files and three find references requests at
+    // once, while each analysis of a caller waits.
+    let mut ids = Vec::new();
+    for lens in &listed {
+        let id = session.next_request_id();
+        session.send(json!({
+            "jsonrpc": "2.0", "id": id, "method": "codeLens/resolve", "params": lens
+        }));
+        ids.push(id);
+    }
+    for (path, text) in &texts {
+        let id = session.next_request_id();
+        let (line, character) = utf16_at(text, nth(text, "Run()", 0) + 1);
+        session.send(json!({
+            "jsonrpc": "2.0", "id": id, "method": "textDocument/references",
+            "params": {
+                "textDocument": {"uri": file_uri(path)},
+                "position": {"line": line, "character": character},
+                "context": {"includeDeclaration": false}
+            }
+        }));
+        ids.push(id);
+    }
+    let mut most = before;
+    let mut left = ids.len();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while left > 0 {
+        most = most.max(threads_of(pid));
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{left} answers missing"
+        );
+        while let Some(message) = session.try_next(std::time::Duration::from_millis(20)) {
+            if ids.iter().any(|id| message["id"] == json!(id)) && message.get("method").is_none() {
+                assert!(message.get("error").is_none(), "{message}");
+                left -= 1;
+            }
+        }
+    }
+    // A runner for each of two batches, a thread for each find references
+    // request, and a thread for each of these five that waits for the
+    // workspace pass. No thread for a resolve that waits, and no new thread to
+    // analyse a file: the searches share the ones that exist.
+    let allowed = 2 + 3 + 5;
+    eprintln!("the daemon went from {before} to {most} threads");
+    assert!(
+        most - before <= allowed,
+        "the daemon went from {before} to {most} threads (allowed {allowed} more)"
+    );
+}
