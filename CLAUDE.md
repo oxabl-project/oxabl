@@ -44,6 +44,10 @@ cargo test -p oxabl_lexer -- test_name
 
 # Check code without building
 cargo check
+
+# Run the CI jobs on this machine (see "CI & Release Process")
+cargo xtask ci --list
+cargo xtask ci fmt clippy
 ```
 
 ## Code Generation
@@ -131,6 +135,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 - `crates/oxabl_bench` - Not published. The end-to-end and memory benches, the counting global allocator (`alloc`), the bench inputs (`fixtures`) and the generator of synthetic ABL workspaces (`generate`, the binary `gen-workspace`; `scripts/bench/gen-workspace`). Its oxabl dependencies are paths with no version, so a release adds no version to a dependency line and `cargo publish` of `oxabl_daemon` drops its dev-dependency on it. Release Please's `cargo-workspace` plugin still bumps its `version` and writes its `CHANGELOG.md` in a release PR; that is expected. See `docs/performance.md`
 - `crates/oxabl_fake_avm` - A fake AVM that speaks the worker protocol, including compile requests, the faults the build tests need and error 12927 for stale class r-code of a cycle, for black-box tests of `oxabl build`. It also stands in for the runtime (`-p <program>`, `-new <class>`) and for a project's own `COMPILE ... SAVE` (`-c`), with the PROPATH from the `PROPATH` variable; the shared case table `crates/oxabl/tests/common/runtime_cases.rs` runs against it (`build_runtime_fake.rs`) and against OpenEdge (`build_openedge/runtime.rs`). Not published. It has no oxabl dependency, on purpose: CI fails when `cargo tree -p oxabl_fake_avm` names an oxabl crate
 - Real-AVM suite - `crates/oxabl/tests/build_openedge.rs` and `build_openedge_scratch.rs` (with `build_openedge/`, `common/openedge/` and `fixtures/openedge/`): the opt-in tests of `oxabl build` against OpenEdge. Every test is `#[ignore]` and fails, never skips, without its `OXABL_OPENEDGE_*` variables; the variables and the commands are in `docs/overview.md`, "Testing against a real AVM". CI builds them and runs none
+- `xtask` - Project automation (`cargo xtask ci`, see "Run CI locally"). Not published and not in `release-please-config.json`; it has no dependencies
 - `crates/oxabl_nulls` - Unknown values per unit: buffers a failed `FIND ... NO-ERROR` may leave without a record and the field references that read them, and local variables that may hold `?` with the uses they reach
 
 - `crates/oxabl_semantic` - The declare, resolve and type-check passes: scopes, symbols, references and types per file. The resolve pass finds the class of a receiver (`obj:Name`, `THIS-OBJECT`, `SUPER`, `CAST`, a type name, a chain) and its member, through the scope tree or the workspace index; the type-check pass types the member and picks the method overload from the argument types (`overload.rs`). An unknown fact gives `Unknown`. See `docs/design/class-members.md`. A pass finds the scope of a statement with `ScopeTree::child`, a table that `push` fills, never with a scan of all scopes: with the test-only `test-counts` feature, in a build with debug assertions, the tree counts every scope record that it reads (its storage is private, so a scan counts wherever it sits), and a test build of `oxabl` prints the count when `OXABL_TEST_SCOPES_READ` is set, which `crates/oxabl/tests/check_scope_search.rs` reads (procedures and class members; the test is compiled only with debug assertions, because a release build has no count: `cargo build --benches` turns the feature on, so a bench build must never count, and the CI test job runs it in the test profile). The `kind`, `parent` and `owner_node` of a `Scope` are read-only (`Scope::kind()`, `parent()`, `owner_node()`), because `ScopeTree::child` is keyed by them. A `Scope` (48 bytes) holds a binding map only for each namespace that binds a name
@@ -176,6 +181,17 @@ Generates:
 - `match_keyword()` function handling abbreviations and case-insensitive matching
 
 ## CI & Release Process
+
+### Run CI locally
+
+`cargo xtask ci [--list] [--verbose] [JOB...]` runs the jobs of `.github/workflows/ci.yml` on this machine. The logic of each job is Rust code in `xtask/src/jobs.rs` (the checks that read the dependency tree or the workflows are in `xtask/src/checks.rs`). A job in `ci.yml` keeps only its runner setup (checkout, `.github/actions/setup-rust`, caches, Node) and runs `cargo xtask ci <job>`, so a local run and a CI run execute the same code. A test in `xtask` fails when a `ci.yml` job does not call its own xtask job. A new job needs an entry in `xtask/src/jobs.rs`, in the order of `ci.yml`, and a `cargo xtask ci <job>` step.
+
+- Before you open a pull request, or push new commits to one, run `cargo xtask ci` (all jobs) on your branch merged with `origin/master` and get it green. This holds for an agent and for a contributor. GitHub CI is the second check, not the first.
+- With no job names it runs every job in order. A job stops at its first failed step. The run goes on with the next job. The summary lists each step as PASS, FAIL or SKIP with its time and its log under `target/xtask-ci/logs/`. The exit status is non-zero when any step failed or was skipped.
+- A missing tool is a FAIL that names the tool and how to get it (`shellcheck`, `docker`, `xvfb-run`, `pnpm`, `node`, `dash`, the `wasm32-unknown-unknown` target, `cargo-clippy`, `cargo-fmt`). The tool does not install anything. Put the tool on `PATH` first, for example `mise x shellcheck@0.11.0 -- nix shell nixpkgs#dash -c cargo xtask ci install-script` where the system has neither.
+- The drift jobs (`schema-drift`, `grammar-drift`) and `fuzz-targets` put back the tracked files they rewrite, so a run leaves the checkout as it found it.
+- `OXABL_MUSL_CACHE` (default `target/xtask-ci/musl-cache`), `OXABL_CACHE_BIN_DIR` (default `~/oxabl-cache-bin`) and `OXABL_E2E_RUNTIME` (a short path; default `$TMPDIR/oxrt`) set the directories of `musl-binary`, `remote-cache` and `vscode-e2e`. Set `CARGO_BUILD_JOBS` to limit the build jobs on a shared machine. `--verbose` also streams the output of each step.
+- `vscode-e2e` takes about 10 minutes. The whole run takes about 30 minutes.
 
 Every job in `ci.yml` and `codspeed.yml` has a `timeout-minutes` of about three times its usual run time, so a hung step (such as a toolchain setup that never returns) fails in minutes, not after GitHub's six-hour default. Raise a job's limit when it grows; do not remove it.
 

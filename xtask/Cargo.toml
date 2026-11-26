@@ -1,0 +1,18 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Project automation: cargo xtask ci runs the CI jobs on this machine"
+
+# No dependencies on purpose: the standard library runs commands and reads files.
+
+[lints.rust]
+unused_must_use = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+let_underscore_must_use = "deny"
+todo = "deny"
+dbg_macro = "deny"
