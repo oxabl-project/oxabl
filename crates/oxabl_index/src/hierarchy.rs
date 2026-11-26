@@ -862,7 +862,8 @@ fn uncertain_gap(class: &IndexName, name: &IndexName) -> String {
 
 fn incomplete_gap(class: &IndexName, name: &IndexName) -> String {
     format!(
-        "`{}` has members that oxabl cannot read (an include or an &IF): it may declare `{}`",
+        "`{}` has members that oxabl cannot read (an include, an &IF or a preprocessor \
+         reference): it may declare `{}`",
         class.as_written(),
         name.as_written()
     )

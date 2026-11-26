@@ -2526,6 +2526,23 @@ fn a_record_name_that_a_preprocessor_name_writes_can_name_the_table() {
             "&GLOBAL-DEFINE TT item\n",
             "    DEFINE PROTECTED TEMP-TABLE {&TT} NO-UNDO FIELD code AS INTEGER.\n",
         ),
+        (
+            "a definition after a period in a declaration",
+            "&SCOPED-DEFINE MORE . DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER\n",
+            "    DEFINE PROTECTED TEMP-TABLE other NO-UNDO FIELD code AS INTEGER {&MORE}.\n",
+        ),
+        (
+            "a definition that ends a method",
+            "&SCOPED-DEFINE MORE END METHOD. DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code \
+             AS INTEGER. METHOD PRIVATE VOID z():\n",
+            "    METHOD PRIVATE VOID y():\n        {&MORE}\n    END METHOD.\n",
+        ),
+        (
+            "a definition in a file whose expanded text does not parse",
+            "&SCOPED-DEFINE MORE . DEFINE PROTECTED TEMP-TABLE item NO-UNDO FIELD code AS INTEGER\n",
+            "    DEFINE PROTECTED TEMP-TABLE other NO-UNDO FIELD code AS INTEGER {&MORE}.\n\
+             \x20   METHOD PRIVATE VOID y():\n        MESSAGE {&OPSYS}.\n    END METHOD.\n",
+        ),
     ];
     let class = like_class("app.LC INHERITS app.LG IMPLEMENTS app.LI", "").replace("OVERRIDE ", "");
     for (what, define, body) in variants {
@@ -2600,5 +2617,35 @@ fn an_overload_oxabl_cannot_place_adds_its_class() {
             .iter()
             .any(|w| w.contains("each is shown\"") || w.contains("could not be told apart")),
         "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_preprocessor_reference_that_expands_to_nothing_leaves_the_members_whole() {
+    // A Prolint suppression at class level, and a name in a method body.
+    let grand = "CLASS app.LG:\n\
+        \x20   {&_proparse_ prolint-nowarn(varusage)}\n\
+        \x20   DEFINE PRIVATE VARIABLE v AS INTEGER NO-UNDO.\n\
+        \x20   METHOD PUBLIC VOID Log():\n\
+        \x20       MESSAGE \"{&FILE-NAME}\".\n\
+        \x20   END METHOD.\n\
+        END CLASS.\n";
+    let class = like_class("app.LC INHERITS app.LG IMPLEMENTS app.LI", "").replace("OVERRIDE ", "");
+    let ws = small(&[
+        ("app/LG.cls", grand),
+        ("app/LI.cls", LIKE_LI),
+        ("app/LC.cls", &class),
+    ]);
+    let path = ws.path("app/LC.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, &class);
+    let answer = ask(
+        &mut session,
+        "oxabl/superMethod",
+        position(&path, &class, LIKE_M, 0),
+    );
+    assert_eq!(
+        answer.result,
+        json!({"locations": [name_in(&ws.path("app/LI.cls"), LIKE_LI, "VOID M(", "M")], "gaps": []})
     );
 }

@@ -29,8 +29,9 @@
 //! direction — a missing fact yields a missing link, which by the R11 firewall
 //! produces no finding.
 //!
-//! The exception is a file whose text as written does not parse, names a class
-//! with a `{&name}` reference, or is nothing but includes and directives. That
+//! The exception is a file whose text as written does not parse, is nothing but
+//! includes and directives, or declares a class that names an include or holds
+//! a `{&name}` or `{N}` reference (in its header, a member or a method). That
 //! file is preprocessed, reading its includes through [`IncludeContext`], and the
 //! result is used when it parses and every include was read. Facts then depend on
 //! the file's text, on the includes read ([`index_file_with_includes`] names
@@ -92,7 +93,7 @@ use oxabl_ast::{
 use oxabl_common::FileId;
 use oxabl_lexer::{Kind, Token};
 use oxabl_parser::Parser;
-use oxabl_preprocessor::{PreprocessedFile, Preprocessor, SpanNode};
+use oxabl_preprocessor::{ElidedKind, PreprocessedFile, Preprocessor, SpanNode};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, ClassDescriptor, ClassKind, ImportContext, IndexName, IndexedFileId,
@@ -100,6 +101,7 @@ use oxabl_semantic::{
     ScopeId, SymbolFlags, SymbolKind, declare_pass, member_params,
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
+use rustc_hash::FxHashMap;
 
 /// The [`FileId`] the declare pass is run under while indexing.
 ///
@@ -250,17 +252,95 @@ pub fn index_file_with_includes(
     source: &str,
     includes: &IncludeContext<'_>,
 ) -> (FileFacts, Vec<PathBuf>) {
-    let (facts, built_from_includes) = index_parsed(file, source);
-    if facts.parsed && !names_a_reference(&facts) && !built_from_includes {
-        return (facts, Vec::new());
+    let written = Written::parse(source);
+    if let Some(written) = written.as_ref().filter(|w| !w.needs_expansion()) {
+        return (written.facts(file, None), Vec::new());
     }
+    // The facts of the text as written are read only when the expansion does
+    // not give them.
+    let as_written = |values: Option<&KnownValues>| {
+        written
+            .as_ref()
+            .map_or_else(|| FileFacts::unparseable(file), |w| w.facts(file, values))
+    };
     let Some(expansion) = expand(source, includes) else {
-        return (facts, Vec::new());
+        return (as_written(None), Vec::new());
     };
     let read = included_paths(&expansion.processed);
-    match expansion.text.map(|text| index_parsed(file, &text).0) {
-        Some(expanded) if expanded.parsed => (expanded, read),
-        _ => (facts, read),
+    let expanded = expansion
+        .text
+        .as_deref()
+        .and_then(Written::parse)
+        .map(|expanded| expanded.facts(file, None));
+    match expanded {
+        Some(expanded) => (expanded, read),
+        // The expansion settled and its text does not parse: the values of
+        // the references are known, so the text as written can still be whole.
+        None if expansion.text.is_some() => (
+            as_written(Some(&KnownValues::of(&expansion.processed))),
+            read,
+        ),
+        None => (as_written(None), read),
+    }
+}
+
+/// The values of the `{&name}` and `{N}` references of the file itself, by
+/// the offset where each starts, from an expansion that settled. An empty
+/// reference has the value "".
+struct KnownValues(FxHashMap<u32, String>);
+
+impl KnownValues {
+    fn of(processed: &PreprocessedFile) -> Self {
+        fn text(processed: &PreprocessedFile, nodes: &[SpanNode], out: &mut String) {
+            for node in nodes {
+                match node {
+                    SpanNode::Chunk { file, start, end } => {
+                        if let Some(source) = processed.source(*file) {
+                            out.push_str(&source[*start as usize..*end as usize]);
+                        }
+                    }
+                    SpanNode::Include { children, .. } => text(processed, children, out),
+                }
+            }
+        }
+        let mut values = FxHashMap::default();
+        for node in &processed.tree {
+            if let SpanNode::Include {
+                site,
+                path: None,
+                children,
+            } = node
+                && site.file == INDEXED_FILE
+            {
+                let mut value = String::new();
+                text(processed, children, &mut value);
+                values.insert(site.span.start, value);
+            }
+        }
+        for elided in &processed.elided {
+            if elided.within.is_none()
+                && elided.site.file == INDEXED_FILE
+                && matches!(elided.kind, ElidedKind::Name | ElidedKind::Argument)
+            {
+                values.entry(elided.site.span.start).or_default();
+            }
+        }
+        KnownValues(values)
+    }
+
+    /// Whether the reference at `start` has a known value that cannot end a
+    /// statement or open a block, so it cannot add a declaration.
+    fn harmless(&self, start: usize) -> bool {
+        let Some(value) = self.0.get(&(start as u32)) else {
+            return false;
+        };
+        let bytes = value.as_bytes();
+        !bytes.iter().enumerate().any(|(at, b)| {
+            matches!(b, b'.' | b':')
+                && bytes
+                    .get(at + 1)
+                    .is_none_or(|next| next.is_ascii_whitespace())
+        })
     }
 }
 
@@ -293,20 +373,6 @@ pub(crate) fn expanded_text_at(
         ..*includes
     };
     expand(source, &includes)?.text
-}
-
-/// Whether a class header in `facts` is spelled with an unexpanded `{&name}`
-/// reference, which the parser accepts as an ordinary name.
-fn names_a_reference(facts: &FileFacts) -> bool {
-    facts.classes.iter().any(|class| {
-        let descriptor = &class.descriptor;
-        descriptor.name.as_str().contains('{')
-            || descriptor
-                .inherits
-                .iter()
-                .chain(&descriptor.implements)
-                .any(|name| name.as_str().contains('{'))
-    })
 }
 
 /// One preprocessor run over an indexed file.
@@ -361,80 +427,106 @@ fn included_paths(processed: &PreprocessedFile) -> Vec<PathBuf> {
     paths
 }
 
-/// The facts of `source` as written, or the unparseable record if it parses
-/// with recovered errors, and whether its includes may hold part of what it
-/// declares: the text is nothing but includes and directives, or it declares a
-/// class or interface and names an include anywhere.
-fn index_parsed(file: IndexedFileId, source: &str) -> (FileFacts, bool) {
-    let tokens = oxabl_lexer::tokenize(source);
-    let program = Parser::new(&tokens, source).parse_program();
-    if !program.is_ok() {
-        return (FileFacts::unparseable(file), false);
+/// A text that parses with no recovered error: its tokens and statements.
+struct Written<'s> {
+    source: &'s str,
+    tokens: Vec<Token>,
+    program: oxabl_parser::Program,
+}
+
+impl<'s> Written<'s> {
+    /// `None` when the parse recovered an error.
+    fn parse(source: &'s str) -> Option<Self> {
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        program.is_ok().then_some(Written {
+            source,
+            tokens,
+            program,
+        })
     }
-    let built_from_includes = only_includes(&program.statements)
-        || (program.statements.iter().any(|stmt| {
+
+    /// Whether includes or preprocessor names may hold part of what the text
+    /// declares: it is nothing but includes and directives, or it declares a
+    /// class or interface and names an include anywhere or holds a `{&name}`
+    /// or `{N}` reference in the class (a header, a member, a method body).
+    fn needs_expansion(&self) -> bool {
+        let is_class = |stmt: &&Statement| {
             matches!(
                 stmt.kind,
                 StatementKind::Class { .. } | StatementKind::Interface { .. }
             )
-        }) && tokens.iter().any(|t| t.kind == Kind::IncludeReference));
-
-    // The declare pass is the same machinery a client runs over the file it is
-    // analyzing, which is what keeps an indexed declaration and a local one from
-    // being recognized by two different sets of rules. It is also why the
-    // routine-level facts below read the *symbol table* rather than the
-    // statement list: a `FUNCTION` prototype and its later definition merge into
-    // one symbol there (#69), and a name the pass refused to declare twice
-    // appears once.
-    let schema = Schema::empty();
-    let ctx = AnalysisContext::new(INDEXED_FILE, source, &schema);
-    let (_scopes, symbols, _diagnostics, _schema_revision) =
-        declare_pass(&program.statements, &ctx);
-
-    let mut procedures = Vec::new();
-    let mut functions = Vec::new();
-    let mut shared_definitions = Vec::new();
-    for (_id, symbol) in symbols.iter() {
-        // `IndexName::new` folds, and the atom is already folded, so this is an
-        // idempotent second pass over ASCII bytes plus an intern-table hit.
-        if symbol.kind == SymbolKind::Procedure {
-            procedures.push(IndexName::new(&symbol.name));
-        } else if symbol.kind == SymbolKind::Function && symbol.declared_in == ScopeId::ROOT {
-            // A method carries `SymbolKind::Function` too, but is declared in
-            // its class's scope and is reported as a member instead.
-            functions.push(IndexName::new(&symbol.name));
-        }
-        if symbol
-            .flags
-            .intersects(SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED)
-        {
-            shared_definitions.push(IndexName::new(&symbol.name));
-        }
+        };
+        let statements = &self.program.statements;
+        only_includes(statements)
+            || (statements.iter().any(|stmt| is_class(&stmt))
+                && self.tokens.iter().any(|t| t.kind == Kind::IncludeReference))
+            || statements
+                .iter()
+                .filter(is_class)
+                .any(|stmt| holds_reference(stmt, &self.tokens, self.source))
     }
 
-    let mut imports = ImportContext::from_statements(&program.statements);
-    if include_before_header(&tokens, &program.statements) {
-        imports = imports.with_unseen_imports();
-    }
+    /// The facts of the text. `values` are the values of its references, when
+    /// an expansion knows them.
+    fn facts(&self, file: IndexedFileId, values: Option<&KnownValues>) -> FileFacts {
+        // The declare pass is the same machinery a client runs over the file it is
+        // analyzing, which is what keeps an indexed declaration and a local one from
+        // being recognized by two different sets of rules. It is also why the
+        // routine-level facts below read the *symbol table* rather than the
+        // statement list: a `FUNCTION` prototype and its later definition merge into
+        // one symbol there (#69), and a name the pass refused to declare twice
+        // appears once.
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(INDEXED_FILE, self.source, &schema);
+        let (_scopes, symbols, _diagnostics, _schema_revision) =
+            declare_pass(&self.program.statements, &ctx);
 
-    let facts = FileFacts {
-        file,
-        parsed: true,
-        classes: declared_classes(
+        let mut procedures = Vec::new();
+        let mut functions = Vec::new();
+        let mut shared_definitions = Vec::new();
+        for (_id, symbol) in symbols.iter() {
+            // `IndexName::new` folds, and the atom is already folded, so this is an
+            // idempotent second pass over ASCII bytes plus an intern-table hit.
+            if symbol.kind == SymbolKind::Procedure {
+                procedures.push(IndexName::new(&symbol.name));
+            } else if symbol.kind == SymbolKind::Function && symbol.declared_in == ScopeId::ROOT {
+                // A method carries `SymbolKind::Function` too, but is declared in
+                // its class's scope and is reported as a member instead.
+                functions.push(IndexName::new(&symbol.name));
+            }
+            if symbol
+                .flags
+                .intersects(SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED)
+            {
+                shared_definitions.push(IndexName::new(&symbol.name));
+            }
+        }
+
+        let mut imports = ImportContext::from_statements(&self.program.statements);
+        if include_before_header(&self.tokens, &self.program.statements) {
+            imports = imports.with_unseen_imports();
+        }
+
+        FileFacts {
             file,
-            &program.statements,
-            &tokens,
-            source,
-            &Arc::new(imports),
-        )
-        .into_iter()
-        .chain(declared_enums(file, &tokens, source))
-        .collect(),
-        procedures,
-        functions,
-        shared_definitions,
-    };
-    (facts, built_from_includes)
+            parsed: true,
+            classes: declared_classes(
+                file,
+                &self.program.statements,
+                &self.tokens,
+                self.source,
+                values,
+                &Arc::new(imports),
+            )
+            .into_iter()
+            .chain(declared_enums(file, &self.tokens, self.source))
+            .collect(),
+            procedures,
+            functions,
+            shared_definitions,
+        }
+    }
 }
 
 /// Whether `statements` are includes and directives, with at least one include:
@@ -513,6 +605,7 @@ fn declared_classes(
     statements: &[Statement],
     tokens: &[Token],
     source: &str,
+    values: Option<&KnownValues>,
     imports: &Arc<ImportContext>,
 ) -> Vec<ClassFacts> {
     let imports_for = |has_supertype: bool, members: &[MemberDescriptor]| {
@@ -545,7 +638,7 @@ fn declared_classes(
                         .map(|id| IndexName::new(&id.name))
                         .collect(),
                     imports: imports_for(inherits.is_some() || !implements.is_empty(), &members),
-                    members_complete: members_readable(stmt, body, &members, tokens, source),
+                    members_complete: members_readable(stmt, body, tokens, source, values),
                     is_abstract: *is_abstract,
                 }),
                 members,
@@ -572,7 +665,7 @@ fn declared_classes(
                     inherits: None,
                     implements: inherits.iter().map(|id| IndexName::new(&id.name)).collect(),
                     imports: imports_for(!inherits.is_empty(), &members),
-                    members_complete: members_readable(stmt, body, &members, tokens, source),
+                    members_complete: members_readable(stmt, body, tokens, source, values),
                     is_abstract: false,
                 }),
                 members,
@@ -593,64 +686,41 @@ fn names_a_class(member: &MemberDescriptor) -> bool {
         })
 }
 
-/// Whether the members of a class are all that it declares, each with its own
-/// name: no `{include}` or `&IF` can add one ([`hides_members`]), no member
-/// name holds a preprocessor reference, and no reference stands where a
-/// member can be declared ([`reference_declares`]).
+/// Whether the members of a class are all that it declares: no `{include}`
+/// or `&IF` can add one ([`hides_members`]), and no preprocessor reference in
+/// the class can. A reference anywhere in a class, also inside a declaration,
+/// can expand to a period and a new declaration, so it counts unless `values`
+/// know a value of it that cannot end a statement. A file with a reference is
+/// expanded ([`index_file_with_includes`]), and the expanded text has none.
 fn members_readable(
     class: &Statement,
     body: &[Statement],
-    members: &[MemberDescriptor],
     tokens: &[Token],
     source: &str,
+    values: Option<&KnownValues>,
 ) -> bool {
     !hides_members(body)
-        && members.iter().all(|m| !m.name.as_str().contains('{'))
-        && !reference_declares(class, body, tokens, source)
+        && !references(class, tokens, source)
+            .any(|t| !values.is_some_and(|values| values.harmless(t.start)))
 }
 
-/// Whether a `{&name}` or `{N}` reference in `class` stands outside every
-/// member declaration of `body`: its value can be a whole declaration, which
-/// the parser skips. A reference inside a declaration that the facts read
-/// (its type, a method body) cannot add a member; one in a member name is a
-/// name that holds `{`.
-fn reference_declares(
-    class: &Statement,
-    body: &[Statement],
-    tokens: &[Token],
-    source: &str,
-) -> bool {
-    fn declarations(body: &[Statement], spans: &mut Vec<(usize, usize)>) {
-        for stmt in body {
-            match &stmt.kind {
-                StatementKind::Block(inner) | StatementKind::VariableDeclarationList(inner) => {
-                    declarations(inner, spans)
-                }
-                StatementKind::Method { .. }
-                | StatementKind::Constructor { .. }
-                | StatementKind::Destructor { .. }
-                | StatementKind::Property { .. }
-                | StatementKind::VariableDeclaration { .. }
-                | StatementKind::DefineTempTable { .. }
-                | StatementKind::DefineBuffer { .. }
-                | StatementKind::DefineDataset { .. }
-                | StatementKind::DefineDataSource { .. }
-                | StatementKind::DefineEvent { .. } => {
-                    spans.push((stmt.span.start as usize, stmt.span.end as usize))
-                }
-                _ => {}
-            }
-        }
-    }
-    let mut spans = Vec::new();
-    declarations(body, &mut spans);
-    let (start, end) = (class.span.start as usize, class.span.end as usize);
+/// The `{...}` references in the text of `stmt`.
+fn references<'t>(
+    stmt: &Statement,
+    tokens: &'t [Token],
+    source: &'t str,
+) -> impl Iterator<Item = &'t Token> {
+    let (start, end) = (stmt.span.start as usize, stmt.span.end as usize);
     let from = tokens.partition_point(|t| t.start < start);
     tokens[from..]
         .iter()
-        .take_while(|t| t.start < end)
-        .filter(|t| source[t.start..t.end].starts_with('{'))
-        .any(|t| !spans.iter().any(|(s, e)| *s <= t.start && t.end <= *e))
+        .take_while(move |t| t.start < end)
+        .filter(move |t| source[t.start..t.end].starts_with('{'))
+}
+
+/// Whether a `{...}` reference stands in the text of `stmt`.
+fn holds_reference(stmt: &Statement, tokens: &[Token], source: &str) -> bool {
+    references(stmt, tokens, source).next().is_some()
 }
 
 /// Whether a class body may declare more members than its statements show: it

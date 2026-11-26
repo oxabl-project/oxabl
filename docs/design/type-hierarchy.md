@@ -171,23 +171,26 @@ its type. It answers `Yes`, `No` or `Unknown`:
 | Parameter | Comparison |
 | --- | --- |
 | Primitive types | Equal types are `Yes`, different types are `No`; an `&IF` type is `Unknown` |
-| `LIKE` | Two lists that write the same `table.field` (and the same `EXTENT`) are `Yes` when no temp-table or buffer can have the name of the table: none in the subclass (or the class at the cursor) and in every class and interface above it, through any number of headers, and none in the interface or class that declares the other method and every type above it. Every member list must be whole, and every supertype must resolve and be read. A member list is not whole when an `{include}` or an `&IF` can add a member, when a preprocessor reference stands where a member can be declared (`{&TTDEF}`), or when a member name holds one (`DEFINE TEMP-TABLE {&TT}`). A temp-table defined `LIKE` or `LIKE-SEQUENTIAL` another table, a static temp-table and a work table count by their own names. An interface counts because oxabl does not model whether a class sees the temp-tables of its interfaces. Then both read the database field. Any other `LIKE` is `Unknown`: a name with no table can be a variable, and a different spelling can name a field of the same type. The rule takes one schema for the two classes: a class compiled against another database, or under another alias, can read another field |
+| `LIKE` | Two lists that write the same `table.field` (and the same `EXTENT`) are `Yes` when no temp-table or buffer can have the name of the table: none in the subclass (or the class at the cursor) and in every class and interface above it, through any number of headers, and none in the interface or class that declares the other method and every type above it. Every member list must be whole, and every supertype must resolve and be read. A member list is not whole when an `{include}` or an `&IF` can add a member, or when the class holds a preprocessor reference (`{&TTDEF}`, `DEFINE TEMP-TABLE {&TT}`, a value that ends a declaration and starts another) and its expansion does not settle. A temp-table defined `LIKE` or `LIKE-SEQUENTIAL` another table, a static temp-table and a work table count by their own names. An interface counts because oxabl does not model whether a class sees the temp-tables of its interfaces. Then both read the database field. Any other `LIKE` is `Unknown`: a name with no table can be a variable, and a different spelling can name a field of the same type. The rule takes one schema for the two classes: a class compiled against another database, or under another alias, can read another field |
 | Class types | Each name is resolved through the imports of the file that declares the method (`ImportContext::resolve_class`). The same class is `Yes`, two classes are `No`. A name that resolves in no file is `Yes` when both lists write it alike under equal imports, else `Unknown`. A .NET type, or a name that two files can supply, is `Unknown` |
 | `TABLE`, `BUFFER`, `DATASET` | `Unknown`: the table is not in the list |
 | A list that an `{include}` or `&IF` hides | `Unknown` |
 
-The facts of a class file that names an include come from its expanded text
-when its expansion settles: every include resolves and the
-preprocessor gives no warning. Then a list that an include writes, with the
+The facts of a class file that names an include, or that holds a `{&NAME}` or
+`{N}` reference anywhere in a class (its header, a member, a method body),
+come from its expanded text when its expansion settles: every include
+resolves and the preprocessor gives no warning. A reference that expands to
+nothing, such as a Prolint suppression `{&_proparse_ ...}`, then changes no
+fact. When the expansion settles and its text does not parse, the facts are
+read as written, and the member list is whole only when the value of each
+reference in the class has no period or colon that can end a statement. Then a list that an include writes, with the
 `{&NAME}` values of the file that includes it, is compared as written there.
 One include read with two values of a name gives two lists: an overload, or
 `Unknown`, and never `Yes`. When the expansion does not settle (an include
 that does not resolve, also one outside the list, which can define a name
 that the list reads), a list that holds an include or a preprocessor
 reference is `Unknown`. The parser skips such a reference in a parameter
-list, so the facts never take the rest of the list for the whole list. A
-class file that names no include is read as written, so a `{&NAME}` in one of
-its lists makes the list `Unknown`.
+list, so the facts never take the rest of the list for the whole list.
 
 A method counts only when it is not `PRIVATE` and not `STATIC`. An `Unknown`
 match is listed and says that it may be an overload.
@@ -300,6 +303,15 @@ resolves every header (the file probes of `find_path` are not memoized, by
 design, so a new file is seen) with a lookup table for each distinct class name
 for the length of the request. The memo of facts keeps the cost low for a
 file that did not change; it does not make a later request free.
+
+A class file with a preprocessor reference is expanded when its facts are
+read: one preprocessor run and a second parse. Over 200 generated class files
+of 30 methods, half of them with a Prolint line at class level and
+`{&LINE-NUMBER}` in some method bodies, the facts cost 977 million
+instructions (callgrind) against 679 million when such files were read as
+written, about 1.9 times for a file with a reference. A file with no
+reference costs the same as before. In return, those files keep whole member
+lists.
 
 Measured with a release build on a 4-core machine over a generated workspace:
 one base class and N classes in chains of ten, each file 362 lines and 15 KB
