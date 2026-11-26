@@ -171,6 +171,7 @@ pub struct Lexer<'a> {
     /// The byte a lexer made by [`Lexer::starting_at`] started at. With the
     /// test-only `test-counters` feature, it counts the bytes it read when it
     /// is dropped, not the bytes of the source.
+    #[cfg(feature = "test-counters")]
     started_at: Option<usize>,
 }
 
@@ -196,6 +197,7 @@ impl<'a> Lexer<'a> {
             in_directive: false,
             finished: false,
             normalized_word: None,
+            #[cfg(feature = "test-counters")]
             started_at: None,
         }
     }
@@ -217,6 +219,7 @@ impl<'a> Lexer<'a> {
             in_directive: false,
             finished: false,
             normalized_word: None,
+            #[cfg(feature = "test-counters")]
             started_at: Some(from),
         }
     }
