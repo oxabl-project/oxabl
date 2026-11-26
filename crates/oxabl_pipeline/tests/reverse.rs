@@ -723,6 +723,51 @@ fn parts_over(ws: &Workspace, config: &PipelineConfig, files: &[PathBuf]) -> Vec
     .collect()
 }
 
+// Two listed spellings of one file share a normalised path, so a row of one
+// cannot be told from a row of the other. An edit of one spelling must still
+// give the graph of the whole join, which keeps the rows of the other.
+#[test]
+fn an_updated_graph_keeps_the_rows_of_another_spelling_of_the_same_file() {
+    let base = "DEFINE VARIABLE v-base AS INTEGER NO-UNDO.\n";
+    let before = Workspace::new(&[
+        ("base.i", base),
+        ("a.p", "{base.i}\nMESSAGE v-base.\n"),
+        ("x/../a.p", "{base.i}\nMESSAGE 2.\n"),
+    ]);
+    let after = Workspace::new(&[
+        ("base.i", base),
+        ("a.p", "MESSAGE 3.\n"),
+        ("x/../a.p", "{base.i}\nMESSAGE 2.\n"),
+    ]);
+    let mut files = before.files.clone();
+    files.sort();
+    assert_eq!(files, [proj("a.p"), proj("x/../a.p")]);
+    let config = before.config();
+
+    let parts = parts_over(&before, &config, &files);
+    let graph = ReverseGraph::from_parts(
+        &LintPipeline::new(&config, &before.fs).with_known_files(&files),
+        &files,
+        &parts,
+    );
+    let next_parts = parts_over(&after, &config, &files);
+    let pipeline = LintPipeline::new(&config, &after.fs).with_known_files(&files);
+    let borrowed: Vec<&FilePart> = next_parts.iter().collect();
+    let updated = ReverseGraph::updated(
+        &graph,
+        &pipeline,
+        &files,
+        &borrowed,
+        &[&parts[0]],
+        &[&next_parts[0]],
+    );
+    let whole = ReverseGraph::from_parts(&pipeline, &files, &next_parts);
+    assert_eq!(
+        updated, whole,
+        "an edit of one spelling dropped the rows of the other"
+    );
+}
+
 // The graph that an earlier graph and the parts that changed give is the graph
 // of the whole join, after each of many edits: a file set to another program, a
 // file removed, an include edited, an unreadable file listed. A step that
