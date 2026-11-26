@@ -255,7 +255,8 @@ outgoing calls of a program with N variables and N calls take 0.10 to 0.16 s
 for N = 2,000 and 0.9 to 1.2 s for N = 16,000 (release, a loaded machine), and
 the test `outgoing_calls_cost_about_linear_time_in_the_calls` fails when 16
 times the calls cost more than 40 times the time. Nothing is memoized between
-requests. The
+requests. The reference lenses of a file share one search: each other file
+is analysed once for all of them (`docs/design/reference-lenses.md`). The
 first request that searches other files waits for the workspace pass that
 `workspace/symbol` and `oxabl/impact` also wait for.
 

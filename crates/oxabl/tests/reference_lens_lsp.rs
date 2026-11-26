@@ -1185,10 +1185,12 @@ fn a_change_on_disk_during_a_search_is_not_kept_as_its_answer() {
     ]);
     let calc = ws.path("app/Calc.cls");
     let mut session = start(&ws);
-    session.open(&calc, &held_calc());
+    let text = held_calc();
+    session.open(&calc, &text);
     let listed = lenses(&mut session, &calc);
-    // The workspace pass exists once a first lens has its answer.
-    assert_eq!(title(&resolve(&mut session, &listed[ADD + 1])), exact(1));
+    // The workspace pass exists once find references has its answer. A lens
+    // would count every lens of the file, and `Add` would have a kept title.
+    assert_eq!(find_references(&mut session, &calc, &text, "Twice(").0, 1);
     let id = session.next_request_id();
     session.send(json!({
         "jsonrpc": "2.0", "id": id, "method": "codeLens/resolve", "params": listed[ADD]
@@ -1626,4 +1628,162 @@ fn a_parameter_list_from_an_include_that_does_not_resolve_may_override() {
     let unread = short(0, UNKNOWN_FILE);
     assert_eq!(titles[0], unread, "{titles:?}");
     assert_eq!(titles[1], format!("{unread} (+1 more)"), "{titles:?}");
+}
+
+const SHAPES: &str = "CLASS app.Shapes:\n\
+    \x20   DEFINE PUBLIC PROPERTY Count AS INTEGER NO-UNDO GET. SET.\n\
+    \x20   METHOD PUBLIC INTEGER Add(INPUT piValue AS INTEGER):\n\
+    \x20       RETURN Twice(piValue).\n\
+    \x20   END METHOD.\n\
+    \x20   METHOD PRIVATE INTEGER Twice(INPUT piValue AS INTEGER):\n\
+    \x20       RETURN piValue * 2.\n\
+    \x20   END METHOD.\n\
+    \x20   METHOD PUBLIC VOID Reset():\n\
+    \x20       Count = 0.\n\
+    \x20   END METHOD.\n\
+    \x20   METHOD PUBLIC VOID Unused():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const CIRCLE: &str = "CLASS app.Circle INHERITS app.Shapes:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Reset():\n\
+    \x20       SUPER:Reset().\n\
+    \x20       Add(1).\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// A class with many lenses, a subclass, two callers and a caller with a
+/// parse error.
+fn shapes_workspace() -> Workspace {
+    Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("app/Shapes.cls", SHAPES),
+        ("app/Circle.cls", CIRCLE),
+        (
+            "a.p",
+            "DEFINE VARIABLE o AS CLASS app.Shapes NO-UNDO.\no = NEW app.Shapes().\n\
+             o:Add(1).\no:Count = 2.\no:Reset().\n",
+        ),
+        (
+            "b.p",
+            "DEFINE VARIABLE o AS CLASS app.Shapes NO-UNDO.\no = NEW app.Shapes().\n\
+             o:Add(2).\no:Add(3).\n",
+        ),
+        (
+            "c.p",
+            "DEFINE VARIABLE o AS CLASS app.Shapes NO-UNDO.\no = NEW app.Shapes().\n\
+             o:Reset().\nIF THEN ELSE.\n",
+        ),
+        ("d.p", "MESSAGE \"names no class\".\n"),
+    ])
+}
+
+/// Send `codeLens/resolve` for each of `listed` before reading any answer.
+/// The answers in order, and the lines of the test log of the lens searches.
+fn resolve_at_once(session: &mut Session, listed: &[Value]) -> (Vec<Value>, Vec<String>) {
+    let ids: Vec<u64> = listed
+        .iter()
+        .map(|lens| {
+            let id = session.next_request_id();
+            session.send(json!({
+                "jsonrpc": "2.0", "id": id, "method": "codeLens/resolve", "params": lens
+            }));
+            id
+        })
+        .collect();
+    let mut answers = vec![Value::Null; ids.len()];
+    let mut logged = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while answers.iter().any(Value::is_null) {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("every resolve has an answer in 60 s");
+        let Some(message) = session.try_next(left) else {
+            continue;
+        };
+        if let Some(line) = message["params"]["message"]
+            .as_str()
+            .filter(|line| line.starts_with("oxabl-test:"))
+        {
+            logged.push(line.to_string());
+        } else if let Some(at) = ids.iter().position(|id| message["id"] == json!(id)) {
+            assert!(message.get("error").is_none(), "resolve gave {message}");
+            answers[at] = message["result"].clone();
+        }
+    }
+    (answers, logged)
+}
+
+#[test]
+fn lenses_resolved_at_once_have_the_counts_and_lists_of_lenses_resolved_one_at_a_time() {
+    let ws = shapes_workspace();
+    let shapes = ws.path("app/Shapes.cls");
+    let mut session = start(&ws);
+    session.open(&shapes, SHAPES);
+    let listed = lenses(&mut session, &shapes);
+    assert_eq!(listed.len(), 6, "a lens for the class and each member");
+    let (at_once, _) = resolve_at_once(&mut session, &listed);
+    let titles: Vec<String> = at_once.iter().map(title).collect();
+    let counts: Vec<usize> = titles.iter().map(|title| count_of(title)).collect();
+    assert_eq!(counts, [7, 2, 3, 1, 3, 0], "{titles:#?}");
+    // `c.p` has a parse error and names the class: no count is exact.
+    assert!(
+        titles
+            .iter()
+            .all(|title| title.contains("+ references · incomplete: c.p has parse errors")),
+        "{titles:#?}"
+    );
+    // Each lens alone, in a session of its own, so that no other lens of the
+    // file was asked for.
+    for (n, lens) in at_once.iter().enumerate() {
+        let mut alone = start(&ws);
+        alone.open(&shapes, SHAPES);
+        let own = lenses(&mut alone, &shapes).remove(n);
+        assert_eq!(
+            resolve(&mut alone, &own)["command"],
+            lens["command"],
+            "lens {n} alone"
+        );
+    }
+    // Each list is the answer of find references for its symbol.
+    for (n, symbol) in [
+        "Shapes:", "Count AS", "Add(", "Twice(", "Reset()", "Unused()",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            listed_places(&at_once[n]),
+            find_places(&mut session, &shapes, SHAPES, symbol),
+            "`{symbol}`"
+        );
+    }
+}
+
+#[test]
+fn one_search_analyses_each_file_once_for_all_the_lenses_of_a_file() {
+    let ws = shapes_workspace();
+    let shapes = ws.path("app/Shapes.cls");
+    let mut session = start(&ws);
+    let text = format!("{SHAPES}/* OXABL-TEST-COUNT:lsp.reference-lens */\n");
+    session.open(&shapes, &text);
+    let listed = lenses(&mut session, &shapes);
+    let (answers, logged) = resolve_at_once(&mut session, &listed);
+    assert!(answers.iter().all(|lens| !title(lens).is_empty()));
+    // One search for the six lenses, and each file that can name a member of
+    // the class once in it.
+    assert_eq!(logged.len(), 1, "the searches: {logged:#?}");
+    let (lenses_searched, files) = logged[0]
+        .strip_prefix("oxabl-test: ")
+        .and_then(|rest| rest.split_once(" reference lenses searched "))
+        .unwrap_or_else(|| panic!("an unknown log line: {}", logged[0]));
+    assert_eq!(lenses_searched, "6");
+    let mut files: Vec<&str> = files.split('|').collect();
+    files.sort_unstable();
+    let mut want: Vec<String> = ["a.p", "app/Circle.cls", "b.p", "c.p"]
+        .iter()
+        .map(|name| ws.path(name).display().to_string())
+        .collect();
+    want.sort();
+    assert_eq!(files, want, "the files the search analysed");
 }

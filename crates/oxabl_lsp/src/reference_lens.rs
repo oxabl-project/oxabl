@@ -7,23 +7,24 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use lsp_server::RequestId;
 use lsp_server::{ErrorCode, Message, Request, Response};
 use lsp_types::{CodeLens, Command, Location, Position, PositionEncodingKind, Range, Uri};
-use oxabl_daemon::canonical_path;
-use oxabl_daemon::hierarchy::may_override;
+use oxabl_daemon::hierarchy::may_override_each;
 use oxabl_daemon::references::{
-    Pass, ReferenceAnswer, ReferenceError, ReferenceQuery, answer_references,
+    Pass, ReferenceAnswer, ReferenceError, ReferenceQuery, answer_batch,
 };
+use oxabl_daemon::{SessionHost, canonical_path};
 use oxabl_pipeline::{OutlineKind, OutlineSymbol};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::code_lens::lens_file;
 use crate::position::byte_to_position;
-use crate::references::{locations, with_dropped};
+use crate::references::{InFlight, locations, with_dropped};
 use crate::{Server, uri_to_path};
 
 /// The client command a resolved lens runs. Its arguments are the `uri` and
@@ -332,25 +333,16 @@ impl Server<'_> {
                 .ok(),
             }
         };
-        if is_program(&path) {
-            lenses.push(lens(Kind::Program, 0, 0));
-        }
-        let mut stack: Vec<&OutlineSymbol> = symbols.iter().rev().collect();
-        while let Some(symbol) = stack.pop() {
-            if lensed(symbol.kind) {
-                lenses.push(lens(
-                    Kind::Symbol,
-                    symbol.span.start,
-                    symbol.selection_span.start,
-                ));
-            }
-            stack.extend(symbol.children.iter().rev());
+        for (kind, start, name) in lens_sites(&path, symbols) {
+            lenses.push(lens(kind, start, name));
         }
         lenses
     }
 
-    /// `codeLens/resolve`: count the references of a reference lens on a
-    /// worker thread. A lens of another kind comes back as it is.
+    /// `codeLens/resolve`: count the references of a reference lens. The
+    /// lens joins the batch of its file ([`Batches`]): one search counts every
+    /// lens of the file, and the lenses that arrive while it runs wait in it
+    /// with no thread of their own. A lens of another kind comes back as it is.
     pub(crate) fn handle_code_lens_resolve(&mut self, req: Request) -> anyhow::Result<()> {
         let lens: CodeLens = match serde_json::from_value(req.params) {
             Ok(lens) => lens,
@@ -396,20 +388,16 @@ impl Server<'_> {
                 "oxabl-lsp: the text changed since the lens was made".to_string(),
             ));
         }
-        let (root, query) = match data.kind {
-            Kind::Program => (path.clone(), ReferenceQuery::Program),
-            Kind::Symbol => (
-                self.contexts
-                    .selected(&uri)
-                    .cloned()
-                    .unwrap_or_else(|| path.clone()),
-                ReferenceQuery::References {
-                    file: path.clone(),
-                    offset: data.offset,
-                    include_declaration: false,
-                },
-            ),
+        let selected = self
+            .contexts
+            .selected(&uri)
+            .cloned()
+            .unwrap_or_else(|| path.clone());
+        let root_of = |kind: Kind| match kind {
+            Kind::Program => path.clone(),
+            Kind::Symbol => selected.clone(),
         };
+        let root = root_of(data.kind);
         let generations: Option<Generations> = self.host.with(|sessions| {
             sessions.get(&self.session_root).map(|session| {
                 (
@@ -433,134 +421,543 @@ impl Server<'_> {
             Some((title, None)) => {
                 return self.respond(Response::new_ok(req.id, resolved(lens, &data, title)));
             }
-            kept => kept,
+            Some((title, Some(pass))) => Some((title, pass)),
+            None => None,
+        };
+        let batch_key = BatchKey {
+            uri: data.uri.clone(),
+            version: data.version,
+            root: root.clone(),
+            generations,
+            epoch,
+        };
+        // The lenses of the file that the same unit counts, made as
+        // `textDocument/codeLens` makes them.
+        let wanted = (data.kind, data.offset);
+        let lenses = || {
+            let mut found: Vec<(Kind, u32)> = self
+                .documents
+                .get(&uri)
+                .and_then(|doc| oxabl_pipeline::outline(&doc.text()).ok())
+                .map(|symbols| lens_sites(&path, &symbols))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(kind, _, name)| (kind, name))
+                .filter(|(kind, _)| root_of(*kind) == root)
+                .collect();
+            if !found.contains(&wanted) {
+                found.push(wanted);
+            }
+            found
+        };
+        let cancel = self.references.start(&req.id);
+        let waiter = Waiter {
+            id: req.id,
+            lens,
+            data,
+            cancel,
+            kept,
+        };
+        let job = BatchJob {
+            host: self.host.clone(),
+            session_root: self.session_root.clone(),
+            encoding: self.encoding.clone(),
+            sender: self.connection.sender.clone(),
+            in_flight: self.references.clone(),
+            cache: self.reference_cache.clone(),
         };
         // The text, to hold the search in a test that asks for it.
-        let hold_text = oxabl_common::INJECTION_ENABLED
-            .then(|| self.documents.get(&uri).map(|doc| doc.text()))
-            .flatten();
-        let cache = self.reference_cache.clone();
-        let in_flight = self.references.clone();
-        let cancel = in_flight.start(&req.id);
-        let host = self.host.clone();
-        let session_root = self.session_root.clone();
-        let encoding = self.encoding.clone();
-        let sender = self.connection.sender.clone();
-        let id = req.id.clone();
+        let hold_text = || {
+            oxabl_common::INJECTION_ENABLED
+                .then(|| self.documents.get(&uri).map(|doc| doc.text().to_string()))
+                .flatten()
+        };
+        self.lens_batches
+            .join(batch_key, path.clone(), waiter, lenses, hold_text, job);
+        Ok(())
+    }
+}
+
+/// The lenses of a file: the kind, the byte the lens stands on and the byte of
+/// the name, in the order of the outline.
+fn lens_sites(path: &std::path::Path, symbols: &[OutlineSymbol]) -> Vec<(Kind, u32, u32)> {
+    let mut sites = Vec::new();
+    if is_program(path) {
+        sites.push((Kind::Program, 0, 0));
+    }
+    let mut stack: Vec<&OutlineSymbol> = symbols.iter().rev().collect();
+    while let Some(symbol) = stack.pop() {
+        if lensed(symbol.kind) {
+            sites.push((Kind::Symbol, symbol.span.start, symbol.selection_span.start));
+        }
+        stack.extend(symbol.children.iter().rev());
+    }
+    sites
+}
+
+/// How many batches of one client run at one time.
+const RUNNERS: usize = 2;
+
+/// What tells two batches apart: the file, the version of its text, the unit
+/// that is analysed, and the state of the session. A resolve made after an
+/// edit, a change of the configuration or a change on disk joins a new batch.
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct BatchKey {
+    uri: String,
+    version: i32,
+    root: PathBuf,
+    generations: Option<Generations>,
+    epoch: u64,
+}
+
+/// A resolve that waits for its batch.
+struct Waiter {
+    id: RequestId,
+    lens: CodeLens,
+    data: LensData,
+    cancel: Arc<AtomicBool>,
+    /// A kept title whose workspace pass must be checked.
+    kept: Option<(Title, Pass)>,
+}
+
+/// What a batch needs of the server.
+#[derive(Clone)]
+struct BatchJob {
+    host: SessionHost,
+    session_root: PathBuf,
+    encoding: PositionEncodingKind,
+    sender: crossbeam_channel::Sender<Message>,
+    in_flight: InFlight,
+    cache: ResolveCache,
+}
+
+impl BatchJob {
+    fn send(&self, waiter: Waiter, outcome: &Outcome) {
+        self.in_flight.finish(&waiter.id);
+        let response = match outcome {
+            Outcome::Title(title) => Response::new_ok(
+                waiter.id,
+                resolved(waiter.lens, &waiter.data, title.clone()),
+            ),
+            Outcome::Error(code, message) => Response::new_err(waiter.id, *code, message.clone()),
+        };
+        let _ = self.sender.send(Message::Response(response));
+    }
+}
+
+/// The answer of one lens.
+#[derive(Clone)]
+enum Outcome {
+    Title(Title),
+    Error(i32, String),
+}
+
+fn cancelled() -> Outcome {
+    Outcome::Error(
+        ErrorCode::RequestCanceled as i32,
+        "oxabl-lsp: the request was cancelled".to_string(),
+    )
+}
+
+/// One search for the lenses of a file.
+struct Batch {
+    key: BatchKey,
+    /// The file of the lenses.
+    path: PathBuf,
+    /// The kind and name byte of each lens.
+    lenses: Vec<(Kind, u32)>,
+    hold_text: Option<String>,
+    state: Mutex<BatchState>,
+}
+
+#[derive(Default)]
+struct BatchState {
+    waiters: Vec<Waiter>,
+    /// The answer of each lens, once it is known.
+    outcomes: Vec<Option<Outcome>>,
+    /// No resolve joins a closed batch.
+    closed: bool,
+}
+
+impl Batch {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BatchState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+#[derive(Default)]
+struct Queue {
+    /// The batches that resolves can join, by key.
+    open: HashMap<BatchKey, Arc<Batch>>,
+    /// The batches that wait for a runner.
+    waiting: std::collections::VecDeque<Arc<Batch>>,
+    runners: usize,
+}
+
+/// The lens batches of a client, and the runners that work them off: at
+/// most [`RUNNERS`] threads, whatever the number of resolves.
+#[derive(Clone, Default)]
+pub(crate) struct Batches {
+    queue: Arc<Mutex<Queue>>,
+}
+
+impl Batches {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
+        self.queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Put `waiter` in the open batch of `key`, or in a new one of `lenses`.
+    fn join(
+        &self,
+        key: BatchKey,
+        path: PathBuf,
+        waiter: Waiter,
+        lenses: impl FnOnce() -> Vec<(Kind, u32)>,
+        hold_text: impl FnOnce() -> Option<String>,
+        job: BatchJob,
+    ) {
+        let wanted = (waiter.data.kind, waiter.data.offset);
+        let mut queue = self.lock();
+        if let Some(batch) = queue.open.get(&key).cloned() {
+            let mut state = batch.lock();
+            if !state.closed
+                && let Some(at) = batch.lenses.iter().position(|lens| *lens == wanted)
+            {
+                match state.outcomes[at].clone() {
+                    Some(outcome) => {
+                        drop(state);
+                        drop(queue);
+                        job.send(waiter, &outcome);
+                    }
+                    None => state.waiters.push(waiter),
+                }
+                return;
+            }
+        }
+        let lenses = lenses();
+        let batch = Arc::new(Batch {
+            key: key.clone(),
+            path,
+            state: Mutex::new(BatchState {
+                waiters: vec![waiter],
+                outcomes: vec![None; lenses.len()],
+                closed: false,
+            }),
+            lenses,
+            hold_text: hold_text(),
+        });
+        queue.open.insert(key, Arc::clone(&batch));
+        queue.waiting.push_back(batch);
+        if queue.runners >= RUNNERS {
+            return;
+        }
         let spawned = oxabl_common::stack::builder()
             .name("oxabl-reference-lens".to_string())
             .spawn({
-                let sender = sender.clone();
-                let in_flight = in_flight.clone();
-                let id = id.clone();
-                move || {
-                    // A kept title that read a workspace pass holds while the
-                    // pass is the one that find references reads now.
-                    if let Some((title, Some(pass))) = &kept
-                        && pass.is_current(&host, &session_root, &cancel)
-                    {
-                        in_flight.finish(&id);
-                        let response = Response::new_ok(id, resolved(lens, &data, title.clone()));
-                        let _ = sender.send(Message::Response(response));
+                let batches = self.clone();
+                let job = job.clone();
+                move || batches.run(&job)
+            });
+        match spawned {
+            Ok(_) => queue.runners += 1,
+            Err(error) => {
+                // No runner: answer the batches that no runner will take.
+                let stranded: Vec<Arc<Batch>> = if queue.runners == 0 {
+                    queue.waiting.drain(..).collect()
+                } else {
+                    Vec::new()
+                };
+                for batch in &stranded {
+                    queue.open.remove(&batch.key);
+                }
+                drop(queue);
+                let outcome = Outcome::Error(
+                    ErrorCode::InternalError as i32,
+                    format!("oxabl-lsp: cannot start the analysis: {error}"),
+                );
+                for batch in stranded {
+                    let waiters = {
+                        let mut state = batch.lock();
+                        state.closed = true;
+                        std::mem::take(&mut state.waiters)
+                    };
+                    for waiter in waiters {
+                        job.send(waiter, &outcome);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Work off the waiting batches, then end.
+    fn run(&self, job: &BatchJob) {
+        loop {
+            let batch = {
+                let mut queue = self.lock();
+                match queue.waiting.pop_front() {
+                    Some(batch) => batch,
+                    None => {
+                        queue.runners -= 1;
                         return;
                     }
-                    if let Some(text) = &hold_text {
-                        oxabl_common::hold_if_injected(
-                            oxabl_common::panic_sites::LSP_REFERENCE_LENS,
-                            text,
-                        );
-                    }
-                    let answered = oxabl_common::catch_panic(|| {
-                        answer_references(&host, &session_root, &root, &query, &cancel)
-                    });
-                    if let (Some(text), Ok(Ok(_))) = (&hold_text, &answered) {
-                        oxabl_common::hold_if_injected(
-                            oxabl_common::panic_sites::LSP_REFERENCE_LENS_ANSWER,
-                            text,
-                        );
-                    }
-                    // A member that overrides or implements another is also
-                    // called through its supertype, which the search does not
-                    // read. Any failure to tell counts as an override.
-                    let overrides = match &answered {
-                        Ok(Ok(answer)) if answer.member && data.kind == Kind::Symbol => {
-                            match oxabl_common::catch_panic(|| {
-                                may_override(&host, &session_root, &root, &path, data.offset)
-                            }) {
-                                Ok(Ok(overrides)) => Ok(overrides),
-                                Ok(Err(
-                                    error @ (ReferenceError::Cancelled | ReferenceError::Modified),
-                                )) => Err(error),
-                                _ => Ok(true),
-                            }
-                        }
-                        _ => Ok(false),
-                    };
-                    in_flight.finish(&id);
-                    let answered = match (answered, overrides) {
-                        (Ok(Ok(answer)), Ok(overrides)) => Ok(Ok((answer, overrides))),
-                        (Ok(Ok(_)), Err(error)) => Ok(Err(error)),
-                        (Ok(Err(error)), _) => Ok(Err(error)),
-                        (Err(panic), _) => Err(panic),
-                    };
-                    let response = match answered {
-                        Ok(Ok((answer, overrides))) => {
-                            crate::references::log_standing(
-                                &sender,
-                                &in_flight,
-                                "references and calls",
-                                &answer.gaps,
-                            );
-                            let volatile = answer.volatile;
-                            let pass = answer.pass.clone();
-                            let title = title(answer, data.kind, overrides, &encoding);
-                            if !volatile
-                                && title.opens
-                                && let Some(made) = generations
-                            {
-                                cache.put(key, made, epoch, title.clone(), pass);
-                            }
-                            Response::new_ok(id, resolved(lens, &data, title))
-                        }
-                        Ok(Err(ReferenceError::Cancelled)) => Response::new_err(
-                            id,
-                            ErrorCode::RequestCanceled as i32,
-                            "oxabl-lsp: the request was cancelled".to_string(),
-                        ),
-                        Ok(Err(ReferenceError::Modified)) => Response::new_err(
-                            id,
-                            ErrorCode::ContentModified as i32,
-                            "oxabl-lsp: an edit replaced this analysis".to_string(),
-                        ),
-                        Ok(Err(ReferenceError::Failed(reason))) => Response::new_ok(
-                            id,
-                            resolved(
-                                lens,
-                                &data,
-                                unknown(&format!("the file gives no answer: {reason}")),
-                            ),
-                        ),
-                        Err(panic) => Response::new_ok(
-                            id,
-                            resolved(
-                                lens,
-                                &data,
-                                unknown(&format!("the analysis failed: {panic}")),
-                            ),
-                        ),
-                    };
-                    let _ = sender.send(Message::Response(response));
                 }
-            });
-        if let Err(error) = spawned {
-            self.references.finish(&id);
-            return self.respond(Response::new_err(
-                id,
-                ErrorCode::InternalError as i32,
-                format!("oxabl-lsp: cannot start the analysis: {error}"),
-            ));
+            };
+            if oxabl_common::catch_panic(|| run_batch(&batch, job)).is_err() {
+                let outcome = Outcome::Title(unknown("the analysis failed"));
+                let waiters = std::mem::take(&mut batch.lock().waiters);
+                for waiter in waiters {
+                    job.send(waiter, &outcome);
+                }
+            }
+            let mut queue = self.lock();
+            batch.lock().closed = true;
+            if queue
+                .open
+                .get(&batch.key)
+                .is_some_and(|open| Arc::ptr_eq(open, &batch))
+            {
+                queue.open.remove(&batch.key);
+            }
+            drop(queue);
+            // A resolve that joined after the last answer of its lens.
+            let left = std::mem::take(&mut batch.lock().waiters);
+            for waiter in left {
+                job.send(waiter, &cancelled());
+            }
         }
-        Ok(())
+    }
+}
+
+/// Answer the resolves of a cancelled waiter, and say whether none is left. A
+/// batch with no resolve left closes, so no resolve joins a stopped search.
+fn reap(batch: &Batch, job: &BatchJob) -> bool {
+    let (gone, empty) = {
+        let mut state = batch.lock();
+        let (gone, kept): (Vec<Waiter>, Vec<Waiter>) = std::mem::take(&mut state.waiters)
+            .into_iter()
+            .partition(|waiter| waiter.cancel.load(Ordering::Relaxed));
+        state.waiters = kept;
+        let empty = state.waiters.is_empty();
+        if empty {
+            state.closed = true;
+        }
+        (gone, empty)
+    };
+    for waiter in gone {
+        job.send(waiter, &cancelled());
+    }
+    empty
+}
+
+/// Count every lens of `batch` with one search, and answer each waiter.
+fn run_batch(batch: &Batch, job: &BatchJob) {
+    let (host, session_root) = (&job.host, job.session_root.as_path());
+    let stop = || reap(batch, job);
+    // A kept title that read a workspace pass holds while the pass is the
+    // one that find references reads now.
+    let checks = batch
+        .lock()
+        .waiters
+        .iter()
+        .any(|waiter| waiter.kept.is_some());
+    if checks {
+        let current = Pass::current(host, session_root, &stop);
+        let answered: Vec<Waiter> = {
+            let mut state = batch.lock();
+            let (fresh, old): (Vec<Waiter>, Vec<Waiter>) = std::mem::take(&mut state.waiters)
+                .into_iter()
+                .partition(|waiter| {
+                    matches!((&waiter.kept, &current), (Some((_, pass)), Some(current)) if pass.same(current))
+                });
+            state.waiters = old;
+            fresh
+        };
+        for mut waiter in answered {
+            let (title, _) = waiter.kept.take().expect("partitioned on a kept title");
+            job.send(waiter, &Outcome::Title(title));
+        }
+    }
+    if stop() {
+        return;
+    }
+    if let Some(text) = &batch.hold_text {
+        oxabl_common::hold_if_injected(oxabl_common::panic_sites::LSP_REFERENCE_LENS, text);
+    }
+    let root = batch.key.root.as_path();
+    let queries: Vec<ReferenceQuery> = batch
+        .lenses
+        .iter()
+        .map(|&(kind, offset)| match kind {
+            Kind::Program => ReferenceQuery::Program,
+            Kind::Symbol => ReferenceQuery::References {
+                file: batch.path.clone(),
+                offset,
+                include_declaration: false,
+            },
+        })
+        .collect();
+    let answered =
+        oxabl_common::catch_panic(|| answer_batch(host, session_root, root, &queries, &stop));
+    let mut answers: Vec<Option<Result<ReferenceAnswer, ReferenceError>>> = match answered {
+        Ok(batched) => {
+            if let Some(text) = &batch.hold_text {
+                report_analysed(job, text, batch.lenses.len(), &batched.analysed);
+            }
+            batched.answers.into_iter().map(Some).collect()
+        }
+        Err(panic) => {
+            let outcome = Outcome::Title(unknown(&format!("the analysis failed: {panic}")));
+            finish(batch, job, |_| Some(outcome.clone()));
+            return;
+        }
+    };
+    if let Some(text) = &batch.hold_text
+        && answers.iter().any(|answer| matches!(answer, Some(Ok(_))))
+    {
+        oxabl_common::hold_if_injected(oxabl_common::panic_sites::LSP_REFERENCE_LENS_ANSWER, text);
+    }
+    // A member that overrides or implements another is also called through
+    // its supertype, which the search does not read. Any failure to tell
+    // counts as an override.
+    let members: Vec<usize> = (0..batch.lenses.len())
+        .filter(|&at| {
+            batch.lenses[at].0 == Kind::Symbol
+                && matches!(&answers[at], Some(Ok(answer)) if answer.member)
+        })
+        .collect();
+    let offsets: Vec<u32> = members.iter().map(|&at| batch.lenses[at].1).collect();
+    let mut overrides: HashMap<usize, Result<bool, ReferenceError>> = HashMap::new();
+    if !members.is_empty() {
+        let each = oxabl_common::catch_panic(|| {
+            may_override_each(host, session_root, root, &batch.path, &offsets)
+        });
+        for (n, &at) in members.iter().enumerate() {
+            let overrides_at = match &each {
+                Ok(Ok(each)) => match each.get(n) {
+                    Some(Ok(overrides)) => Ok(*overrides),
+                    Some(Err(error @ (ReferenceError::Cancelled | ReferenceError::Modified))) => {
+                        Err(error.clone())
+                    }
+                    _ => Ok(true),
+                },
+                Ok(Err(error @ (ReferenceError::Cancelled | ReferenceError::Modified))) => {
+                    Err(error.clone())
+                }
+                _ => Ok(true),
+            };
+            overrides.insert(at, overrides_at);
+        }
+    }
+    finish(batch, job, |at| {
+        let answer = answers[at].take()?;
+        let overrides = overrides.remove(&at).unwrap_or(Ok(false));
+        let (kind, offset) = batch.lenses[at];
+        let outcome = match (answer, overrides) {
+            (Ok(answer), Ok(overrides)) => {
+                crate::references::log_standing(
+                    &job.sender,
+                    &job.in_flight,
+                    "references and calls",
+                    &answer.gaps,
+                );
+                let volatile = answer.volatile;
+                let pass = answer.pass.clone();
+                let title = title(answer, kind, overrides, &job.encoding);
+                if !volatile
+                    && title.opens
+                    && let Some(made) = batch.key.generations
+                {
+                    let key = CacheKey {
+                        uri: batch.key.uri.clone(),
+                        root: batch.key.root.clone(),
+                        kind,
+                        offset,
+                        version: batch.key.version,
+                    };
+                    job.cache
+                        .put(key, made, batch.key.epoch, title.clone(), pass);
+                }
+                Outcome::Title(title)
+            }
+            (Ok(_), Err(error)) | (Err(error), _) => match error {
+                ReferenceError::Cancelled => cancelled(),
+                ReferenceError::Modified => Outcome::Error(
+                    ErrorCode::ContentModified as i32,
+                    "oxabl-lsp: an edit replaced this analysis".to_string(),
+                ),
+                ReferenceError::Failed(reason) => {
+                    Outcome::Title(unknown(&format!("the file gives no answer: {reason}")))
+                }
+            },
+        };
+        Some(outcome)
+    });
+}
+
+/// Tell a test that asks for it ([`oxabl_common::count_requested`]) which
+/// files the search of a batch analysed: one log line for each batch.
+fn report_analysed(job: &BatchJob, text: &str, lenses: usize, analysed: &[PathBuf]) {
+    if !oxabl_common::count_requested(oxabl_common::panic_sites::LSP_REFERENCE_LENS, text) {
+        return;
+    }
+    let files: Vec<String> = analysed
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    let _ = job
+        .sender
+        .send(Message::Notification(lsp_server::Notification {
+            method: "window/logMessage".to_string(),
+            params: serde_json::json!({
+                "type": lsp_types::MessageType::LOG,
+                "message": format!(
+                    "oxabl-test: {lenses} reference lenses searched {}",
+                    files.join("|")
+                ),
+            }),
+        }));
+}
+
+/// Give each lens of `batch` its outcome from `outcome`, the lenses that a
+/// resolve waits for first, and answer the waiters of each.
+fn finish(batch: &Batch, job: &BatchJob, mut outcome: impl FnMut(usize) -> Option<Outcome>) {
+    let mut done = vec![false; batch.lenses.len()];
+    loop {
+        let next = {
+            let state = batch.lock();
+            let waited = state.waiters.iter().find_map(|waiter| {
+                let wanted = (waiter.data.kind, waiter.data.offset);
+                batch
+                    .lenses
+                    .iter()
+                    .position(|lens| *lens == wanted)
+                    .filter(|&at| !done[at])
+            });
+            waited.or_else(|| done.iter().position(|done| !done))
+        };
+        let Some(at) = next else {
+            return;
+        };
+        done[at] = true;
+        let Some(outcome) = outcome(at) else {
+            continue;
+        };
+        let ready: Vec<Waiter> = {
+            let mut state = batch.lock();
+            state.outcomes[at] = Some(outcome.clone());
+            let (ready, rest): (Vec<Waiter>, Vec<Waiter>) = std::mem::take(&mut state.waiters)
+                .into_iter()
+                .partition(|waiter| batch.lenses[at] == (waiter.data.kind, waiter.data.offset));
+            state.waiters = rest;
+            ready
+        };
+        for waiter in ready {
+            job.send(waiter, &outcome);
+        }
     }
 }
 

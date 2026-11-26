@@ -1284,6 +1284,8 @@ struct Server<'c> {
     lenses: code_lens::LensCache,
     /// The resolved titles of the reference-count lenses.
     reference_cache: reference_lens::ResolveCache,
+    /// The reference lens resolves that wait for a search, by file.
+    lens_batches: reference_lens::Batches,
     /// When to ask the client for the reference lenses again.
     lens_refresh: reference_lens::Refresh,
     /// The client's inlay hint support and the kinds it wants.
@@ -1385,6 +1387,7 @@ impl<'c> Server<'c> {
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
             reference_cache: reference_lens::ResolveCache::default(),
+            lens_batches: reference_lens::Batches::default(),
             lens_refresh: reference_lens::Refresh::new(debounce_window),
             inlay,
             semantic,

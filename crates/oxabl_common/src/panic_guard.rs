@@ -167,7 +167,8 @@ pub mod panic_sites {
     /// snapshot, for [`hold_if_injected`](super::hold_if_injected).
     pub const LSP_PARAMETER_HINTS: &str = "lsp.parameter-hints";
     /// The language server's reference-count lens search, for
-    /// [`hold_if_injected`](super::hold_if_injected).
+    /// [`hold_if_injected`](super::hold_if_injected) and
+    /// [`count_requested`](super::count_requested).
     pub const LSP_REFERENCE_LENS: &str = "lsp.reference-lens";
     /// The reference-count lens search after its answer, before the title is
     /// kept, for [`hold_if_injected`](super::hold_if_injected).
@@ -286,6 +287,26 @@ pub fn hold_if_injected_with(site: &str, source: &str, started: impl FnOnce()) {
 
     #[cfg(not(feature = "test-panics"))]
     let _ = (site, source, started);
+}
+
+/// The marker that asks a site to report the work it did, for a test that
+/// counts it: `OXABL-TEST-COUNT:<site>` in the source, as with
+/// [`TEST_PANIC_MARKER`].
+pub const TEST_COUNT_MARKER: &str = "OXABL-TEST-COUNT";
+
+/// Whether `source` asks this `site` to report its work with
+/// [`TEST_COUNT_MARKER`]. Always `false` unless the test-only `test-panics`
+/// feature is enabled.
+#[inline]
+pub fn count_requested(site: &str, source: &str) -> bool {
+    #[cfg(feature = "test-panics")]
+    return source.contains(&format!("{TEST_COUNT_MARKER}:{site}"));
+
+    #[cfg(not(feature = "test-panics"))]
+    {
+        let _ = (site, source);
+        false
+    }
 }
 
 /// Panic when `source` carries this `site`'s injection marker.

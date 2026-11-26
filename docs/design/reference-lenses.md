@@ -32,13 +32,35 @@ references.
 `textDocument/codeLens` gives ranges only. A lens has no command and no count.
 Its `data` holds the file, the version of the text, the byte of the name and
 the kind. The client asks for the count with `codeLens/resolve` when the lens
-comes into view. This is the only place where the search runs, so a large file
-runs no search for a declaration that nobody sees.
+comes into view. This is the only place where the search runs, so a file that
+nobody looks at runs no search.
 
-A resolve runs on a worker thread, as a find references request does. It
-waits for a workspace pass when other files can name the declaration. At most
-two searches run at one time (`oxabl_daemon::references::MAX_SEARCHES`).
-`$/cancelRequest` stops a resolve.
+## One search for the lenses of a file
+
+The first resolve of a file starts a batch. The batch counts every lens of the
+file with one search (`oxabl_daemon::references::answer_batch`). It analyses
+the unit once, gets the workspace pass once, and analyses each other file that
+one of the declarations can be named in once. In each such file it collects
+the places of every declaration. The answer of each lens is the same as the
+answer of a search for that lens alone: its count, its list and its reasons.
+The lenses of a class are about the same declarations and the same other
+files, so one search costs about as much as the search of one lens.
+
+A resolve that comes while the batch of its file runs joins the batch. It
+waits as data, with no thread of its own, and gets its answer when the batch
+has counted its lens. The batch counts the lenses that a resolve waits for
+first. The batch keeps every title that it can keep (see "Cost"), so a later
+resolve of another lens of the file is a lookup. A batch is for one version of
+the text, one unit and one state of the session: a resolve after an edit, a
+change of the configuration or schema, or a change on disk starts a new batch.
+
+Each client has at most two runners (threads) that run batches; a later batch
+waits in a queue. The member lenses also ask whether the member overrides or
+implements another (see below). The batch asks this for all its members with
+one more analysis of the unit.
+
+`$/cancelRequest` stops a resolve. When every resolve of a batch is cancelled,
+the batch stops: while it waits for the workspace pass, and between two files.
 
 A resolve for text that has changed since the lens was made answers
 `ContentModified`. The offsets in the data are for the old text. The client
@@ -179,13 +201,12 @@ with `workspace/codeLens/refresh`.
 
 ## Cost
 
-A resolve costs one find references request. A file with many declarations
-makes many requests, two at a time, as the lenses come into view. A client
-can cancel a resolve that scrolls out of view (VS Code does). The lens needs
-no work until it is seen.
+The first resolve of a file costs one search (see "One search for the lenses
+of a file"), however many lenses the file has. The lens needs no work until
+one lens of the file is seen.
 
-The server keeps the title of each resolved lens. A second resolve of the
-same lens (the same file, unit, declaration and text version) runs no new
+The server keeps the title of each lens that a batch counted. A second
+resolve of the same lens (the same file, unit, declaration and text version) runs no new
 search while the session is unchanged: the generations of the buffers, the
 configuration and the schema are the same, and no watched file changed on
 disk. A kept title also holds the workspace pass that its search read. On a
@@ -245,7 +266,12 @@ text that the preprocessor cannot decide; the dynamic and
 reflection calls for classes and members; a file that oxabl cannot read), and
 the exact counts of a workspace that has none; the refresh request after a
 save, a disk change and an edit of another file, and one request for a burst;
-and the effect lenses with the reference lenses beside them. The cache bounds
+the effect lenses with the reference lenses beside them; and the batch: the
+lenses of a file that are resolved at once have the counts and lists that each
+lens has alone, and one search analyses each other file once for all the
+lenses of the file. A source with `OXABL-TEST-COUNT:lsp.reference-lens` makes
+the server write the files that the search of each batch analysed to the log
+(`window/logMessage`), in test builds only. The cache bounds
 are tested in `crates/oxabl_lsp/src/reference_lens.rs`, because no client can see
 the size of the cache. The `reference-lenses` scenario of
 `clients/vscode/test/e2e` shows the lenses in a real VS Code, clicks the
