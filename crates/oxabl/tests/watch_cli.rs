@@ -161,3 +161,30 @@ fn ctrl_c_exits_cleanly() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// A producer with a `TRIGGERS` phrase holds a `DEFINE` of its own. The first
+/// check asks the producer map for the consumer, and must end.
+#[test]
+fn the_first_check_ends_over_a_producer_that_holds_a_define() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("producer.p"),
+        "DEFINE NEW SHARED VARIABLE v-a AS CHARACTER NO-UNDO\n\
+         VIEW-AS FILL-IN\n\
+         TRIGGERS:\n\
+         ON LEAVE DO:\n\
+         DEFINE VARIABLE v-b AS INTEGER NO-UNDO.\n\
+         END.\n\
+         END TRIGGERS.\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("consumer.p"),
+        "DEFINE SHARED VARIABLE v-a AS CHARACTER NO-UNDO.\nMESSAGE v-a.\n",
+    )
+    .unwrap();
+
+    let watch = Watch::start(tmp.path(), &[]);
+    let text = watch.wait_for("watching").join("\n");
+    assert!(text.contains("checked 2 files"), "{text}");
+}
