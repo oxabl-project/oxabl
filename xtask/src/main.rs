@@ -6,6 +6,7 @@
 mod changed;
 mod checks;
 mod jobs;
+mod lost_content;
 mod runner;
 mod tools;
 
@@ -13,8 +14,7 @@ use changed::{HEAVY_JOBS, Tests};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str =
-    "usage: cargo xtask ci [--list] [--verbose] [--changed [--base REF] [--lint-only]] [JOB...]";
+const USAGE: &str = "usage: cargo xtask ci [--list] [--verbose] [--changed [--base REF] [--lint-only]] [JOB...]\n       cargo xtask lost-content <old-head> <new-head> [--base <ref>]";
 const DEFAULT_BASE: &str = "origin/master";
 
 /// What every job and step needs to know about the run.
@@ -31,6 +31,7 @@ fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.split_first() {
         Some((command, rest)) if command == "ci" => ci(rest),
+        Some((command, rest)) if command == "lost-content" => lost_content::run(rest),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
