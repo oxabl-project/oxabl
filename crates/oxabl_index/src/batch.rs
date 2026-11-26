@@ -713,7 +713,10 @@ impl<'a> BatchIndex<'a> {
             ProducerSource::Deferred(map) => {
                 let predefined = self.predefined();
                 let includes = self.includes(&predefined);
-                listed = unobserved(self.fs, || map.map(&includes)).producers_of(name);
+                match unobserved(self.fs, || map.map(&includes)) {
+                    Some(map) => listed = map.producers_of(name),
+                    None => return IndexAnswer::Unknowable,
+                }
             }
             // Scanned on first ask. This is the only query the list feeds, and
             // deferring it to here is what keeps a run that consumes no `SHARED`

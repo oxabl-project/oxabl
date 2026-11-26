@@ -212,7 +212,8 @@ pub struct DeferredProducers {
     /// The files, in the order the scan claims them.
     files: Vec<PathBuf>,
     threads: usize,
-    map: OnceLock<SharedProducers>,
+    /// `None` when the scan panicked.
+    map: OnceLock<Option<SharedProducers>>,
     procedures: ProcedureNames,
 }
 
@@ -230,14 +231,27 @@ impl DeferredProducers {
 
     /// The map, built through `includes` when this is the first question.
     /// Every caller gets the same map.
-    pub fn map(&self, includes: &IncludeContext<'_>) -> &SharedProducers {
-        self.map
-            .get_or_init(|| SharedProducers::build_parallel(&self.files, includes, self.threads))
+    ///
+    /// `None` when the scan panicked: the panic unwinds through the question
+    /// that ran it, and every other question, then and later, gets `None` at
+    /// once and does not scan again.
+    pub fn map(&self, includes: &IncludeContext<'_>) -> Option<&SharedProducers> {
+        let mut panicked = None;
+        let map = self.map.get_or_init(|| {
+            let scan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                SharedProducers::build_parallel(&self.files, includes, self.threads)
+            }));
+            scan.map_err(|payload| panicked = Some(payload)).ok()
+        });
+        if let Some(payload) = panicked {
+            std::panic::resume_unwind(payload);
+        }
+        map.as_ref()
     }
 
     /// The map, when a question has built it.
     pub fn built(&self) -> Option<&SharedProducers> {
-        self.map.get()
+        self.map.get().and_then(Option::as_ref)
     }
 
     /// [`SharedProducers::defines_procedure`] over the files, without the
@@ -279,22 +293,19 @@ fn candidates_in(path: &Path, source: &str, includes: &IncludeContext<'_>) -> Ve
     if !written_says && !source.contains('{') {
         return Vec::new();
     }
-    let tokens = oxabl_lexer::tokenize(source);
+    let mut tokens = oxabl_lexer::tokenize(source);
     let mut names = Vec::new();
     let expanded = if written_says {
         let program = crate::parse(&tokens, source);
         // The text as written answers when it parses, unless the index reads
         // the expanded text; and when the expanded text does not parse, the
         // index falls back to it. So its names are kept in both cases.
-        if program.is_ok() && !scan_definitions(&tokens, source, &mut names) {
+        if program.is_ok() && !scan_definitions(&mut tokens, source, &mut names) {
             // A statement that does not parse alone in a text that parses
             // whole: the names of the declare pass, as the index finds them.
             names = crate::declared_shared(&program.statements, source);
         }
-        // A superset of the files `index_file_at` reads expanded: those it
-        // may expand, and those with an enum named by a reference.
         crate::may_be_expanded_parsed(&program)
-            || crate::names_an_enum_with_a_reference(&tokens, source)
     } else {
         // Only the expanded text can say `NEW SHARED`, and the index reads it
         // only when it may expand the file: the test `may_define_shared` makes.
@@ -304,9 +315,18 @@ fn candidates_in(path: &Path, source: &str, includes: &IncludeContext<'_>) -> Ve
         && let Some(text) = crate::expanded_text_at(path, source, includes)
         && let Some(last) = new_shared_said_at(&text).last()
     {
-        // A statement that does not parse alone makes the whole expanded text
-        // fail to parse, and the index then reads the text as written.
-        scan_definitions(&tokens_through(&text, last), &text, &mut names);
+        let mut expanded_tokens = tokens_through(&text, last);
+        if !scan_definitions(&mut expanded_tokens, &text, &mut names) {
+            // A statement that does not parse alone: when the whole text
+            // parses, the names of its declare pass are the index's. When it
+            // does not, the index reads the text as written, and the names
+            // found so far stand as extra candidates.
+            let whole = oxabl_lexer::tokenize(&text);
+            let program = crate::parse(&whole, &text);
+            if program.is_ok() {
+                names.extend(crate::declared_shared(&program.statements, &text));
+            }
+        }
     }
     names.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
     names.dedup();
@@ -317,16 +337,20 @@ fn candidates_in(path: &Path, source: &str, includes: &IncludeContext<'_>) -> Ve
 /// temp-table, work-table, buffer and dataset in `tokens`, the tokens of
 /// `source`: the definitions the declare pass flags as producers. Each
 /// `DEFINE` with `NEW` ahead is parsed alone, with the parser that parses it in
-/// the whole text. False when one of them does not parse alone.
-fn scan_definitions(tokens: &[Token], source: &str, out: &mut Vec<IndexName>) -> bool {
-    let mut whole = true;
-    let mut defines = tokens
+/// the whole text, and ends at the next `DEFINE` or the end. False when one of
+/// them does not parse alone; a statement that holds a `DEFINE` of its own (a
+/// `TRIGGERS` phrase) is one of them.
+///
+/// `tokens` must end with an `Eof`. They are as they were when this returns.
+fn scan_definitions(tokens: &mut [Token], source: &str, out: &mut Vec<IndexName>) -> bool {
+    let defines: Vec<usize> = tokens
         .iter()
         .enumerate()
         .filter(|(_, token)| token.kind == Kind::Define)
         .map(|(at, _)| at)
-        .peekable();
-    while let Some(at) = defines.next() {
+        .collect();
+    let mut whole = true;
+    for (n, &at) in defines.iter().enumerate() {
         // As the parser reads `DEFINE`: references may stand before `NEW`.
         let new_ahead = tokens[at + 1..]
             .iter()
@@ -340,10 +364,20 @@ fn scan_definitions(tokens: &[Token], source: &str, out: &mut Vec<IndexName>) ->
         if !new_ahead {
             continue;
         }
-        // Up to the next `DEFINE`, which no statement holds, or the end: the
-        // parser sees the same tokens as in the whole text and no others.
-        let end = defines.peek().map_or(tokens.len(), |next| next + 1);
-        match Parser::new(&tokens[at..end], source).parse_statement() {
+        // The next `DEFINE` stands in for the end of the text, so the parser
+        // sees the tokens of the statement and then `Eof`, and stops.
+        let (end, cut) = match defines.get(n + 1) {
+            Some(&next) => (next, Some(next)),
+            None => (tokens.len() - 1, None),
+        };
+        if let Some(next) = cut {
+            tokens[next].kind = Kind::Eof;
+        }
+        let parsed = Parser::new(&tokens[at..=end], source).parse_statement();
+        if let Some(next) = cut {
+            tokens[next].kind = Kind::Define;
+        }
+        match parsed {
             Ok(statement) => out.extend(new_shared_name(&statement).map(IndexName::new)),
             Err(_) => whole = false,
         }
@@ -598,13 +632,16 @@ fn new_shared_said_at(source: &str) -> impl Iterator<Item = usize> {
 }
 
 /// The tokens of `source` up to the first `DEFINE` that starts after the
-/// offset `last`, that one included, or all of them. Every `DEFINE` whose
-/// `NEW` starts at or before `last` is in them, with the tokens of its
-/// statement: no statement holds a second `DEFINE`.
+/// offset `last`, which becomes the closing `Eof`, or all of them. Every
+/// `DEFINE` whose `NEW` starts at or before `last` is in them, so the scan
+/// finds what a scan of all the tokens finds.
 fn tokens_through(source: &str, last: usize) -> Vec<Token> {
     let mut tokens = Vec::new();
-    for token in oxabl_lexer::Lexer::new(source) {
+    for mut token in oxabl_lexer::Lexer::new(source) {
         let stop = token.kind == Kind::Define && token.start > last;
+        if stop {
+            token.kind = Kind::Eof;
+        }
         tokens.push(token);
         if stop {
             break;
@@ -663,10 +700,12 @@ mod tests {
             " {&nothing} ",
         ];
         const SHAREDS: [&str; 4] = ["SHARED", "shared", "GLOBAL SHARED", "{&sh}"];
-        const OBJECTS: [&str; 3] = [
+        const OBJECTS: [&str; 4] = [
             "VARIABLE v AS INTEGER NO-UNDO.",
             "TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.",
             "STREAM s.",
+            "VARIABLE v AS CHARACTER NO-UNDO VIEW-AS FILL-IN TRIGGERS: \
+             ON LEAVE DO: DEFINE VARIABLE w AS INTEGER NO-UNDO. END. END TRIGGERS.",
         ];
         let fs = InMemoryFileSystem::new();
         let predefined = PreprocessorConfig::default();
@@ -899,6 +938,128 @@ mod tests {
         }
     }
 
+    const TRIGGERED: &str = "DEFINE NEW SHARED VARIABLE v-t AS CHARACTER NO-UNDO\n\
+         VIEW-AS FILL-IN\n\
+         TRIGGERS:\n\
+         ON LEAVE DO:\n\
+         DEFINE VARIABLE v-inner AS INTEGER NO-UNDO.\n\
+         END.\n\
+         END TRIGGERS.\n";
+
+    /// `work`, which must end within 60 s: a scan that loops stops the test
+    /// binary with a message, and does not hang it.
+    fn within_limit<T: Send>(work: impl FnOnce() -> T + Send) -> T {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            oxabl_common::stack::builder()
+                .spawn_scoped(scope, move || {
+                    let _ = sender.send(work());
+                })
+                .unwrap();
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .unwrap_or_else(|_| {
+                    eprintln!("the scan did not end within 60 s");
+                    std::process::exit(101)
+                })
+        })
+    }
+
+    /// A definition that holds a `DEFINE` of its own does not parse alone, and
+    /// the scan must end and still find it: as written, through an include,
+    /// and among other definitions.
+    #[test]
+    fn a_definition_that_holds_a_define_is_found_and_the_scan_ends() {
+        let include_paths = [PathBuf::from("/")];
+        let predefined = PreprocessorConfig::default();
+        let others = "DEFINE NEW SHARED VARIABLE v-a AS INTEGER NO-UNDO.\n";
+        for (source, want) in [
+            (TRIGGERED.to_string(), &["v-t"][..]),
+            ("{trig.i}".to_string(), &["v-t"]),
+            (format!("{others}{TRIGGERED}{others}"), &["v-a", "v-t"]),
+            (format!("{TRIGGERED}{TRIGGERED}"), &["v-t"]),
+            (format!("{{trig.i}}\n{others}"), &["v-a"]),
+            (format!("{{trig.i}}\n{{trig.i}}"), &["v-t"]),
+            (
+                format!(
+                    "DEFINE NEW SHARED VARIABLE v-u AS CHARACTER VIEW-AS FILL-IN TRIGGERS:\nON LEAVE DO:\n{others}"
+                ),
+                &["v-a", "v-u"],
+            ),
+        ] {
+            let fs = fs_with(&[("/f.p", source.as_str()), ("/trig.i", TRIGGERED)]);
+            let includes = IncludeContext {
+                fs: &fs,
+                include_paths: &include_paths,
+                root_relative_paths: &[],
+                predefined: &predefined,
+            };
+            let listed = within_limit(|| definitions_in(Path::new("/f.p"), &includes));
+            let indexed =
+                index_file_at(IndexedFileId::new(0), Path::new("/f.p"), &source, &includes)
+                    .0
+                    .shared_definitions;
+            for name in &indexed {
+                assert!(listed.contains(name), "{name:?} in {source:?}");
+            }
+            let want: Vec<IndexName> = want.iter().map(|name| IndexName::new(name)).collect();
+            assert_eq!(listed, want, "{source}");
+        }
+    }
+
+    /// A file system that panics on a read of one path and counts the reads.
+    struct Reads {
+        inner: InMemoryFileSystem,
+        reads: AtomicUsize,
+        panic_on: &'static str,
+    }
+
+    impl oxabl_workspace::FileSystem for Reads {
+        fn read(&self, path: &Path) -> Result<std::sync::Arc<str>, std::io::Error> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            assert!(!path.ends_with(self.panic_on), "injected read failure");
+            self.inner.read(path)
+        }
+
+        fn exists(&self, path: &Path) -> bool {
+            self.inner.exists(path)
+        }
+    }
+
+    /// A panic in the scan unwinds through the question that ran it, and every
+    /// later question gets no map and does not scan again.
+    #[test]
+    fn a_panic_in_the_scan_is_recorded_once_and_not_scanned_again() {
+        let files = [
+            ("/a.p", "DEFINE NEW SHARED VARIABLE v-a AS INTEGER NO-UNDO."),
+            ("/b.p", "DEFINE NEW SHARED VARIABLE v-b AS INTEGER NO-UNDO."),
+        ];
+        let fs = Reads {
+            inner: fs_with(&files),
+            reads: AtomicUsize::new(0),
+            panic_on: "b.p",
+        };
+        let predefined = PreprocessorConfig::default();
+        let includes = IncludeContext {
+            fs: &fs,
+            include_paths: &[],
+            root_relative_paths: &[],
+            predefined: &predefined,
+        };
+        let deferred = DeferredProducers::new(&paths(&files), 1);
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            deferred.map(&includes).is_some()
+        }));
+        assert!(first.is_err(), "the question that ran the scan unwinds");
+        let reads = fs.reads.load(Ordering::SeqCst);
+        assert!(reads > 0);
+        for _ in 0..3 {
+            assert!(deferred.map(&includes).is_none());
+        }
+        assert!(deferred.built().is_none());
+        assert_eq!(fs.reads.load(Ordering::SeqCst), reads, "a second scan");
+    }
+
     #[test]
     fn procedure_names_are_read_in_any_spelling() {
         let files = [
@@ -1007,7 +1168,7 @@ mod tests {
         );
         let seen: Vec<SharedProducers> = std::thread::scope(|scope| {
             let askers: Vec<_> = (0..8)
-                .map(|_| scope.spawn(|| deferred.map(&includes).clone()))
+                .map(|_| scope.spawn(|| deferred.map(&includes).unwrap().clone()))
                 .collect();
             askers.into_iter().map(|a| a.join().unwrap()).collect()
         });

@@ -153,12 +153,21 @@ mod producer_built_from_includes {
     const DEFS: &str = "DEFINE NEW SHARED VARIABLE v-x AS INTEGER NO-UNDO.\nRUN b.p.\n";
     const B: &str = "DEFINE SHARED VARIABLE v-x AS INTEGER NO-UNDO.\nMESSAGE v-x.\n";
     const C: &str = "RUN a.p.\n";
+    /// A definition that holds a `DEFINE` of its own, in a trigger block.
+    const TRIGGERED: &str = "DEFINE NEW SHARED VARIABLE v-x AS CHARACTER NO-UNDO\n\
+         VIEW-AS FILL-IN\n\
+         TRIGGERS:\n\
+         ON LEAVE DO:\n\
+         DEFINE VARIABLE v-inner AS INTEGER NO-UNDO.\n\
+         END.\n\
+         END TRIGGERS.\n";
 
     fn workspace(a: &str) -> InMemoryFileSystem {
         let mut fs = InMemoryFileSystem::new();
         fs.insert(PathBuf::from("/p/a.p"), a);
         fs.insert(PathBuf::from("/p/defs.i"), DEFS);
         fs.insert(PathBuf::from("/p/head.i"), "NEW SHARED");
+        fs.insert(PathBuf::from("/p/trig.i"), TRIGGERED);
         fs.insert(PathBuf::from("/p/b.p"), B);
         fs.insert(PathBuf::from("/p/c.p"), C);
         fs
@@ -300,6 +309,18 @@ mod producer_built_from_includes {
     #[test]
     fn a_producer_whose_new_shared_comes_from_an_include_is_found_in_every_order() {
         assert_found_everywhere("DEFINE {head.i} VARIABLE v-x AS INTEGER NO-UNDO.\nRUN b.p.\n");
+    }
+
+    /// A statement that holds a `DEFINE` does not parse alone, and the index
+    /// still finds the producer, written or through an include.
+    #[test]
+    fn a_producer_with_a_trigger_block_is_found_in_every_order() {
+        assert_found_everywhere(TRIGGERED);
+        assert_found_everywhere("{trig.i}\n");
+        assert_found_everywhere(&format!("{TRIGGERED}{TRIGGERED}"));
+        assert_found_everywhere(&format!(
+            "DEFINE VARIABLE v-own AS INTEGER NO-UNDO.\n{TRIGGERED}"
+        ));
     }
 
     /// The scan lists the second arm, but the declare pass keeps the first
