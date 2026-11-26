@@ -21,7 +21,7 @@ reads the disk, but outside the measured part.
 | --- | --- | --- |
 | `check/file` | `resources/lsp_bench.p` and its two includes | `oxabl check <file>`: the lint run, then the format check, on a new pipeline |
 | `check/workspace` | the 300 roots of the generated `ci` workspace: no finding, no drift | `oxabl check <dir>`: one pipeline for the walk |
-| `check/workspace_include_findings` | the same, with 100 unused variables in each hot include (42,700 findings in includes, about 140 for each root) | `oxabl check <dir>` where shared includes have findings: the fold of include findings (`IncludeRows::add` in `oxabl_analyze` is 11.9% of the bench, the hash of its key 7.6%) |
+| `check/workspace_include_findings` | the same, with 100 unused variables in each hot include (42,700 findings in includes, about 140 for each root) | `oxabl check <dir>` where shared includes have findings: the fold of include findings (`IncludeRows::add` in `oxabl_analyze`: 7.4% of `oxabl check` on this workspace when its key held a path and a message, 1.3% with a key of plain data) |
 | `format/file_end_to_end` | `lsp_bench.p` | `oxabl format`, Format Document: `FormatPipeline::format` from the text |
 | `format/synthetic_mixed`, `format/synthetic_mixed_with_tokens` | a synthetic program of 40 repeated units | the formatter engine on a parsed tree: `format()` lexes the source itself, `format_with_tokens()` takes the tokens of the caller, as the pipeline does. The lex and parse are outside the timed loop |
 | `navigation/definitions` | `lsp_bench.p` | one go to definition request: expansion, analysis, query |
@@ -134,6 +134,12 @@ budget in the same pull request, so the gain stays. A new stable Rust can move
 the counts (CI uses the newest stable). Then re-measure with
 `cargo test -p oxabl_bench --test alloc_budget -- --nocapture` and set the
 budgets to the printed numbers.
+
+`crates/oxabl_bench/tests/include_rows_alloc.rs` guards the fold of the
+findings in includes. It lints a root that includes a file with 50 and with 250
+unused variables, and fails when the lint run allocates more than 9 times for
+each added finding (8.6 now; 10.6 when the fold cloned a path and a message to
+build its key).
 
 ### Type sizes
 

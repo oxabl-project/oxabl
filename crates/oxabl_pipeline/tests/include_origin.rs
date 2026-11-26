@@ -172,6 +172,38 @@ fn distinct_findings_of_repeated_expansions_stay_distinct() {
 }
 
 #[test]
+fn findings_that_differ_only_in_their_message_stay_distinct() {
+    let decl = "DEFINE VARIABLE v-{&n} AS INTEGER NO-UNDO.\n";
+    let result = run(
+        &[("/w/d.i", decl)],
+        "PROCEDURE p1:\n{d.i &n=a}\nEND PROCEDURE.\n\
+         PROCEDURE p2:\n{d.i &n=b}\nEND PROCEDURE.\n\
+         PROCEDURE p3:\n{d.i &n=a}\nEND PROCEDURE.\n",
+    );
+
+    let rows: Vec<_> = result
+        .include_origin()
+        .iter()
+        .map(|d| {
+            (
+                d.diagnostic.message.as_str(),
+                d.diagnostic.span.span,
+                d.expansions
+                    .iter()
+                    .map(|e| e.occurrence)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].0, "unused variable `v-a`");
+    assert_eq!(rows[0].2, [1, 3]);
+    assert_eq!(rows[1].0, "unused variable `v-b`");
+    assert_eq!(rows[1].2, [2]);
+    assert_eq!(rows[0].1, rows[1].1, "the two findings share one span");
+}
+
+#[test]
 fn a_finding_in_substituted_text_has_no_physical_location_and_is_not_returned() {
     let result = run(
         &[("/w/arg.i", "DEFINE VARIABLE {&n} AS INTEGER NO-UNDO.\n")],
