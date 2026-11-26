@@ -190,14 +190,30 @@ fn cursor(
     file: &Path,
     offset: u32,
 ) -> Result<Cursor, ReferenceError> {
+    cursors(host, session_root, root, file, &[offset])?
+        .pop()
+        .ok_or_else(|| ReferenceError::Failed("no cursor".to_string()))
+}
+
+/// [`cursor`] at each of `offsets`, from one analysis of `root`.
+fn cursors(
+    host: &SessionHost,
+    session_root: &Path,
+    root: &Path,
+    file: &Path,
+    offsets: &[u32],
+) -> Result<Vec<Cursor>, ReferenceError> {
     analyse(host, session_root, root, |unit| {
         let file = unit.spelled(file);
-        Cursor {
-            types: unit.navigation.types_at(&file, offset),
-            enclosing: unit.navigation.enclosing_type(&file, offset),
-            methods: unit.navigation.methods_at(&file, offset),
-            builtin: unit.navigation.builtin_type_at(&file, offset),
-        }
+        offsets
+            .iter()
+            .map(|&offset| Cursor {
+                types: unit.navigation.types_at(&file, offset),
+                enclosing: unit.navigation.enclosing_type(&file, offset),
+                methods: unit.navigation.methods_at(&file, offset),
+                builtin: unit.navigation.builtin_type_at(&file, offset),
+            })
+            .collect()
     })
     .ok_or(ReferenceError::Modified)?
     .map_err(ReferenceError::Failed)
@@ -757,13 +773,41 @@ pub fn may_override(
     file: &Path,
     offset: u32,
 ) -> Result<bool, ReferenceError> {
-    let answer = super_method(host, session_root, root, file, offset)?;
+    may_override_each(host, session_root, root, file, &[offset])?
+        .pop()
+        .unwrap_or(Ok(true))
+}
+
+/// [`may_override`] for the member at each of `offsets` of `file`, with one
+/// analysis of `root` for all of them. An `Err` of the whole is one of that
+/// analysis.
+pub fn may_override_each(
+    host: &SessionHost,
+    session_root: &Path,
+    root: &Path,
+    file: &Path,
+    offsets: &[u32],
+) -> Result<Vec<Result<bool, ReferenceError>>, ReferenceError> {
+    let cursors = cursors(host, session_root, root, file, offsets)?;
+    Ok(cursors
+        .into_iter()
+        .map(|cursor| may_override_at(host, session_root, cursor))
+        .collect())
+}
+
+fn may_override_at(
+    host: &SessionHost,
+    session_root: &Path,
+    cursor: Cursor,
+) -> Result<bool, ReferenceError> {
+    let enclosing = cursor.enclosing.clone();
+    let answer = super_method_at(host, session_root, cursor)?;
     if answer.not_a_method.is_none() {
         return Ok(!answer.locations.is_empty() || !answer.gaps.is_empty());
     }
     // Not a method: a property. It has no super-member lookup, so a class
     // with a parent or an interface counts.
-    let Some(class) = cursor(host, session_root, root, file, offset)?.enclosing else {
+    let Some(class) = enclosing else {
         return Ok(true);
     };
     with_snapshot(host, session_root, |unit| {
@@ -786,6 +830,14 @@ fn super_method(
     offset: u32,
 ) -> Result<HierarchyAnswer, ReferenceError> {
     let cursor = cursor(host, session_root, root, file, offset)?;
+    super_method_at(host, session_root, cursor)
+}
+
+fn super_method_at(
+    host: &SessionHost,
+    session_root: &Path,
+    cursor: Cursor,
+) -> Result<HierarchyAnswer, ReferenceError> {
     let method = match cursor.methods {
         MethodsAt::Found(method) => method,
         MethodsAt::Unsupported(reason) => {

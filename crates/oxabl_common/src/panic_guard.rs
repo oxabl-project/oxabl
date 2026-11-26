@@ -167,11 +167,33 @@ pub mod panic_sites {
     /// snapshot, for [`hold_if_injected`](super::hold_if_injected).
     pub const LSP_PARAMETER_HINTS: &str = "lsp.parameter-hints";
     /// The language server's reference-count lens search, for
-    /// [`hold_if_injected`](super::hold_if_injected).
+    /// [`hold_if_injected`](super::hold_if_injected) and
+    /// [`count_requested`](super::count_requested).
     pub const LSP_REFERENCE_LENS: &str = "lsp.reference-lens";
+    /// The analysis of one other file of a references search, for
+    /// [`hold_if_injected`](super::hold_if_injected). The marker is in that
+    /// file.
+    pub const REFERENCE_UNIT: &str = "daemon.reference-unit";
+    /// What one other file of a references search holds of one referent,
+    /// for [`panic_if_injected`](super::panic_if_injected) with the
+    /// referent's name after a colon (`daemon.reference-part:Run`). The
+    /// marker is in that file.
+    pub const REFERENCE_PART: &str = "daemon.reference-part";
     /// The reference-count lens search after its answer, before the title is
     /// kept, for [`hold_if_injected`](super::hold_if_injected).
     pub const LSP_REFERENCE_LENS_ANSWER: &str = "lsp.answered-reference-lens";
+    /// The most runner threads of the reference-count lenses of a client,
+    /// for [`injected_bound`](super::injected_bound). The marker is in the
+    /// workspace root path.
+    pub const LSP_REFERENCE_LENS_RUNNERS: &str = "lsp.reference-lens-runners";
+    /// A runner thread of the reference-count lenses outside the guard of
+    /// its search, for [`panic_if_injected`](super::panic_if_injected).
+    pub const LSP_REFERENCE_LENS_THREAD: &str = "lsp.reference-lens-thread";
+    /// The thread that checks the kept titles of the reference-count lenses,
+    /// before it answers a round, for both
+    /// [`hold_if_injected`](super::hold_if_injected) and
+    /// [`panic_if_injected`](super::panic_if_injected).
+    pub const LSP_REFERENCE_LENS_CHECK: &str = "lsp.reference-lens-check";
     /// The language server's semantic tokens, for both
     /// [`hold_if_injected`](super::hold_if_injected) and
     /// [`panic_if_injected`](super::panic_if_injected).
@@ -207,6 +229,11 @@ pub const TEST_HOLD_MARKER: &str = "OXABL-TEST-HOLD";
 /// The marker that shortens a time limit, for a test that must reach it:
 /// `OXABL-TEST-LIMIT@<ms>` in the text the caller passes to [`injected_limit`].
 pub const TEST_LIMIT_MARKER: &str = "OXABL-TEST-LIMIT";
+
+/// The marker that lowers a count bound of a site, for a test that must reach
+/// it with few items: `OXABL-TEST-BOUND:<site>@<n>` in the text the caller
+/// passes to [`injected_bound`].
+pub const TEST_BOUND_MARKER: &str = "OXABL-TEST-BOUND";
 
 /// The marker that ends the process with `abort` at a site, as a stack overflow does
 /// and no panic guard can stop: `OXABL-TEST-ABORT:<site>` in the source.
@@ -254,6 +281,27 @@ pub fn injected_limit(source: &str) -> Option<std::time::Duration> {
     }
 }
 
+/// The bound that `source` asks this `site` for with [`TEST_BOUND_MARKER`],
+/// in test builds only. Always `None` unless the test-only `test-panics`
+/// feature is enabled.
+#[inline]
+pub fn injected_bound(site: &str, source: &str) -> Option<usize> {
+    #[cfg(feature = "test-panics")]
+    {
+        let marker = format!("{TEST_BOUND_MARKER}:{site}@");
+        let at = source.find(&marker)?;
+        let rest = &source[at + marker.len()..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        rest[..digits].parse::<usize>().ok()
+    }
+
+    #[cfg(not(feature = "test-panics"))]
+    {
+        let _ = (site, source);
+        None
+    }
+}
+
 /// Whether the markers act: only with the test-only `test-panics` feature. A
 /// caller that must build a string to look for a marker checks this first.
 pub const INJECTION_ENABLED: bool = cfg!(feature = "test-panics");
@@ -286,6 +334,26 @@ pub fn hold_if_injected_with(site: &str, source: &str, started: impl FnOnce()) {
 
     #[cfg(not(feature = "test-panics"))]
     let _ = (site, source, started);
+}
+
+/// The marker that asks a site to report the work it did, for a test that
+/// counts it: `OXABL-TEST-COUNT:<site>` in the source, as with
+/// [`TEST_PANIC_MARKER`].
+pub const TEST_COUNT_MARKER: &str = "OXABL-TEST-COUNT";
+
+/// Whether `source` asks this `site` to report its work with
+/// [`TEST_COUNT_MARKER`]. Always `false` unless the test-only `test-panics`
+/// feature is enabled.
+#[inline]
+pub fn count_requested(site: &str, source: &str) -> bool {
+    #[cfg(feature = "test-panics")]
+    return source.contains(&format!("{TEST_COUNT_MARKER}:{site}"));
+
+    #[cfg(not(feature = "test-panics"))]
+    {
+        let _ = (site, source);
+        false
+    }
 }
 
 /// Panic when `source` carries this `site`'s injection marker.

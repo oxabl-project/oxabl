@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use oxabl_index::calls::MAX_SITES;
 use oxabl_pipeline::{
-    CallItem, Gap, IncomingCall, ItemKey, Occurrence, OutgoingCall, Referent, Target, UnitIncoming,
-    UnitReferences, dedupe_spans, fold_gaps,
+    CallItem, Gap, IncomingCall, ItemKey, Occurrence, OutgoingCall, ReferenceMemo, Referent,
+    Target, UnitIncoming, UnitReferences, dedupe_spans, fold_gaps,
 };
 
 use crate::SessionHost;
@@ -35,48 +35,6 @@ pub const MAX_UNITS: usize = 2_000;
 
 /// How often a unit is analysed again after an edit cancelled its analysis.
 const ATTEMPTS: usize = 3;
-
-/// The most searches over other files that run at one time. A later one
-/// waits, so repeated requests do not multiply the analysis threads.
-pub const MAX_SEARCHES: usize = 2;
-
-/// The searches over other files that run now.
-static SEARCHES: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
-
-/// One of the [`MAX_SEARCHES`] places, given back on drop.
-struct SearchSlot;
-
-impl SearchSlot {
-    /// Wait for a place. `None` when `cancel` is set while waiting.
-    fn take(cancel: &AtomicBool) -> Option<SearchSlot> {
-        let (count, freed) = &SEARCHES;
-        let mut running = count
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while *running >= MAX_SEARCHES {
-            if cancel.load(Ordering::Relaxed) {
-                return None;
-            }
-            running = freed
-                .wait_timeout(running, Duration::from_millis(50))
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .0;
-        }
-        *running += 1;
-        Some(SearchSlot)
-    }
-}
-
-impl Drop for SearchSlot {
-    fn drop(&mut self) {
-        let (count, freed) = &SEARCHES;
-        let mut running = count
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *running -= 1;
-        freed.notify_one();
-    }
-}
 
 /// What a references or call hierarchy request asks.
 #[derive(Debug, Clone)]
@@ -139,13 +97,27 @@ impl Pass {
     /// callers keep it off the LSP thread. `false` when `cancel` is set, or
     /// when the workspace cannot say.
     pub fn is_current(&self, host: &SessionHost, session_root: &Path, cancel: &AtomicBool) -> bool {
-        match graph_or_cancel(host, session_root, cancel) {
-            Ok(Ok(Ok(graph))) => {
-                graph.gaps.is_empty()
-                    && std::sync::Weak::ptr_eq(&self.0, &Arc::downgrade(&graph.graph))
-            }
-            _ => false,
+        Pass::current(host, session_root, &|| cancel.load(Ordering::Relaxed))
+            .is_some_and(|current| current.same(self))
+    }
+
+    /// The workspace pass that a request now reads, when it is current. Blocks
+    /// as [`is_current`](Self::is_current) does. `None` when `stop` says so,
+    /// or when the workspace cannot say.
+    pub fn current(
+        host: &SessionHost,
+        session_root: &Path,
+        stop: &dyn Fn() -> bool,
+    ) -> Option<Pass> {
+        match graph_or_stop(host, session_root, stop) {
+            Ok(Ok(Ok(graph))) if graph.gaps.is_empty() => Some(Pass(Arc::downgrade(&graph.graph))),
+            _ => None,
         }
+    }
+
+    /// Whether both are one pass.
+    pub fn same(&self, other: &Pass) -> bool {
+        std::sync::Weak::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -180,167 +152,367 @@ pub fn answer_references(
     query: &ReferenceQuery,
     cancel: &AtomicBool,
 ) -> Result<ReferenceAnswer, ReferenceError> {
-    let cancelled = || {
-        if cancel.load(Ordering::Relaxed) {
-            Err(ReferenceError::Cancelled)
-        } else {
-            Ok(())
-        }
-    };
-    let local = analyse(host, session_root, root, |unit| local_answer(unit, query))
-        .ok_or(ReferenceError::Modified)?
-        .map_err(ReferenceError::Failed)?;
-    let (referent, local, mut texts) = match local {
-        Local::Done(answer) => return Ok(answer),
-        Local::Search(referent, part, texts) => (referent, part, texts),
-    };
-    let mut gaps = referent.gaps.clone();
-    let mut units = Vec::new();
-    let mut slot = None;
-    let mut volatile = false;
-    let mut pass = None;
-    let mut count_reasons = Vec::new();
-    if !referent.is_local() {
-        cancelled()?;
-        // These leave out or date the whole search, so they are gaps of this
-        // answer, not standing ones.
-        match graph_or_cancel(host, session_root, cancel)? {
-            Ok(Ok(graph)) => {
-                volatile = !graph.gaps.is_empty();
-                pass = Some(Pass(Arc::downgrade(&graph.graph)));
-                gaps.extend(graph.gaps.into_iter().map(Gap::of_referent));
-                let search = referent.search(&graph.graph, root, MAX_UNITS);
-                gaps.extend(search.gaps);
-                count_reasons = search.counts;
-                units = search.units;
-            }
-            Ok(Err(reason)) => {
-                volatile = true;
-                gaps.push(Gap::of_referent(format!(
-                    "other files are not searched: {reason}"
-                )));
-            }
-            Err(error) => {
-                volatile = true;
-                gaps.push(Gap::of_referent(format!(
-                    "other files are not searched: {error}"
-                )));
-            }
-        }
-        cancelled()?;
-        // Taken once the graph is ready: a request that waits for a pass holds
-        // no place another request could use.
-        if !units.is_empty() {
-            slot = Some(SearchSlot::take(cancel).ok_or(ReferenceError::Cancelled)?);
-        }
-    }
-    let incoming = matches!(local, Part::Incoming(..));
-    let include_declaration = matches!(
-        query,
-        ReferenceQuery::References {
-            include_declaration: true,
-            ..
-        }
-    );
-    let remote = search_units(host, session_root, &units, cancel, |unit| {
-        unit_part(unit, &referent, incoming)
-    });
-    drop(slot);
-    cancelled()?;
+    let stop = || cancel.load(Ordering::Relaxed);
+    answer_batch(host, session_root, root, std::slice::from_ref(query), &stop)
+        .answers
+        .pop()
+        .unwrap_or(Err(ReferenceError::Cancelled))
+}
 
-    let mut answer = ReferenceAnswer::default();
-    let mut unresolved = 0;
-    let mut grouped: HashMap<ItemKey, usize> = HashMap::new();
-    let parts = std::iter::once((local, HashMap::new())).chain(remote.parts);
-    for (part, part_texts) in parts {
-        // The first text of a file is the one its spans were measured on: a
-        // later analysis can have read an edit.
-        for (path, text) in part_texts {
-            texts.entry(path).or_insert(text);
-        }
-        match part {
-            Part::References(found) => {
-                unresolved += found.unresolved_calls;
-                gaps.extend(found.gaps);
-                answer
-                    .locations
-                    .extend(kept_locations(found.occurrences, include_declaration));
-            }
-            Part::Incoming(found) => {
-                unresolved += found.unresolved_calls;
-                gaps.extend(found.gaps);
-                merge_incoming(&mut answer.incoming, &mut grouped, found.calls);
-            }
+/// The answers to several queries of one unit, from one search: the unit
+/// that asks is analysed once, and so is each other file that one of the
+/// referents can be named in. Each answer is the one [`answer_references`]
+/// gives for its query alone.
+#[derive(Debug, Default)]
+pub struct BatchAnswer {
+    /// One for each query, in their order.
+    pub answers: Vec<Result<ReferenceAnswer, ReferenceError>>,
+    /// The other files the search analysed, once for each analysis.
+    pub analysed: Vec<PathBuf>,
+}
+
+/// Answer each of `queries` for the unit `root`, in one search. Stops, and
+/// every answer is [`ReferenceError::Cancelled`], once `stop` says so; `stop`
+/// is asked often while the search waits.
+pub fn answer_batch(
+    host: &SessionHost,
+    session_root: &Path,
+    root: &Path,
+    queries: &[ReferenceQuery],
+    stop: &dyn Fn() -> bool,
+) -> BatchAnswer {
+    let every = |error: ReferenceError| BatchAnswer {
+        answers: queries.iter().map(|_| Err(error.clone())).collect(),
+        analysed: Vec::new(),
+    };
+    let locals = match analyse(host, session_root, root, |unit| {
+        let (mut read, mut memo) = (HashMap::new(), ReferenceMemo::default());
+        queries
+            .iter()
+            .map(|query| local_answer(unit, query, &mut read, &mut memo))
+            .collect::<Vec<_>>()
+    }) {
+        None => return every(ReferenceError::Modified),
+        Some(Err(reason)) => return every(ReferenceError::Failed(reason)),
+        Some(Ok(locals)) => locals,
+    };
+    let mut answers: Vec<Option<Result<ReferenceAnswer, ReferenceError>>> =
+        (0..queries.len()).map(|_| None).collect();
+    let mut searches: Vec<Pending> = Vec::new();
+    for (at, local) in locals.into_iter().enumerate() {
+        match local {
+            Local::Done(answer) => answers[at] = Some(Ok(answer)),
+            Local::Search(referent, part, texts) => searches.push(Pending {
+                at,
+                incoming: matches!(part, Part::Incoming(..)),
+                include_declaration: matches!(
+                    queries[at],
+                    ReferenceQuery::References {
+                        include_declaration: true,
+                        ..
+                    }
+                ),
+                gaps: referent.gaps.clone(),
+                referent,
+                local: Some(part),
+                texts,
+                units: Vec::new(),
+                volatile: false,
+                pass: None,
+                count_reasons: Vec::new(),
+            }),
         }
     }
-    if include_declaration && !incoming {
-        answer.locations.extend(
-            referent
-                .declarations()
+    if searches.is_empty() {
+        return BatchAnswer {
+            answers: answers
                 .into_iter()
-                .filter(|target| texts.contains_key(&target.path)),
-        );
+                .map(|answer| answer.unwrap_or(Err(ReferenceError::Cancelled)))
+                .collect(),
+            analysed: Vec::new(),
+        };
     }
-    if !remote.failed.is_empty() {
-        let (path, reason) = &remote.failed[0];
-        gaps.push(Gap::of_referent(format!(
-            "{} file(s) that can name `{}` could not be analysed, such as {}: {reason}",
-            remote.failed.len(),
-            referent.name,
-            path.display()
-        )));
-    }
-    if unresolved > 0 {
-        gaps.push(Gap::of_referent(format!(
-            "{unresolved} call(s) of a routine named `{}` go through a handle, a super \
-             procedure or an object whose class oxabl does not know, and can call it",
-            referent.name
-        )));
-    }
-    let mut gaps = fold_gaps(gaps);
-    let mut seen = Vec::new();
-    gaps.retain(|gap| {
-        let new = !seen.contains(gap);
-        if new {
-            seen.push(gap.clone());
+    let cancelled = || every(ReferenceError::Cancelled);
+    if searches.iter().any(|search| !search.referent.is_local()) {
+        if stop() {
+            return cancelled();
         }
-        new
+        // These leave out or date the whole search, so they are gaps of each
+        // answer, not standing ones.
+        let graph = match graph_or_stop(host, session_root, stop) {
+            Ok(graph) => graph,
+            Err(_) => return cancelled(),
+        };
+        for search in searches
+            .iter_mut()
+            .filter(|search| !search.referent.is_local())
+        {
+            match &graph {
+                Ok(Ok(graph)) => {
+                    search.volatile = !graph.gaps.is_empty();
+                    search.pass = Some(Pass(Arc::downgrade(&graph.graph)));
+                    search
+                        .gaps
+                        .extend(graph.gaps.iter().cloned().map(Gap::of_referent));
+                    let found = search.referent.search(&graph.graph, root, MAX_UNITS);
+                    search.gaps.extend(found.gaps);
+                    search.count_reasons = found.counts;
+                    search.units = found.units;
+                }
+                Ok(Err(reason)) => {
+                    search.volatile = true;
+                    search.gaps.push(Gap::of_referent(format!(
+                        "other files are not searched: {reason}"
+                    )));
+                }
+                Err(error) => {
+                    search.volatile = true;
+                    search.gaps.push(Gap::of_referent(format!(
+                        "other files are not searched: {error}"
+                    )));
+                }
+            }
+        }
+        if stop() {
+            return cancelled();
+        }
+    }
+
+    // Each file once, with the referents that can be named in it.
+    let mut units: Vec<PathBuf> = Vec::new();
+    let mut wanted: Vec<Vec<usize>> = Vec::new();
+    let mut at_unit: HashMap<&Path, usize> = HashMap::new();
+    let mut unit_of: Vec<Vec<usize>> = Vec::with_capacity(searches.len());
+    for (s, search) in searches.iter().enumerate() {
+        let mut mine = Vec::with_capacity(search.units.len());
+        for unit in &search.units {
+            let u = *at_unit.entry(unit.as_path()).or_insert_with(|| {
+                units.push(unit.clone());
+                wanted.push(Vec::new());
+                units.len() - 1
+            });
+            wanted[u].push(s);
+            mine.push(u);
+        }
+        unit_of.push(mine);
+    }
+    drop(at_unit);
+    let referents: Arc<Vec<(Referent, bool)>> = Arc::new(
+        searches
+            .iter()
+            .map(|search| (search.referent.clone(), search.incoming))
+            .collect(),
+    );
+    let units = Arc::new(units);
+    let remote = search_units(host, session_root, &units, stop, move |unit, at| {
+        let (mut read, mut memo) = (HashMap::new(), ReferenceMemo::default());
+        wanted[at]
+            .iter()
+            .map(|&s| {
+                let (referent, incoming) = &referents[s];
+                // A panic costs this referent in this unit, not the others.
+                let part = oxabl_common::catch_panic(|| {
+                    if oxabl_common::INJECTION_ENABLED {
+                        oxabl_common::panic_if_injected(
+                            &format!(
+                                "{}:{}",
+                                oxabl_common::panic_sites::REFERENCE_PART,
+                                referent.name
+                            ),
+                            &unit.source,
+                        );
+                    }
+                    unit_part(unit, referent, *incoming, &mut read, &mut memo)
+                })
+                .map_err(|panic| {
+                    // What the panic left behind is not trusted.
+                    (read, memo) = (HashMap::new(), ReferenceMemo::default());
+                    format!("its analysis failed: {panic}")
+                });
+                (s, part)
+            })
+            .collect::<Vec<_>>()
     });
-    answer.locations.sort_by(|a, b| {
-        (&a.path, a.span.map(|s| s.start)).cmp(&(&b.path, b.span.map(|s| s.start)))
-    });
-    answer.locations.dedup();
-    finish_incoming(&mut answer.incoming);
-    answer.gaps = gaps;
-    answer.count_reasons = count_reasons;
-    answer.texts = texts;
-    answer.resolved = true;
-    answer.volatile = volatile;
-    answer.member = referent.is_member();
-    answer.pass = pass;
-    Ok(answer)
+    if stop() {
+        return BatchAnswer {
+            analysed: remote.analysed,
+            ..cancelled()
+        };
+    }
+    let analysed = remote.analysed;
+    // The parts of each unit, by search.
+    let mut parts: Vec<Option<Result<Vec<Option<PartOutcome>>, String>>> =
+        (0..units.len()).map(|_| None).collect();
+    for (u, outcome) in remote.outcomes {
+        parts[u] = Some(outcome.map(|found| {
+            let mut by_search: Vec<Option<PartOutcome>> =
+                (0..searches.len()).map(|_| None).collect();
+            for (s, part) in found {
+                by_search[s] = Some(part);
+            }
+            by_search
+        }));
+    }
+    for (s, search) in searches.into_iter().enumerate() {
+        let mut remote = Vec::with_capacity(unit_of[s].len());
+        let mut failed: Vec<(PathBuf, String)> = Vec::new();
+        for &u in &unit_of[s] {
+            match &mut parts[u] {
+                Some(Ok(by_search)) => match by_search[s].take() {
+                    Some(Ok(part)) => remote.push(part),
+                    Some(Err(reason)) => failed.push((units[u].clone(), reason)),
+                    None => failed.push((units[u].clone(), "it was not searched".to_string())),
+                },
+                Some(Err(reason)) => failed.push((units[u].clone(), reason.clone())),
+                None => failed.push((units[u].clone(), "no thread could analyse it".to_string())),
+            }
+        }
+        let at = search.at;
+        answers[at] = Some(Ok(search.finish(remote, failed)));
+    }
+    BatchAnswer {
+        answers: answers
+            .into_iter()
+            .map(|answer| answer.unwrap_or(Err(ReferenceError::Cancelled)))
+            .collect(),
+        analysed,
+    }
+}
+
+/// A query whose referent other files can name, while its search runs.
+struct Pending {
+    /// The index of the query.
+    at: usize,
+    referent: Referent,
+    incoming: bool,
+    include_declaration: bool,
+    /// What the unit that asked holds of the referent.
+    local: Option<Part>,
+    texts: HashMap<PathBuf, Arc<str>>,
+    gaps: Vec<Gap>,
+    /// The other files to search, in their order.
+    units: Vec<PathBuf>,
+    volatile: bool,
+    pass: Option<Pass>,
+    count_reasons: Vec<String>,
+}
+
+impl Pending {
+    /// The answer from the parts of the other files, in the order of
+    /// [`units`](Self::units), and the files that gave none.
+    fn finish(
+        mut self,
+        remote: Vec<TextedPart>,
+        failed: Vec<(PathBuf, String)>,
+    ) -> ReferenceAnswer {
+        let referent = &self.referent;
+        let include_declaration = self.include_declaration;
+        let incoming = self.incoming;
+        let mut texts = std::mem::take(&mut self.texts);
+        let mut gaps = std::mem::take(&mut self.gaps);
+        let mut answer = ReferenceAnswer::default();
+        let mut unresolved = 0;
+        let mut grouped: HashMap<ItemKey, usize> = HashMap::new();
+        let parts = self
+            .local
+            .take()
+            .map(|local| (local, HashMap::new()))
+            .into_iter()
+            .chain(remote);
+        for (part, part_texts) in parts {
+            // The first text of a file is the one its spans were measured on: a
+            // later analysis can have read an edit.
+            for (path, text) in part_texts {
+                texts.entry(path).or_insert(text);
+            }
+            match part {
+                Part::References(found) => {
+                    unresolved += found.unresolved_calls;
+                    gaps.extend(found.gaps);
+                    answer
+                        .locations
+                        .extend(kept_locations(found.occurrences, include_declaration));
+                }
+                Part::Incoming(found) => {
+                    unresolved += found.unresolved_calls;
+                    gaps.extend(found.gaps);
+                    merge_incoming(&mut answer.incoming, &mut grouped, found.calls);
+                }
+            }
+        }
+        if include_declaration && !incoming {
+            answer.locations.extend(
+                referent
+                    .declarations()
+                    .into_iter()
+                    .filter(|target| texts.contains_key(&target.path)),
+            );
+        }
+        if !failed.is_empty() {
+            let (path, reason) = &failed[0];
+            gaps.push(Gap::of_referent(format!(
+                "{} file(s) that can name `{}` could not be analysed, such as {}: {reason}",
+                failed.len(),
+                referent.name,
+                path.display()
+            )));
+        }
+        if unresolved > 0 {
+            gaps.push(Gap::of_referent(format!(
+                "{unresolved} call(s) of a routine named `{}` go through a handle, a super \
+                 procedure or an object whose class oxabl does not know, and can call it",
+                referent.name
+            )));
+        }
+        let mut gaps = fold_gaps(gaps);
+        let mut seen = Vec::new();
+        gaps.retain(|gap| {
+            let new = !seen.contains(gap);
+            if new {
+                seen.push(gap.clone());
+            }
+            new
+        });
+        answer.locations.sort_by(|a, b| {
+            (&a.path, a.span.map(|s| s.start)).cmp(&(&b.path, b.span.map(|s| s.start)))
+        });
+        answer.locations.dedup();
+        finish_incoming(&mut answer.incoming);
+        answer.gaps = gaps;
+        answer.count_reasons = self.count_reasons;
+        answer.texts = texts;
+        answer.resolved = true;
+        answer.volatile = self.volatile;
+        answer.member = referent.is_member();
+        answer.pass = self.pass;
+        answer
+    }
 }
 
 /// What one unit holds of `referent`, with the texts of the files it names.
+/// `read` and `memo` keep what the unit has read and resolved, for the other
+/// referents.
 fn unit_part(
     unit: &NavigationUnit<'_, '_, '_>,
     referent: &Referent,
     incoming: bool,
-) -> (Part, HashMap<PathBuf, Arc<str>>) {
+    read: &mut HashMap<PathBuf, Option<Arc<str>>>,
+    memo: &mut ReferenceMemo,
+) -> TextedPart {
     let mut texts = HashMap::new();
     let part = if incoming {
         let found = unit.navigation.incoming_calls(referent);
         for call in &found.calls {
-            read_into(unit, &mut texts, &call.from.path);
+            read_into(unit, read, &mut texts, &call.from.path);
         }
         Part::Incoming(found)
     } else {
-        let found = unit.navigation.references(referent);
+        let found = unit.navigation.references_with(referent, memo);
         for occurrence in &found.occurrences {
-            read_into(unit, &mut texts, &occurrence.place.path);
+            read_into(unit, read, &mut texts, &occurrence.place.path);
         }
         for declaration in referent.declarations() {
-            read_into(unit, &mut texts, &declaration.path);
+            read_into(unit, read, &mut texts, &declaration.path);
         }
         Part::References(found)
     };
@@ -348,14 +520,19 @@ fn unit_part(
 }
 
 /// The answer within the unit that asked.
-fn local_answer(unit: &NavigationUnit<'_, '_, '_>, query: &ReferenceQuery) -> Local {
+fn local_answer(
+    unit: &NavigationUnit<'_, '_, '_>,
+    query: &ReferenceQuery,
+    read: &mut HashMap<PathBuf, Option<Arc<str>>>,
+    memo: &mut ReferenceMemo,
+) -> Local {
     let navigation = unit.navigation;
     let mut answer = ReferenceAnswer::default();
     match query {
         ReferenceQuery::Prepare { file, offset } => {
             answer.items = navigation.prepare_call_hierarchy(&unit.spelled(file), *offset);
             for item in &answer.items {
-                read_into(unit, &mut answer.texts, &item.path);
+                read_into(unit, read, &mut answer.texts, &item.path);
             }
             Local::Done(answer)
         }
@@ -372,16 +549,16 @@ fn local_answer(unit: &NavigationUnit<'_, '_, '_>, query: &ReferenceQuery) -> Lo
                 }
                 Err(reason) => answer.gaps.push(Gap::of_referent(reason)),
             }
-            read_into(unit, &mut answer.texts, &item.path);
+            read_into(unit, read, &mut answer.texts, &item.path);
             for call in &answer.outgoing {
-                read_into(unit, &mut answer.texts, &call.to.path);
+                read_into(unit, read, &mut answer.texts, &call.to.path);
             }
             Local::Done(answer)
         }
         ReferenceQuery::References { file, offset, .. } => {
             match navigation.referent_at(&unit.spelled(file), *offset) {
                 Some(referent) => {
-                    let (part, texts) = unit_part(unit, &referent, false);
+                    let (part, texts) = unit_part(unit, &referent, false, read, memo);
                     Local::Search(referent, part, texts)
                 }
                 None => Local::Done(answer),
@@ -389,14 +566,14 @@ fn local_answer(unit: &NavigationUnit<'_, '_, '_>, query: &ReferenceQuery) -> Lo
         }
         ReferenceQuery::Program => match navigation.program_referent() {
             Some(referent) => {
-                let (part, texts) = unit_part(unit, &referent, false);
+                let (part, texts) = unit_part(unit, &referent, false, read, memo);
                 Local::Search(referent, part, texts)
             }
             None => Local::Done(answer),
         },
         ReferenceQuery::Incoming(item) => match navigation.referent_of(item) {
             Some(referent) => {
-                let (part, texts) = unit_part(unit, &referent, true);
+                let (part, texts) = unit_part(unit, &referent, true, read, memo);
                 Local::Search(referent, part, texts)
             }
             None => Local::Done(answer),
@@ -404,14 +581,25 @@ fn local_answer(unit: &NavigationUnit<'_, '_, '_>, query: &ReferenceQuery) -> Lo
     }
 }
 
+/// Put the text of `path` into `texts`, read once for the unit through `read`.
 fn read_into(
     unit: &NavigationUnit<'_, '_, '_>,
+    read: &mut HashMap<PathBuf, Option<Arc<str>>>,
     texts: &mut HashMap<PathBuf, Arc<str>>,
     path: &Path,
 ) {
-    if !texts.contains_key(path)
-        && let Some(text) = unit.read(path)
-    {
+    if texts.contains_key(path) {
+        return;
+    }
+    let text = match read.get(path) {
+        Some(text) => text.clone(),
+        None => {
+            let text = unit.read(path);
+            read.insert(path.to_path_buf(), text.clone());
+            text
+        }
+    };
+    if let Some(text) = text {
         texts.insert(path.to_path_buf(), text);
     }
 }
@@ -457,6 +645,15 @@ pub(crate) fn graph_or_cancel(
     session_root: &Path,
     cancel: &AtomicBool,
 ) -> Result<GraphAnswer, ReferenceError> {
+    graph_or_stop(host, session_root, &|| cancel.load(Ordering::Relaxed))
+}
+
+/// [`graph_or_cancel`], stopped when `stop` says so.
+fn graph_or_stop(
+    host: &SessionHost,
+    session_root: &Path,
+    stop: &dyn Fn() -> bool,
+) -> Result<GraphAnswer, ReferenceError> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let spawned = oxabl_common::stack::builder()
         .name("oxabl-reference-graph".to_string())
@@ -473,7 +670,7 @@ pub(crate) fn graph_or_cancel(
         return Ok(Ok(Err(format!("cannot start the workspace pass: {error}"))));
     }
     loop {
-        if cancel.load(Ordering::Relaxed) {
+        if stop() {
             return Err(ReferenceError::Cancelled);
         }
         match receiver.recv_timeout(Duration::from_millis(50)) {
@@ -486,6 +683,12 @@ pub(crate) fn graph_or_cancel(
     }
 }
 
+/// What one unit gives of a referent, with the texts of the files it names.
+type TextedPart = (Part, HashMap<PathBuf, Arc<str>>);
+
+/// What one unit gives of a referent, or why it gives nothing.
+type PartOutcome = Result<TextedPart, String>;
+
 /// What one unit gives.
 enum Part {
     References(UnitReferences),
@@ -493,84 +696,236 @@ enum Part {
 }
 
 struct Searched<T> {
-    parts: Vec<T>,
-    /// The units that gave no answer, and why.
-    failed: Vec<(PathBuf, String)>,
+    /// What each unit gave, by its index, or why it gave nothing. A unit with
+    /// no entry was not analysed.
+    outcomes: Vec<(usize, Result<T, String>)>,
+    /// Each unit analysed, once for each analysis.
+    analysed: Vec<PathBuf>,
 }
 
-/// Analyse each of `units` with `answer`, on worker threads.
-fn search_units<T: Send>(
+/// Analyse each of `units` with `answer`, which also gets the unit's index,
+/// on the threads of the [`Pool`]. Stops between two units when `stop` says
+/// so; the units not analysed then have no outcome.
+fn search_units<T: Send + 'static>(
     host: &SessionHost,
     session_root: &Path,
-    units: &[PathBuf],
-    cancel: &AtomicBool,
-    answer: impl Fn(&NavigationUnit<'_, '_, '_>) -> T + Sync,
+    units: &Arc<Vec<PathBuf>>,
+    stop: &dyn Fn() -> bool,
+    answer: impl Fn(&NavigationUnit<'_, '_, '_>, usize) -> T + Send + Sync + 'static,
 ) -> Searched<T> {
-    let jobs = std::thread::available_parallelism()
-        .map_or(1, usize::from)
-        .clamp(1, units.len().max(1));
-    let next = AtomicUsize::new(0);
-    let mut results: Vec<(usize, Result<T, String>)> = std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..jobs)
-            .map(|_| {
-                let (next, answer) = (&next, &answer);
-                oxabl_common::stack::builder()
-                    .name("oxabl-references".to_string())
-                    .spawn_scoped(scope, move || {
-                        let mut mine = Vec::new();
-                        loop {
-                            if cancel.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            let at = next.fetch_add(1, Ordering::Relaxed);
-                            let Some(unit) = units.get(at) else { break };
-                            // A panic in one file costs that file, not the request.
-                            let outcome = oxabl_common::catch_panic(|| {
-                                (0..ATTEMPTS)
-                                    .find_map(|_| analyse(host, session_root, unit, answer))
-                                    .unwrap_or_else(|| {
-                                        Err("edits kept cancelling its analysis".to_string())
-                                    })
-                            })
-                            .unwrap_or_else(|panic| Err(format!("its analysis failed: {panic}")));
-                            mine.push((at, outcome));
-                        }
-                        mine
-                    })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .flat_map(|worker| match worker {
-                Ok(worker) => worker.join().unwrap_or_else(|panic| {
-                    std::panic::resume_unwind(panic);
-                }),
-                Err(_) => Vec::new(),
-            })
-            .collect()
-    });
-    results.sort_by_key(|(at, _)| *at);
     let mut searched = Searched {
-        parts: Vec::new(),
-        failed: Vec::new(),
+        outcomes: Vec::with_capacity(units.len()),
+        analysed: Vec::with_capacity(units.len()),
     };
-    let mut seen = vec![false; units.len()];
-    for (at, outcome) in results {
-        seen[at] = true;
-        match outcome {
-            Ok(part) => searched.parts.push(part),
-            Err(reason) => searched.failed.push((units[at].clone(), reason)),
+    if units.is_empty() {
+        return searched;
+    }
+    let (sender, results) = std::sync::mpsc::channel();
+    let task = Arc::new(SearchTask {
+        host: host.clone(),
+        session_root: session_root.to_path_buf(),
+        units: Arc::clone(units),
+        next: AtomicUsize::new(0),
+        stop: AtomicBool::new(false),
+        answer: Box::new(answer),
+        results: sender,
+    });
+    if !Pool::shared().submit(Arc::clone(&task) as Arc<dyn PoolTask>) {
+        return searched;
+    }
+    while searched.outcomes.len() < units.len() {
+        if stop() {
+            break;
+        }
+        match results.recv_timeout(Duration::from_millis(50)) {
+            Ok((at, outcome)) => {
+                searched.analysed.push(units[at].clone());
+                searched.outcomes.push((at, outcome));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    // A worker that could not start leaves its units unanalysed.
-    for (at, seen) in seen.into_iter().enumerate() {
-        if !seen {
-            searched
-                .failed
-                .push((units[at].clone(), "no thread could analyse it".to_string()));
-        }
-    }
+    // The pool leaves the units that are left.
+    task.stop.store(true, Ordering::Relaxed);
+    searched.outcomes.sort_by_key(|(at, _)| *at);
     searched
+}
+
+/// The threads that analyse the other files of every search of the process,
+/// [`available_parallelism`](std::thread::available_parallelism) of them. The
+/// searches share them by turns, one unit at a time, so the work in progress
+/// is bounded whatever the number of searches, and a short search is not stuck
+/// behind a long one. A thread with no work for [`Pool::IDLE`] ends.
+struct Pool {
+    state: Mutex<PoolState>,
+    work: Condvar,
+}
+
+#[derive(Default)]
+struct PoolState {
+    /// The searches with units left, in turn.
+    tasks: std::collections::VecDeque<Arc<dyn PoolTask>>,
+    threads: usize,
+}
+
+/// A search that the [`Pool`] works.
+trait PoolTask: Send + Sync {
+    /// Analyse the next unit. `false` when none is left.
+    fn step(&self) -> bool;
+}
+
+impl Pool {
+    /// Short, because the allocator keeps the memory that a thread freed until
+    /// the thread ends: after a large search that is most of the memory of
+    /// the process, and none of it is in use.
+    const IDLE: Duration = Duration::from_secs(5);
+
+    fn shared() -> &'static Pool {
+        static POOL: std::sync::LazyLock<Pool> = std::sync::LazyLock::new(|| Pool {
+            state: Mutex::new(PoolState::default()),
+            work: Condvar::new(),
+        });
+        &POOL
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PoolState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Queue `task`, and start the threads that are missing. `false` when no
+    /// thread runs and none can start.
+    fn submit(&'static self, task: Arc<dyn PoolTask>) -> bool {
+        let size = std::thread::available_parallelism().map_or(1, usize::from);
+        let mut state = self.lock();
+        state.tasks.push_back(Arc::clone(&task));
+        while state.threads < size {
+            let spawned = oxabl_common::stack::builder()
+                .name("oxabl-references".to_string())
+                .spawn(move || self.work());
+            if spawned.is_err() {
+                break;
+            }
+            state.threads += 1;
+        }
+        if state.threads == 0 {
+            state.tasks.retain(|held| !Arc::ptr_eq(held, &task));
+            return false;
+        }
+        self.work.notify_all();
+        true
+    }
+
+    fn work(&self) {
+        loop {
+            let task = {
+                let mut state = self.lock();
+                loop {
+                    if let Some(task) = state.tasks.pop_front() {
+                        state.tasks.push_back(Arc::clone(&task));
+                        break task;
+                    }
+                    let (held, waited) = self
+                        .work
+                        .wait_timeout(state, Pool::IDLE)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state = held;
+                    if waited.timed_out() && state.tasks.is_empty() {
+                        state.threads -= 1;
+                        return;
+                    }
+                }
+            };
+            // A step contains the panics of its unit; a panic past that costs
+            // the unit ([`Unsent`]), not the thread or the search.
+            let more = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task.step()))
+                .unwrap_or(true);
+            if !more {
+                self.lock().tasks.retain(|held| !Arc::ptr_eq(held, &task));
+            }
+        }
+    }
+}
+
+/// One search, as the [`Pool`] works it.
+struct SearchTask<T> {
+    host: SessionHost,
+    session_root: PathBuf,
+    units: Arc<Vec<PathBuf>>,
+    next: AtomicUsize,
+    stop: AtomicBool,
+    answer: Box<UnitAnswer<T>>,
+    results: std::sync::mpsc::Sender<(usize, Result<T, String>)>,
+}
+
+/// What a search asks of each unit, with the index of the unit.
+type UnitAnswer<T> = dyn Fn(&NavigationUnit<'_, '_, '_>, usize) -> T + Send + Sync;
+
+/// Sends a failure for a unit whose analysis ended with no outcome, so that
+/// the search does not wait for it.
+struct Unsent<'a, T> {
+    at: usize,
+    results: &'a std::sync::mpsc::Sender<(usize, Result<T, String>)>,
+    sent: bool,
+}
+
+impl<T> Drop for Unsent<'_, T> {
+    fn drop(&mut self) {
+        if !self.sent {
+            let _ = self
+                .results
+                .send((self.at, Err("its analysis failed".to_string())));
+        }
+    }
+}
+
+impl<T: Send> PoolTask for SearchTask<T> {
+    fn step(&self) -> bool {
+        if self.stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        let at = self.next.fetch_add(1, Ordering::Relaxed);
+        let Some(unit) = self.units.get(at) else {
+            return false;
+        };
+        let mut unsent = Unsent {
+            at,
+            results: &self.results,
+            sent: false,
+        };
+        let outcome = analyse_unit(&self.host, &self.session_root, unit, at, &*self.answer);
+        unsent.sent = true;
+        // The search may have stopped and gone.
+        let _ = self.results.send((at, outcome));
+        true
+    }
+}
+
+/// What `answer` gives for `unit`, analysed again when an edit cancelled its
+/// analysis. A panic in one file costs that file, not the request.
+fn analyse_unit<T>(
+    host: &SessionHost,
+    session_root: &Path,
+    unit: &Path,
+    at: usize,
+    answer: &dyn Fn(&NavigationUnit<'_, '_, '_>, usize) -> T,
+) -> Result<T, String> {
+    oxabl_common::catch_panic(|| {
+        (0..ATTEMPTS)
+            .find_map(|_| {
+                analyse(host, session_root, unit, |unit| {
+                    oxabl_common::hold_if_injected(
+                        oxabl_common::panic_sites::REFERENCE_UNIT,
+                        &unit.source,
+                    );
+                    answer(unit, at)
+                })
+            })
+            .unwrap_or_else(|| Err("edits kept cancelling its analysis".to_string()))
+    })
+    .unwrap_or_else(|panic| Err(format!("its analysis failed: {panic}")))
 }
 
 /// Analyse `root` on a fresh snapshot of the session at `session_root`.

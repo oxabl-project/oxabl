@@ -136,7 +136,7 @@ pub use outline_includes::{
 pub use oxabl_ast::Span;
 pub use references::{
     CallItem, CallItemKind, Gap, IncomingCall, ItemKey, Occurrence, Outgoing, OutgoingCall, Reach,
-    Referent, Search, UnitIncoming, UnitReferences, dedupe_spans, fold_gaps,
+    ReferenceMemo, Referent, Search, UnitIncoming, UnitReferences, dedupe_spans, fold_gaps,
 };
 pub use schema_view::{
     SchemaDatabase, SchemaField, SchemaIndex, SchemaIndexField, SchemaProblem, SchemaSequence,

@@ -133,10 +133,10 @@ you also get, with no setup:
   interface and property, with the number of places that use it
   (`3 references`), and above a program, with the number of files that run it
   (`3 references · used by 2 files`). A click lists the places that the lens
-  counts. The count is the length of Find All References without the declaration,
-  and it is made when
-  the lens comes into view, so a large file does not run a search for each
-  declaration at once. A count that can be short says so
+  counts. The count is the length of Find All References without the
+  declaration. The count is made when a lens of the file comes into view: one
+  search then counts every lens of the file, so a file with many declarations
+  costs about one search. A count that can be short says so
   (`12+ references · incomplete: <reason>`). A procedure or function always says
   that calls through a handle are not followed, because a super procedure, a
   `PUBLISH`, a trigger or a callback can run it with no trace that oxabl
