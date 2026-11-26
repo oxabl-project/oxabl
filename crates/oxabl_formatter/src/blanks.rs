@@ -17,7 +17,7 @@
 //! section/ordering machinery deferred to v2, so it is read but not enforced in
 //! v1 — consistent with the reflow no-op (R4.3/R4.4).
 
-use oxabl_lexer::{Kind, tokenize};
+use oxabl_lexer::{Kind, Lexer};
 use oxabl_style::StyleGuide;
 
 use crate::ir::{Line, LineBuf};
@@ -37,11 +37,13 @@ fn is_block_opener(content: &str) -> bool {
     // label, `OTHERWISE:`). Tokenize and look at the last non-comment token so a
     // trailing comment (`DO: /* x */`) doesn't hide the colon, and a `:` inside a
     // string or a member-access colon that isn't line-final doesn't fake one.
-    tokenize(content)
-        .iter()
-        .rev()
-        .find(|t| t.kind != Kind::Comment && t.kind != Kind::Eof)
-        .is_some_and(|t| t.kind == Kind::Colon)
+    // Walk the tokens without collecting them: this runs for each blank run, on
+    // one line each.
+    Lexer::new(content)
+        .map(|t| t.kind)
+        .filter(|kind| *kind != Kind::Comment && *kind != Kind::Eof)
+        .last()
+        == Some(Kind::Colon)
 }
 
 fn is_block_end(content: &str) -> bool {

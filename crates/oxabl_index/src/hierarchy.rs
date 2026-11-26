@@ -547,17 +547,80 @@ pub enum SameSignature {
     Unknown,
 }
 
+/// The temp-table and buffer names of some classes: the names a
+/// `LIKE table.field` parameter can mean instead of a database table.
+#[derive(Debug, Clone)]
+pub struct RecordNames {
+    names: FxHashSet<IndexName>,
+    /// False when a class added has members that oxabl cannot read, or a class
+    /// that should be added cannot be found.
+    known: bool,
+}
+
+impl Default for RecordNames {
+    fn default() -> Self {
+        RecordNames {
+            names: FxHashSet::default(),
+            known: true,
+        }
+    }
+}
+
+impl RecordNames {
+    /// The names of one class: its members, and whether the list is whole.
+    pub fn of(members: &[MemberDescriptor], complete: bool) -> Self {
+        let mut records = RecordNames::default();
+        records.add(members, complete);
+        records
+    }
+
+    /// Names that oxabl cannot list: every `LIKE table.field` can mean a
+    /// temp-table or a buffer.
+    pub fn unknown() -> Self {
+        RecordNames {
+            names: FxHashSet::default(),
+            known: false,
+        }
+    }
+
+    pub fn add(&mut self, members: &[MemberDescriptor], complete: bool) {
+        self.known &= complete;
+        self.names.extend(
+            members
+                .iter()
+                .filter(|m| matches!(m.kind, SymbolKind::TempTable | SymbolKind::Buffer))
+                .map(|m| m.name.clone()),
+        );
+    }
+
+    /// Whether `table` can be a temp-table or a buffer of these classes.
+    fn may_name(&self, table: &IndexName) -> bool {
+        !self.known || self.names.contains(table)
+    }
+}
+
 /// Where a method is declared: the imports and the index that give a class
-/// name in its parameters its meaning.
+/// name in its parameters its meaning, and the temp-tables and buffers that a
+/// `LIKE` in its parameters can name: those of its class, and of the classes
+/// between it and the other method of a comparison.
 #[derive(Clone, Copy)]
 pub struct Declaring<'a> {
     imports: &'a ImportContext,
     index: &'a dyn WorkspaceIndex,
+    records: &'a RecordNames,
 }
 
 impl<'a> Declaring<'a> {
-    pub fn new(imports: &'a ImportContext, index: &'a dyn WorkspaceIndex) -> Self {
-        Declaring { imports, index }
+    pub fn new(
+        imports: &'a ImportContext,
+        index: &'a dyn WorkspaceIndex,
+        records: &'a RecordNames,
+    ) -> Self {
+        Declaring {
+            imports,
+            index,
+            records,
+        }
     }
 }
 
@@ -615,6 +678,25 @@ fn same_param(
     }
     match (&a.shape, &b.shape) {
         (MemberParamShape::Value(a), MemberParamShape::Value(b)) => same_type(a, a_in, b, b_in),
+        (
+            MemberParamShape::Like {
+                source: a,
+                extent: a_extent,
+            },
+            MemberParamShape::Like {
+                source: b,
+                extent: b_extent,
+            },
+        ) => {
+            if a == b && a_extent == b_extent && same_like_target(a, a_in, b_in) {
+                SameSignature::Yes
+            } else {
+                SameSignature::Unknown
+            }
+        }
+        // `LIKE` can give the type the other parameter names.
+        (MemberParamShape::Like { .. }, MemberParamShape::Value(_))
+        | (MemberParamShape::Value(_), MemberParamShape::Like { .. }) => SameSignature::Unknown,
         (MemberParamShape::Buffer, MemberParamShape::Buffer)
         | (MemberParamShape::Table, MemberParamShape::Table)
         | (MemberParamShape::Dataset, MemberParamShape::Dataset) => SameSignature::Unknown,
@@ -622,6 +704,19 @@ fn same_param(
         | (MemberParamShape::DatasetHandle, MemberParamShape::DatasetHandle) => SameSignature::Yes,
         _ => SameSignature::No,
     }
+}
+
+/// Whether `LIKE source`, written alike in two declarations, names one field
+/// in both: a `table.field` whose table no temp-table or buffer of either side
+/// can be, so both read the database table. A name with no table can be a
+/// variable of either class.
+fn same_like_target(source: &IndexName, a_in: &Declaring<'_>, b_in: &Declaring<'_>) -> bool {
+    let mut parts = source.as_str().rsplit('.');
+    let (Some(_field), Some(table)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let table = IndexName::new(table);
+    !a_in.records.may_name(&table) && !b_in.records.may_name(&table)
 }
 
 /// What a class name in a parameter means.
@@ -734,6 +829,7 @@ struct Declared {
 fn declared_in_node(
     node: &ClassNode,
     source: &dyn ClassSource,
+    records: &RecordNames,
     name: &IndexName,
     wanted: &[&MemberDescriptor],
     wanted_in: &Declaring<'_>,
@@ -747,7 +843,7 @@ fn declared_in_node(
         };
     }
     let resolver = source.resolver(&node.path);
-    let within = Declaring::new(&node.imports, &*resolver);
+    let within = Declaring::new(&node.imports, &*resolver, records);
     let (ordinals, certain) = matching(&declared, &within, wanted, wanted_in);
     Declared {
         ordinals,
@@ -766,7 +862,8 @@ fn uncertain_gap(class: &IndexName, name: &IndexName) -> String {
 
 fn incomplete_gap(class: &IndexName, name: &IndexName) -> String {
     format!(
-        "`{}` has members that oxabl cannot read (an include or an &IF): it may declare `{}`",
+        "`{}` has members that oxabl cannot read (an include, an &IF or a preprocessor \
+         reference): it may declare `{}`",
         class.as_written(),
         name.as_written()
     )
@@ -819,15 +916,22 @@ pub fn overrides_below<'a>(
     let Some(name) = wanted.first().map(|method| method.name.clone()) else {
         return Overrides { found, gaps };
     };
+    let like = has_like(wanted);
     for class in index.all_subtypes(target) {
         // An interface that extends another declares no body.
         if class.kind == ClassKind::Interface {
             continue;
         }
+        // Each class above `class` is above the declaration it matches too.
+        let records = if like {
+            closure_records(index, class)
+        } else {
+            RecordNames::unknown()
+        };
         let mut at = class;
         let mut walked: FxHashSet<(IndexName, IndexedFileId)> = FxHashSet::default();
         loop {
-            let mut declared = declared_in_node(at, source, &name, wanted, wanted_in);
+            let mut declared = declared_in_node(at, source, &records, &name, wanted, wanted_in);
             if implements && !std::ptr::eq(at, class) {
                 // An interface method is implemented by a public method only.
                 let members = methods_named(&at.members, &name);
@@ -924,6 +1028,85 @@ pub fn overrides_below<'a>(
     Overrides { found, gaps }
 }
 
+/// Whether a method of `wanted` has a `LIKE` parameter: only then do the
+/// temp-tables and buffers of the classes matter.
+pub fn has_like(wanted: &[&MemberDescriptor]) -> bool {
+    wanted.iter().any(|method| {
+        method.params.as_deref().is_some_and(|params| {
+            params
+                .iter()
+                .any(|p| matches!(p.shape, MemberParamShape::Like { .. }))
+        })
+    })
+}
+
+/// The temp-tables and buffers of `class` and of every class and interface
+/// above it, through any number of headers. Each of them can give a name to
+/// the table of a `LIKE` in a list of `class`. A supertype that the index does
+/// not hold, or that does not resolve, makes them not known.
+pub fn closure_records(index: &SubtypeIndex, class: &ClassNode) -> RecordNames {
+    let mut records = RecordNames::of(&class.members, class.members_complete);
+    let mut seen: FxHashSet<(&IndexName, IndexedFileId)> = FxHashSet::default();
+    seen.insert((&class.name, class.file));
+    let mut todo = vec![class];
+    while let Some(at) = todo.pop() {
+        for up in &at.supertypes {
+            match &up.resolved {
+                Supertype::Class { name, file, .. } => {
+                    if !seen.insert((name, *file)) {
+                        continue;
+                    }
+                    let Some(node) = index.class(name, *file) else {
+                        return RecordNames::unknown();
+                    };
+                    records.add(&node.members, node.members_complete);
+                    todo.push(node);
+                }
+                // A built-in or .NET type has no temp-table that ABL code names.
+                Supertype::Builtin { .. } | Supertype::DotNet => {}
+                Supertype::Unresolved(_) => return RecordNames::unknown(),
+            }
+        }
+    }
+    records
+}
+
+/// [`closure_records`] for the class `start` of the file `start_path`, read
+/// through `source`: a class or interface that cannot be read makes them not
+/// known.
+fn source_closure_records(
+    source: &dyn ClassSource,
+    start_path: &Path,
+    start: &ClassDescriptor,
+    start_members: &[MemberDescriptor],
+) -> RecordNames {
+    let mut records = RecordNames::of(start_members, start.members_complete);
+    let mut seen: FxHashSet<(IndexName, IndexedFileId)> = FxHashSet::default();
+    seen.insert((start.name.clone(), start.file));
+    let mut todo = supertypes_of(start, &*source.resolver(start_path));
+    while let Some(up) = todo.pop() {
+        match up.resolved {
+            Supertype::Class { name, file, .. } => {
+                if !seen.insert((name.clone(), file)) {
+                    continue;
+                }
+                let Some(path) = source.path_of(file) else {
+                    return RecordNames::unknown();
+                };
+                let facts = source.facts(&path);
+                let Some(read) = facts.class(&name).filter(|_| facts.parsed) else {
+                    return RecordNames::unknown();
+                };
+                records.add(&read.members, read.descriptor.members_complete);
+                todo.extend(supertypes_of(&read.descriptor, &*source.resolver(&path)));
+            }
+            Supertype::Builtin { .. } | Supertype::DotNet => {}
+            Supertype::Unresolved(_) => return RecordNames::unknown(),
+        }
+    }
+    records
+}
+
 /// A class above a method, found by [`super_methods`].
 #[derive(Debug, Clone)]
 pub struct SuperMatch {
@@ -961,6 +1144,9 @@ struct SuperWalk<'a> {
     name: IndexName,
     wanted: &'a [&'a MemberDescriptor],
     wanted_in: Declaring<'a>,
+    /// The temp-tables and buffers of the start and of every type above it:
+    /// each type the walk reads is one of them.
+    records: &'a RecordNames,
     seen: FxHashSet<(IndexName, IndexedFileId)>,
     found: Vec<SuperMatch>,
     gaps: Vec<String>,
@@ -993,7 +1179,7 @@ impl SuperWalk<'_> {
                     return Examined::Stopped;
                 };
                 let resolver = self.source.resolver(&path);
-                let within = Declaring::new(&read.descriptor.imports, &*resolver);
+                let within = Declaring::new(&read.descriptor.imports, &*resolver, self.records);
                 let declared = methods_named(&read.members, &self.name);
                 let (ordinals, certain) =
                     matching(&declared, &within, self.wanted, &self.wanted_in);
@@ -1067,6 +1253,7 @@ pub fn super_methods(
     source: &dyn ClassSource,
     start_path: &Path,
     start: &ClassDescriptor,
+    start_members: &[MemberDescriptor],
     wanted: &[&MemberDescriptor],
 ) -> SuperMethods {
     let Some(name) = wanted.first().map(|method| method.name.clone()) else {
@@ -1076,11 +1263,20 @@ pub fn super_methods(
         };
     };
     let resolver = source.resolver(start_path);
+    // The whole closure, not only what the walk reads before a match: an
+    // interface does not see a temp-table above the matched parent, and the
+    // start does.
+    let records = if has_like(wanted) {
+        source_closure_records(source, start_path, start, start_members)
+    } else {
+        RecordNames::unknown()
+    };
     let mut walk = SuperWalk {
         source,
         name: name.clone(),
         wanted,
-        wanted_in: Declaring::new(&start.imports, &*resolver),
+        wanted_in: Declaring::new(&start.imports, &*resolver, &records),
+        records: &records,
         seen: FxHashSet::default(),
         found: Vec::new(),
         gaps: Vec::new(),

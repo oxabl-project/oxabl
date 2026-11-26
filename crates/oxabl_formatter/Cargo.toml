@@ -14,6 +14,9 @@ oxabl_parser = { path = "../oxabl_parser", version = "5.0.1" }
 oxabl_style = { path = "../oxabl_style", version = "0.2.1" }
 
 [dev-dependencies]
+oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.5", features = [
+    "test-counters",
+] }
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
 
 [[bench]]

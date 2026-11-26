@@ -11,6 +11,9 @@
 //! - `check/workspace_include_findings`: the same workspace with 100 unused
 //!   variables in each hot include, so each root that reads one folds the
 //!   findings of the include (`IncludeRows` in `oxabl_analyze`).
+//! - `check/include_findings_repeated`: one root that includes a file of 100
+//!   unused variables in each of 60 procedures, so 100 rows have 60 expansions
+//!   each and the fold of include findings is a large share of the run.
 //! - `format/file_end_to_end`: `FormatPipeline::format` from the source text
 //!   of `lsp_bench.p`, as `oxabl format` and Format Document call it.
 //! - `navigation/definitions`: one go to definition request on `lsp_bench.p`:
@@ -105,6 +108,17 @@ fn bench_check_and_format(c: &mut Criterion) {
             check_walk(&ws_config, &ws_fs, &ws_format, &roots)
         });
     }
+
+    let (rep_fs, rep_config, rep_path, rep_source) = fixtures::repeated_include(60, 100);
+    let rep = [(rep_path, rep_source)];
+    assert_eq!(
+        check_walk(&rep_config, &rep_fs, &format, &rep),
+        100,
+        "one row for each unused variable"
+    );
+    bench(&mut group, "check", "include_findings_repeated", || {
+        check_walk(&rep_config, &rep_fs, &format, &rep)
+    });
     group.finish();
 
     let mut group = c.benchmark_group("format");

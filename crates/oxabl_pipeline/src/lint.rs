@@ -83,9 +83,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use oxabl_analyze::{
     BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
-    ExpandedFile, IncludeOrigin, IncludeOriginDiagnostic, PreprocessMode, RuleSelection,
-    SkippedText, UnresolvedInclude, analyze_from_expanded, analyze_from_expanded_inspecting,
-    collect_from_expanded_with_summaries, expand_source_tracking, expand_source_with,
+    ExpandOptions, ExpandedFile, IncludeOrigin, IncludeOriginDiagnostic, PreprocessMode,
+    RuleSelection, SkippedText, UnresolvedInclude, analyze_from_expanded,
+    analyze_from_expanded_inspecting, collect_from_expanded_with_summaries,
+    expand_source_recording, expand_source_with,
 };
 
 use oxabl_common::{
@@ -521,6 +522,8 @@ pub struct LintPipeline<'a> {
     preprocess: bool,
     /// See [`LintPipeline::with_branch_tracking`].
     track_branches: bool,
+    /// See [`LintPipeline::with_define_record`].
+    record_defines: bool,
     /// The run's cross-file index.
     index: RunIndex<'a>,
     /// The file being analysed, when the client knows which one that is.
@@ -615,6 +618,7 @@ impl<'a> SharedRun<'a> {
             fs: self.fs,
             preprocess: true,
             track_branches: false,
+            record_defines: false,
             index: RunIndex::Shared(&self.index),
             file: None,
             conditional_closure: false,
@@ -805,6 +809,7 @@ impl<'a> LintPipeline<'a> {
             fs,
             preprocess: true,
             track_branches: false,
+            record_defines: false,
             // The index reads nothing until a name is looked up (R6), so building
             // it here costs a pair of borrows and no I/O — which is what lets it
             // be unconditional rather than another thing a client can forget.
@@ -835,6 +840,15 @@ impl<'a> LintPipeline<'a> {
     #[must_use]
     pub fn with_branch_tracking(mut self, track: bool) -> Self {
         self.track_branches = track;
+        self
+    }
+
+    /// Make [`expand`](Self::expand) record the defines and the include
+    /// arguments ([`ExpandedFile::defines`]). Off by default: only code
+    /// completion reads them.
+    #[must_use]
+    pub fn with_define_record(mut self, record: bool) -> Self {
+        self.record_defines = record;
         self
     }
 
@@ -1018,6 +1032,7 @@ impl<'a> LintPipeline<'a> {
             fs: self.fs,
             preprocess: self.preprocess,
             track_branches: self.track_branches,
+            record_defines: self.record_defines,
             index: match &self.index {
                 // A sibling shares the run's memo rather than building a second
                 // one — that is what makes the shared-dependency dedup pay.
@@ -1646,17 +1661,20 @@ impl<'a> LintPipeline<'a> {
         }
         let search_base = self.config.search_base(self.file(), source);
         Expansion {
-            inner: expand_source_tracking(
+            inner: expand_source_recording(
                 ROOT_FILE_ID,
                 self.file().and_then(Path::to_str),
                 source,
                 self.fs,
                 &self.config.include_paths_from(search_base.as_deref()),
                 &self.config.preprocessor,
-                match (self.preprocess, self.track_branches) {
-                    (false, _) => PreprocessMode::Off,
-                    (true, false) => PreprocessMode::Expand,
-                    (true, true) => PreprocessMode::TrackBranches,
+                ExpandOptions {
+                    mode: match (self.preprocess, self.track_branches) {
+                        (false, _) => PreprocessMode::Off,
+                        (true, false) => PreprocessMode::Expand,
+                        (true, true) => PreprocessMode::TrackBranches,
+                    },
+                    record_defines: self.record_defines,
                 },
             ),
             search_base,

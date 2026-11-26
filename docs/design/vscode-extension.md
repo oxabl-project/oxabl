@@ -383,6 +383,19 @@ lists.
 - The end-to-end scenario `completion` fails when the suggest widget shows
   `trycatch` twice.
 
+### Enter after a trigger character
+
+The extension sets `editor.suggest.selectionMode` to `whenQuickSuggestion`
+for `[abl]` in `configurationDefaults`. The server gives the fields after
+`DISPLAY Customer.`, because it cannot tell a qualifier from the `.` that ends
+the statement. With the default of VS Code (`always`), the list opens with a
+row selected, and Enter writes `Customer.CustNum` in place of a new line.
+With `whenQuickSuggestion`, a list that a trigger character opens has no row
+selected, and Enter writes a new line; a list that opens as the person types
+a word, or with `Ctrl+Space`, still has one. The end-to-end scenario
+`completion` fails when Enter after `display Customer.` writes a field. A
+person can set the value back in the settings.
+
 ## Releases
 
 - Release Please releases the extension as the component `oxabl_vscode`

@@ -91,6 +91,32 @@ pub fn in_memory(workspace: &Workspace, dir: &Path) -> (InMemoryFileSystem, Pipe
     (fs, config)
 }
 
+/// A root that includes `/rep/hot.i` in each of `procedures` procedures, and
+/// the file system with the include: `findings` unused variables, so each
+/// expansion states the same findings again and the fold of include findings
+/// has one row for each and `procedures` expansions in it.
+pub fn repeated_include(
+    procedures: usize,
+    findings: usize,
+) -> (InMemoryFileSystem, PipelineConfig, PathBuf, String) {
+    let dir = PathBuf::from("/rep");
+    let mut fs = InMemoryFileSystem::new();
+    let include: String = (0..findings)
+        .map(|i| format!("DEFINE VARIABLE hot-unused-{i} AS INTEGER NO-UNDO.\n"))
+        .collect();
+    fs.insert(dir.join("hot.i"), include);
+    let source: String = (0..procedures)
+        .map(|p| format!("PROCEDURE rp{p}:\n{{hot.i}}\nEND PROCEDURE.\n"))
+        .collect();
+    let path = dir.join("root.p");
+    fs.insert(path.clone(), source.clone());
+    let config = PipelineConfig {
+        include_paths: vec![dir],
+        ..PipelineConfig::default()
+    };
+    (fs, config, path, source)
+}
+
 /// A procedure file of `procedures` internal procedures, each with blocks
 /// nested `depth` deep: many scopes for the semantic passes.
 pub fn nested_blocks(procedures: usize, depth: usize) -> String {
