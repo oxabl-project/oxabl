@@ -93,8 +93,9 @@ fn serve_messages(
 /// Joins the framing threads before returning, so a caller that exits immediately
 /// afterwards does not truncate the last response.
 pub fn serve_stdio(dispatch: &Dispatch, host: &SessionHost) -> anyhow::Result<bool> {
-    let (connection, io_threads) = Connection::stdio();
+    let (connection, io_threads) = crate::transport::stdio()?;
     let clean = serve(&connection, dispatch, host);
-    io_threads.join()?;
+    drop(connection);
+    io_threads.join();
     Ok(clean)
 }

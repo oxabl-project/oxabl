@@ -23,7 +23,7 @@
 //! client free; one that queries under the lock serialises the daemon, which is why
 //! the rule is stated on [`SessionHost`] rather than left to habit.
 
-use std::io::{self, BufReader};
+use std::io;
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -32,13 +32,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender, bounded};
-use lsp_server::{Connection, Message};
+use crossbeam_channel::bounded;
+use lsp_server::Connection;
 
 use crate::dispatch::Dispatch;
 use crate::registry;
 use crate::server;
 use crate::session::SessionHost;
+use crate::transport;
 
 /// The test-hold and test-panic site just before a starting daemon registers.
 pub const READY_SITE: &str = "daemon.ready";
@@ -449,16 +450,14 @@ impl Stopper {
 
 /// Handles for one client's framing threads.
 pub struct ClientThreads {
-    reader: thread::JoinHandle<()>,
-    writer: thread::JoinHandle<()>,
+    threads: transport::Threads,
     control: Option<UnixStream>,
 }
 
 impl ClientThreads {
     /// Wait for both threads, so a response is not cut off by an early return.
     pub fn join(self) {
-        let _ = self.reader.join();
-        let _ = self.writer.join();
+        self.threads.join();
     }
 
     /// Close both socket directions, then wait for the framing threads.
@@ -478,56 +477,30 @@ impl ClientThreads {
 ///
 /// This is the part the transport crate keeps to itself for TCP. `Message::read` and
 /// `Message::write` are public, and `Connection`'s channel fields are public, so the
-/// framing is reused rather than reimplemented — only the socket type differs.
+/// framing is reused rather than reimplemented — only the socket type differs. The
+/// reader never waits on the consumer; see [`transport`].
 pub fn connection_over(stream: UnixStream) -> (Connection, ClientThreads) {
-    let (write_half, control) = match (stream.try_clone(), stream.try_clone()) {
-        (Ok(write_half), Ok(control)) => (write_half, control),
-        // A stream that cannot be cloned cannot be served. Hand back a connection
-        // whose channels are already closed so the caller's loop ends immediately,
-        // rather than panicking a thread that is holding no lock.
-        _ => return closed_connection(),
+    let (write_half, control, overflow) =
+        match (stream.try_clone(), stream.try_clone(), stream.try_clone()) {
+            (Ok(write_half), Ok(control), Ok(overflow)) => (write_half, control, overflow),
+            // A stream that cannot be cloned cannot be served. Hand back a connection
+            // whose channels are already closed so the caller's loop ends immediately,
+            // rather than panicking a thread that is holding no lock.
+            _ => return closed_connection(),
+        };
+    let close = move || {
+        let _ = overflow.shutdown(Shutdown::Both);
     };
-
-    let (inbound_tx, inbound_rx): (Sender<Message>, Receiver<Message>) = bounded(0);
-    let reader = thread::spawn(move || {
-        let mut reader = BufReader::new(stream);
-        // A malformed frame ends this client's session rather than the daemon: the
-        // peer is speaking something the framing cannot read, and there is no id to
-        // report an error against.
-        while let Ok(Some(message)) = Message::read(&mut reader) {
-            let is_exit = matches!(&message, Message::Notification(n) if n.method == "exit");
-            if inbound_tx.send(message).is_err() {
-                break;
-            }
-            if is_exit {
-                break;
-            }
-        }
-    });
-
-    let (outbound_tx, outbound_rx): (Sender<Message>, Receiver<Message>) = bounded(0);
-    let writer = thread::spawn(move || {
-        let mut stream = write_half;
-        for message in outbound_rx {
-            // A write failure means the client is gone. Stop writing; the reader
-            // will end too, and no other client is affected.
-            if message.write(&mut stream).is_err() {
-                break;
-            }
-        }
-    });
-
-    (
-        Connection {
-            sender: outbound_tx,
-            receiver: inbound_rx,
-        },
-        ClientThreads {
-            reader,
-            writer,
-            control: Some(control),
-        },
-    )
+    match transport::spawn(stream, write_half, close) {
+        Ok((connection, threads)) => (
+            connection,
+            ClientThreads {
+                threads,
+                control: Some(control),
+            },
+        ),
+        Err(_) => closed_connection(),
+    }
 }
 
 /// A connection whose channels are already closed, for the unserveable stream above.
@@ -537,8 +510,10 @@ fn closed_connection() -> (Connection, ClientThreads) {
     (
         Connection { sender, receiver },
         ClientThreads {
-            reader: thread::spawn(|| {}),
-            writer: thread::spawn(|| {}),
+            threads: transport::Threads {
+                reader: thread::spawn(|| {}),
+                writer: thread::spawn(|| {}),
+            },
             control: None,
         },
     )

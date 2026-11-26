@@ -103,14 +103,15 @@ use oxabl_daemon::{CompletedWork, Disposition, SessionHost, analyze_guarded, dis
 /// LSP-mandated non-zero exit), so the binary can map it to a failing
 /// [`ExitCode`](std::process::ExitCode).
 pub fn run() -> Result<()> {
-    let (connection, io_threads) = Connection::stdio();
+    let (connection, io_threads) =
+        oxabl_daemon::transport::stdio().context("starting the LSP I/O threads")?;
     let result = proxy_to_daemon(&connection);
     drop(connection);
     // The stdio reader can be blocked in the editor's still-open input pipe. On
     // a daemon failure there will never be another useful frame, so return and
     // let process exit close it instead of waiting forever to join it.
     result?;
-    io_threads.join().context("joining LSP I/O threads")?;
+    io_threads.join();
     Ok(())
 }
 
@@ -194,9 +195,7 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
         }
     };
     drop(progress);
-    let outcome =
-        editor_send(connection, answer).and_then(|()| proxy_messages(connection, &daemon));
-    drop(daemon);
+    let outcome = editor_send(connection, answer).and_then(|()| proxy_messages(connection, daemon));
     daemon_threads.shutdown();
     outcome
 }
@@ -796,21 +795,50 @@ fn build_suffix(build: &str) -> String {
     }
 }
 
+/// Forward frames between the editor and the daemon until the editor sends `exit` or
+/// either side closes.
+///
+/// Each direction has its own thread, so a frame that waits to reach one side never
+/// stops the frames for the other. With one thread, a send to a daemon that is
+/// itself waiting to write to this proxy deadlocks both processes once both socket
+/// buffers are full.
+///
+/// The daemon is dropped before the function returns, so its writer ends; the caller
+/// then shuts the socket down, which ends the daemon-to-editor thread.
 #[cfg(unix)]
-fn proxy_messages(editor: &Connection, daemon: &Connection) -> Result<()> {
+fn proxy_messages(editor: &Connection, daemon: Connection) -> Result<()> {
+    let Connection {
+        sender: to_daemon,
+        receiver: from_daemon,
+    } = daemon;
+    let (ended_tx, ended_rx) = crossbeam_channel::bounded::<Result<()>>(1);
+    let to_editor = editor.sender.clone();
+    std::thread::Builder::new()
+        .name("oxabl-lsp-to-editor".to_string())
+        .spawn(move || {
+            let outcome = (|| loop {
+                let message = from_daemon
+                    .recv()
+                    .context("the daemon exited during the editor session")?;
+                to_editor
+                    .send(with_null_result(message))
+                    .context("the editor connection closed")?;
+            })();
+            let _ = ended_tx.send(outcome);
+        })
+        .context("starting the proxy thread")?;
     loop {
         crossbeam_channel::select! {
             recv(editor.receiver) -> message => {
                 let message = message.context("the editor connection closed")?;
                 let exiting = matches!(&message, Message::Notification(notification) if notification.method == "exit");
-                daemon.sender.send(message).context("the daemon exited during the editor session")?;
+                to_daemon.send(message).context("the daemon exited during the editor session")?;
                 if exiting {
                     return Ok(());
                 }
             }
-            recv(daemon.receiver) -> message => {
-                let message = message.context("the daemon exited during the editor session")?;
-                editor_send(editor, message)?;
+            recv(ended_rx) -> outcome => {
+                return outcome.unwrap_or_else(|_| Err(anyhow::anyhow!("the proxy thread ended")));
             }
         }
     }
