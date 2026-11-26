@@ -185,17 +185,83 @@ scripts/bench/gen-workspace --preset ci --programs 1000 target/ws-1000
 | Preset | Files | Roots | Size | Use |
 | --- | --- | --- | --- | --- |
 | `ci` | 372 | 300 | 0.8 MB | `check/workspace`, `navigation/links`, `workspace_symbols/query` |
-| `medium` | 1,408 | 700 | 23 MB | a quick local run |
-| `erp` | 13,998 | 7,000 | 229 MB | the shape of a large ERP code base |
+| `medium` | 1,502 | 1,040 | 21 MB | a quick local run, a tenth of `erp` |
+| `erp` | 14,380 | 10,386 | 213 MB | the shape of a large real ERP code base |
 
-The `erp` preset has six includes that more than 1,000 roots read (the largest
-fan-in is 5,125 roots), roots that read about 300 includes, chains of includes
-10 deep, and 248 roots of more than 30,000 lines after expansion. The knobs are
-in `crates/oxabl_bench/src/generate.rs` (`Knobs`): the numbers of programs and
-classes, the file sizes (on a log scale), the include fan-in and fan-out, the
-depth of the include chains, the density of `&SCOPED-DEFINE`, `&IF`, `{&name}`
-and include arguments, the temp-tables and datasets of the includes, and the
-tables of the `.df` schema.
+The `ci` workspace does not change: the CodSpeed benches compare by name, so
+`the_ci_workspace_does_not_change` in `tests/generate.rs` fails on a change of
+one byte. A change of the generator that must change it updates the number in
+that test on purpose.
+
+### The `erp` preset
+
+The knobs of `erp` come from counts that a scan measured on a large real
+workspace of about 14,800 ABL files. The scan counted only. No name and no
+source text left it. `--stats` prints the same numbers for a generated
+workspace, and `the_erp_preset_has_the_shape_of_a_large_real_workspace` in
+`tests/generate.rs` keeps the main ones inside a band.
+
+| Measure | Real workspace | `erp` |
+| --- | --- | --- |
+| Roots (procedures and classes) | 10,386 (8,210 and 2,176) | 10,386 (8,210 and 2,176) |
+| Files, bytes, lines | 14,832, 212 MB, 5.38 M | 14,380, 213 MB, 5.49 M |
+| Lines of a root: p50, p90, p99, max | 178, 718, 3,151, 28,315 | 186, 717, 3,111, 22,231 |
+| Lines of an include: p50, p90, p99, max | 176, 783, 3,345, 28,366 | 116, 663, 3,076, 26,709 |
+| Includes a root reads directly: p50, p90, p99, max | 3, 7, 11, 27 | 4, 8, 12, 22 |
+| Direct includers of an include: p50, p90, p99, max | 1, 5, 85, 4,925 | 2, 7, 52, 5,037 |
+| Largest three direct fan-ins | 4,925, 3,616, 3,611 | 5,037, 4,525, 4,508 |
+| Include files below a root: p50, p90, p99, max | 24, 41, 46, 70 | 21, 53, 72, 100 |
+| Levels of nesting below a root: p50, p90, p99, max | 3, 4, 5, 6 | 3, 4, 6, 6 |
+| Expanded lines of a root: mean, p50, p90, p99 | 3,418, 2,017, 8,492, 14,760 | 3,442, 3,003, 7,374, 12,387 |
+| `&SCOPED-DEFINE`, `&GLOBAL-DEFINE`, `&IF` | 3,734, 497, 2,901 | 4,931, 22, 3,010 |
+| `{&name}` references, `{1}` arguments | 40,428, 557 | 42,915, 540 |
+| Temp-tables (files that have one), datasets | 18,886 (6,704), 233 | 16,924 (6,346), 212 |
+| Internal procedures, functions, methods | 40,697, 7,237, 10,752 | 34,504, 6,844, 11,247 |
+| `RUN`, `FIND`, `FOR EACH`, `NEW` class | 71,900, 93,653, 30,471, 8,525 | 66,363, 90,745, 31,941, 7,750 |
+| `NEW SHARED` lines (files), `DEFINE SHARED` lines | 2,000 (447), 545 | 2,215 (447), 480 |
+
+The generator models these shapes, each with a knob in
+`crates/oxabl_bench/src/generate.rs` (`Knobs`):
+
+- **Sizes.** A root and an include have a size from measured quantiles
+  (`Dist::Quantiles`). A class has methods of `method_lines` lines.
+  `comment_bytes` adds a comment to the first line of each block, so the
+  bytes for each line match.
+- **Include fan-in.** The 22 hot includes (`hot`) have a size and a share of
+  roots each. A pool include is read through a pick that leans to the first
+  ones (`pool_skew`), so a few carry most of the fan-in, and about 900 of them are
+  never read (795 in the real workspace). `hot_spread` makes a root that reads one big include read more
+  of them.
+- **Include nesting.** A hot include reads 7 to 14 small pool includes, and a
+  pool include reads up to 2 others, down to `nest_depth` levels. So a root
+  has many files below it, and few lines in most of them (`child_lines`).
+  Chains of includes with a `{1}` argument go 6 deep. No root reads an
+  include twice, through any depth, so no root defines a name two times.
+- **Launchers.** A share of programs (`launcher_share`) are nothing but
+  includes, and read up to 40 each. They make the largest units, as in the
+  real workspace. They are also the files that the `SHARED` producer pre-pass
+  expands, as are the classes with a `{&name}` (`class_directive_share`).
+- **Directives.** `preprocessor_every` sets the `&SCOPED-DEFINE` and `&IF`
+  blocks, and `ref_every` the `{&name}` references to a hot include.
+- **Statements.** `mix` gives the weight of each kind of block: `FIND`,
+  `FOR EACH`, `RUN`, `NEW` class, procedures and functions. `reference_skew`
+  makes a few classes and programs the targets of most.
+- **Temp-tables.** `temp_tables` and `temp_table_share` set how many files have
+  a temp-table and how many each has. `dataset_every` sets the datasets.
+- **`SHARED`.** `shared_producers` programs define `NEW SHARED` variables and
+  a temp-table, and `shared_consumers` programs define the same `SHARED`.
+
+What the preset does not model:
+
+- A producer through an include (`{inc.i NEW}`). A producer is a program with
+  `NEW SHARED` lines of its own.
+- `IMPLEMENTS`, `PERSISTENT SET`, `RUN VALUE`, `PUBLISH`, `SUBSCRIBE` and
+  `DYNAMIC-*` calls.
+- The closure of a root is wider than the real one (the 99th percentile is 72
+  files, the real one 46), and its median expanded size is 50% larger, with a
+  thinner tail. The small includes are smaller than the real ones.
+- A schema of 1,230 tables of 25 fields, but no real index shapes: every table
+  has the one primary index.
 
 ## The command line
 
@@ -346,10 +412,48 @@ the CodSpeed CPU build, has it on. Its cost is up to three atomic additions
 for each lexer, which is very small, and a build of the shipped binary does
 not have it.
 
-On the `erp` workspace (7,000 roots, 16 cores, a loaded machine, before the
-generated text was made format-clean), `oxabl check src` took 23.3 s with a
-peak RSS of 1,523 MB, a heap peak of 1.34 GB and 417 million allocation calls;
-`oxabl format --check src` took 1.6 s and 275 MB.
+On the `erp` workspace (10,386 roots, 12 cores, a machine with other work on
+it), the release binary of `oxabl check src` took 22.4 s and 237 CPU-seconds
+(22.8 ms for each root), with a peak RSS of 719 MB. The system-allocator binary
+had a heap peak of 317 MB and 244 million allocation calls.
+`oxabl format --check src` took 2.0 s and 21 CPU-seconds, with a peak RSS of
+574 MB, a heap peak of 138 MB and 28 million allocation calls. A real
+workspace of 10,385 roots took 15.5 to 20 s on 16 threads, 182 to 192
+CPU-seconds (17.5 to 19.5 ms for each root) and 828 to 843 MB of peak RSS.
+
+The share of the instructions of `check -j 1` on the `medium` workspace
+(callgrind, inclusive, so the shares overlap), and the share of the CPU time of
+the real workspace (perf, inclusive):
+
+| Stage | `medium` | Real workspace |
+| --- | --- | --- |
+| parse (`parse_program`) | 32.6% | 21.6% |
+| tokenize | 25.0% | 16.6% |
+| semantic (`analyze_file`) | 26.9% | 35% |
+| of which `resolve_pass` | 20.2% | 26.6% |
+| format channel | 13.6% | 5.9% |
+| `BatchIndex::facts_for` | 6.7% | 9.6% |
+| `SHARED` producers pre-pass | 6.8% | 16.8% |
+| preprocessor (`process_inner`) | 3.8% | 9.1% |
+
+The gaps between `erp` and the real workspace:
+
+- The CPU time for each root is 25% higher, and the peak RSS 13% lower. The
+  machine had other work on it during the run, so the CPU time is an upper
+  bound.
+- The lex and the parse have a larger share, and the semantic pass, the
+  `SHARED` pre-pass and the preprocessor a smaller one. Fewer roots need the
+  pre-pass: the `erp` roots that expand there are the classes with a directive
+  and the launchers (about 19%), where 33% of the real roots expand. The roots
+  that parse only after expansion cannot be generated, because `oxabl format`
+  then reports the file as not formatted. The generated statements may also be
+  simpler than real ones: this is not measured.
+- The format channel has more than twice the share. The cause is not found.
+- The real workspace has producers through an include, which the `erp`
+  preset does not model.
+
+The `medium` shares come from instruction counts of 1,040 roots and the real
+ones from CPU time of 10,386, so a gap of a few points is not a finding.
 
 `check big.p` spends 98% of its instructions in `SourceMap::new`, which
 `LabelPlaces::rows` (`crates/oxabl/src/main.rs`) builds for each label of each
