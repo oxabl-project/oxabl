@@ -540,9 +540,12 @@ not have it.
 The test-only feature `test-counters` of `oxabl_parser` counts the calls of
 `parse_program` and the bytes that their tokens cover. A test build of `oxabl`
 prints the bytes lexed and parsed when `OXABL_TEST_LEX_PARSE` is set
-(`crates/oxabl/tests/check_lex_parse_counts.rs`). `docs/design/shared-unit.md`
-lists what each stage of `check` lexes and parses, and the plan to do it once
-for each text.
+(`crates/oxabl/tests/check_lex_parse_counts.rs`). As for the lexer, Cargo
+unifies the feature of the dev-dependency over a workspace build, so the
+CodSpeed CPU build has it on. Its cost is two relaxed atomic additions for each
+`parse_program`, and a build of the shipped binary does not have it.
+`docs/design/shared-unit.md` lists what each stage of `check` lexes and parses,
+and the plan to do it once for each text.
 
 The first slice of that plan (one `SharedFacts` for the indexes of the threads
 of a walk, no lex of a format candidate that is the source, and no second lex

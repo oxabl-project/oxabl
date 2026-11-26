@@ -1,6 +1,7 @@
 //! The formatter lexes a file once for its caller and once for the candidate it
-//! prints, and no more. A candidate that is the source is not lexed. A full lex that comes back costs 7% of `oxabl check`
-//! on a file and the same share of `oxabl format`.
+//! prints, and no more. A candidate that is the source is not lexed. A full lex
+//! that comes back costs 7% of `oxabl check` on a file and the same share of
+//! `oxabl format`.
 //!
 //! A test build of `oxabl_lexer` (the `test-counters` feature) counts the lexers
 //! built and the bytes they were given. The counters belong to the process, so

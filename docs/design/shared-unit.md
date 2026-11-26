@@ -30,6 +30,7 @@ the release binary at commit `89ab4c3`, with `-j 1`.
 | The expanded root | `oxabl_analyze::collect_from_expanded_with_summaries` | the same | The analysis and the lint rules |
 | The expanded root | `ResolveWalker::receiver_is_no_class` (`names_after_widget_keywords`) | not parsed | The resolve pass, for a bare receiver that does not resolve in a file with a `USING` |
 | Each `RUN` target and class the root reaches | `Written::parse` (and the expanded text of the target, when its own text does not give its facts) | the same | `BatchIndex::facts_for`, one time for each **thread** that reaches the file |
+| Each `RUN` target the root reaches with arguments (`strict.calls`) | `program_signatures_at` | the same | `BatchIndex::signatures_of`, only when the parse of `facts_for` did not give the parameter lists: they are not whole in the text as written, or the target is a class |
 
 The floor is one lex and one parse of each distinct text: the expanded root,
 the root as written (the formatter must see the raw text, KTD4), and each
@@ -135,7 +136,17 @@ and the run reads them many times.
   reaches it meanwhile waits for that one. The index of a file does not call
   the index again, so a wait cannot be a deadlock. The ids come from the slot,
   so one file has one id in every thread. The ids never reach the output (the
-  output of `-j 1` and `-j 16` is the same, and their ids are different).
+  output of `-j 1` and `-j 16` is the same, and their ids are different). A
+  second index of the run must not mint ids of its own, so
+  `BatchIndex::with_shared_facts` refuses an index that has done a lookup.
+- **The parameter lists of a target** (`strict.calls`) live in the same slot.
+  When the parse that gives the facts of a program shows the lists of its main
+  block and of all its internal procedures whole, the slot keeps them, and no
+  stage reads or parses the target again. When the text as written does not
+  show them (an `{include}` or an `&IF` may hold a parameter) or the target is
+  a class, the first index that asks reads the target again, with its
+  expansion, and the slot keeps the answer for the run. This second read is
+  left work: one more parse for each such target, one time for the run.
 - **Key.** The run assumes that no file changes while it runs, as the memo of
   each index does. So the key is the path. The daemon keys by file and disk
   revision (salsa inputs), which is the content stamp.
@@ -173,6 +184,13 @@ if the share of lexing of include chunks that start and end at a statement
 boundary is high.
 
 ### The daemon
+
+The workspace pass of the daemon (`oxabl_daemon::methods`, the workspace
+snapshot) builds the call graph with `ReverseGraph::build_with`, one
+`LintPipeline` for each thread, and gives its indexes no `SharedFacts`. It
+has the cost that `check` had before the first slice. A slice for it must share
+the facts of the pass across its threads. The salsa inputs give the key (file
+and revision) that the run key of `check` assumes away.
 
 The daemon is the only crate that knows salsa. Two tracked queries:
 
@@ -216,7 +234,12 @@ and fails when:
 - a root that is formatted is lexed more than two times, or parsed more than
   two times (the analysis and the format check);
 - a `RUN` target that many roots reach is parsed more than one time for the
-  run, at `-j 1` and at `-j 4`.
+  run, at `-j 1` and at `-j 4`, with the default rules and with
+  `strict.calls` and arguments on the `RUN` statements.
+
+The guard does not cover `check --watch`: a pass of the watch ends on a
+signal and prints no counts. `with_shared_facts` on the handles of
+`crates/oxabl/src/watch.rs` has no test of its own.
 
 Each slice makes the bounds smaller.
 

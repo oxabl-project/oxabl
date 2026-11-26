@@ -1180,6 +1180,83 @@ fn the_job_count_changes_nothing_a_run_reports() {
 }
 
 #[test]
+fn files_that_many_roots_reach_answer_the_same_at_any_job_count() {
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n\n[workspace.sources]\ninclude_paths = [\"lib\"]\n\n\
+         [workspace.lint]\nenable = [\"strict.calls\"]\n",
+    );
+    // `RUN` targets with a parameter list, a class chain that the roots reach
+    // through its heirs, and a `SHARED` producer that the roots consume.
+    write(
+        &tmp.path().join("lib/takes.p"),
+        "DEFINE INPUT PARAMETER iNum AS INTEGER NO-UNDO.\nDEFINE OUTPUT PARAMETER cOut AS CHARACTER NO-UNDO.\ncOut = STRING(iNum).\n",
+    );
+    // A parameter that an include supplies: the list is read from the
+    // expanded text.
+    write(
+        &tmp.path().join("lib/via-include.p"),
+        "DEFINE INPUT PARAMETER iNum AS INTEGER NO-UNDO.\n{lib/extra.i}\n",
+    );
+    write(
+        &tmp.path().join("lib/extra.i"),
+        "DEFINE OUTPUT PARAMETER cOut AS CHARACTER NO-UNDO.\n",
+    );
+    write(
+        &tmp.path().join("lib/with-proc.p"),
+        "PROCEDURE total:\n    DEFINE INPUT PARAMETER dAmount AS DECIMAL NO-UNDO.\nEND PROCEDURE.\n",
+    );
+    write(
+        &tmp.path().join("lib/producer.p"),
+        "DEFINE NEW SHARED VARIABLE gCount AS INTEGER NO-UNDO.\n",
+    );
+    write(
+        &tmp.path().join("lib/app/base.cls"),
+        "CLASS app.base:\n    METHOD PUBLIC INTEGER Size():\n        RETURN 1.\n    END METHOD.\nEND CLASS.\n",
+    );
+    write(
+        &tmp.path().join("lib/app/mid.cls"),
+        "CLASS app.mid INHERITS app.base:\nEND CLASS.\n",
+    );
+    for k in 0..40 {
+        // Every fifth root passes a wrong count of arguments.
+        let run = if k % 5 == 0 {
+            "RUN takes.p (INPUT 1)."
+        } else {
+            "RUN takes.p (INPUT 1, OUTPUT cText)."
+        };
+        write(
+            &tmp.path().join(format!("src/r{k:02}.p")),
+            &format!(
+                "DEFINE VARIABLE cText AS CHARACTER NO-UNDO.\n\
+                 DEFINE VARIABLE oMid AS app.mid NO-UNDO.\n\
+                 DEFINE SHARED VARIABLE gCount AS INTEGER NO-UNDO.\n\
+                 {run}\nRUN via-include.p (INPUT 1, OUTPUT cText, OUTPUT cText).\nRUN with-proc.p PERSISTENT.\nRUN total IN THIS-PROCEDURE (INPUT 1.5).\n\
+                 oMid = NEW app.mid().\nMESSAGE oMid:Size() gCount cText.\n"
+            ),
+        );
+    }
+    let dir = tmp.path().to_str().unwrap();
+    for flags in [&[][..], &["--json"]] {
+        let run = |jobs: &str| check([&[dir, "--no-format", "-j", jobs][..], flags].concat());
+        let serial = run("1");
+        assert!(
+            serial.stdout.contains("CL003"),
+            "the fixture must reach the parameter lists: {}{}",
+            serial.stdout,
+            serial.stderr
+        );
+        for jobs in ["2", "7", "64"] {
+            let parallel = run(jobs);
+            assert_eq!(parallel.code, serial.code, "-j {jobs} {flags:?}");
+            assert_eq!(parallel.stdout, serial.stdout, "-j {jobs} {flags:?}");
+            assert_eq!(parallel.stderr, serial.stderr, "-j {jobs} {flags:?}");
+        }
+    }
+}
+
+#[test]
 fn callee_summaries_are_the_same_at_any_job_count() {
     let tmp = TempDir::new().unwrap();
     write(

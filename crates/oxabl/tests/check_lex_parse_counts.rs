@@ -131,57 +131,88 @@ fn a_root_is_lexed_and_parsed_once_for_its_analysis_and_once_for_its_format_chec
     );
 }
 
-#[test]
-fn a_file_that_many_roots_run_is_indexed_once_for_the_run() {
-    let tmp = TempDir::new().unwrap();
-    let (src, lib) = (tmp.path().join("src"), tmp.path().join("lib"));
+/// `program`, with a parameter on its main block, so that a `RUN` with
+/// arguments asks for the list of the target (`strict.calls`).
+fn target(prefix: &str, units: usize) -> String {
+    program(prefix, units).replacen(
+        "USING Progress.Lang.*.\n",
+        "USING Progress.Lang.*.\nDEFINE INPUT PARAMETER piTop AS INTEGER NO-UNDO.\n",
+        1,
+    )
+}
+
+/// A workspace of `roots` roots that each `RUN` three large targets, and the
+/// bytes of the targets and of the roots.
+fn run_workspace(dir: &Path, lint: &str, roots: usize) -> (usize, usize) {
+    let (src, lib) = (dir.join("src"), dir.join("lib"));
     fs::create_dir_all(&src).unwrap();
     fs::create_dir_all(&lib).unwrap();
     fs::write(
-        tmp.path().join("oxabl.toml"),
-        "[workspace]\nname = \"counts\"\n\n[workspace.sources]\ninclude_paths = [\"lib\"]\n",
+        dir.join("oxabl.toml"),
+        format!(
+            "[workspace]\nname = \"counts\"\n\n[workspace.sources]\ninclude_paths = [\"lib\"]\n\n{lint}"
+        ),
     )
     .unwrap();
     // Large targets beside small roots, so the parses of the targets are most
     // of the count.
     let targets = ["alpha", "beta", "gamma"];
-    for target in targets {
-        fs::write(lib.join(format!("{target}.p")), program(target, 40)).unwrap();
+    for name in targets {
+        fs::write(lib.join(format!("{name}.p")), target(name, 40)).unwrap();
     }
-    let roots = 24;
     for n in 0..roots {
         let mut source = String::new();
-        for target in targets {
-            source.push_str(&format!("RUN {target}.p.\n"));
+        for name in targets {
+            source.push_str(&format!("RUN {name}.p ({n}).\n"));
         }
         source.push_str(&format!("MESSAGE \"root {n}\".\n"));
         fs::write(src.join(format!("root{n}.p")), source).unwrap();
     }
-    let target_bytes: usize = targets
+    let size = |path: std::path::PathBuf| fs::read(path).unwrap().len();
+    let target_bytes = targets
         .iter()
-        .map(|t| fs::read(lib.join(format!("{t}.p"))).unwrap().len())
+        .map(|t| size(lib.join(format!("{t}.p"))))
         .sum();
-    let root_bytes: usize = (0..roots)
-        .map(|n| fs::read(src.join(format!("root{n}.p"))).unwrap().len())
+    let root_bytes = (0..roots)
+        .map(|n| size(src.join(format!("root{n}.p"))))
         .sum();
+    (target_bytes, root_bytes)
+}
 
-    for jobs in ["1", "4"] {
-        let (counts, stdout) = counted(tmp.path(), &["check", "-j", jobs, "--no-format", "src"]);
-        assert!(
-            stdout.contains(&format!("checked {roots} files: no findings")),
-            "the fixture must be clean and its targets found (-j {jobs}): {stdout}"
-        );
-        // Each root parsed once for its analysis; each target once for the run.
-        // A target parsed a second time, as by a second thread, passes the bound.
-        let budget = root_bytes + target_bytes + target_bytes / 2;
-        assert!(
-            counts.parsed <= budget,
-            "-j {jobs}: the targets ({target_bytes} bytes) were parsed more than once for the \
-             run, or the roots ({root_bytes} bytes) more than once each: {counts:?}"
-        );
-        assert!(
-            counts.parsed >= root_bytes + target_bytes,
-            "-j {jobs}: the targets must be indexed for the run: {counts:?}"
-        );
+#[test]
+fn a_file_that_many_roots_run_is_indexed_once_for_the_run() {
+    let roots = 24;
+    // `strict.calls` reads the parameter list of each target, which the index
+    // takes from the parse that gave its facts.
+    for (lint, rule) in [
+        ("", "default rules"),
+        (
+            "[workspace.lint]\nenable = [\"strict.calls\"]\n",
+            "strict.calls",
+        ),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let (target_bytes, root_bytes) = run_workspace(tmp.path(), lint, roots);
+        for jobs in ["1", "4"] {
+            let (counts, stdout) =
+                counted(tmp.path(), &["check", "-j", jobs, "--no-format", "src"]);
+            assert!(
+                stdout.contains(&format!("checked {roots} files: no findings")),
+                "the fixture must be clean and its targets found ({rule}, -j {jobs}): {stdout}"
+            );
+            // Each root parsed once for its analysis; each target once for the
+            // run. A target parsed a second time, as by a second thread or for
+            // its parameter list, passes the bound.
+            let budget = root_bytes + target_bytes + target_bytes / 2;
+            assert!(
+                counts.parsed <= budget,
+                "{rule}, -j {jobs}: the targets ({target_bytes} bytes) were parsed more than once \
+                 for the run, or the roots ({root_bytes} bytes) more than once each: {counts:?}"
+            );
+            assert!(
+                counts.parsed >= root_bytes + target_bytes,
+                "{rule}, -j {jobs}: the targets must be indexed for the run: {counts:?}"
+            );
+        }
     }
 }

@@ -25,7 +25,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::facts::{ClassFacts, FileFacts};
 use crate::producers::{DeferredProducers, SharedProducers, may_define_shared, scan_procedures};
-use crate::{IncludeContext, index_file_at, program_signatures_at, search};
+use crate::{IncludeContext, index_file_and_signatures_at, program_signatures_at, search};
 
 /// The generation a batch reports.
 ///
@@ -130,6 +130,7 @@ impl SharedFacts {
         let slot = Arc::new(Pending {
             id: IndexedFileId::new(self.next_file_id.fetch_add(1, Ordering::Relaxed)),
             facts: OnceLock::new(),
+            signatures: OnceLock::new(),
         });
         files.insert(key.to_path_buf(), Arc::clone(&slot));
         slot
@@ -285,9 +286,21 @@ impl<'a> BatchIndex<'a> {
     /// Index each file once for the whole run, in `facts`, which the other
     /// indexes of the run share. See [`SharedFacts`].
     ///
-    /// Apply before any lookup.
+    /// Apply before any lookup: an id this index minted for itself would clash
+    /// with an id of the run.
+    ///
+    /// # Panics
+    ///
+    /// When a lookup has already reached a file.
     #[must_use]
     pub fn with_shared_facts(mut self, facts: &'a SharedFacts) -> Self {
+        {
+            let memo = self.memo_read();
+            assert!(
+                memo.next_file_id == 1 && memo.pending.is_empty() && memo.facts.is_empty(),
+                "with_shared_facts must be applied before any lookup"
+            );
+        }
         self.shared_facts = Some(facts);
         self
     }
@@ -637,7 +650,11 @@ impl<'a> BatchIndex<'a> {
             }
             memo.paths.get(&file).cloned()?
         };
-        let answer = Observed::capture(self.fs, || self.read_signatures(&path).map(Arc::new));
+        let read = || Observed::capture(self.fs, || self.read_signatures(&path).map(Arc::new));
+        let answer = match self.shared_facts {
+            Some(shared) => shared.slot(&path).signatures.get_or_init(read).clone(),
+            None => read(),
+        };
         let kept = answer.clone();
         self.memo().signatures.insert(file, answer);
         kept.attributed(self.fs).clone()
@@ -1010,6 +1027,9 @@ fn map_parallel<T: Sync, R: Send>(
 struct Pending {
     id: IndexedFileId,
     facts: OnceLock<Observed<Arc<FileFacts>>>,
+    /// The parameter lists of the file. Indexing sets them when the parse of
+    /// the facts settles them; otherwise the first index that asks reads them.
+    signatures: OnceLock<Observed<Option<Arc<ProgramSignatures>>>>,
 }
 
 impl Pending {
@@ -1027,12 +1047,20 @@ impl Pending {
     ) -> Observed<Arc<FileFacts>> {
         self.facts
             .get_or_init(|| {
-                Observed::capture(includes.fs, || {
-                    Arc::new(match read() {
-                        Some(source) => index_file_at(self.id, key, &source, includes).0,
-                        None => FileFacts::unparseable(self.id),
-                    })
-                })
+                let indexed = Observed::capture(includes.fs, || match read() {
+                    Some(source) => {
+                        let (facts, shown, _) =
+                            index_file_and_signatures_at(self.id, key, &source, includes);
+                        (Arc::new(facts), shown.map(Arc::new))
+                    }
+                    None => (Arc::new(FileFacts::unparseable(self.id)), None),
+                });
+                if let Some(shown) = &indexed.value().1 {
+                    let _ = self
+                        .signatures
+                        .set(indexed.with_value(Some(Arc::clone(shown))));
+                }
+                indexed.with_value(Arc::clone(&indexed.value().0))
             })
             .clone()
     }
@@ -1061,6 +1089,7 @@ impl Memo {
                 let pending = Arc::new(Pending {
                     id: IndexedFileId::new(self.next_file_id),
                     facts: OnceLock::new(),
+                    signatures: OnceLock::new(),
                 });
                 self.next_file_id += 1;
                 pending
@@ -2502,5 +2531,132 @@ mod tests {
         let on = BatchIndex::new(&fs, &paths).with_case_insensitive_lookup(true);
         assert!(matches!(on.class(&class), IndexAnswer::Found(_)));
         assert!(matches!(on.program(&program), IndexAnswer::Found(_)));
+    }
+
+    const TARGET: &str = "\
+DEFINE INPUT PARAMETER iOrder AS INTEGER NO-UNDO.
+PROCEDURE inner:
+    DEFINE OUTPUT PARAMETER cText AS CHARACTER NO-UNDO.
+END PROCEDURE.
+";
+
+    /// The parameter list is not whole in the text as written: an include may
+    /// hold more of it.
+    const TARGET_WITH_INCLUDE: &str = "\
+DEFINE INPUT PARAMETER iOrder AS INTEGER NO-UNDO.
+{extra.i}
+";
+
+    #[test]
+    fn two_indexes_of_a_run_give_one_file_one_id_and_read_it_once() {
+        let fs = CountingFs::new(&[("/src/t.p", TARGET), ("/src/u.p", "MESSAGE 1.")]);
+        let paths = dirs(&["/src"]);
+        let shared = SharedFacts::default();
+        assert!(shared.is_empty());
+        let first = BatchIndex::new(&fs, &paths).with_shared_facts(&shared);
+        let second = BatchIndex::new(&fs, &paths).with_shared_facts(&shared);
+        let target = IndexName::new("t.p");
+        // The second index reaches `u.p` first, so its local order differs.
+        let IndexAnswer::Found(u_second) = second.program(&IndexName::new("u.p")) else {
+            panic!("u.p is found");
+        };
+        let IndexAnswer::Found(from_first) = first.program(&target) else {
+            panic!("t.p is found");
+        };
+        let IndexAnswer::Found(from_second) = second.program(&target) else {
+            panic!("t.p is found");
+        };
+        assert_eq!(from_first, from_second, "one file, one id for the run");
+        assert_ne!(from_first, u_second, "two files never share an id");
+        assert_eq!(
+            first.indexed_path(from_first),
+            second.indexed_path(from_first)
+        );
+        let list =
+            |index: &BatchIndex<'_>| index.signature(&target, Some(&IndexName::new("inner")));
+        assert_eq!(list(&first), list(&second));
+        assert!(list(&first).is_some(), "the list is known");
+        assert_eq!(
+            fs.reads_of("/src/t.p"),
+            1,
+            "indexed, and its lists taken from the same parse, once for the run"
+        );
+        assert_eq!(shared.len(), 2);
+    }
+
+    #[test]
+    fn a_list_that_needs_the_include_is_read_once_for_the_run() {
+        let fs = CountingFs::new(&[
+            ("/src/t.p", TARGET_WITH_INCLUDE),
+            (
+                "/src/extra.i",
+                "DEFINE OUTPUT PARAMETER cText AS CHARACTER NO-UNDO.\n",
+            ),
+        ]);
+        let paths = dirs(&["/src"]);
+        let shared = SharedFacts::default();
+        let indexes: Vec<_> = (0..3)
+            .map(|_| BatchIndex::new(&fs, &paths).with_shared_facts(&shared))
+            .collect();
+        let target = IndexName::new("t.p");
+        let lists: Vec<_> = indexes
+            .iter()
+            .map(|index| index.signature(&target, None))
+            .collect();
+        assert_eq!(lists[0].as_ref().map(|s| s.params.len()), Some(2));
+        assert!(lists.iter().all(|list| *list == lists[0]));
+        assert_eq!(
+            fs.reads_of("/src/t.p"),
+            2,
+            "one read for the facts and one for the lists, not one for each index"
+        );
+    }
+
+    #[test]
+    fn an_index_of_its_own_still_answers_the_same_lists() {
+        let fs = CountingFs::new(&[("/src/t.p", TARGET)]);
+        let paths = dirs(&["/src"]);
+        let shared = SharedFacts::default();
+        let target = IndexName::new("t.p");
+        let own = BatchIndex::new(&fs, &paths);
+        let joined = BatchIndex::new(&fs, &paths).with_shared_facts(&shared);
+        for procedure in [None, Some(IndexName::new("inner"))] {
+            assert_eq!(
+                own.signature(&target, procedure.as_ref()),
+                joined.signature(&target, procedure.as_ref())
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "before any lookup")]
+    fn shared_facts_after_a_lookup_are_refused() {
+        let fs = CountingFs::new(&[("/src/t.p", TARGET), ("/src/u.p", "MESSAGE 1.")]);
+        let paths = dirs(&["/src"]);
+        let shared = SharedFacts::default();
+        let index = BatchIndex::new(&fs, &paths);
+        let _ = index.program(&IndexName::new("t.p"));
+        let _ = index.with_shared_facts(&shared);
+    }
+
+    #[test]
+    fn an_index_that_reaches_a_file_meanwhile_waits_for_the_first() {
+        let fs = Gated::new(CountingFs::new(&[("/src/t.p", TARGET)]), "/src/t.p", false);
+        let paths = dirs(&["/src"]);
+        let shared = SharedFacts::default();
+        let first = BatchIndex::new(&fs, &paths).with_shared_facts(&shared);
+        let second = BatchIndex::new(&fs, &paths).with_shared_facts(&shared);
+        let target = IndexName::new("t.p");
+        let (a, b) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| first.program(&target));
+            fs.wait_until_entered();
+            let b = scope.spawn(|| second.program(&target));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            fs.open();
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert!(matches!(a, IndexAnswer::Found(_)));
+        assert_eq!(a, b);
+        assert_eq!(fs.inner.reads_of("/src/t.p"), 1);
     }
 }
