@@ -1296,6 +1296,34 @@ pub struct ContextDiagnostics {
     pub dependencies: Vec<PathBuf>,
 }
 
+/// Whether a path is the include that a context question is about. Each
+/// distinct path is resolved once, because `canonical_path` asks the file
+/// system and a root can name one include many times.
+struct IsInclude {
+    target: PathBuf,
+    verdicts: RefCell<HashMap<PathBuf, bool>>,
+}
+
+impl IsInclude {
+    fn new(include: &Path) -> Self {
+        IsInclude {
+            target: crate::session::canonical_path(include),
+            verdicts: RefCell::default(),
+        }
+    }
+
+    fn is(&self, path: &Path) -> bool {
+        if let Some(&verdict) = self.verdicts.borrow().get(path) {
+            return verdict;
+        }
+        let verdict = crate::session::canonical_path(path) == self.target;
+        self.verdicts
+            .borrow_mut()
+            .insert(path.to_path_buf(), verdict);
+        verdict
+    }
+}
+
 /// Analyse `root` with `overlay` (the open buffers, by path) over the configured
 /// file system, and keep the findings that sit in `include`.
 ///
@@ -1310,12 +1338,12 @@ pub fn compute_context_diagnostics(
     overlay: HashMap<PathBuf, Arc<str>>,
 ) -> Option<ContextDiagnostics> {
     salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-        let target = crate::session::canonical_path(include);
+        let target = IsInclude::new(include);
         let analysed = analyse_root(snapshot, schema, root, overlay, |expansion| {
             let included = expansion
                 .dependency_paths()
                 .iter()
-                .any(|path| crate::session::canonical_path(path) == target);
+                .any(|path| target.is(path));
             (!included).then(|| "it no longer includes this file".to_string())
         });
         match analysed {
@@ -1324,17 +1352,13 @@ pub fn compute_context_diagnostics(
                 let inactive_regions = unit
                     .expansion
                     .expanded()
-                    .map(|expanded| {
-                        expanded.inactive_regions_in(|path| {
-                            crate::session::canonical_path(path) == target
-                        })
-                    })
+                    .map(|expanded| expanded.inactive_regions_in(|path| target.is(path)))
                     .unwrap_or_default();
                 let findings: Vec<_> = unit
                     .diagnostics
                     .include_origin
                     .into_iter()
-                    .filter(|finding| crate::session::canonical_path(&finding.path) == target)
+                    .filter(|finding| target.is(&finding.path))
                     .collect();
                 let mut label_files = unit.diagnostics.label_files;
                 if let Some(expanded) = unit.expansion.expanded() {
@@ -2058,10 +2082,14 @@ pub(crate) struct OverlayFs {
 
 impl FileSystem for OverlayFs {
     fn read(&self, path: &Path) -> Result<Arc<str>, std::io::Error> {
-        let text = self
-            .overlay
-            .get(path)
-            .or_else(|| self.overlay.get(&crate::session::canonical_path(path)));
+        // With no open buffer there is nothing to find, so no path to resolve.
+        let text = (!self.overlay.is_empty())
+            .then(|| {
+                self.overlay
+                    .get(path)
+                    .or_else(|| self.overlay.get(&crate::session::canonical_path(path)))
+            })
+            .flatten();
         match text {
             Some(text) => Ok(Arc::clone(text)),
             None => self.inner.read(path),
