@@ -75,6 +75,10 @@ out of date while another rebuilds it waits for that pass and checks again, so
 several requests after one change share one pass, also when they are
 cancelled.
 
+A pass after an edit analyses only the files that changed and the files that
+read them, and an open of a file with its disk text runs no pass
+(`docs/design/workspace-pass.md`).
+
 `includeDeclaration` adds the declarations of the referent. A program has no
 declaration.
 

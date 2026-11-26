@@ -81,7 +81,7 @@ pub use deps::{
     UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
 };
 pub use facts::{ClassFacts, FileFacts};
-pub use producers::{DeferredProducers, SharedProducers, definitions_in};
+pub use producers::{DeferredProducers, FileScan, SharedProducers, definitions_in};
 pub use written::{ReferenceSyntax, WrittenReference, written_imports, written_references};
 
 use std::io;
