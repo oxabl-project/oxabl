@@ -297,6 +297,32 @@ pub(crate) struct WorkspaceSnapshot {
     /// installs a fresh one, which is right: a new pass has a new count to compare
     /// against.
     pub added_files: Arc<Mutex<AddedFileWalk>>,
+    /// The parts of the pass, for the next pass to start from.
+    pub kept: Arc<crate::pass::KeptPass>,
+    /// The content hash of each buffer the pass read through.
+    pub overlay: Arc<crate::pass::OverlayHashes>,
+}
+
+impl WorkspaceSnapshot {
+    /// Whether the pass read every file as the buffers `now` give it.
+    pub(crate) fn reads_same(&self, now: &crate::pass::Overlay) -> bool {
+        self.kept.reads_same(&self.overlay, now)
+    }
+
+    /// This snapshot as the snapshot of the session state `generations` with
+    /// the buffers `overlay`, after [`reads_same`](Self::reads_same) said yes.
+    pub(crate) fn carried_to(
+        &self,
+        generations: SessionGenerations,
+        overlay: &crate::pass::Overlay,
+    ) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            generations,
+            overlay: Arc::new(crate::pass::overlay_hashes(overlay)),
+            superseded: None,
+            ..self.clone()
+        }
+    }
 }
 
 /// The rate limit on the added-file walk, and what the last walk saw.
@@ -316,6 +342,8 @@ pub(crate) struct AddedFileWalk {
     pub last_ran: Option<Instant>,
     /// What that walk counted, or the pass's own count before the first walk.
     pub last_count: usize,
+    /// How many paths that the pass looked for and did not find that walk found.
+    pub last_appeared: u32,
     /// How many walks have run. Read by tests, which is the only way the rate limit
     /// is observable at all — a limit nothing can see is a limit nothing pins.
     pub walks: u64,
@@ -328,6 +356,7 @@ impl AddedFileWalk {
         AddedFileWalk {
             last_ran: None,
             last_count: discovered,
+            last_appeared: 0,
             walks: 0,
         }
     }

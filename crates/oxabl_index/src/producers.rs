@@ -104,9 +104,25 @@ impl SharedProducers {
         includes: &IncludeContext<'_>,
         threads: usize,
     ) -> Self {
+        Self::build_parallel_with(files, includes, threads, &definitions_in)
+    }
+
+    /// [`build_parallel`](Self::build_parallel) with `scan` in place of
+    /// [`definitions_in`], for a caller that keeps what each scan read. `scan`
+    /// must answer as `definitions_in` does.
+    pub fn build_parallel_with(
+        files: &[PathBuf],
+        includes: &IncludeContext<'_>,
+        threads: usize,
+        scan: &FileScan,
+    ) -> Self {
         let threads = threads.clamp(1, files.len().max(1));
         if threads == 1 {
-            return Self::build(files, includes);
+            return Self::from_definitions(
+                files
+                    .iter()
+                    .map(|path| (path.clone(), scan(path, includes))),
+            );
         }
         let next = AtomicUsize::new(0);
         let definitions = std::thread::scope(|scope| {
@@ -116,7 +132,7 @@ impl SharedProducers {
                         .spawn_scoped(scope, || {
                             let mut mine = Vec::new();
                             while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
-                                mine.push((path.clone(), definitions_in(path, includes)));
+                                mine.push((path.clone(), scan(path, includes)));
                             }
                             mine
                         })
@@ -207,11 +223,13 @@ impl SharedProducers {
 ///
 /// `Send + Sync`: build one per run and lend it to each thread's index with
 /// [`BatchIndex::with_deferred_producers`](crate::BatchIndex::with_deferred_producers).
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct DeferredProducers {
     /// The files, in the order the scan claims them.
     files: Vec<PathBuf>,
     threads: usize,
+    /// The scan of one file, when the caller supplied its own.
+    scan: Option<Box<FileScan>>,
     /// `None` when the scan panicked.
     map: OnceLock<Option<SharedProducers>>,
     procedures: ProcedureNames,
@@ -224,8 +242,23 @@ impl DeferredProducers {
         DeferredProducers {
             files: files.to_vec(),
             threads: threads.max(1),
+            scan: None,
             map: OnceLock::new(),
             procedures: ProcedureNames::default(),
+        }
+    }
+
+    /// [`new`](Self::new) with `scan` in place of [`definitions_in`] for each
+    /// file, for a caller that keeps what each scan read. `scan` must answer
+    /// as `definitions_in` does.
+    pub fn with_scan(
+        files: &[PathBuf],
+        threads: usize,
+        scan: impl Fn(&Path, &IncludeContext<'_>) -> Vec<IndexName> + Send + Sync + 'static,
+    ) -> Self {
+        DeferredProducers {
+            scan: Some(Box::new(scan)),
+            ..Self::new(files, threads)
         }
     }
 
@@ -239,7 +272,8 @@ impl DeferredProducers {
         let mut panicked = None;
         let map = self.map.get_or_init(|| {
             let scan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                SharedProducers::build_parallel(&self.files, includes, self.threads)
+                let scan: &FileScan = self.scan.as_deref().unwrap_or(&definitions_in);
+                SharedProducers::build_parallel_with(&self.files, includes, self.threads, scan)
             }));
             scan.map_err(|payload| panicked = Some(payload)).ok()
         });
@@ -261,6 +295,21 @@ impl DeferredProducers {
             .0
             .get_or_init(|| scan_procedures(&self.files, includes, self.threads))
             .contains(name.as_str())
+    }
+}
+
+/// The scan of one file for the `SHARED` names it may produce: the shape of
+/// [`definitions_in`].
+pub type FileScan = dyn Fn(&Path, &IncludeContext<'_>) -> Vec<IndexName> + Send + Sync;
+
+impl std::fmt::Debug for DeferredProducers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeferredProducers")
+            .field("files", &self.files.len())
+            .field("threads", &self.threads)
+            .field("own_scan", &self.scan.is_some())
+            .field("built", &self.built().is_some())
+            .finish()
     }
 }
 

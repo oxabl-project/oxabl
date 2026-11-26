@@ -463,6 +463,7 @@ the work.
 | schema files parsed (`schema_file_parsed`) | `oxabl_common`, feature `test-panics` | `OXABL_TEST_SCHEMA_PARSES` is set | `crates/oxabl/tests/schema_cache.rs` |
 | calls of `parse_program` (`parse_count`) | `oxabl_parser`, feature `test-counters` | `OXABL_TEST_PARSES` is set | `crates/oxabl/tests/check_producer_prefilter.rs`, `check_producer_scan.rs` |
 | expansions of each file of the producer scan | `oxabl_common::test_tally`, feature `test-panics` | `OXABL_TEST_TALLY` is set | `crates/oxabl/tests/check_producer_scan.rs` |
+| files each workspace pass of the daemon analyses | `oxabl_daemon`, through `oxabl_common`'s feature `test-panics` | `OXABL_TEST_PASS_COUNTS` is set | `crates/oxabl/tests/incremental_pass_lsp.rs` |
 
 `check_producer_prefilter.rs` runs `oxabl check` over 3 and 6 roots of one
 shape, with one `SHARED` consumer, and reads the parses of one more root. A
@@ -472,6 +473,44 @@ the text as written parses. The producer scan reads a class or interface
 header from the tokens (`oxabl_index::expansion_scan`). It cannot read more
 from them: an include, a reference or a directive can mend a text that does
 not parse as written, and the scan must then send the file to its expansion.
+
+## The daemon after an edit
+
+`scripts/bench/lsp-edit-pass.py` measures find references through `oxabl lsp`
+on the `erp` workspace: the first request (with the cold workspace pass), a
+second one, the first one after a one-character edit of another open file, and
+one more. For each it prints the wall time, the CPU seconds of the daemon and
+its peak RSS. Give it a short runtime directory of its own: the daemon socket
+is in it.
+
+```sh
+scripts/bench/gen-workspace --preset erp target/ws-erp
+cargo build --release -p oxabl
+python3 -I scripts/bench/lsp-edit-pass.py target/release/oxabl target/ws-erp ~/rt-edit
+```
+
+By default the request asks for the references of the class `cls.pk3.C120`
+(15 places), and the edit adds a character at the end of
+`src/app/m47/p4716.p`, a program that two files run. The fourth argument names
+another file to edit: `src/app/m0/p1.p` is a program that 570 files read
+(through the includes that run it). Release build, 12 threads (`taskset -c
+0-11`), on a machine with a load average of 16 to 25 from other work, so read
+the CPU seconds before the wall times. "Before" is master with the lazy `SHARED`
+producers and the schema cache; "after" is this change:
+
+| Request | Before (a full pass after each edit) | After (`docs/design/workspace-pass.md`) |
+| --- | --- | --- |
+| First request (cold pass) | 8.6 s, 80.2 CPU s, 1,107 MiB | 8.6 s, 77.7 CPU s, 1,011 MiB |
+| Second request, no edit | 0.29 s, 1.24 CPU s | 0.34 s, 1.24 CPU s |
+| First request after an edit of `p4716.p` (the pass analyses 3 files) | 8.2 s, 80.4 CPU s, 1,263 MiB | 1.40 s, 2.5 CPU s, 1,011 MiB |
+| First request after an edit of `p1.p` (the pass analyses 571 files) | 8.9 s, 81.0 CPU s, 1,247 MiB | 2.8 s, 15.5 CPU s, 1,225 MiB |
+
+The cold pass keeps the lazy map of `SHARED` producers: it costs the same as
+the cold pass of master. The pass of the `erp` workspace analyses 10,386 files.
+The parts it keeps for the next pass take about 55 MB (`oxabl-test: workspace
+pass ... kept`, in a test build), as many after an edit as after the cold
+pass. While a pass that analysed files joins its parts, the daemon holds two
+sets of parts, so the peak after the edit of `p1.p` is higher than before.
 
 ## CodSpeed
 

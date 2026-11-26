@@ -149,8 +149,8 @@ pub use position::{
     Position, ResolvedSpan, resolve_diagnostic, resolve_file_span, resolve_offset, resolve_offsets,
 };
 pub use reverse::{
-    Degraded, Dependent, Dependents, ReverseGraph, Subject, Unanalysed, UnnameableEdge,
-    UnresolvedRow, dependency_section,
+    AnalysedPart, Degraded, Dependent, Dependents, FilePart, ReverseGraph, Subject, Unanalysed,
+    UnnameableEdge, UnresolvedRow, dependency_section,
 };
 pub use syntax::{DocumentSyntax, Fold, FoldKind, document_syntax};
 // Re-exported so a consumer of the reverse query need not also depend on

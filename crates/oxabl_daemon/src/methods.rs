@@ -46,11 +46,12 @@ use oxabl_daemon_protocol::{
     SchemaIdentity, Sourced, StalenessCause, Subject, SymbolKind, SymbolRow, SymbolSearchRequest,
     SymbolSearchResponse, method,
 };
-use oxabl_pipeline::{EdgeKind, Expansion, LintPipeline, LintResult, ReverseGraph};
+use oxabl_pipeline::{EdgeKind, Expansion, LintResult, ReverseGraph};
 use oxabl_semantic::{SymbolFlags, SymbolKind as SemanticSymbolKind};
-use oxabl_workspace::{EncodedFileSystem, FileSystem, discover_path_in};
+use oxabl_workspace::{FileSystem, discover_path_in};
 
 use crate::dispatch::{ClientContext, Dispatch, MethodError};
+use crate::pass::{self, OverlayFileSystem};
 use crate::session::{
     AddedFileWalk, FileStamp, SessionGenerations, SessionHost, SupersededPass, WorkspaceProgress,
     WorkspaceSnapshot,
@@ -103,7 +104,7 @@ fn impact(
         return serde_json::to_value(Sourced::<ImpactResponse>::unavailable(reason))
             .map_err(MethodError::internal);
     }
-    let workspace = ensure_workspace(host, &root, false)?;
+    let workspace = ensure_workspace(host, &root, Refresh::IfMoved)?;
     let subject = pipeline_subject(&request.subject);
     let dependents = workspace.graph.dependents(&subject);
 
@@ -194,7 +195,7 @@ fn symbol_search(
 ) -> Result<serde_json::Value, MethodError> {
     let request: SymbolSearchRequest =
         serde_json::from_value(params).map_err(MethodError::invalid_params)?;
-    let workspace = ensure_workspace(host, context.workspace_root()?, false)?;
+    let workspace = ensure_workspace(host, context.workspace_root()?, Refresh::IfMoved)?;
 
     let (symbols, total_matches) =
         select_symbols(&workspace.symbols, &request.query, request.limit as usize);
@@ -226,7 +227,7 @@ pub fn search_symbols_located(
     query: &str,
     limit: usize,
 ) -> Result<LocatedSymbols, MethodError> {
-    let workspace = ensure_workspace(host, root, false)?;
+    let workspace = ensure_workspace(host, root, Refresh::IfMoved)?;
     let (rows, total_matches) = select_symbols(&workspace.symbols, query, limit);
     let fs = OverlayFileSystem {
         overlay: host.with(|sessions| sessions.for_root(root).buffer_overlay()),
@@ -277,7 +278,7 @@ pub fn includer_contexts(
     if let Some(reason) = cross_file_refusal(root) {
         return Ok(Err(reason));
     }
-    let workspace = ensure_workspace(host, root, false)?;
+    let workspace = ensure_workspace(host, root, Refresh::IfMoved)?;
     let include = crate::session::canonical_path(include);
     let dependents = workspace
         .graph
@@ -340,17 +341,17 @@ pub fn reference_graph(
     }
     // A walk for added files is reused for a shorter time than a poll's, so
     // a file added a moment ago is seen without a walk per request.
-    let mut workspace = ensure_workspace(host, root, false)?;
+    let mut workspace = ensure_workspace(host, root, Refresh::IfMoved)?;
     let mut freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
     if matches!(freshness.state, IndexState::Stale { .. }) {
         // One forced pass at a time for a root. A request that waited for
         // another's checks again: that pass can have made the index current.
         let gate = forced_pass_gate(root);
         let _forcing = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        workspace = ensure_workspace(host, root, false)?;
+        workspace = ensure_workspace(host, root, Refresh::IfMoved)?;
         freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
         if matches!(freshness.state, IndexState::Stale { .. }) {
-            workspace = ensure_workspace(host, root, true)?;
+            workspace = ensure_workspace(host, root, Refresh::Again)?;
             freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
         }
     }
@@ -658,7 +659,7 @@ fn reindex(
         return serde_json::to_value(Sourced::<ReindexResponse>::unavailable(reason))
             .map_err(MethodError::internal);
     }
-    let workspace = ensure_workspace(host, &root, true)?;
+    let workspace = ensure_workspace(host, &root, Refresh::Full)?;
     serde_json::to_value(Sourced::Available {
         value: ReindexResponse {
             freshness: workspace_freshness(&workspace),
@@ -700,7 +701,7 @@ fn reindex(
 fn ensure_workspace(
     host: &SessionHost,
     root: &Path,
-    force: bool,
+    refresh: Refresh,
 ) -> Result<WorkspaceSnapshot, MethodError> {
     let mut attempts: u32 = 0;
     let mut parks: u32 = 0;
@@ -710,14 +711,31 @@ fn ensure_workspace(
         let may_park = parks < MAX_WORKSPACE_PASS_ATTEMPTS;
         let prepared = host.with(|sessions| {
             let session = sessions.for_root(root);
-            if !force
+            if refresh == Refresh::IfMoved
                 && let Some(workspace) = session.workspace()
-                && workspace.generations == session.generations()
             {
-                // The snapshot travels out of the critical section that checked it.
-                // Re-reading it afterwards was a second lock acquisition guarded by
-                // an `expect` on a condition the first one had already left behind.
-                return WorkspacePreparation::Ready(workspace);
+                let current = session.generations();
+                if workspace.generations == current {
+                    // The snapshot travels out of the critical section that checked
+                    // it. Re-reading it afterwards was a second lock acquisition
+                    // guarded by an `expect` on a condition the first one had
+                    // already left behind.
+                    return WorkspacePreparation::Ready(workspace);
+                }
+                // Only the buffers moved, and no file the pass read reads
+                // differently in them (an open of a file with its disk text, an
+                // edit of a file no analysis read, an edit undone): the pass is
+                // current.
+                if workspace.generations.config == current.config
+                    && workspace.generations.schema == current.schema
+                {
+                    let overlay = session.buffer_overlay();
+                    if workspace.reads_same(&overlay) {
+                        let carried = workspace.carried_to(current, &overlay);
+                        session.install_workspace(carried.clone(), &WorkspaceProgress::default());
+                        return WorkspacePreparation::Ready(carried);
+                    }
+                }
             }
             if may_park && let Some(running) = session.workspace_progress() {
                 return WorkspacePreparation::Wait(running);
@@ -733,6 +751,7 @@ fn ensure_workspace(
                 session.buffer_overlay(),
                 session.generations(),
                 progress,
+                session.workspace().filter(|_| refresh != Refresh::Full),
             )
         });
 
@@ -747,15 +766,21 @@ fn ensure_workspace(
                 parked = true;
                 parks += 1;
             }
-            WorkspacePreparation::Build(root, overlay, generations, progress) => {
+            WorkspacePreparation::Build(root, overlay, generations, progress, previous) => {
                 attempts += 1;
                 let attempt = PassAttempt {
                     number: attempts,
                     is_final: attempts >= MAX_WORKSPACE_PASS_ATTEMPTS,
                 };
-                if let Some(workspace) =
-                    run_claimed_pass(host, &root, overlay, generations, progress, attempt)?
-                {
+                if let Some(workspace) = run_claimed_pass(
+                    host,
+                    &root,
+                    overlay,
+                    generations,
+                    progress,
+                    attempt,
+                    previous.as_ref(),
+                )? {
                     return Ok(workspace);
                 }
             }
@@ -780,6 +805,19 @@ fn ensure_workspace(
             "the retry parked {parks} times against a cap of {MAX_WORKSPACE_PASS_ATTEMPTS}"
         );
     }
+}
+
+/// When [`ensure_workspace`] runs a pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refresh {
+    /// When the session moved since the stored pass, and only the files that
+    /// changed are analysed again.
+    IfMoved,
+    /// Always, and only the files that changed are analysed again: for files
+    /// that changed on disk.
+    Again,
+    /// Always, and every file is analysed (`oxabl/reindex`).
+    Full,
 }
 
 /// How many passes one request may run before it answers with the pass it has.
@@ -824,13 +862,24 @@ fn run_claimed_pass(
     generations: SessionGenerations,
     progress: WorkspaceProgress,
     attempt: PassAttempt,
+    previous: Option<&WorkspaceSnapshot>,
 ) -> Result<Option<WorkspaceSnapshot>, MethodError> {
-    let outcome = match build_workspace(root, overlay, generations, &progress) {
+    let outcome = match build_workspace_from(root, overlay, generations, &progress, previous) {
         Ok(mut workspace) => {
             progress.complete();
             host.with(|sessions| {
                 let session = sessions.for_root(root);
-                match superseding_cause(session, generations) {
+                let mut cause = superseding_cause(session, generations);
+                // Buffers that moved while the pass ran supersede it only when
+                // the pass read a file differently from them.
+                if matches!(cause, Some(StalenessCause::BuffersMoved)) {
+                    let overlay = session.buffer_overlay();
+                    if workspace.reads_same(&overlay) {
+                        workspace = workspace.carried_to(session.generations(), &overlay);
+                        cause = None;
+                    }
+                }
+                match cause {
                     // Superseded with attempts still to spend: install nothing and
                     // let the caller's loop run another pass.
                     Some(_) if !attempt.is_final => {
@@ -918,12 +967,13 @@ fn run_claimed_workspace_pass(
     root: &Path,
     progress: WorkspaceProgress,
 ) -> Result<Option<WorkspaceSnapshot>, MethodError> {
-    let (owned_root, overlay, generations) = host.with(|sessions| {
+    let (owned_root, overlay, generations, previous) = host.with(|sessions| {
         let session = sessions.for_root(root);
         (
             session.root().to_path_buf(),
             session.buffer_overlay(),
             session.generations(),
+            session.workspace(),
         )
     });
     // Never the final attempt. This pass is started by a freshness poll and
@@ -940,6 +990,7 @@ fn run_claimed_workspace_pass(
             number: 1,
             is_final: false,
         },
+        previous.as_ref(),
     )
 }
 
@@ -960,6 +1011,7 @@ enum WorkspacePreparation {
         HashMap<PathBuf, Arc<str>>,
         SessionGenerations,
         WorkspaceProgress,
+        Option<WorkspaceSnapshot>,
     ),
 }
 
@@ -986,44 +1038,107 @@ fn pass_jobs() -> usize {
     }
 }
 
+#[cfg(test)]
 fn build_workspace(
     root: &Path,
     overlay: HashMap<PathBuf, Arc<str>>,
     generations: SessionGenerations,
     progress: &WorkspaceProgress,
 ) -> Result<WorkspaceSnapshot, MethodError> {
+    build_workspace_from(root, overlay, generations, progress, None)
+}
+
+type PassOutput = (
+    Arc<ReverseGraph>,
+    Arc<Vec<SymbolRow>>,
+    Arc<pass::KeptPass>,
+    usize,
+);
+
+/// The graph, the symbol rows, the kept parts and the count of files analysed.
+/// Incremental from `previous` when the `SHARED` producers allow it.
+fn run_pass(
+    context: &pass::PassContext<'_>,
+    previous: Option<&WorkspaceSnapshot>,
+    files: Vec<PathBuf>,
+    overlay: &HashMap<PathBuf, Arc<str>>,
+    disk: &oxabl_workspace::EncodedFileSystem,
+) -> PassOutput {
+    let refreshed = match previous {
+        Some(previous) => {
+            pass::incremental_pass(context, &previous.kept, files.clone(), overlay, disk)
+        }
+        None => pass::Refreshed::Full,
+    };
+    match (refreshed, previous) {
+        (pass::Refreshed::Same(kept), Some(previous)) => (
+            Arc::clone(&previous.graph),
+            Arc::clone(&previous.symbols),
+            kept,
+            0,
+        ),
+        (pass::Refreshed::Built(built), _) => {
+            (built.graph, built.symbols, built.kept, built.analysed)
+        }
+        _ => {
+            let built = pass::full_pass(context, files);
+            (built.graph, built.symbols, built.kept, built.analysed)
+        }
+    }
+}
+
+/// Test builds only: write how many files a pass analysed.
+fn report_pass_counts(analysed: usize, discovered: usize, kept: &pass::KeptPass) {
+    if oxabl_common::INJECTION_ENABLED && std::env::var_os("OXABL_TEST_PASS_COUNTS").is_some() {
+        use std::io::Write;
+        let _ = writeln!(
+            io::stderr(),
+            "oxabl-test: workspace pass analysed {analysed} of {discovered} files, kept {} bytes",
+            kept.estimated_heap_bytes()
+        );
+    }
+}
+
+/// Run a pass. With `previous`, analyse only the files that changed since it
+/// ran (see [`crate::pass`]); the pass is full when the configuration, the
+/// schema or the `SHARED` producers are not the same.
+fn build_workspace_from(
+    root: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+    generations: SessionGenerations,
+    progress: &WorkspaceProgress,
+    previous: Option<&WorkspaceSnapshot>,
+) -> Result<WorkspaceSnapshot, MethodError> {
     let started = Instant::now();
     let (config, _warnings) =
         oxabl_pipeline::PipelineConfig::resolve(root, &oxabl_pipeline::ConfigOverrides::default());
     let files = discover_path_in(root, &config.root_extensions).map_err(MethodError::internal)?;
-    progress.set_total(files.len());
-    let fs = OverlayFileSystem {
-        overlay,
-        disk: config.file_system(),
+    let discovered_files = files.len();
+    let disk = config.file_system();
+    let fs = pass::pass_file_system(overlay.clone(), config.file_system());
+    let collect = |path: &Path, expansion: &Expansion, result: &LintResult, fs: &dyn FileSystem| {
+        collect_symbols(path, expansion, result, fs)
     };
-    let jobs = pass_jobs();
-    let producers = LintPipeline::new(&config, &fs).deferred_producers(&files, jobs);
-    let (graph, file_rows) = ReverseGraph::build_with(
-        &files,
-        jobs,
-        || LintPipeline::new(&config, &fs).with_deferred_producers(&producers),
-        |path, expansion, result| {
-            let rows = collect_symbols(path, expansion, result, &fs);
-            progress.advance();
-            rows
-        },
-    );
-    let mut symbols = file_symbols(&files);
-    symbols.extend(file_rows.into_iter().flatten());
-    symbols.extend(table_symbols(&config));
-    symbols.sort_by(|left, right| left.id.cmp(&right.id));
-    symbols.dedup_by(|left, right| left.id == right.id);
+    let context = pass::PassContext {
+        config: &config,
+        fs: &fs,
+        jobs: pass_jobs(),
+        collect: &collect,
+        progress,
+    };
+    let previous = previous.filter(|previous| {
+        previous.generations.config == generations.config
+            && previous.generations.schema == generations.schema
+            && previous.kept.same_config(&config)
+    });
+    let (graph, symbols, kept, analysed) = run_pass(&context, previous, files, &overlay, &disk);
+    report_pass_counts(analysed, discovered_files, &kept);
 
     let tracked_files = graph.tracked_files();
     let graph_bytes = graph.estimated_heap_bytes() as u64;
     Ok(WorkspaceSnapshot {
-        graph: Arc::new(graph),
-        symbols: Arc::new(symbols),
+        graph,
+        symbols,
         files: Arc::new(tracked_files.into_iter().map(FileStamp::capture).collect()),
         config: Arc::new(config),
         generations,
@@ -1032,31 +1147,14 @@ fn build_workspace(
         root: root.to_path_buf(),
         // The count discovery produced, captured before the pipeline widened it with
         // include targets from outside the tree.
-        discovered_files: files.len(),
-        added_files: Arc::new(Mutex::new(AddedFileWalk::starting_from(files.len()))),
+        discovered_files,
+        added_files: Arc::new(Mutex::new(AddedFileWalk::starting_from(discovered_files))),
         // Set by whoever installs it, which is the only place that can know
         // whether the session moved while this ran.
         superseded: None,
+        kept,
+        overlay: Arc::new(pass::overlay_hashes(&overlay)),
     })
-}
-
-struct OverlayFileSystem {
-    overlay: HashMap<PathBuf, Arc<str>>,
-    disk: EncodedFileSystem,
-}
-
-impl FileSystem for OverlayFileSystem {
-    fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
-        self.overlay
-            .get(path)
-            .cloned()
-            .map(Ok)
-            .unwrap_or_else(|| self.disk.read(path))
-    }
-
-    fn exists(&self, path: &Path) -> bool {
-        self.overlay.contains_key(path) || self.disk.exists(path)
-    }
 }
 
 fn collect_symbols(
@@ -1111,44 +1209,6 @@ fn collect_symbols(
         });
     }
     rows
-}
-
-fn file_symbols(files: &[PathBuf]) -> Vec<SymbolRow> {
-    files
-        .iter()
-        .map(|path| SymbolRow {
-            id: format!("file:{}", path.display()),
-            name: path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            kind: SymbolKind::File,
-            file: Some(path.to_string_lossy().into_owned()),
-            span: None,
-            subject: Subject::File {
-                path: path.to_string_lossy().into_owned(),
-            },
-        })
-        .collect()
-}
-
-fn table_symbols(config: &oxabl_pipeline::PipelineConfig) -> Vec<SymbolRow> {
-    config
-        .schema
-        .tables()
-        .map(|(_, table)| {
-            let name = table.name.to_string();
-            SymbolRow {
-                id: format!("table:{name}"),
-                name: name.clone(),
-                kind: SymbolKind::Table,
-                file: None,
-                span: None,
-                subject: Subject::Table { name },
-            }
-        })
-        .collect()
 }
 
 fn session_stamps(
@@ -1281,6 +1341,10 @@ fn added_since_pass(workspace: &WorkspaceSnapshot, interval: Duration) -> AddedF
     let counted = match walk.last_ran {
         Some(last) if last.elapsed() < interval => walk.last_count,
         _ => {
+            // A path that the pass looked for and did not find, and that is
+            // there now (an include earlier on the path, a class, a program):
+            // no stamp holds it, and it can change what a file resolves to.
+            walk.last_appeared = workspace.kept.appeared_paths();
             let Ok(files) = discover_path_in(&workspace.root, &workspace.config.root_extensions)
             else {
                 // Left un-timestamped on purpose, so the next poll retries rather
@@ -1295,7 +1359,8 @@ fn added_since_pass(workspace: &WorkspaceSnapshot, interval: Duration) -> AddedF
     };
 
     match counted.abs_diff(workspace.discovered_files) {
-        0 => AddedFiles::None,
+        0 if walk.last_appeared == 0 => AddedFiles::None,
+        0 => AddedFiles::Some(walk.last_appeared),
         difference => AddedFiles::Some(difference.min(u32::MAX as usize) as u32),
     }
 }
@@ -1759,7 +1824,7 @@ mod tests {
             session.install_workspace(stale, &WorkspaceProgress::default());
         });
 
-        let answer = ensure_workspace(&host, root, false).expect("the query answers");
+        let answer = ensure_workspace(&host, root, Refresh::IfMoved).expect("the query answers");
         assert!(
             answer.superseded.is_none(),
             "the stored snapshot was served again under a schema the session had replaced"
@@ -1866,7 +1931,7 @@ mod tests {
         let parked = {
             let (host, root) = (host.clone(), root.clone());
             std::thread::spawn(move || {
-                let _ = sender.send(ensure_workspace(&host, &root, false).map(|_| ()));
+                let _ = sender.send(ensure_workspace(&host, &root, Refresh::IfMoved).map(|_| ()));
             })
         };
 
