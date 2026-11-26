@@ -36,6 +36,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use lsp_server::{Connection, Message};
 
 use crate::dispatch::Dispatch;
+use crate::idle::Activity;
 use crate::registry;
 use crate::root_watch::{self, RootState, RootWatch};
 use crate::server;
@@ -293,6 +294,20 @@ impl Listener {
         // daemon would hold this root's lock and refuse every client of it.
         host.bind_root(&self.workspace_root)?;
         let activity = Arc::clone(host.activity());
+        // The root the host is bound to is the canonical one, so the watch follows
+        // the directory and not a link to it.
+        let root = host.bound_root().unwrap_or(&self.workspace_root);
+        let root_watch = RootWatch::new(root)?;
+        self.listener.set_nonblocking(true)?;
+        let root_gone = Arc::new(AtomicBool::new(false));
+        // Declared before the idle watcher, so a failed spawn of the watcher still
+        // ends the thread.
+        let _root_thread = RootThread::spawn(
+            root_watch,
+            Arc::clone(&activity),
+            self.stopper(),
+            Arc::clone(&root_gone),
+        )?;
         let watcher = match self.idle_timeout {
             Some(timeout) => {
                 let activity = Arc::clone(&activity);
@@ -309,38 +324,19 @@ impl Listener {
             }
             None => None,
         };
-        // The root the host is bound to is the canonical one, so the watch follows
-        // the directory and not a link to it.
-        let root = host.bound_root().unwrap_or(&self.workspace_root);
-        let root_watch = RootWatch::new(root)?;
-        self.listener.set_nonblocking(true)?;
         let mut clients = Vec::new();
         let mut reported_spawn_failure = false;
-        let mut root_gone = false;
-        let mut next_root_check = Instant::now() + root_watch::CHECK_INTERVAL;
         loop {
             if self.stopping.load(Ordering::SeqCst) {
                 break;
             }
-            if Instant::now() >= next_root_check {
-                next_root_check = Instant::now() + root_watch::CHECK_INTERVAL;
-                if let RootState::Gone(reason) = root_watch.check() {
-                    use std::io::Write as _;
-                    let _ = writeln!(
-                        std::io::stderr(),
-                        "oxabl daemon: {reason}, so this daemon exits"
-                    );
-                    root_gone = true;
-                    break;
-                }
-            }
             let stream = match self.listener.accept() {
                 Ok((stream, _)) => stream,
-                // Nothing to accept. The wait ends at the next check of the root, so a
-                // stop is seen even when its throwaway connection cannot reach a socket
-                // file that was removed.
+                // Nothing to accept. The wait ends after one interval, so a stop is seen
+                // even when its throwaway connection cannot reach a socket file that
+                // was removed.
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    wait_for_client(&self.listener, next_root_check);
+                    wait_for_client(&self.listener, Instant::now() + root_watch::CHECK_INTERVAL);
                     continue;
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -412,12 +408,84 @@ impl Listener {
         }
         // Let every client finish in flight rather than cutting responses off. A root
         // that is gone has no client worth waiting for: the process ends them.
-        if !root_gone {
+        if !root_gone.load(Ordering::SeqCst) {
             for client in clients {
                 let _ = client.join();
             }
         }
         Ok(())
+    }
+}
+
+/// The thread that watches the root of a daemon, so that a hung mount blocks it and
+/// not the accept loop. Dropping the guard ends the thread at its next wakeup; a thread
+/// blocked in a file system call is left to finish alone.
+struct RootThread {
+    done: Arc<AtomicBool>,
+    thread: thread::Thread,
+}
+
+impl RootThread {
+    fn spawn(
+        watch: RootWatch,
+        activity: Arc<Activity>,
+        stopper: Stopper,
+        root_gone: Arc<AtomicBool>,
+    ) -> io::Result<RootThread> {
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&done);
+        let handle = thread::Builder::new()
+            .name("oxabl-root-watch".to_string())
+            .spawn(move || {
+                let mut reported_replaced = false;
+                while !flag.load(Ordering::SeqCst) {
+                    thread::park_timeout(root_watch::CHECK_INTERVAL);
+                    if flag.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let reason = match watch.check() {
+                        RootState::Gone(reason) => reason,
+                        // A client is a reason to trust the path less than the open
+                        // directory; with none, a restart costs little.
+                        RootState::Replaced(reason) if activity.clients() == 0 => reason,
+                        RootState::Replaced(reason) => {
+                            if !std::mem::replace(&mut reported_replaced, true) {
+                                use std::io::Write as _;
+                                let _ = writeln!(
+                                    std::io::stderr(),
+                                    "oxabl daemon: {reason}; the daemon keeps running \
+                                     because a client is connected"
+                                );
+                            }
+                            continue;
+                        }
+                        RootState::Present => {
+                            reported_replaced = false;
+                            continue;
+                        }
+                        RootState::Unknown(_) => continue,
+                    };
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "oxabl daemon: {reason}, so this daemon exits"
+                    );
+                    root_gone.store(true, Ordering::SeqCst);
+                    stopper.stop();
+                    break;
+                }
+            })?;
+        Ok(RootThread {
+            done,
+            thread: handle.thread().clone(),
+        })
+    }
+}
+
+impl Drop for RootThread {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::SeqCst);
+        self.thread.unpark();
     }
 }
 
@@ -492,7 +560,7 @@ impl Stopper {
     /// The flag alone is not enough: the accept loop waits for a client, so a
     /// throwaway connection wakes it at once. When that connection cannot reach the
     /// socket (its file was removed with the runtime directory), the loop still sees
-    /// the flag at its next check of the root, within [`root_watch::CHECK_INTERVAL`].
+    /// the flag within [`root_watch::CHECK_INTERVAL`].
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         let _ = UnixStream::connect(&self.socket_path);

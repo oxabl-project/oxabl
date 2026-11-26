@@ -2,7 +2,8 @@
 //! replaced, and when no client has been connected for the idle timeout. A daemon that
 //! serves a connected client never exits for either idle reason, and a client that
 //! comes after an idle exit gets a new daemon. A test that panics also stops its daemon
-//! (the `Session` helper). See the `oxabl daemon` entry of `docs/overview.md`.
+//! (the `Session` helper), and the helper stops only an `oxabl daemon` of the build
+//! under test. See the `oxabl daemon` entry of `docs/overview.md`.
 
 #![cfg(unix)]
 
@@ -74,10 +75,24 @@ fn a_daemon_exits_when_the_root_of_its_session_is_removed() {
         !session.registration_path().exists(),
         "the daemon removed its registration"
     );
+    // The editor sees its server end with an error, and the line says why.
+    let status = session
+        .wait_exit(Duration::from_secs(10))
+        .expect("`oxabl lsp` ends when its daemon ends");
+    assert!(!status.success(), "`oxabl lsp` ended with {status}");
+    assert!(
+        session
+            .stderr()
+            .contains("the daemon exited during the editor session"),
+        "stderr of `oxabl lsp`:\n{}",
+        session.stderr()
+    );
 }
 
+/// A changed device or inode number alone does not end a daemon that serves a client:
+/// some file systems do not keep these numbers. When the client leaves, it ends.
 #[test]
-fn a_daemon_exits_when_the_root_of_its_session_is_replaced() {
+fn a_replaced_root_ends_the_daemon_only_when_its_client_has_left() {
     let parent = tempfile::tempdir().unwrap();
     let root = workspace(parent.path(), "ws");
     let mut session = Session::start(&root);
@@ -88,8 +103,29 @@ fn a_daemon_exits_when_the_root_of_its_session_is_replaced() {
     std::fs::rename(&root, parent.path().join("aside")).unwrap();
     std::fs::rename(&other, &root).unwrap();
     assert!(
+        !exits_within(pid, Duration::from_secs(4)),
+        "the daemon exited with a client connected after only its identity changed"
+    );
+
+    session.end_client();
+    assert!(
         exits_within(pid, Duration::from_secs(10)),
-        "the daemon of a replaced root still runs after 10 s"
+        "the daemon of a replaced root still runs 10 s after its last client left"
+    );
+}
+
+#[test]
+fn a_daemon_exits_when_the_root_of_its_session_moves_away() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = workspace(parent.path(), "ws");
+    let mut session = Session::start(&root);
+    assert_serves(&mut session, &root);
+    let pid = session.daemon_pid().expect("a daemon serves the session");
+
+    std::fs::rename(&root, parent.path().join("aside")).unwrap();
+    assert!(
+        exits_within(pid, Duration::from_secs(10)),
+        "the daemon of a root that moved away still runs after 10 s"
     );
 }
 
@@ -180,6 +216,24 @@ fn an_idle_daemon_exits_after_its_runtime_directory_was_removed() {
     assert!(
         exits_within(pid, Duration::from_secs(20)),
         "the idle daemon without a runtime directory still runs after 20 s"
+    );
+}
+
+/// The helper stops a daemon by a pid from a registration, which can be stale: the
+/// system can give the pid of a daemon that aborted to another process.
+#[test]
+fn the_session_helper_leaves_a_process_that_is_no_daemon_alone() {
+    let mut bystander = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("a bystander process");
+    session::stop_processes(&[bystander.id()]);
+    let alive = is_running(bystander.id());
+    let _ = bystander.kill();
+    let _ = bystander.wait();
+    assert!(
+        alive,
+        "the helper stopped a process that is no oxabl daemon"
     );
 }
 

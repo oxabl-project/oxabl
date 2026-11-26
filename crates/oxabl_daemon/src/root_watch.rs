@@ -1,20 +1,27 @@
 //! Whether the workspace root of a daemon is still the directory it started for.
 //!
-//! A daemon outlives the client that started it. When its root is deleted, or replaced
-//! by another directory, nobody can use it any more, and it must not wait for a client
-//! that never comes. The accept loop calls [`RootWatch::check`] every
-//! [`CHECK_INTERVAL`]. A check is one `stat` call.
+//! A daemon outlives the client that started it. When its root is deleted, nobody can
+//! use it any more, and it must not wait for a client that never comes. The root watch
+//! opens the root at the start and keeps the descriptor. A [`RootWatch::check`] is one
+//! `fstat` call and one `stat` call.
 //!
-//! Only a proof ends the daemon: the root is missing, is no directory, or has another
-//! device and inode number. Any other error (a permission, a slow mount) is
-//! [`RootState::Unknown`], and the daemon keeps serving.
+//! Only a proof ends a daemon that has a client: the open directory has no link any
+//! more, or the path is missing or is no directory. A path that now names another
+//! device or inode number is [`RootState::Replaced`]. Some file systems (SMB without
+//! server inode numbers, an overlay without `xino`, an NFS automount) do not keep these
+//! numbers, so the daemon ends on this alone only when it has no client. Any other
+//! error (a permission, a slow mount) is [`RootState::Unknown`], and the daemon keeps
+//! serving.
 
 use std::io;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// How often the accept loop looks at the root.
+use rustix::fs::{Mode, OFlags};
+
+/// How often the root watch thread looks at the root.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// What a check of the root found.
@@ -22,46 +29,61 @@ pub const CHECK_INTERVAL: Duration = Duration::from_secs(1);
 pub enum RootState {
     /// The same directory as at the start.
     Present,
-    /// The root is not the directory the daemon started for.
+    /// The root is deleted, or its path is missing or names no directory.
     Gone(String),
+    /// The path names a directory with another device or inode number.
+    Replaced(String),
     /// The check failed for a reason that does not prove anything.
     Unknown(String),
 }
 
-/// The identity of a workspace root at the start of its daemon.
+/// The workspace root of a daemon, held open since its start.
 #[derive(Debug)]
 pub struct RootWatch {
     path: PathBuf,
+    root: OwnedFd,
     device: u64,
     inode: u64,
 }
 
 impl RootWatch {
-    /// Record the identity of the directory `path`.
+    /// Open the directory `path` and record its identity.
     pub fn new(path: &Path) -> io::Result<RootWatch> {
-        let metadata = std::fs::metadata(path)?;
-        if !metadata.is_dir() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotADirectory,
-                format!("{} is not a directory", path.display()),
-            ));
-        }
+        let root = rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let stat = rustix::fs::fstat(&root)?;
         Ok(RootWatch {
             path: path.to_path_buf(),
-            device: metadata.dev(),
-            inode: metadata.ino(),
+            root,
+            device: stat.st_dev as u64,
+            inode: stat.st_ino as u64,
         })
     }
 
-    /// Whether the root is still the directory that [`RootWatch::new`] recorded.
+    /// Whether the root is still the directory that [`RootWatch::new`] opened.
     pub fn check(&self) -> RootState {
+        match rustix::fs::fstat(&self.root) {
+            Ok(stat) if stat.st_nlink == 0 => {
+                return RootState::Gone(format!("{} was removed", self.path.display()));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return RootState::Unknown(format!(
+                    "{} could not be checked: {error}",
+                    self.path.display()
+                ));
+            }
+        }
         match std::fs::metadata(&self.path) {
             Ok(metadata) if !metadata.is_dir() => RootState::Gone(format!(
                 "{} is not a directory any more",
                 self.path.display()
             )),
             Ok(metadata) if metadata.dev() != self.device || metadata.ino() != self.inode => {
-                RootState::Gone(format!("{} was replaced", self.path.display()))
+                RootState::Replaced(format!("{} was replaced", self.path.display()))
             }
             Ok(_) => RootState::Present,
             Err(error)

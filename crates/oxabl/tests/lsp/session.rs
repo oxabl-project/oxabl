@@ -363,9 +363,34 @@ impl Drop for Session {
     }
 }
 
-/// Stop each process with SIGTERM, and with SIGKILL when it is still there after
-/// 5 s.
+/// Whether `pid` is an `oxabl daemon` of this build. A registration can outlive its
+/// daemon, and the system can give its pid to another process.
+fn is_oxabl_daemon(pid: u32) -> bool {
+    let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) else {
+        return false;
+    };
+    let Ok(bin) = std::fs::canonicalize(OXABL_BIN) else {
+        return false;
+    };
+    let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    exe == bin
+        && cmdline
+            .split(|&byte| byte == 0)
+            .nth(1)
+            .is_some_and(|arg| arg == b"daemon")
+}
+
+/// Stop each `oxabl daemon` of this build among `pids` with SIGTERM, and with SIGKILL
+/// when it is still there after 5 s. Any other process is left alone.
 pub fn stop_processes(pids: &[u32]) {
+    let pids: Vec<u32> = pids
+        .iter()
+        .copied()
+        .filter(|&pid| is_oxabl_daemon(pid))
+        .collect();
+    let pids = pids.as_slice();
     for &pid in pids {
         signal(pid, 15);
     }

@@ -123,6 +123,11 @@ impl Activity {
         })
     }
 
+    /// How many clients are connected now.
+    pub fn clients(&self) -> usize {
+        self.lock().clients
+    }
+
     /// Count background work that must finish before the daemon may exit, such as a
     /// workspace pass that outlives the request that started it.
     pub fn work(self: &Arc<Self>) -> Busy {
