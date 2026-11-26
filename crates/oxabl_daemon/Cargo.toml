@@ -71,3 +71,7 @@ harness = false
 [[bench]]
 name = "daemon_features_bench"
 harness = false
+
+[[bench]]
+name = "edit_pass_bench"
+harness = false
