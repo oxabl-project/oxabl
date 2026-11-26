@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use oxabl_common::FileId;
-use oxabl_schema::{SchemaLoader, parse_df};
+use oxabl_schema::{SchemaCache, SchemaLoader, SchemaSource, parse_df};
 use oxabl_workspace::InMemoryFileSystem;
 
 const SP2K: &str = include_str!("../fixtures/sp2k.df");
@@ -22,6 +24,43 @@ fn load_sp2k(c: &mut Criterion) {
             let mut fs = InMemoryFileSystem::new();
             fs.insert(PathBuf::from("/sp2k.df"), SP2K.to_string());
             let (schema, diags) = SchemaLoader::load_files(&[PathBuf::from("/sp2k.df")], &fs);
+            black_box(schema);
+            black_box(diags);
+        });
+    });
+}
+
+/// Keeps entries in memory, under one key for every load.
+#[derive(Default)]
+struct Memory(Mutex<HashMap<String, Vec<u8>>>);
+
+impl SchemaCache for Memory {
+    fn key(&self, _: &[SchemaSource<'_>]) -> String {
+        String::new()
+    }
+
+    fn fetch(&self, key: &str) -> Option<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned()
+    }
+
+    fn store(&self, key: &str, entry: &[u8]) {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), entry.to_vec());
+    }
+}
+
+/// A load that the cache already holds: the decode of the entry.
+fn load_sp2k_cached(c: &mut Criterion) {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from("/sp2k.df"), SP2K.to_string());
+    let paths = [PathBuf::from("/sp2k.df")];
+    let cache = Memory::default();
+    SchemaLoader::load_files_cached(&paths, &fs, Some(&cache));
+    c.bench_function("load_files_cached:sp2k", |b| {
+        b.iter(|| {
+            let (schema, diags) = SchemaLoader::load_files_cached(&paths, &fs, Some(&cache));
             black_box(schema);
             black_box(diags);
         });
@@ -57,5 +96,11 @@ fn load_large_merged(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, parse_sp2k, load_sp2k, load_large_merged);
+criterion_group!(
+    benches,
+    parse_sp2k,
+    load_sp2k,
+    load_sp2k_cached,
+    load_large_merged
+);
 criterion_main!(benches);
