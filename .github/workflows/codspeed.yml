@@ -1,11 +1,17 @@
 name: CodSpeed
 
+# The benchmarks run on pushes to master, which are the baseline, and on request. A pull
+# request does not run them: a regression shows on the master run after the merge.
 on:
   push:
     branches:
       - "master"
-  pull_request:
   workflow_dispatch:
+
+# One run for each commit, and no run is cancelled: a master run is the baseline of the next.
+concurrency:
+  group: codspeed-${{ github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read

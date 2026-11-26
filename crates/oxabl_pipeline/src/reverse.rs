@@ -43,6 +43,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use oxabl_analyze::{
@@ -270,18 +271,136 @@ impl NameShape {
 /// One file's contribution to the graph, every edge target already named.
 ///
 /// Named where the file was analysed, because an index file id means something
-/// only to the index that minted it.
-struct FilePart {
+/// only to the index that minted it. A client that keeps the parts of a pass
+/// can analyse only the files that changed and join the rest again
+/// ([`ReverseGraph::analyse_parts`], [`ReverseGraph::from_parts`]).
+#[derive(Debug, Clone)]
+pub struct FilePart {
     file: PathBuf,
     outcome: Result<NamedEdges, String>,
 }
 
+impl FilePart {
+    /// The analysed file, normalised.
+    pub fn file(&self) -> &Path {
+        &self.file
+    }
+
+    /// Estimated heap bytes owned by this part. A subject that several
+    /// parts share is counted in none of them.
+    pub fn estimated_heap_bytes(&self) -> usize {
+        self.file.as_os_str().len()
+            + match &self.outcome {
+                Err(reason) => reason.capacity(),
+                Ok(named) => {
+                    named.rows.capacity() * std::mem::size_of::<EdgeRow>()
+                        + named
+                            .unnameable
+                            .iter()
+                            .map(|(_, key)| {
+                                std::mem::size_of::<(EdgeKind, String)>() + key.capacity()
+                            })
+                            .sum::<usize>()
+                        + named
+                            .unresolved
+                            .iter()
+                            .map(|row| std::mem::size_of_val(row) + row.name.capacity())
+                            .sum::<usize>()
+                        + named.degraded.as_ref().map_or(0, |reasons| {
+                            reasons.capacity() * std::mem::size_of::<DegradedReason>()
+                        })
+                }
+            }
+    }
+}
+
+/// What [`ReverseGraph::analyse_parts`] gives for one file: its part, what the
+/// inspection returned, and what the analysis observed through a file system
+/// that observes (`None` through any other).
+pub struct AnalysedPart<T> {
+    pub part: FilePart,
+    pub inspected: Option<T>,
+    pub observations: Option<std::sync::Arc<oxabl_workspace::Observations>>,
+}
+
+/// One row of a part: a subject, the kind of edge, and the span the graph
+/// keeps for the pair.
+type EdgeRow = (Arc<Subject>, EdgeKind, Option<Span>);
+
+/// A file's edge set in the form the graph keeps of it.
+#[derive(Debug, Clone)]
 struct NamedEdges {
-    edges: DependencyEdges,
-    /// One per edge, in order. `None` for an edge whose target cannot be named.
-    subjects: Vec<Option<Subject>>,
+    /// One row for each subject and kind: of the edges of the pair, the one
+    /// the graph keeps (the first with the lowest span start, as
+    /// [`ReverseGraph::sort`] keeps it).
+    rows: Vec<EdgeRow>,
+    /// How many edges named a subject, before the rows were merged.
+    named: usize,
+    /// The edges whose target cannot be named: kind and target key.
+    unnameable: Vec<(EdgeKind, String)>,
+    unresolved: Vec<UnresolvedReference>,
+    /// The reasons the edge set is incomplete; `None` when it is complete.
+    degraded: Option<Vec<DegradedReason>>,
     /// The calls of the file that no static search follows.
     dynamic: DynamicCalls,
+}
+
+impl NamedEdges {
+    fn new(
+        edges: DependencyEdges,
+        dynamic: DynamicCalls,
+        subject_of: impl Fn(&EdgeTarget) -> Option<Arc<Subject>>,
+    ) -> Self {
+        let mut rows: Vec<EdgeRow> = Vec::new();
+        let mut at: HashMap<(*const Subject, EdgeKind), usize> = HashMap::new();
+        let mut named = 0;
+        let mut unnameable = Vec::new();
+        for edge in edges.edges() {
+            let Some(subject) = subject_of(&edge.target) else {
+                unnameable.push((edge.kind, edge.target.key().to_string()));
+                continue;
+            };
+            named += 1;
+            let start = |span: Option<Span>| span.map(|s| s.start);
+            match at.entry((Arc::as_ptr(&subject), edge.kind)) {
+                std::collections::hash_map::Entry::Occupied(row) => {
+                    let kept = &mut rows[*row.get()];
+                    if start(edge.span) < start(kept.2) {
+                        kept.2 = edge.span;
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(row) => {
+                    row.insert(rows.len());
+                    rows.push((subject, edge.kind, edge.span));
+                }
+            }
+        }
+        rows.shrink_to_fit();
+        let degraded =
+            (!edges.completeness().is_complete()).then(|| edges.completeness().reasons().to_vec());
+        NamedEdges {
+            rows,
+            named,
+            unnameable,
+            unresolved: edges.unresolved().to_vec(),
+            degraded,
+            dynamic,
+        }
+    }
+}
+
+/// One copy of each subject for the parts that one thread analyses.
+#[derive(Default)]
+struct Subjects(HashMap<Subject, Arc<Subject>>);
+
+impl Subjects {
+    fn intern(&mut self, subject: Subject) -> Arc<Subject> {
+        Arc::clone(
+            self.0
+                .entry(subject)
+                .or_insert_with_key(|subject| Arc::new(subject.clone())),
+        )
+    }
 }
 
 /// The whole workspace's edges, inverted.
@@ -397,9 +516,10 @@ impl ReverseGraph {
     /// be asked about a subset.
     pub fn build(pipeline: &LintPipeline<'_>, files: &[PathBuf]) -> Self {
         let mut graph = Self::empty(pipeline, files);
+        let mut subjects = Subjects::default();
         for path in files {
-            let (part, _) = Self::analyse(pipeline, path, &|_, _, _| ());
-            graph.absorb(part);
+            let (part, _) = Self::analyse(pipeline, path, &|_, _, _| (), &mut subjects);
+            graph.absorb(&part);
         }
         graph.sort();
         graph
@@ -424,34 +544,68 @@ impl ReverseGraph {
         run: impl Fn() -> LintPipeline<'a> + Sync,
         inspect: impl Fn(&Path, &crate::Expansion, &crate::LintResult) -> T + Sync,
     ) -> (Self, Vec<T>) {
-        let jobs = jobs.clamp(1, files.len().max(1));
+        let analysed = Self::analyse_parts(files, jobs, &run, inspect);
+        let mut graph = Self::empty(&run(), files);
         let mut inspected = Vec::new();
+        for analysed in analysed {
+            graph.absorb(&analysed.part);
+            inspected.extend(analysed.inspected);
+        }
+        graph.sort();
+        (graph, inspected)
+    }
+
+    /// Analyse each of `files` on `jobs` threads, as
+    /// [`build_with`](Self::build_with) does, and give each file's part
+    /// without joining them. The parts come back in `files` order.
+    ///
+    /// Each analysis runs under [`FileSystem::observe`](oxabl_workspace::FileSystem::observe)
+    /// of the run's file system, so a client that reads through an
+    /// [`ObservingFileSystem`](oxabl_workspace::ObservingFileSystem) learns which
+    /// files each part depends on: the file itself, its include files, and the
+    /// class and program files whose facts it took from the index.
+    pub fn analyse_parts<'a, T: Send>(
+        files: &[PathBuf],
+        jobs: usize,
+        run: impl Fn() -> LintPipeline<'a> + Sync,
+        inspect: impl Fn(&Path, &crate::Expansion, &crate::LintResult) -> T + Sync,
+    ) -> Vec<AnalysedPart<T>> {
+        let jobs = jobs.clamp(1, files.len().max(1));
+        let observed = |pipeline: &LintPipeline<'_>, path: &Path, subjects: &mut Subjects| {
+            let mut analysed = None;
+            let observations = pipeline.file_system().observe(&mut || {
+                analysed = Some(Self::analyse(pipeline, path, &inspect, subjects))
+            });
+            let (part, inspected) = analysed.expect("observe runs the analysis exactly once");
+            AnalysedPart {
+                part,
+                inspected,
+                observations,
+            }
+        };
         if jobs == 1 {
             let pipeline = run();
-            let mut graph = Self::empty(&pipeline, files);
-            for path in files {
-                let (part, output) = Self::analyse(&pipeline, path, &inspect);
-                graph.absorb(part);
-                inspected.extend(output);
-            }
-            graph.sort();
-            return (graph, inspected);
+            let mut subjects = Subjects::default();
+            return files
+                .iter()
+                .map(|path| observed(&pipeline, path, &mut subjects))
+                .collect();
         }
 
         let next = AtomicUsize::new(0);
-        let mut parts: Vec<(usize, FilePart, Option<T>)> = std::thread::scope(|scope| {
+        let mut parts: Vec<(usize, AnalysedPart<T>)> = std::thread::scope(|scope| {
             let workers: Vec<_> = (0..jobs)
                 .map(|_| {
-                    let (next, run, inspect) = (&next, &run, &inspect);
+                    let (next, run, observed) = (&next, &run, &observed);
                     oxabl_common::stack::builder()
                         .spawn_scoped(scope, move || {
                             let pipeline = run();
+                            let mut subjects = Subjects::default();
                             let mut mine = Vec::new();
                             loop {
                                 let i = next.fetch_add(1, Ordering::Relaxed);
                                 let Some(path) = files.get(i) else { break };
-                                let (part, output) = Self::analyse(&pipeline, path, inspect);
-                                mine.push((i, part, output));
+                                mine.push((i, observed(&pipeline, path, &mut subjects)));
                             }
                             mine
                         })
@@ -466,15 +620,25 @@ impl ReverseGraph {
                 })
                 .collect()
         });
-        // Absorbed in `files` order, as the serial pass absorbs them.
-        parts.sort_unstable_by_key(|(i, _, _)| *i);
-        let mut graph = Self::empty(&run(), files);
-        for (_, part, output) in parts {
+        // In `files` order, as the serial pass absorbs them.
+        parts.sort_unstable_by_key(|(i, _)| *i);
+        parts.into_iter().map(|(_, part)| part).collect()
+    }
+
+    /// Join the parts of a pass over `files` into a graph. The graph is the one
+    /// [`build_with`](Self::build_with) gives when `parts` are the parts of
+    /// `files`, in `files` order. `pipeline` gives the include roots.
+    pub fn from_parts<'p>(
+        pipeline: &LintPipeline<'_>,
+        files: &[PathBuf],
+        parts: impl IntoIterator<Item = &'p FilePart>,
+    ) -> Self {
+        let mut graph = Self::empty(pipeline, files);
+        for part in parts {
             graph.absorb(part);
-            inspected.extend(output);
         }
         graph.sort();
-        (graph, inspected)
+        graph
     }
 
     /// A graph over `files` with nothing absorbed yet.
@@ -503,6 +667,7 @@ impl ReverseGraph {
         pipeline: &LintPipeline<'_>,
         path: &Path,
         inspect: &impl Fn(&Path, &crate::Expansion, &crate::LintResult) -> T,
+        subjects: &mut Subjects,
     ) -> (FilePart, Option<T>) {
         let file = normalize_lexically(path);
         let source = match pipeline.file_system().read(path) {
@@ -519,66 +684,65 @@ impl ReverseGraph {
             .edge_set_with_calls(&source, |expansion, result| {
                 inspected = Some(inspect(&file, expansion, result));
             })
-            .map(|(edges, dynamic)| NamedEdges {
-                subjects: edges
-                    .edges()
-                    .iter()
-                    .map(|edge| Self::subject_of(&edge.target, pipeline))
-                    .collect(),
-                edges,
-                dynamic,
+            .map(|(edges, dynamic)| {
+                let subjects = std::cell::RefCell::new(subjects);
+                NamedEdges::new(edges, dynamic, |target| {
+                    Self::subject_of(target, pipeline)
+                        .map(|subject| subjects.borrow_mut().intern(subject))
+                })
             });
         (FilePart { file, outcome }, inspected)
     }
 
     /// Invert one file's named edge set into the graph.
-    fn absorb(&mut self, part: FilePart) {
+    fn absorb(&mut self, part: &FilePart) {
         let FilePart { file, outcome } = part;
-        let NamedEdges {
-            edges,
-            subjects,
-            dynamic,
-        } = match outcome {
+        let named = match outcome {
             Ok(named) => named,
             Err(reason) => {
-                self.unanalysed.push(Unanalysed { file, reason });
+                self.unanalysed.push(Unanalysed {
+                    file: file.clone(),
+                    reason: reason.clone(),
+                });
                 return;
             }
         };
-        let dependent = file.as_path();
-        self.dynamic.absorb(&dynamic);
-        if !edges.completeness().is_complete() {
+        self.dynamic.absorb(&named.dynamic);
+        if let Some(reasons) = &named.degraded {
             self.degraded.push(Degraded {
-                file: dependent.to_path_buf(),
-                reasons: edges.completeness().reasons().to_vec(),
+                file: file.clone(),
+                reasons: reasons.clone(),
             });
         }
-        for (edge, subject) in edges.edges().iter().zip(subjects) {
-            let Some(subject) = subject else {
-                // Recorded, not dropped. The pass promises never to present a
-                // failure as "depends on nothing", and an edge that vanished here
-                // would do exactly that while moving no number a reader could see.
-                self.unnameable.push(UnnameableEdge {
-                    file: dependent.to_path_buf(),
-                    kind: edge.kind,
-                    target: edge.target.key().to_string(),
+        // An edge whose target cannot be named is recorded, not dropped. The
+        // pass promises never to present a failure as "depends on nothing",
+        // and an edge that vanished here would do exactly that while moving no
+        // number a reader could see.
+        for (kind, target) in &named.unnameable {
+            self.unnameable.push(UnnameableEdge {
+                file: file.clone(),
+                kind: *kind,
+                target: target.clone(),
+            });
+        }
+        self.edge_count += named.named;
+        for (subject, kind, span) in &named.rows {
+            self.dependents
+                .entry(Subject::clone(subject))
+                .or_default()
+                .push(Dependent {
+                    file: file.clone(),
+                    kind: *kind,
+                    span: *span,
                 });
-                continue;
-            };
-            self.edge_count += 1;
-            self.dependents.entry(subject).or_default().push(Dependent {
-                file: dependent.to_path_buf(),
-                kind: edge.kind,
-                span: edge.span,
-            });
         }
-        for reference in edges.unresolved() {
+        for reference in &named.unresolved {
             self.unresolved_count += 1;
             self.unresolved_by_name
                 .entry(reference.name.to_ascii_lowercase())
                 .or_default()
                 .push(UnresolvedRow {
-                    file: dependent.to_path_buf(),
+                    file: file.clone(),
                     reference: reference.clone(),
                 });
         }
