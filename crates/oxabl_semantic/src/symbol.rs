@@ -385,6 +385,11 @@ pub struct Symbol {
     pub table_id: Option<oxabl_schema::TableId>,
 }
 
+// Lock the size of a symbol deliberately: a file has one for each declaration.
+// Gated to 64-bit; bump the bound deliberately.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Symbol>() <= 64);
+
 impl Symbol {
     /// A symbol the resolve pass synthesizes for something **this file does not
     /// declare** — a schema table's field or default buffer, a workspace class,

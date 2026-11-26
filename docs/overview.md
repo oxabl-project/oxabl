@@ -568,6 +568,8 @@ Benchmarks are run with `cargo bench -p <crate>`. Each crate has its own benchma
 
 `cargo bench -p oxabl_pipeline --bench tx_rules_bench` runs one set of synthetic programs with each of TX001 to TX004 on, and with none on. TX004 builds the workspace effect summaries of its callees, so its case includes them. A TX004 that costs much more than TX001 to TX003 shows as a gap between the cases.
 
+`docs/performance.md` is the performance guide. It describes the end-to-end and memory benches of `crates/oxabl_bench` (`check/*`, `format/file_end_to_end`, `navigation/*`, `workspace_symbols/query`, `daemon_cycle/features_on_one_revision`, `lexer/large_mixed/*`, `parser/large_mixed/*`, `semantic/large/*`), the allocation budgets and type size guards, the generated workspace (`scripts/bench/gen-workspace`), the command line script `scripts/bench/cli.sh` (GNU `time`, heaptrack, callgrind), and how to read CodSpeed.
+
 These are not sanitized benchmarks — they were run on real hardware with normal background processes, similar to how a developer would actually use the tools. The CI benchmarks are run by CodSpeed.
 
 ### Intel i7-8550U Laptop

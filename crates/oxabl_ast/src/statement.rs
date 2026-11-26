@@ -16,9 +16,8 @@ pub struct PreprocIf<T> {
 }
 
 // Guard against accidental growth of the AST's central enum. `StatementKind`'s
-// size is dominated by its largest variant (`Class`/`Method`/`DefineDataset`).
-// Adding the `span` field to the `Expression` wrapper (which several variants
-// embed inline, e.g. `Assignment`/`Do`) grew this from 656 to 720. Gated to
+// size is set by its largest variants, `BufferCopy` (713 bytes) and `Assign`
+// (656 bytes), which embed several `Expression`s inline. Gated to
 // 64-bit; bump the bound deliberately if a variant legitimately grows.
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<StatementKind>() <= 720);

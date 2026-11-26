@@ -3,7 +3,7 @@ use oxabl_common::FileId;
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::Preprocessor;
-use oxabl_workspace::{FileSystem, RealFileSystem};
+use oxabl_workspace::{FileSystem, InMemoryFileSystem, RealFileSystem};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -31,14 +31,54 @@ fn bench_pipeline_with_includes(
     name: &str,
     fixture: &str,
 ) {
+    bench_pipeline_on(group, name, fixture, &RealFileSystem, resources_dir());
+}
+
+/// [`bench_pipeline_with_includes`] with the includes in memory: the CPU cost
+/// alone, with no system call, which the Simulation instrument does not count.
+fn bench_pipeline_with_includes_in_memory(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    name: &str,
+    fixture: &str,
+) {
+    let dir = PathBuf::from("/bench/resources");
+    let mut fs = InMemoryFileSystem::new();
+    for entry in fs::read_dir(resources_dir()).unwrap() {
+        let file = entry.unwrap().file_name().to_string_lossy().into_owned();
+        if file.starts_with("bench_preprocessor_") {
+            fs.insert(dir.join(&file), load_fixture(&file));
+        }
+    }
+    // The same expansion as from disk, so the two benches measure one input.
     let source = load_fixture(fixture);
-    let fs = RealFileSystem;
-    let include_paths = vec![resources_dir()];
+    let expand = |fs: &dyn FileSystem, dir: PathBuf| {
+        let paths = vec![dir];
+        Preprocessor::new(fs, &paths)
+            .process(FileId::new(1), &source)
+            .unwrap()
+            .to_text()
+    };
+    assert_eq!(
+        expand(&fs, dir.clone()),
+        expand(&RealFileSystem, resources_dir())
+    );
+    bench_pipeline_on(group, name, fixture, &fs, dir);
+}
+
+fn bench_pipeline_on(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    name: &str,
+    fixture: &str,
+    fs: &dyn FileSystem,
+    include_dir: PathBuf,
+) {
+    let source = load_fixture(fixture);
+    let include_paths = vec![include_dir];
 
     group.throughput(Throughput::Bytes(source.len() as u64));
     group.bench_function(name, |b| {
         b.iter(|| {
-            let pp = Preprocessor::new(&fs as &dyn FileSystem, &include_paths);
+            let pp = Preprocessor::new(fs, &include_paths);
             let preprocessed = pp.process(FileId::new(1), black_box(&source)).unwrap();
             let expanded = preprocessed.to_text();
             let tokens = tokenize(&expanded);
@@ -74,6 +114,14 @@ fn parser_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "control_flow", "bench_parser_control_flow.abl");
     bench_fixture(&mut group, "oo_abl", "bench_parser_oo_abl.abl");
     bench_fixture(&mut group, "temp_tables", "bench_parser_temp_tables.abl");
+    // `temp_tables` names a field `status`, a reserved keyword, so it measures
+    // the error recovery. Its input stays for the history of the bench; this
+    // copy names the field `order-status` and parses with no error.
+    bench_fixture(
+        &mut group,
+        "temp_tables_v2",
+        "bench_parser_temp_tables_v2.abl",
+    );
     bench_fixture(&mut group, "procs_funcs", "bench_parser_procs_funcs.abl");
     bench_fixture(&mut group, "datasets", "bench_parser_datasets.abl");
     bench_fixture(
@@ -108,6 +156,11 @@ fn parser_benchmarks(c: &mut Criterion) {
     bench_pipeline_with_includes(
         &mut group,
         "pipeline_with_includes",
+        "bench_preprocessor_pipeline.abl",
+    );
+    bench_pipeline_with_includes_in_memory(
+        &mut group,
+        "pipeline_with_includes_in_memory",
         "bench_preprocessor_pipeline.abl",
     );
 

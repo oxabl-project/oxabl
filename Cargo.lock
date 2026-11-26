@@ -2618,6 +2618,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxabl_bench"
+version = "0.1.0"
+dependencies = [
+ "codspeed-criterion-compat",
+ "oxabl_analyze",
+ "oxabl_common",
+ "oxabl_index",
+ "oxabl_lexer",
+ "oxabl_parser",
+ "oxabl_pipeline",
+ "oxabl_schema",
+ "oxabl_semantic",
+ "oxabl_workspace",
+]
+
+[[package]]
 name = "oxabl_build"
 version = "0.9.1"
 dependencies = [
@@ -2684,6 +2700,7 @@ dependencies = [
  "lsp-server",
  "oxabl_analyze",
  "oxabl_ast",
+ "oxabl_bench",
  "oxabl_common",
  "oxabl_daemon_protocol",
  "oxabl_index",

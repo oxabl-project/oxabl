@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Write a deterministic synthetic ABL workspace (crates/oxabl_bench/src/generate.rs).
+#
+# Usage: scripts/bench/gen-workspace [--preset ci|medium|erp] [--seed N]
+#                                    [--programs N] [--classes N]
+#                                    [--include-findings N] [--stats] <dir>
+#
+# --stats alone prints the shape and writes nothing.
+set -euo pipefail
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+exec cargo run --quiet --release --manifest-path "$repo/Cargo.toml" -p oxabl_bench --bin gen-workspace -- "$@"
