@@ -27,6 +27,7 @@ impl SourceMap {
     /// How many maps this process built, or `None` without the test-only
     /// `test-panics` feature, so a test can see that a report builds one map
     /// for each text and not one for each finding.
+    #[doc(hidden)]
     pub fn built() -> Option<usize> {
         #[cfg(feature = "test-panics")]
         return Some(BUILT.load(std::sync::atomic::Ordering::Relaxed));

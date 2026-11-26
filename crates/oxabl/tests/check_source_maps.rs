@@ -174,3 +174,111 @@ fn parse_errors_in_an_include_build_its_table_once() {
         "40 parse errors built {many} line tables, 2 built {few}"
     );
 }
+
+/// A directory walk where `src/inc.i` has `count` findings of a context-free
+/// rule and `src/main.p` includes it, so each finding lists its includers.
+fn includers_counts(few: usize, many: usize, args: &[&str]) -> [(String, usize); 2] {
+    [few, many].map(|count| {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("oxabl.toml"),
+            "[workspace]\nname = \"p\"\n[workspace.sources]\ninclude_paths = [\".\", \"src\"]\n\
+             [workspace.lint]\nenable = [\"strict\"]\n",
+        )
+        .unwrap();
+        fs::create_dir(tmp.path().join("src")).unwrap();
+        let mut inc = String::from("DEFINE NEW SHARED VARIABLE shared-c AS CHARACTER NO-UNDO.\n");
+        for _ in 0..count {
+            inc.push_str("RUN VALUE(shared-c).\n");
+        }
+        fs::write(tmp.path().join("src/inc.i"), inc).unwrap();
+        fs::write(tmp.path().join("src/main.p"), "{inc.i}\n").unwrap();
+        check(tmp.path(), &[args, &["src"]].concat())
+    })
+}
+
+#[test]
+fn json_report_of_an_include_with_includers_builds_its_tables_once() {
+    let [(few_out, few), (many_out, many)] = includers_counts(5, 300, &["--json"]);
+    let found = |out: &str| {
+        json(out)["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["code"] == "CL001" && d["includers"]["count"] == 1)
+            .count()
+    };
+    assert_eq!((found(&few_out), found(&many_out)), (5, 300));
+    assert_eq!(
+        few, many,
+        "300 findings with includers built {many} line tables, 5 built {few}"
+    );
+}
+
+#[test]
+fn text_report_of_an_include_with_includers_builds_its_tables_once() {
+    let [(few_out, few), (many_out, many)] = includers_counts(5, 300, &[]);
+    assert_eq!(few_out.matches("note: included by 1 file").count(), 5 + 1);
+    // One more note for the `CL005` finding of the shared variable.
+    assert_eq!(
+        many_out.matches("note: included by 1 file").count(),
+        300 + 1
+    );
+    assert_eq!(
+        few, many,
+        "300 findings with includers built {many} line tables, 5 built {few}"
+    );
+}
+
+/// A file with an unresolvable include (a preprocessor finding) and one other
+/// finding, so the text report, the preprocessor rows and the finding rows all
+/// need the line table.
+fn preproc_counts(args: &[&str]) -> (String, usize) {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("p.p"),
+        "{missing.i}\nDEFINE VARIABLE a AS INTEGER NO-UNDO.\nDEFINE VARIABLE a AS INTEGER NO-UNDO.\nMESSAGE a.\n",
+    )
+    .unwrap();
+    check(tmp.path(), &[args, &["p.p"]].concat())
+}
+
+#[test]
+fn a_file_with_a_preprocessor_finding_builds_one_table() {
+    let (out, built) = preproc_counts(&[]);
+    assert!(out.contains("SEM0001"), "no finding in:\n{out}");
+    assert_eq!(built, 1, "text report built {built} line tables");
+    let (out, built) = preproc_counts(&["--json"]);
+    assert!(out.contains("PREPROC007"), "no preprocessor row in:\n{out}");
+    assert_eq!(built, 1, "JSON report built {built} line tables");
+}
+
+/// A directory of three roots that include one file of `count` duplicate
+/// declarations: each root reports every finding of the include.
+fn shared_include_counts(count: usize, args: &[&str]) -> (String, usize) {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("dups.i"), duplicates(count)).unwrap();
+    for root in ["a.p", "b.p", "c.p"] {
+        fs::write(tmp.path().join(root), "{dups.i}\nMESSAGE \"done\".\n").unwrap();
+    }
+    check(
+        tmp.path(),
+        &[args, &["--include-findings", "-I", ".", "."]].concat(),
+    )
+}
+
+#[test]
+fn roots_that_share_an_include_build_its_table_once_each_run() {
+    for args in [&["--json"][..], &[][..]] {
+        let (_, few) = shared_include_counts(5, args);
+        let (out, many) = shared_include_counts(300, args);
+        assert!(
+            out.matches("already declared").count() >= 3 * 299,
+            "few findings in:\n{out}"
+        );
+        assert_eq!(
+            few, many,
+            "{args:?}: 300 findings in a shared include built {many} line tables, 5 built {few}"
+        );
+    }
+}

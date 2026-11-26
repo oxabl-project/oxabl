@@ -615,7 +615,7 @@ fn render_preproc_diagnostics(
 /// single-file and its envelope names the path once.
 fn surface_collected_preproc(
     path: &Path,
-    source: &str,
+    source: &Lines<'_>,
     collected: &CollectedDiagnostics,
     output: &mut Output,
 ) {
@@ -626,7 +626,12 @@ fn surface_collected_preproc(
     if loud.is_empty() {
         return;
     }
-    let resolver = SourceResolver::new(ROOT_FILE_ID, path.display().to_string(), source);
+    let resolver = SourceResolver::with_map(
+        ROOT_FILE_ID,
+        path.display().to_string(),
+        source.text(),
+        source.map(),
+    );
     output.err(render_diagnostics(&loud, &resolver));
 }
 
@@ -2376,7 +2381,7 @@ impl CheckPass<'_> {
         }
         let encrypted = oxabl_pipeline::encrypted_root_diagnostics();
         // The warning has no position in the text, so no text is shown.
-        surface_collected_preproc(file, "", &encrypted, &mut unit.output);
+        surface_collected_preproc(file, &Lines::new(""), &encrypted, &mut unit.output);
         if self.json_output {
             let map = SourceMap::new("");
             unit.preproc.extend(
@@ -2449,7 +2454,7 @@ impl CheckPass<'_> {
             // same helper `analyze` uses, so the two cannot drift. They are
             // coverage warnings, not findings, and never move the exit code: an
             // elided include still parses.
-            surface_collected_preproc(file, source, result.diagnostics(), &mut unit.output);
+            surface_collected_preproc(file, &root, result.diagnostics(), &mut unit.output);
             let withheld = reaches_encrypted(&result);
             // Machine-readable, through the *same* row builder the findings use
             // (D1): an entry names its file, so two files losing coverage on
@@ -2560,7 +2565,7 @@ impl CheckPass<'_> {
         }
         let lines = Lines::new(source.as_str());
         if reaches_encrypted(&result) {
-            surface_collected_preproc(file, &source, result.diagnostics(), &mut unit.output);
+            surface_collected_preproc(file, &lines, result.diagnostics(), &mut unit.output);
             if self.json_output {
                 unit.preproc.extend(
                     result
@@ -3268,7 +3273,7 @@ fn run_analyze(
     // saying how much of the file the count-gated rules could not judge. The
     // envelope carries both facts as well; neither replaces the other.
     let mut notes = Output::default();
-    surface_collected_preproc(path, &source, &collected, &mut notes);
+    surface_collected_preproc(path, &Lines::new(source.as_str()), &collected, &mut notes);
     if !surface_source_context(sem, &mut notes) {
         surface_unjudged_symbols(sem, &mut notes);
     }
