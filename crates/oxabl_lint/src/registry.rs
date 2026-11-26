@@ -1002,6 +1002,7 @@ impl Registry {
             let Some(severity) = enabled(rule) else {
                 continue;
             };
+            ctx.index.checkpoint();
             // The first rule over the dynamic objects asks whether the
             // scopes will be analysed too.
             if !decided && rule.reads_handles() {

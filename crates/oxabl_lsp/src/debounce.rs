@@ -34,6 +34,12 @@ impl Debouncer {
         self.deadlines.insert(uri, now + self.window);
     }
 
+    /// Schedule `uri`'s recompute for `now`, with no window: the first
+    /// computation of an opened buffer, which no edit burst follows.
+    pub fn schedule_now(&mut self, uri: Uri, now: Instant) {
+        self.deadlines.insert(uri, now);
+    }
+
     /// Cancel any pending recompute for `uri` (e.g. on close).
     pub fn cancel(&mut self, uri: &Uri) {
         self.deadlines.remove(uri);

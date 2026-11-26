@@ -958,6 +958,13 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
         SALSA_INDEX_REVISION
     }
 
+    /// The analysis of a unit has no query boundary inside it, so salsa
+    /// checks for a pending write only here: a write to a buffer waits for
+    /// the snapshot of this analysis to drop.
+    fn checkpoint(&self) {
+        self.db.unwind_if_revision_cancelled();
+    }
+
     /// The configured include paths, which are what `locate` searches. With none,
     /// a miss says "we did not look" rather than claiming a fact about the
     /// workspace — the same answer the CLI gives under the same configuration,
