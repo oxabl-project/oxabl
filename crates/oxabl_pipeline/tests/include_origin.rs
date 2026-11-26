@@ -172,6 +172,73 @@ fn distinct_findings_of_repeated_expansions_stay_distinct() {
 }
 
 #[test]
+fn findings_that_differ_only_in_their_message_stay_distinct() {
+    let decl = "DEFINE VARIABLE v-{&n} AS INTEGER NO-UNDO.\n";
+    let result = run(
+        &[("/w/d.i", decl)],
+        "PROCEDURE p1:\n{d.i &n=a}\nEND PROCEDURE.\n\
+         PROCEDURE p2:\n{d.i &n=b}\nEND PROCEDURE.\n\
+         PROCEDURE p3:\n{d.i &n=a}\nEND PROCEDURE.\n",
+    );
+
+    let rows: Vec<_> = result
+        .include_origin()
+        .iter()
+        .map(|d| {
+            (
+                d.diagnostic.message.as_str(),
+                d.diagnostic.span.span,
+                d.expansions
+                    .iter()
+                    .map(|e| e.occurrence)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].0, "unused variable `v-a`");
+    assert_eq!(rows[0].2, [1, 3]);
+    assert_eq!(rows[1].0, "unused variable `v-b`");
+    assert_eq!(rows[1].2, [2]);
+    assert_eq!(rows[0].1, rows[1].1, "the two findings share one span");
+}
+
+/// Findings that agree on path, span, code, severity and message are one row,
+/// whatever their labels: the row keeps the labels of its first expansion.
+#[test]
+fn findings_that_differ_only_in_their_labels_are_one_row_with_the_first_labels() {
+    let decl = "DEFINE VARIABLE w AS INTEGER NO-UNDO.\n";
+    let result = run(
+        &[("/w/a.i", decl), ("/w/d.i", decl)],
+        "{a.i}\n{d.i}\n{d.i}\nMESSAGE w.\n",
+    );
+
+    let redeclared: Vec<_> = result
+        .include_origin()
+        .iter()
+        .filter(|d| d.diagnostic.message.contains("already declared"))
+        .collect();
+    assert_eq!(redeclared.len(), 1, "{:?}", messages(&result));
+    let row = redeclared[0];
+    assert_eq!(row.expansions.len(), 2);
+    // The first expansion's prior declaration is in `a.i`, the second's in
+    // `d.i`; only the first is kept.
+    assert_eq!(row.diagnostic.labels.len(), 1);
+    let label = &row.diagnostic.labels[0];
+    let first_expansion = &row.expansions[0];
+    assert_eq!(first_expansion.chain[0].path, PathBuf::from("/w/d.i"));
+    assert_eq!(first_expansion.occurrence, 1);
+    assert_eq!(label.message, "prior declaration here");
+    let labelled = result
+        .diagnostics()
+        .label_files
+        .iter()
+        .find(|f| f.file == label.span.file)
+        .map(|f| f.path.clone());
+    assert_eq!(labelled, Some(PathBuf::from("/w/a.i")));
+}
+
+#[test]
 fn a_finding_in_substituted_text_has_no_physical_location_and_is_not_returned() {
     let result = run(
         &[("/w/arg.i", "DEFINE VARIABLE {&n} AS INTEGER NO-UNDO.\n")],

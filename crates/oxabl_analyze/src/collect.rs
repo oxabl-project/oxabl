@@ -52,6 +52,7 @@ use oxabl_semantic::{
     analyze_file_untyped,
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig, is_include_fragment};
+use rustc_hash::FxHashMap;
 
 /// Which pipeline stage produced a diagnostic. Lets the CLI route preprocessor
 /// diagnostics to its own JSON channel while parse/semantic/lint feed the
@@ -1050,23 +1051,25 @@ impl ExpandedFile {
         chain
     }
 
-    /// For each include expansion, which expansion of its file it is (from 1)
-    /// and how many expansions that file has.
-    fn include_occurrences(&self) -> Vec<(u32, u32)> {
-        let mut seen: HashMap<&Path, u32> = HashMap::new();
-        let nth: Vec<u32> = self
+    /// For each include expansion, which expansion of its file it is (from 1),
+    /// how many expansions that file has, and a number for the file that is the
+    /// same for every expansion of it.
+    fn include_occurrences(&self) -> Vec<(u32, u32, u32)> {
+        let mut files: FxHashMap<&Path, (u32, u32)> = FxHashMap::default();
+        let nth: Vec<(u32, u32)> = self
             .included
             .iter()
             .map(|entry| {
-                let count = seen.entry(entry.path.as_path()).or_default();
+                let next_file = files.len() as u32;
+                let (file, count) = files.entry(entry.path.as_path()).or_insert((next_file, 0));
                 *count += 1;
-                *count
+                (*file, *count)
             })
             .collect();
         self.included
             .iter()
             .zip(nth)
-            .map(|(entry, nth)| (nth, seen[entry.path.as_path()]))
+            .map(|(entry, (file, nth))| (nth, files[entry.path.as_path()].1, file))
             .collect()
     }
 }
@@ -2070,14 +2073,31 @@ pub fn database_hints_from_expanded(
     oxabl_lint::hints::database_hints(&program.statements, &ctx, &shared, kinds)
 }
 
+/// Where a finding sits and what it is, apart from its message: the fold key of
+/// [`IncludeRows`]. It holds plain data, so a lookup hashes a few integers and
+/// two short static strings and allocates nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct RowKey {
+    /// The number of the include file, the same for each expansion of it.
+    file: u32,
+    start: u32,
+    end: u32,
+    code: &'static str,
+    severity: &'static str,
+}
+
 /// Builds [`CollectedDiagnostics::include_origin`], folding findings that agree
 /// on path, span, code, severity and message into one row.
 #[derive(Default)]
 struct IncludeRows {
-    seen: HashMap<(PathBuf, u32, u32, &'static str, &'static str, String), usize>,
-    /// Per include expansion, which expansion of its file it is and how many
-    /// that file has. Counted on the first row.
-    occurrences: Vec<(u32, u32)>,
+    /// The newest row of each key. Rows of one key differ in their message, and
+    /// are linked through `older`.
+    newest: FxHashMap<RowKey, usize>,
+    /// For each row of `include_origin`, the next older row of its key.
+    older: Vec<Option<usize>>,
+    /// Per include expansion, which expansion of its file it is, how many that
+    /// file has, and the number of that file. Counted on the first row.
+    occurrences: Vec<(u32, u32, u32)>,
 }
 
 impl IncludeRows {
@@ -2097,32 +2117,35 @@ impl IncludeRows {
         if self.occurrences.is_empty() {
             self.occurrences = expanded.include_occurrences();
         }
-        let (occurrence, occurrences) = self.occurrences[include as usize];
+        let (occurrence, occurrences, path_id) = self.occurrences[include as usize];
         let occurrence = IncludeOccurrence {
             chain: expanded.include_chain(include),
             occurrence,
             occurrences,
         };
-        let path = expanded.included[include as usize].path.clone();
-        let key = (
-            path.clone(),
-            span.start,
-            span.end,
-            d.code.0,
-            d.severity.as_str(),
-            d.message.clone(),
-        );
-        if let Some(&row) = self.seen.get(&key) {
-            out.include_origin[row].expansions.push(occurrence);
-            return;
+        let key = RowKey {
+            file: path_id,
+            start: span.start,
+            end: span.end,
+            code: d.code.0,
+            severity: d.severity.as_str(),
+        };
+        let mut candidate = self.newest.get(&key).copied();
+        while let Some(row) = candidate {
+            if out.include_origin[row].diagnostic.message == d.message {
+                out.include_origin[row].expansions.push(occurrence);
+                return;
+            }
+            candidate = self.older[row];
         }
         d.span = FileSpan { file, span };
         d.labels.retain_mut(|label| resolve_label(label, expanded));
-        self.seen.insert(key, out.include_origin.len());
+        let row = out.include_origin.len();
+        self.older.push(self.newest.insert(key, row));
         out.include_origin.push(IncludeOriginDiagnostic {
             diagnostic: d,
             source,
-            path,
+            path: expanded.included[include as usize].path.clone(),
             expansions: vec![occurrence],
         });
     }
@@ -2566,7 +2589,7 @@ mod tests {
             .collect();
         assert_eq!(
             expanded.include_occurrences(),
-            [(1, 3), (1, 1), (2, 3), (3, 3)]
+            [(1, 3, 0), (1, 1, 1), (2, 3, 0), (3, 3, 0)]
         );
     }
 
