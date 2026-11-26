@@ -30,6 +30,9 @@ const QUEUE_LIMIT: usize = 1 << 20;
 /// bound.
 const WRITE_LIMIT: usize = 64 << 20;
 
+/// How long a held site of the daemon waits, in milliseconds.
+const HOLD_MS: u64 = 3000;
+
 /// The time for each step that the daemon must do.
 const LIMIT: Duration = Duration::from_secs(60);
 
@@ -113,6 +116,19 @@ impl Daemon {
 
     fn stderr(&self) -> String {
         self.stderr.lock().unwrap().clone()
+    }
+
+    /// Wait until the daemon's stderr holds `needle` `count` times.
+    fn wait_for_stderr(&self, needle: &str, count: usize) {
+        let started = Instant::now();
+        while self.stderr().matches(needle).count() < count {
+            assert!(
+                started.elapsed() < LIMIT,
+                "the daemon did not write `{needle}` {count} times in {LIMIT:?}; its stderr:\n{}",
+                self.stderr()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// A connected client that has had its answer to `initialize` and reads every
@@ -332,7 +348,10 @@ fn a_client_that_writes_and_never_reads_is_disconnected() {
 
     let text = large_source();
     let uri = daemon.uri("big.p");
-    let mut frames = vec![open(&uri, &text)];
+    // The server does not read its queue while it handles this first `didOpen`, so
+    // the frames that follow wait there, whatever the speed of the machine.
+    let first = format!("/* OXABL-TEST-HOLD:lsp.did-open@{HOLD_MS} */\n{text}");
+    let mut frames = vec![open(&uri, &first)];
     // Answers this client does not read, so the daemon waits to write them.
     frames.extend((1..=4).map(|id| symbols(id, &uri)));
 
@@ -405,13 +424,22 @@ fn a_client_that_stops_reading_does_not_stop_the_others() {
     let mut daemon = Daemon::start(None);
     let mut stuck = daemon.silent_client();
     let uri = daemon.uri("uses.p");
-    stuck.write(&open(&uri, &many_uses())).unwrap();
+    // Each highlight worker waits before its analysis while it holds its database
+    // snapshot, and the daemon says so on stderr.
+    let text = format!(
+        "{}/* OXABL-TEST-HOLD:lsp.highlights@{HOLD_MS} */\n",
+        many_uses()
+    );
+    stuck.write(&open(&uri, &text)).unwrap();
     // The first answer is larger than the socket buffers, so the writer of this
-    // client stops in it. The second one is computed while the first waits.
+    // client stops in it. The second request is sent when the first worker has
+    // passed the check for a newer request, and its worker starts when the first
+    // has sent its answer. So the first answer is with the writer when the second
+    // worker waits.
     stuck.write(&highlights(1, &uri)).unwrap();
-    thread::sleep(Duration::from_secs(1));
+    daemon.wait_for_stderr("OXABL-TEST-HOLD started: lsp.highlights", 1);
     stuck.write(&highlights(2, &uri)).unwrap();
-    thread::sleep(Duration::from_secs(1));
+    daemon.wait_for_stderr("OXABL-TEST-HOLD started: lsp.highlights", 2);
 
     let mut other = daemon.client();
     let other_uri = daemon.uri("other.p");
@@ -476,4 +504,48 @@ fn a_client_that_does_not_read_its_answers_is_disconnected() {
         stderr.contains("closing the connection") && stderr.contains("not written"),
         "the daemon must say why it closed the connection; its stderr:\n{stderr}"
     );
+}
+
+/// A client that stops reading but keeps writing ends its own connection when the
+/// daemon cannot write to it. The answers that the daemon still makes must not
+/// collect in a queue that nobody reads.
+#[test]
+fn a_client_that_closes_its_read_side_is_disconnected() {
+    let mut daemon = Daemon::start(None);
+    let mut client = daemon.silent_client();
+    client.stream.shutdown(std::net::Shutdown::Read).unwrap();
+    let text = large_source();
+    let uri = daemon.uri("big.p");
+    let started = Instant::now();
+    let mut written = 0usize;
+    let mut id = 0;
+    let refused = loop {
+        // The first write is the file, then a request for each turn. The daemon may
+        // close the connection at any of them.
+        let message = if id == 0 {
+            open(&uri, &text)
+        } else {
+            symbols(id, &uri)
+        };
+        match client.write(&message) {
+            Ok(size) => written += size,
+            Err(error) => break error,
+        }
+        id += 1;
+        assert!(
+            written < WRITE_LIMIT && started.elapsed() < LIMIT,
+            "the daemon still reads the client that does not read after {id} requests in \
+             {:?}",
+            started.elapsed()
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert!(
+        matches!(
+            refused.kind(),
+            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+        ),
+        "the daemon must close the connection: {refused}"
+    );
+    assert_serves(&mut daemon, "a client closed its read side");
 }

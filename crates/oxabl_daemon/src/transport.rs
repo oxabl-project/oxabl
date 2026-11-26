@@ -28,15 +28,19 @@
 //! not their size in memory) and closes the connection when they pass
 //! [`HIGH_WATER_BYTES`]. A test build reads a lower mark from
 //! [`TEST_HIGH_WATER_VARIABLE`].
+//!
+//! A failed write ends the connection too: the peer is gone or does not read. The
+//! connection is closed, so the reader stops and the consumer sees the input end.
+//! Frames that the consumer still sends are dropped, so nothing collects.
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Select, Sender, TryRecvError, bounded, unbounded};
 use lsp_server::{Connection, Message};
 
 /// The bytes of frames that may wait in one queue of a connection before the
@@ -74,9 +78,11 @@ pub type Close = Arc<dyn Fn() + Send + Sync>;
 
 /// The framing threads of one connection.
 pub struct Threads {
-    reader: thread::JoinHandle<()>,
-    writer: thread::JoinHandle<()>,
+    reader: Option<thread::JoinHandle<()>>,
+    writer: Option<thread::JoinHandle<()>>,
     queue: Option<QueueThreads>,
+    /// Set when this side closed the connection because a queue passed the mark.
+    over_limit: Arc<AtomicBool>,
 }
 
 /// The extra state of an [`Outbound::Queued`] connection.
@@ -92,18 +98,26 @@ struct QueueThreads {
 struct Progress {
     /// Bytes of frames the forwarder made and the writer has not written.
     waiting: AtomicUsize,
-    /// The forwarder holds a frame it has not counted yet.
-    forwarding: AtomicBool,
+    /// Held while the forwarder takes a frame from the channel and counts it, so
+    /// that [`Threads::finish`] never looks between the two.
+    gate: Mutex<()>,
 }
 
 impl Threads {
     /// Threads that have already ended.
     pub fn ended() -> Threads {
         Threads {
-            reader: thread::spawn(|| {}),
-            writer: thread::spawn(|| {}),
+            reader: None,
+            writer: None,
             queue: None,
+            over_limit: Arc::default(),
         }
+    }
+
+    /// Whether this side closed the connection because a queue passed the mark. The
+    /// flag is shared, so it can be read after the threads have moved.
+    pub fn over_limit(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.over_limit)
     }
 
     /// Wait for every thread, so a response is not cut off by an early return.
@@ -111,8 +125,9 @@ impl Threads {
         if let Some(queue) = self.queue {
             let _ = queue.forwarder.join();
         }
-        let _ = self.writer.join();
-        let _ = self.reader.join();
+        for handle in [self.writer, self.reader].into_iter().flatten() {
+            let _ = handle.join();
+        }
     }
 
     /// Wait, for [`WRITE_GRACE`] at most, until the frames already sent are written
@@ -120,16 +135,16 @@ impl Threads {
     pub fn finish(&self) {
         let Some(queue) = &self.queue else { return };
         let deadline = Instant::now() + WRITE_GRACE;
-        // The forwarder marks a frame only after it took it from the channel, so the
-        // queue counts as empty when two looks in a row say so.
-        let mut empty_looks = 0;
-        while Instant::now() < deadline && !self.writer.is_finished() {
-            let empty = queue.sent.is_empty()
-                && !queue.progress.forwarding.load(Ordering::SeqCst)
-                && queue.progress.waiting.load(Ordering::SeqCst) == 0;
-            empty_looks = if empty { empty_looks + 1 } else { 0 };
-            if empty_looks == 2 {
-                return;
+        while Instant::now() < deadline && !self.writer.as_ref().is_some_and(|w| w.is_finished()) {
+            {
+                let _gate = queue
+                    .progress
+                    .gate
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if queue.sent.is_empty() && queue.progress.waiting.load(Ordering::SeqCst) == 0 {
+                    return;
+                }
             }
             thread::sleep(Duration::from_millis(5));
         }
@@ -152,11 +167,21 @@ where
     W: Write + Send + 'static,
 {
     let limit = high_water();
+    let over_limit = Arc::new(AtomicBool::new(false));
+    // What a queue past the mark runs: it also tells the owner that this side did it.
+    let close_over_limit: Close = {
+        let close = Arc::clone(&close);
+        let over_limit = Arc::clone(&over_limit);
+        Arc::new(move || {
+            over_limit.store(true, Ordering::SeqCst);
+            close();
+        })
+    };
     let (inbound_tx, inbound_rx) = unbounded();
     let reader = thread::Builder::new()
         .name("oxabl-conn-read".to_string())
         .spawn({
-            let close = Arc::clone(&close);
+            let close = Arc::clone(&close_over_limit);
             let peer = peer.clone();
             move || read_frames(BufReader::new(input), &inbound_tx, limit, &*close, &peer)
         })?;
@@ -185,7 +210,9 @@ where
                 .name("oxabl-conn-write".to_string())
                 .spawn({
                     let progress = Arc::clone(&progress);
-                    move || write_bytes(output, &bytes_rx, &progress)
+                    let close = Arc::clone(&close);
+                    let unhandled = inbound_rx.clone();
+                    move || write_bytes(output, &bytes_rx, &progress, &*close, &unhandled)
                 })?;
             let forwarder = thread::Builder::new()
                 .name("oxabl-conn-queue".to_string())
@@ -193,7 +220,14 @@ where
                     let outbound_rx = outbound_rx.clone();
                     let progress = Arc::clone(&progress);
                     move || {
-                        forward_frames(&outbound_rx, &bytes_tx, &progress, limit, &*close, &peer)
+                        forward_frames(
+                            &outbound_rx,
+                            &bytes_tx,
+                            &progress,
+                            limit,
+                            &*close_over_limit,
+                            &peer,
+                        )
                     }
                 })?;
             let queue = QueueThreads {
@@ -211,9 +245,10 @@ where
             receiver: inbound_rx,
         },
         Threads {
-            reader,
-            writer,
+            reader: Some(reader),
+            writer: Some(writer),
             queue,
+            over_limit,
         },
     ))
 }
@@ -251,8 +286,8 @@ fn read_frames<R: BufRead>(
         if queued > limit {
             close();
             log(format_args!(
-                "closing the connection of {peer}: {queued} bytes of frames it sent were \
-                 not handled, and it does not read the answers"
+                "closing the connection of {peer}: {queued} bytes of frames from it were \
+                 not handled in time"
             ));
             return;
         }
@@ -266,7 +301,8 @@ fn read_frames<R: BufRead>(
 }
 
 /// Turn each frame sent into bytes for the writer, until every sender is gone or the
-/// bytes that wait pass `limit`.
+/// bytes that wait pass `limit`. After the writer or the mark ended the work, the
+/// frames that are still sent are dropped, so they do not collect.
 fn forward_frames(
     frames: &Receiver<Message>,
     bytes: &Sender<Vec<u8>>,
@@ -275,11 +311,31 @@ fn forward_frames(
     close: &dyn Fn(),
     peer: &str,
 ) {
-    for message in frames {
-        progress.forwarding.store(true, Ordering::SeqCst);
+    forward(frames, bytes, progress, limit, close, peer);
+    for _dropped in frames {}
+}
+
+fn forward(
+    frames: &Receiver<Message>,
+    bytes: &Sender<Vec<u8>>,
+    progress: &Progress,
+    limit: usize,
+    close: &dyn Fn(),
+    peer: &str,
+) {
+    let mut select = Select::new();
+    select.recv(frames);
+    loop {
+        // Wait without taking a frame, so the gate covers the take and the count.
+        select.ready();
+        let _gate = progress.gate.lock().unwrap_or_else(PoisonError::into_inner);
+        let message = match frames.try_recv() {
+            Ok(message) => message,
+            Err(TryRecvError::Empty) => continue,
+            Err(TryRecvError::Disconnected) => return,
+        };
         let waiting = progress.waiting.load(Ordering::SeqCst);
         if waiting > limit {
-            progress.forwarding.store(false, Ordering::SeqCst);
             close();
             log(format_args!(
                 "closing the connection of {peer}: {waiting} bytes of frames for it were \
@@ -292,22 +348,30 @@ fn forward_frames(
             continue;
         }
         progress.waiting.fetch_add(frame.len(), Ordering::SeqCst);
-        progress.forwarding.store(false, Ordering::SeqCst);
         if bytes.send(frame).is_err() {
             return;
         }
     }
 }
 
-/// Write each frame's bytes until the forwarder ends or a write fails.
-fn write_bytes<W: Write>(mut output: W, bytes: &Receiver<Vec<u8>>, progress: &Progress) {
+/// Write each frame's bytes until the forwarder ends or a write fails. A failed
+/// write ends the connection: the peer is gone, so the requests that wait for the
+/// consumer are dropped until the reader ends, and no answer is made for them.
+fn write_bytes<W: Write>(
+    mut output: W,
+    bytes: &Receiver<Vec<u8>>,
+    progress: &Progress,
+    close: &dyn Fn(),
+    unhandled: &Receiver<Message>,
+) {
     for frame in bytes {
-        // A write failure means the peer is gone. The reader ends too.
         if output
             .write_all(&frame)
             .and_then(|()| output.flush())
             .is_err()
         {
+            close();
+            for _dropped in unhandled {}
             return;
         }
         progress.waiting.fetch_sub(frame.len(), Ordering::SeqCst);
@@ -346,6 +410,7 @@ impl<R: BufRead> BufRead for Counting<R> {
 /// `/dev/null`: the peer's next write fails, and the consumer sees the input end.
 pub fn stdio() -> io::Result<(Connection, Threads)> {
     let close: Close = Arc::new(|| {
+        #[cfg(unix)]
         if let Ok(null) = std::fs::File::open("/dev/null") {
             let _ = rustix::stdio::dup2_stdin(&null);
         }

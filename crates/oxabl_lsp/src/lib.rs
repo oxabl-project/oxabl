@@ -195,8 +195,9 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
         }
     };
     drop(progress);
+    let over_limit = daemon_threads.over_limit();
     let outcome = editor_send(connection, answer)
-        .and_then(|()| proxy_messages(connection, daemon, daemon_pid));
+        .and_then(|()| proxy_messages(connection, daemon, daemon_pid, over_limit));
     daemon_threads.shutdown();
     outcome
 }
@@ -807,19 +808,25 @@ fn build_suffix(build: &str) -> String {
 /// The daemon is dropped before the function returns, so its writer ends; the caller
 /// then shuts the socket down, which ends the daemon-to-editor thread.
 #[cfg(unix)]
-fn proxy_messages(editor: &Connection, daemon: Connection, daemon_pid: u32) -> Result<()> {
+fn proxy_messages(
+    editor: &Connection,
+    daemon: Connection,
+    daemon_pid: u32,
+    over_limit: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
     let Connection {
         sender: to_daemon,
         receiver: from_daemon,
     } = daemon;
     let (ended_tx, ended_rx) = crossbeam_channel::bounded::<Result<()>>(1);
     let to_editor = editor.sender.clone();
+    let gone = over_limit.clone();
     std::thread::Builder::new()
         .name("oxabl-lsp-to-editor".to_string())
         .spawn(move || {
             let outcome = (|| loop {
                 let Ok(message) = from_daemon.recv() else {
-                    return Err(daemon_gone(daemon_pid));
+                    return Err(daemon_gone(daemon_pid, &gone));
                 };
                 to_editor
                     .send(with_null_result(message))
@@ -834,7 +841,7 @@ fn proxy_messages(editor: &Connection, daemon: Connection, daemon_pid: u32) -> R
                 let message = message.context("the editor connection closed")?;
                 let exiting = matches!(&message, Message::Notification(notification) if notification.method == "exit");
                 if to_daemon.send(message).is_err() {
-                    return Err(daemon_gone(daemon_pid));
+                    return Err(daemon_gone(daemon_pid, &over_limit));
                 }
                 if exiting {
                     return Ok(());
@@ -847,13 +854,19 @@ fn proxy_messages(editor: &Connection, daemon: Connection, daemon_pid: u32) -> R
     }
 }
 
-/// The error for a daemon connection that ended during the editor session: the
-/// daemon exited, or it is still running and closed this connection.
+/// The error for a daemon connection that ended during the editor session: this
+/// process closed it, the daemon exited, or it is still running and closed it.
 ///
 /// A daemon that exits closes its sockets before the process is gone, so the process
 /// gets a short time to go. A zombie (an exited child not yet reaped) has exited.
 #[cfg(unix)]
-fn daemon_gone(pid: u32) -> anyhow::Error {
+fn daemon_gone(pid: u32, over_limit: &std::sync::atomic::AtomicBool) -> anyhow::Error {
+    if over_limit.load(std::sync::atomic::Ordering::SeqCst) {
+        return anyhow::anyhow!(
+            "oxabl lsp closed its connection to the oxabl daemon (pid {pid}) because frames \
+             waited too long in a queue; the line above on stderr says which"
+        );
+    }
     let running = || {
         oxabl_daemon::registry::process_is_alive(pid)
             && !std::fs::read_to_string(format!("/proc/{pid}/stat"))
@@ -1713,6 +1726,10 @@ impl<'c> Server<'c> {
                 if let Ok(params) = serde_json::from_value::<DidOpenTextDocumentParams>(not.params)
                 {
                     let doc = params.text_document;
+                    oxabl_common::hold_if_injected(
+                        oxabl_common::panic_sites::LSP_DID_OPEN,
+                        &doc.text,
+                    );
                     self.ensure_config(&doc.uri);
                     self.outlines.invalidate(&doc.uri);
                     self.note_inlay_version(&doc.uri, Some(doc.version));

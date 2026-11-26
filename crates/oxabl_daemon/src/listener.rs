@@ -455,6 +455,12 @@ pub struct ClientThreads {
 }
 
 impl ClientThreads {
+    /// Whether this side closed the connection because a queue passed the mark; see
+    /// [`transport::Threads::over_limit`].
+    pub fn over_limit(&self) -> Arc<AtomicBool> {
+        self.threads.over_limit()
+    }
+
     /// Wait for the framing threads, so a response is not cut off by an early return.
     pub fn join(self) {
         self.threads.join();
