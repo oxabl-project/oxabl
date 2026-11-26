@@ -177,3 +177,38 @@ fn the_answer_is_capped() {
             .all(|s| s["name"].as_str().unwrap().starts_with("proc"))
     );
 }
+
+/// The workspace pass asks the producer map when a file has a `SHARED`
+/// consumer. A producer with a `TRIGGERS` phrase holds a `DEFINE` of its own,
+/// and the pass must end and answer.
+#[test]
+fn the_pass_ends_over_a_producer_that_holds_a_define() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("oxabl.toml"),
+        "[workspace]\nname = \"triggers\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("producer.p"),
+        "DEFINE NEW SHARED VARIABLE gcTrig AS CHARACTER NO-UNDO\n\
+         \x20   VIEW-AS FILL-IN\n\
+         \x20   TRIGGERS:\n\
+         \x20       ON LEAVE DO:\n\
+         \x20           DEFINE VARIABLE inner AS INTEGER NO-UNDO.\n\
+         \x20       END.\n\
+         \x20   END TRIGGERS.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("consumer.p"),
+        "DEFINE SHARED VARIABLE gcTrig AS CHARACTER NO-UNDO.\nMESSAGE gcTrig.\n",
+    )
+    .unwrap();
+    let mut session = Session::start(root.path());
+    let found = symbols(&mut session, "gctrig");
+    assert!(
+        found.iter().any(|s| s["name"] == json!("gcTrig")),
+        "{found:#?}"
+    );
+}

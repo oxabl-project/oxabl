@@ -203,15 +203,12 @@ fn cycle(
     let files = discover_path_in(opts.path, &config.root_extensions)?;
     let fs = config.file_system();
     let indexed: Vec<PathBuf> = files.iter().map(|f| canonical(f)).collect();
-    // With diagnostics off the lint pipeline never runs, so nothing scans the walk.
-    let producers = if channels.diagnostics {
-        LintPipeline::new(&config, &fs).shared_producers_parallel(&indexed, opts.jobs)
-    } else {
-        Default::default()
-    };
+    // Scanned when a file first asks for a `SHARED` producer, not before; with
+    // diagnostics off nothing asks, so nothing scans the walk.
+    let producers = LintPipeline::new(&config, &fs).deferred_producers(&indexed, opts.jobs);
     let lint = LintPipeline::new(&config, &fs)
         .with_preprocess(opts.preprocess)
-        .with_shared_producers(&producers);
+        .with_deferred_producers(&producers);
     // TX004 asks for the summaries of its callees. Build them once for the
     // whole walk and share them, as each handle would otherwise build its own
     // from the one file it happens to see first. Rebuilt every pass, so the
@@ -250,7 +247,7 @@ fn cycle(
             || {
                 let handle = LintPipeline::new(&config, &fs)
                     .with_preprocess(opts.preprocess)
-                    .with_shared_producers(&producers);
+                    .with_deferred_producers(&producers);
                 match &summaries {
                     Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
                     None => handle,
@@ -313,7 +310,7 @@ fn cycle(
         || {
             let handle = LintPipeline::new(&config, &fs)
                 .with_preprocess(opts.preprocess)
-                .with_shared_producers(&producers);
+                .with_deferred_producers(&producers);
             match &summaries {
                 Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
                 None => handle,

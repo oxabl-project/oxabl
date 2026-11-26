@@ -99,3 +99,14 @@ fn the_preprocessor_pipeline_input_has_its_two_known_errors() {
         ]
     );
 }
+
+#[test]
+fn the_shared_producer_tree_parses() {
+    use oxabl_workspace::FileSystem;
+    let (fs, _config, paths) = fixtures::shared_producers(60);
+    assert_eq!(paths.len(), 60);
+    for path in &paths {
+        let source = fs.read(path).unwrap();
+        assert!(errors(&source).is_empty(), "{}", path.display());
+    }
+}

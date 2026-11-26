@@ -117,6 +117,77 @@ pub fn repeated_include(
     (fs, config, path, source)
 }
 
+/// A tree for the scan of `SHARED` producers: `files` files of six kinds in
+/// turn. Written `NEW SHARED` definitions, one with a `TRIGGERS` phrase, a file
+/// with nothing but an include that holds the definition, consumers with an
+/// include, classes with an include, and files the scan does not read.
+pub fn shared_producers(files: usize) -> (InMemoryFileSystem, PipelineConfig, Vec<PathBuf>) {
+    let dir = PathBuf::from("/sp");
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        dir.join("defs.i"),
+        "DEFINE NEW SHARED VARIABLE sp-included AS INTEGER NO-UNDO.\n\
+         DEFINE NEW SHARED TEMP-TABLE sp-included-tt NO-UNDO FIELD f AS INTEGER.\n",
+    );
+    fs.insert(
+        dir.join("plain.i"),
+        "DEFINE VARIABLE sp-note AS CHARACTER NO-UNDO.\n",
+    );
+    let body: String = (0..20)
+        .map(|n| {
+            format!(
+                "PROCEDURE sp-run{n}:\n    DEFINE VARIABLE lv AS INTEGER NO-UNDO.\n    \
+                 DO lv = 1 TO {n}:\n        MESSAGE lv.\n    END.\nEND PROCEDURE.\n"
+            )
+        })
+        .collect();
+    let mut paths = Vec::new();
+    for i in 0..files {
+        let (name, text) = match i % 6 {
+            0 => (
+                format!("w{i}.p"),
+                format!(
+                    "DEFINE NEW SHARED VARIABLE sp-v{i} AS INTEGER NO-UNDO.\n\
+                     DEFINE NEW SHARED TEMP-TABLE sp-t{i} NO-UNDO FIELD f AS INTEGER.\n\
+                     DEFINE VARIABLE sp-own AS INTEGER NO-UNDO.\n{body}"
+                ),
+            ),
+            1 => (
+                format!("t{i}.p"),
+                format!(
+                    "DEFINE NEW SHARED VARIABLE sp-trig{i} AS CHARACTER NO-UNDO\n    \
+                     VIEW-AS FILL-IN\n    TRIGGERS:\n        ON LEAVE DO:\n            \
+                     DEFINE VARIABLE sp-inner AS INTEGER NO-UNDO.\n        END.\n    \
+                     END TRIGGERS.\n{body}"
+                ),
+            ),
+            2 => (format!("i{i}.p"), "{defs.i}\n".to_string()),
+            3 => (
+                format!("c{i}.p"),
+                format!(
+                    "DEFINE SHARED VARIABLE sp-v{} AS INTEGER NO-UNDO.\n{{plain.i}}\n{body}",
+                    i - 3
+                ),
+            ),
+            4 => (
+                format!("k{i}.cls"),
+                format!(
+                    "CLASS sp.K{i}:\n{{plain.i}}\n    METHOD PUBLIC VOID run():\n    END METHOD.\nEND CLASS.\n"
+                ),
+            ),
+            _ => (format!("q{i}.p"), body.clone()),
+        };
+        let path = dir.join(name);
+        fs.insert(path.clone(), text);
+        paths.push(path);
+    }
+    let config = PipelineConfig {
+        include_paths: vec![dir],
+        ..PipelineConfig::default()
+    };
+    (fs, config, paths)
+}
+
 /// A procedure file of `procedures` internal procedures, each with blocks
 /// nested `depth` deep: many scopes for the semantic passes.
 pub fn nested_blocks(procedures: usize, depth: usize) -> String {
