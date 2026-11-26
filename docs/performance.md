@@ -21,7 +21,7 @@ reads the disk, but outside the measured part.
 | --- | --- | --- |
 | `check/file` | `resources/lsp_bench.p` and its two includes | `oxabl check <file>`: the lint run, then the format check, on a new pipeline |
 | `check/workspace` | the 300 roots of the generated `ci` workspace: no finding, no drift | `oxabl check <dir>`: one pipeline for the walk |
-| `check/workspace_include_findings` | the same, with three unused variables in each hot include (1,281 findings in includes) | `oxabl check <dir>` where shared includes have findings: the fold of include findings (`IncludeRows` in `oxabl_analyze`) |
+| `check/workspace_include_findings` | the same, with 100 unused variables in each hot include (42,700 findings in includes, about 140 for each root) | `oxabl check <dir>` where shared includes have findings: the fold of include findings (`IncludeRows::add` in `oxabl_analyze` is 11.9% of the bench, the hash of its key 7.6%) |
 | `format/file_end_to_end` | `lsp_bench.p` | `oxabl format`, Format Document: `FormatPipeline::format` from the text |
 | `navigation/definitions` | `lsp_bench.p` | one go to definition request: expansion, analysis, query |
 | `navigation/links` | the `ci` root with the most includes | one document links request |
@@ -225,15 +225,22 @@ less work, which look like a gain.
 
 - Wall time and RSS change with the load of the machine. Use them as a rough
   size only.
-- Instruction counts from callgrind are the same on each run. Compare two
-  commits with them when the machine is loaded.
+- Instruction counts from callgrind do not depend on the load. Compare two
+  commits with them when the machine is loaded. `cli.sh` runs the walks
+  (`check-ws*`, `format-ws`) with `-j 1` under callgrind: with several threads,
+  each worker indexes some files again, as the threads happen to run, so the
+  calls change between runs and the instructions by about 1%, and the walk
+  costs about 20% more than with `-j 1`. With `-j 1` the call counts are the
+  same on each run, and the instructions still change by about 0.5% (hash maps
+  with a random seed). `time` and heaptrack use the default `-j`.
 - `tokenize` and `parse_program` show the share of the run and the calls, as
   "N full + M small". A call is full when its caller pays, for each call, at
   least a tenth of what the most expensive caller pays: a lex or parse of a
   whole file. The formatter also lexes short pieces of text many times
   (`blanks::normalize`); these are the small calls. So on one file, "5 full"
-  means that the command lexes the file five times. In a walk, divide by the
-  number of files. `callgrind_summary.py` without `--row` names each full
+  means that the command lexes the file five times. In a walk, the count is
+  not a number for each root: the index lexes and parses the includes too
+  (`index_parsed`), so read the callers. `callgrind_summary.py` without `--row` names each full
   caller with its calls and its share.
 - When the C library has no symbols, `memcpy` shows as an address. Its cost is
   then in the column `unnamed libc self`.
@@ -275,7 +282,7 @@ times: read them on CodSpeed. The memory numbers are of the warm run.
 | --- | --- | --- | --- |
 | `check/file` | 44,569 | 28.5 MB | 10.9 MB |
 | `check/workspace` | 618,870 | 457.1 MB | 3.1 MB |
-| `check/workspace_include_findings` | 634,521 | 457.2 MB | 3.1 MB |
+| `check/workspace_include_findings` | 1,070,457 | 684.4 MB | 3.2 MB |
 | `format/file_end_to_end` | 19,961 | 16.2 MB | 10.1 MB |
 | `navigation/definitions` | 27,690 | 13.7 MB | 5.6 MB |
 | `navigation/links` | 7,198 | 5.3 MB | 2.4 MB |
@@ -297,10 +304,9 @@ are rough:
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `check lsp_bench.p` | 0.04 s | 29 MB | 10.5 MB | 45,472 | 107.6 M | 36.6% (5 full + 167 small) | 25.2% (3 full) |
 | `check big.p` | 7.76 s | 122 MB | 100.2 MB | 623,866 | 66,898 M | 0.6% (6 full + 159 small) | 0.3% (3 full) |
-| `check src` (300 roots) | 0.06 s | 56 MB | 16.7 MB | 823,688 | 1,533 M | 34.2% (2,222 full) | 29.3% (1,622 full) |
-| `check --include-findings src` (300 roots, findings in includes) | 0.07 s | 55 MB | 16.7 MB | 995,569 | 1,818 M | 28.9% (2,198 full) | 24.6% (1,598 full) |
-| `format --check big.p` | 0.10 s | 93 MB | 89.7 MB | 154,855 | 457 M | 49.1% (3 full) | 16.2% (1 full) |
-| `format --check src` (300 roots) | 0.01 s | 30 MB | 4.0 MB | 160,963 | 372 M | 47.2% (900 full) | 16.7% (300 full) |
+| `check src` (300 roots; callgrind with `-j 1`) | 0.14 s | 54 MB | 16.6 MB | 820,382 | 1,236 M | 34.4% (1,707 full) | 27.3% (1,107 full) |
+| `check --include-findings src` (42,700 include findings) | 0.46 s | 87 MB | 36.1 MB | 6,344,394 | 15,479 M | 3.6% (1,707 full) | 3.0% (1,107 full) |
+| `format --check src` (`-j 1` under callgrind) | 0.01 s | 30 MB | 4.0 MB | 160,963 | 362 M | 47.7% (900 full) | 16.4% (300 full) |
 | `conformance -j 1 big.p` | 0.04 s | 53 MB | 41.1 MB | 74,854 | 160 M | 43.3% (1 full) | 46.2% (1 full) |
 | `explain lsp_bench.p` | 0.01 s | 18 MB | 7.0 MB | 25,059 | 46.4 M | 17.0% (1 full) | 20.0% (1 full) |
 
@@ -315,3 +321,8 @@ finding when the findings are reported (10,895 findings on `big.p`). This is a
 regression, not an expected cost: the same run took 1,183 M instructions
 before related locations were added to the findings. Issue #570 tracks it. The
 in-process benches do not report findings, so only `cli.sh` shows it.
+
+`check --include-findings src` has the same shape: 63% of its instructions are
+in `SourceMap::new`, which `LabelPlaces::resolver` builds for each include
+finding when it is reported. `check/workspace_include_findings` runs the fold
+of the findings, not their report, so it does not show this cost.

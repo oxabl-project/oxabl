@@ -22,9 +22,9 @@
 #   callgrind  instructions of the shipped binary, the inclusive share and calls of
 #              `tokenize` and `parse_program` ("full" calls lex or parse a whole file,
 #              "small" ones a short piece of it), and the self share of the allocator,
-#              memcpy and unnamed C library code. Instruction counts are the same on
-#              each run, so two commits compare on a loaded machine. About 50 times
-#              slower than the run.
+#              memcpy and unnamed C library code. The walks (check-ws*, format-ws)
+#              run with -j 1 here, so the counts are the same on each run and two
+#              commits compare on a loaded machine. About 50 times slower than the run.
 #
 # Everything is written below --out (default target/bench-cli). The workspaces
 # are generated with scripts/bench/gen-workspace, and made again when the
@@ -105,7 +105,13 @@ fi
 for binary in "$shipped" $(wants heaptrack && echo "$system"); do
     [ -x "$binary" ] || { echo "cli.sh: no $binary (run without --no-build)" >&2; exit 2; }
 done
-if wants heaptrack && nm "$system" 2>/dev/null | grep -q _rjem_; then
+# Through a file: under pipefail, `nm | grep -q` gives SIGPIPE on a match and
+# so reads as no match.
+if wants heaptrack; then
+    nm "$system" > "$out/system.nm" 2>/dev/null || true
+    [ -s "$out/system.nm" ] || { echo "cli.sh: nm read no symbol of $system" >&2; exit 2; }
+fi
+if wants heaptrack && grep -q _rjem_ "$out/system.nm"; then
     echo "cli.sh: $system links jemalloc, which heaptrack does not see" >&2
     exit 2
 fi
@@ -139,7 +145,7 @@ workspace() {
 ws=$out/ws-$preset
 workspace "$ws" --preset "$preset"
 wsf=$out/ws-$preset-include-findings
-workspace "$wsf" --preset "$preset" --include-findings 3
+workspace "$wsf" --preset "$preset" --include-findings 100
 
 # name | directory | expected exit status | arguments
 #
@@ -219,7 +225,12 @@ for entry in "${surfaces[@]}"; do
         fi
     fi
     if wants callgrind; then
-        if run_in "$dir" "$expected" valgrind --tool=callgrind --callgrind-out-file="$out/$name.callgrind" "$shipped" "${argv[@]}"; then
+        # A walk on several threads indexes some files again in each worker,
+        # as the threads happen to run, so its instructions change between
+        # runs. Under callgrind every walk runs on one thread.
+        cg_argv=("${argv[@]}")
+        case $name in check-ws* | format-ws*) cg_argv=("${argv[0]}" -j 1 "${argv[@]:1}") ;; esac
+        if run_in "$dir" "$expected" valgrind --tool=callgrind --callgrind-out-file="$out/$name.callgrind" "$shipped" "${cg_argv[@]}"; then
             row+=$(python3 -I "$repo/scripts/bench/callgrind_summary.py" --row "$out/$name.callgrind")
         else
             row+="|failed|failed|failed|failed|failed|failed"

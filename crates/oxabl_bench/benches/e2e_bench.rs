@@ -8,7 +8,7 @@
 //! - `check/workspace`: the same over the 300 roots of the generated `ci`
 //!   workspace (`oxabl_bench::generate`), with one pipeline for the walk. The
 //!   roots have no finding and no drift.
-//! - `check/workspace_include_findings`: the same workspace with three unused
+//! - `check/workspace_include_findings`: the same workspace with 100 unused
 //!   variables in each hot include, so each root that reads one folds the
 //!   findings of the include (`IncludeRows` in `oxabl_analyze`).
 //! - `format/file_end_to_end`: `FormatPipeline::format` from the source text
@@ -79,7 +79,7 @@ fn bench_check_and_format(c: &mut Criterion) {
         check_walk(&config, &fs, &format, &one)
     });
 
-    for (name, include_findings) in [("workspace", 0), ("workspace_include_findings", 3)] {
+    for (name, include_findings) in [("workspace", 0), ("workspace_include_findings", 100)] {
         let knobs = Knobs {
             include_findings,
             ..Preset::Ci.knobs()

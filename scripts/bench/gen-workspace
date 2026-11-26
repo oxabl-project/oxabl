@@ -2,7 +2,8 @@
 # Write a deterministic synthetic ABL workspace (crates/oxabl_bench/src/generate.rs).
 #
 # Usage: scripts/bench/gen-workspace [--preset ci|medium|erp] [--seed N]
-#                                    [--programs N] [--classes N] [--stats] <dir>
+#                                    [--programs N] [--classes N]
+#                                    [--include-findings N] [--stats] <dir>
 #
 # --stats alone prints the shape and writes nothing.
 set -euo pipefail

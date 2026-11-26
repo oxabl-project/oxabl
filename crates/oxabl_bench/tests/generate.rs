@@ -133,7 +133,7 @@ fn hot_reads(knobs: &Knobs) -> usize {
 #[test]
 fn each_root_reports_the_findings_of_the_hot_includes_it_reads() {
     let knobs = Knobs {
-        include_findings: 3,
+        include_findings: 100,
         ..Preset::Ci.knobs()
     };
     let reads = hot_reads(&knobs);
@@ -141,7 +141,7 @@ fn each_root_reports_the_findings_of_the_hot_includes_it_reads() {
     let found = findings(&knobs);
     let expected = BTreeMap::from([(
         "include:lint:DiagnosticCode(\"LINT0002\")".to_string(),
-        3 * reads,
+        100 * reads,
     )]);
     assert_eq!(found, expected);
 }
