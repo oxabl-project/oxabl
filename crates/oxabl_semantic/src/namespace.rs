@@ -4,8 +4,8 @@
 //! `customer`, a buffer `customer`, and a schema table `customer` can all
 //! coexist, and resolution order narrows candidate name spaces based on
 //! syntactic context (e.g. `FOR EACH Customer` starts in `Buffers`/`Tables`,
-//! not `Values`). Each scope holds one [`BindingMap`](crate::BindingMap) per
-//! namespace, indexed by the discriminant below.
+//! not `Values`). Each scope holds one [`BindingMap`](crate::BindingMap) for
+//! each namespace it binds a name in.
 
 /// Discriminant for the ten name spaces v1 models. See plan §Technical
 /// Approach → Namespaces.
@@ -35,12 +35,11 @@ pub enum NamespaceId {
     WidgetHandles = 9,
 }
 
-/// Number of name spaces. Used as the fixed size of per-scope binding map
-/// arrays.
+/// Number of name spaces.
 pub const NUM_NAMESPACES: usize = 10;
 
 impl NamespaceId {
-    /// Dense index into a per-scope `[_; NUM_NAMESPACES]`.
+    /// Dense index of the namespace, `0..NUM_NAMESPACES`.
     #[inline]
     pub const fn index(self) -> usize {
         self as u8 as usize

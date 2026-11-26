@@ -401,7 +401,7 @@ impl Navigation<'_, '_> {
         let semantic = &self.model.semantic;
         let scope = semantic.symbols.get(sym).declared_in;
         matches!(
-            semantic.scope_tree.get(scope).kind,
+            semantic.scope_tree.get(scope).kind(),
             ScopeKind::Class | ScopeKind::Interface
         )
     }

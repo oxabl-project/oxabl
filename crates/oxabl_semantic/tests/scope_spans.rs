@@ -15,7 +15,7 @@ fn kind_at(source: &str) -> ScopeKind {
         .with_unclosed_blocks(&program.unclosed_blocks);
     let semantic = analyze_file_untyped(&program.statements, &ctx);
     let tree = &semantic.scope_tree;
-    tree.get(tree.innermost_at(at)).kind
+    tree.get(tree.innermost_at(at)).kind()
 }
 
 #[test]

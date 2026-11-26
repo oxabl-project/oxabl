@@ -119,15 +119,18 @@ impl Engine<'_, '_, '_, '_> {
         let statik = in_static_routine(base, scope);
         for (depth, id) in tree.ancestors(scope).enumerate() {
             let held = tree.get(id);
-            let members = matches!(held.kind, ScopeKind::Class | ScopeKind::Interface);
-            if held.kind == ScopeKind::Class {
+            let members = matches!(held.kind(), ScopeKind::Class | ScopeKind::Interface);
+            if held.kind() == ScopeKind::Class {
                 // Every class inherits members from `Progress.Lang.Object`,
                 // and oxabl lists no inherited member yet.
                 class_incomplete = true;
             }
             for ns in namespaces {
-                let mut bound: Vec<(&str, SymbolId)> = held.bindings[ns.index()]
-                    .iter()
+                let mut bound: Vec<(&str, SymbolId)> = held
+                    .bindings
+                    .get(*ns)
+                    .into_iter()
+                    .flat_map(|map| map.iter())
                     .map(|(name, sym)| (name.as_ref(), sym))
                     .collect();
                 bound.sort_unstable_by_key(|(_, sym)| sym.raw());
@@ -328,7 +331,7 @@ impl Engine<'_, '_, '_, '_> {
         let scope = base::scope_at(base, virt);
         let class = tree
             .ancestors(scope)
-            .find(|id| tree.get(*id).kind == ScopeKind::Class);
+            .find(|id| tree.get(*id).kind() == ScopeKind::Class);
         let mut words: Vec<&'static str> = Vec::new();
         if let Some(class) = class {
             words.push("THIS-OBJECT");
@@ -376,7 +379,7 @@ impl Engine<'_, '_, '_, '_> {
     /// Whether the class whose body is scope `class` names a parent.
     fn inherits(&self, base: &CompletionBase<'_, '_, '_>, class: ScopeId) -> bool {
         let semantic = &base.navigation.model.semantic;
-        let owner = semantic.scope_tree.get(class).owner_node;
+        let owner = semantic.scope_tree.get(class).owner_node();
         semantic
             .symbols
             .iter()
@@ -392,13 +395,13 @@ fn in_static_routine(base: &CompletionBase<'_, '_, '_>, scope: ScopeId) -> bool 
     let tree = &semantic.scope_tree;
     let Some(routine) = tree.ancestors(scope).find(|id| {
         matches!(
-            tree.get(*id).kind,
+            tree.get(*id).kind(),
             ScopeKind::Method | ScopeKind::PropertyGet | ScopeKind::PropertySet
         )
     }) else {
         return false;
     };
-    let owner = tree.get(routine).owner_node;
+    let owner = tree.get(routine).owner_node();
     semantic.symbols.iter().any(|(_, symbol)| {
         symbol.declaration == owner
             && matches!(symbol.kind, SymbolKind::Function | SymbolKind::Property)

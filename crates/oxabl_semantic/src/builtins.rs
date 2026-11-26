@@ -140,13 +140,19 @@ pub(crate) fn seed(tree: &mut ScopeTree, symbols: &mut SymbolTable) {
     let data = &*SEED;
     debug_assert!(symbols.is_empty(), "seed() requires an empty symbol table");
     debug_assert!(
-        tree.get(ScopeId::ROOT).bindings[NamespaceId::Values.index()].is_empty(),
+        tree.get(ScopeId::ROOT)
+            .bindings
+            .get(NamespaceId::Values)
+            .is_none_or(BindingMap::is_empty),
         "seed() requires an empty root Values binding map"
     );
     for sym in &data.symbols {
         symbols.insert(sym.clone());
     }
-    tree.get_mut(ScopeId::ROOT).bindings[NamespaceId::Values.index()] = data.bindings.clone();
+    *tree
+        .get_mut(ScopeId::ROOT)
+        .bindings
+        .get_or_insert(NamespaceId::Values) = data.bindings.clone();
 }
 
 #[cfg(test)]

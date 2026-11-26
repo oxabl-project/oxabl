@@ -15,6 +15,12 @@ bitflags = "2"
 rustc-hash = "2"
 smallvec = { version = "1", features = ["union"] }
 
+[features]
+# Test-only: count the scope records that the searches of a scope tree read
+# (`ScopeTree::scopes_read`), so a test can see that the count grows with the
+# number of scopes and not with its square.
+test-counts = []
+
 [dev-dependencies]
 rust_decimal = "1.40.0"
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
