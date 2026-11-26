@@ -40,6 +40,9 @@ use crate::registry;
 use crate::server;
 use crate::session::SessionHost;
 
+/// The test-hold and test-panic site just before a starting daemon registers.
+pub const READY_SITE: &str = "daemon.ready";
+
 /// One routed client service behind the shared listener.
 pub type ConnectionService = dyn Fn(&Connection, &SessionHost) + Send + Sync;
 
@@ -118,17 +121,18 @@ impl Listener {
                 // The holder has the lock and has registered nothing readable yet, so
                 // there is no pid to name and claiming one would be a guess.
                 registry::DaemonState::Crashed(_) | registry::DaemonState::Absent => format!(
-                    "another process holds the start lock for {} and has not \
-                     registered a daemon yet. Wait for it, or remove {} if you are \
-                     sure nothing is starting.",
-                    workspace_root.display(),
+                    "another process holds the start lock {} for {} and has not \
+                     registered a daemon yet. Wait for it: the lock is released when \
+                     the process that holds it exits. Never remove the lock file while \
+                     that process runs.",
                     // Only a sentence is at stake here: `acquire_root_lock` resolved
                     // this same path a moment ago to open the lock it just found held,
                     // so the error arm is unreachable — and a refusal must not be
                     // replaced by a second, unrelated failure over a message.
                     registry::lock_path_for(&workspace_root)
                         .map(|path| path.display().to_string())
-                        .unwrap_or_else(|error| error.to_string())
+                        .unwrap_or_else(|error| error.to_string()),
+                    workspace_root.display(),
                 ),
             };
             return Err(io::Error::new(
@@ -217,6 +221,11 @@ impl Listener {
             listener.socket_path(),
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
         );
+        // Test builds only: a root whose path names the site makes the start slow, or
+        // ends it, at the moment before the daemon becomes ready.
+        let root_text = listener.workspace_root().to_string_lossy();
+        oxabl_common::hold_if_injected(READY_SITE, &root_text);
+        oxabl_common::panic_if_injected(READY_SITE, &root_text);
         registry::register(
             listener.workspace_root(),
             listener.socket_path(),
@@ -350,7 +359,9 @@ impl Listener {
                     // would be the flood the daemon is already under.
                     if !reported_spawn_failure {
                         reported_spawn_failure = true;
-                        eprintln!(
+                        use std::io::Write as _;
+                        let _ = writeln!(
+                            std::io::stderr(),
                             "oxabl daemon: refusing a client on {} because a thread \
                              could not be started ({error}). Still serving the clients \
                              already connected; raise the process or thread limit.",

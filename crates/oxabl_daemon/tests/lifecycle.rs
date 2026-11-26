@@ -684,8 +684,11 @@ fn a_held_start_lock_with_no_registration_names_the_lock_rather_than_a_daemon() 
                         .display()
                         .to_string()
                 ),
-                "and it must name the file to remove if nothing is really starting: \
-                 {message}"
+                "and it must name the lock file: {message}"
+            );
+            assert!(
+                !message.contains("remove") || message.contains("Never remove"),
+                "and it must not advise to remove a lock that a process holds: {message}"
             );
         });
     });
@@ -749,8 +752,15 @@ fn while_the_root_lock_is_held(root: &Path, body: impl FnOnce()) {
         holding
             .recv()
             .expect("the lock is held before the test runs");
+        // Released also when `body` panics, so a failed assertion ends the test.
+        struct Release(mpsc::Sender<()>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+        let _release = Release(release);
         body();
-        let _ = release.send(());
     });
 }
 

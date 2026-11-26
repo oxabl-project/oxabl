@@ -291,7 +291,9 @@ impl Server<'_> {
                 let (outcome, panicked) = match computed {
                     Ok(outcome) => (outcome, false),
                     Err(panic) => {
-                        eprintln!(
+                        use std::io::Write as _;
+                        let _ = writeln!(
+                            std::io::stderr(),
                             "oxabl: context analysis panicked for {}: {panic}",
                             include.display()
                         );

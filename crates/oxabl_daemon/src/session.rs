@@ -1059,7 +1059,11 @@ pub fn analyze_guarded(
             panicked: false,
         },
         Err(panic) => {
-            eprintln!("oxabl: analysis panicked for {label}: {panic}");
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr(),
+                "oxabl: analysis panicked for {label}: {panic}"
+            );
             Analysis {
                 diagnostics: None,
                 dependencies: None,

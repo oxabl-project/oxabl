@@ -1269,6 +1269,10 @@ pub fn compute_diagnostics(
         oxabl_common::panic_sites::LSP_DIAGNOSTICS,
         buffer.text(snapshot),
     );
+    oxabl_common::abort_if_injected(
+        oxabl_common::panic_sites::LSP_DIAGNOSTICS,
+        buffer.text(snapshot),
+    );
     salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
         diagnostics(snapshot, buffer, schema)
     }))

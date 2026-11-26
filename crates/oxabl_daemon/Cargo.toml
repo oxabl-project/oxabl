@@ -38,8 +38,9 @@ salsa = "=0.28.1"
 # is a manifest line rather than build time.
 # `net` for the liveness probe: it must be a *non-blocking* connect, so a daemon
 # whose accept queue is full reads as busy instead of stalling the client, and
-# `UnixStream::connect` has no such mode (KTD6).
-rustix = { version = "1", features = ["fs", "net", "process"] }
+# `UnixStream::connect` has no such mode (KTD6). `event` and `stdio` for the stderr
+# watcher (`stderr.rs`).
+rustix = { version = "1", features = ["fs", "event", "net", "process", "stdio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

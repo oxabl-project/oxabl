@@ -405,6 +405,11 @@ enum Cli {
         /// `OXABL_DAEMON_IDLE_TIMEOUT`.
         #[arg(long, value_name = "DURATION")]
         idle_timeout: Option<String>,
+
+        /// Exit with no message when another process holds the start lock: a client
+        /// that starts the daemon again after such an exit has shown it once.
+        #[arg(long, hide = true)]
+        quiet_if_locked: bool,
     },
     /// Emit the JSON Schema for `oxabl.toml` to stdout.
     ///
@@ -815,7 +820,8 @@ fn dispatch(cli: Cli) -> ExitCode {
         Cli::Daemon {
             workspace_root,
             idle_timeout,
-        } => run_daemon(&workspace_root, idle_timeout.as_deref()),
+            quiet_if_locked,
+        } => run_daemon(&workspace_root, idle_timeout.as_deref(), quiet_if_locked),
         Cli::Schema => run_schema(),
         Cli::Skill { command } => skill::run(command),
         Cli::Build {
@@ -921,7 +927,11 @@ fn run_lsp() -> ExitCode {
 /// discovery that editor clients already have, so clients do not need to locate a
 /// second binary.
 #[cfg(unix)]
-fn run_daemon(workspace_root: &Path, idle_timeout: Option<&str>) -> ExitCode {
+fn run_daemon(
+    workspace_root: &Path,
+    idle_timeout: Option<&str>,
+    quiet_if_locked: bool,
+) -> ExitCode {
     let idle_timeout = match daemon_idle_timeout(idle_timeout) {
         Ok(timeout) => timeout,
         Err(error) => {
@@ -932,13 +942,21 @@ fn run_daemon(workspace_root: &Path, idle_timeout: Option<&str>) -> ExitCode {
     let mut listener = match oxabl_daemon::Listener::bind(workspace_root) {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("oxabl daemon: {error}");
-            if oxabl_daemon::listener::is_start_lock_held(&error) {
+            let locked = oxabl_daemon::listener::is_start_lock_held(&error);
+            if !(locked && quiet_if_locked) {
+                eprintln!("oxabl daemon: {error}");
+            }
+            if locked {
                 return ExitCode::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD);
             }
             return ExitCode::FAILURE;
         }
     };
+    // From here the daemon may outlive the process that started it and reads its
+    // stderr.
+    if let Err(error) = oxabl_daemon::stderr::watch() {
+        eprintln!("oxabl daemon: stderr is not watched for a closed reader: {error}");
+    }
     listener.set_idle_timeout(idle_timeout);
     let dispatch = std::sync::Arc::new(oxabl_daemon::default_dispatch());
     let host = std::sync::Arc::new(oxabl_daemon::SessionHost::new());
@@ -955,7 +973,12 @@ fn run_daemon(workspace_root: &Path, idle_timeout: Option<&str>) -> ExitCode {
                         request,
                         host.clone(),
                     ) {
-                        eprintln!("oxabl daemon: LSP client failed: {error}");
+                        use std::io::Write as _;
+                        // A closed stderr must not end the other clients' sessions.
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "oxabl daemon: LSP client failed: {error}"
+                        );
                     }
                 }
                 first => {
@@ -993,7 +1016,11 @@ fn daemon_idle_timeout(flag: Option<&str>) -> Result<Option<std::time::Duration>
 }
 
 #[cfg(not(unix))]
-fn run_daemon(_workspace_root: &Path, _idle_timeout: Option<&str>) -> ExitCode {
+fn run_daemon(
+    _workspace_root: &Path,
+    _idle_timeout: Option<&str>,
+    _quiet_if_locked: bool,
+) -> ExitCode {
     eprintln!("oxabl daemon: Unix domain sockets are not supported on this platform");
     ExitCode::FAILURE
 }
