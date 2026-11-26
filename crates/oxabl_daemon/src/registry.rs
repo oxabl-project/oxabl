@@ -1452,10 +1452,11 @@ fn checked_pid(pid: u32) -> Option<i32> {
 ///
 /// **Never the liveness answer.** Liveness is the connect (KTD6); this decides only
 /// whether a registration nobody answers belongs to a daemon that is still starting
-/// or to one that crashed, which is a difference in the sentence a refusal prints.
+/// or to one that crashed, which is a difference in the sentence a refusal prints,
+/// and whether a daemon that closed a connection exited, for the same reason.
 /// `EPERM` counts as alive because a process owned by another user is a process.
 #[cfg(unix)]
-fn process_is_alive(pid: u32) -> bool {
+pub fn process_is_alive(pid: u32) -> bool {
     let Some(pid) = checked_pid(pid) else {
         return false;
     };
@@ -1475,7 +1476,7 @@ fn process_is_alive(pid: u32) -> bool {
 /// launch, so this refuses to guess and says nothing is alive — which at least keeps
 /// the failure to "no daemon found" rather than "connect to a socket nobody holds".
 #[cfg(not(unix))]
-fn process_is_alive(_pid: u32) -> bool {
+pub fn process_is_alive(_pid: u32) -> bool {
     false
 }
 

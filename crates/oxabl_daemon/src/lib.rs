@@ -31,6 +31,8 @@
 //!   `oxabl/*` method register the same way and share one panic-containment wrapper.
 //! - [`server`] — the message loop, transport-agnostic so a second transport is a
 //!   second caller rather than a second loop.
+//! - [`transport`] — the reader and writer threads of one connection; the reader
+//!   never waits on the consumer, so neither direction waits on the other.
 //!
 //! # Cancellation is not failure
 //!
@@ -59,6 +61,7 @@ pub mod server;
 pub mod session;
 #[cfg(unix)]
 pub mod stderr;
+pub mod transport;
 
 pub use dispatch::{ClientContext, Dispatch, MethodError, MethodResult};
 pub use handshake::{default_dispatch, register_handshake};

@@ -1945,6 +1945,24 @@ pub fn compute_highlights(
     schema: SchemaHandle,
     offset: u32,
 ) -> Option<Result<NavigationAnswer, String>> {
+    if oxabl_common::INJECTION_ENABLED
+        && let Ok(text) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+            buffer.text(snapshot).clone()
+        }))
+    {
+        oxabl_common::hold_if_injected_with(
+            oxabl_common::panic_sites::LSP_HIGHLIGHTS,
+            &text,
+            || {
+                use std::io::Write as _;
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "OXABL-TEST-HOLD started: {}",
+                    oxabl_common::panic_sites::LSP_HIGHLIGHTS
+                );
+            },
+        );
+    }
     cached_navigation(snapshot, buffer, schema, |navigation, root| {
         NavigationAnswer {
             highlights: navigation.highlights(root, offset),
