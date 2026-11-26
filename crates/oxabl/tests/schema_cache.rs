@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime};
 
 use tempfile::TempDir;
 
@@ -172,12 +173,33 @@ fn a_new_build_does_not_read_the_entry_of_an_old_one() {
     ws.check(&[]);
     assert_eq!(ws.check(&[]).parsed, 0);
 
-    // The same program in a file made now: a build the cache has not seen.
-    let copy = ws.path().join("oxabl-copy");
-    fs::copy(env!("CARGO_BIN_EXE_oxabl"), &copy).unwrap();
-    assert_eq!(ws.check_with(&copy, &[]).parsed, 1);
+    // Another build with the size and the time of this one.
+    let other = ws.path().join("oxabl-other");
+    let original = Path::new(env!("CARGO_BIN_EXE_oxabl"));
+    let mut bytes = fs::read(original).unwrap();
+    let needle = b"last definition wins";
+    let at = bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("the binary holds the message of the loader");
+    bytes[at..at + needle.len()].make_ascii_uppercase();
+    fs::copy(original, &other).unwrap();
+    fs::write(&other, &bytes).unwrap();
+    let modified = fs::metadata(original).unwrap().modified().unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&other)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_eq!(fs::metadata(&other).unwrap().len(), bytes.len() as u64);
+    assert_eq!(
+        ws.check_with(&other, &[]).parsed,
+        1,
+        "a build with another content read the entry of this one"
+    );
     assert_eq!(ws.entries().len(), 2);
-    assert_eq!(ws.check_with(&copy, &[]).parsed, 0);
+    assert_eq!(ws.check_with(&other, &[]).parsed, 0);
 }
 
 #[test]
@@ -217,6 +239,175 @@ fn a_damaged_entry_is_parsed_again_and_replaced() {
         );
     }
     assert_eq!(ws.check(&[]).parsed, 0);
+}
+
+/// The first position of `needle` in `bytes`.
+fn find(bytes: &[u8], needle: &[u8]) -> usize {
+    bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .unwrap_or_else(|| panic!("{:?} is not in the entry", String::from_utf8_lossy(needle)))
+}
+
+#[test]
+fn an_entry_that_changed_with_its_structure_intact_is_not_read() {
+    let ws = Workspace::new(&[("a.df", CUSTOMER_NAME)]);
+    let off = ws.check(&[("OXABL_SCHEMA_CACHE", "off")]);
+    assert!(!off.stdout.contains("LINT0003"), "{}", off.stdout);
+    ws.check(&[]);
+    let entry = ws.entries().remove(0);
+    let bytes = fs::read(&entry).unwrap();
+
+    let name = find(&bytes, b"Name");
+    let mut renamed = bytes.clone();
+    renamed[name + 1] = b'z';
+    let mut zeroed = bytes.clone();
+    let end = zeroed.len();
+    zeroed[end / 2..end / 2 + 16].fill(0);
+    let mut hash_only = bytes.clone();
+    hash_only[0] ^= 1;
+    for (what, damaged) in [
+        ("a letter of the pool", renamed),
+        ("a zeroed block", zeroed),
+        ("a bit of the hash", hash_only),
+    ] {
+        assert_eq!(damaged.len(), bytes.len());
+        fs::write(&entry, damaged).unwrap();
+        let run = ws.check(&[]);
+        assert_eq!(run.parsed, 1, "{what}: the changed entry was used");
+        same_output(&off, &run);
+        assert_eq!(
+            fs::read(&entry).unwrap(),
+            bytes,
+            "{what}: the entry was not replaced"
+        );
+    }
+    assert_eq!(ws.check(&[]).parsed, 0);
+}
+
+#[test]
+fn an_entry_of_another_key_is_not_read() {
+    let ws = Workspace::new(&[("a.df", CUSTOMER)]);
+    ws.check(&[]);
+    let first = ws.entries().remove(0);
+    fs::write(ws.path().join("schema/a.df"), CUSTOMER_NAME).unwrap();
+    let off = ws.check(&[("OXABL_SCHEMA_CACHE", "off")]);
+    ws.check(&[]);
+    let second = ws.entries().into_iter().find(|p| *p != first).unwrap();
+    fs::copy(&first, &second).unwrap();
+    let run = ws.check(&[]);
+    assert_eq!(run.parsed, 1, "the entry of the other schema was used");
+    same_output(&off, &run);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_at_the_path_of_an_entry_does_not_stop_the_run() {
+    use std::time::{Duration, Instant};
+
+    let ws = Workspace::new(&[("a.df", CUSTOMER)]);
+    ws.check(&[]);
+    let entry = ws.entries().remove(0);
+    fs::remove_file(&entry).unwrap();
+    let made = Command::new("mkfifo").arg(&entry).status().unwrap();
+    assert!(made.success());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxabl"))
+        .current_dir(ws.path())
+        .env_remove("CI")
+        .env_remove("OXABL_CACHE_MODE")
+        .env("OXABL_SCHEMA_CACHE_DIR", ws.cache())
+        .args(["check", "--no-format", "--schema", "schema", "cust.p"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("the run waits on a FIFO at the path of an entry");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.code().is_some());
+}
+
+#[test]
+fn a_test_run_never_touches_the_cache_of_the_user() {
+    let ws = Workspace::new(&[("a.df", CUSTOMER)]);
+    let home = ws.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let env = [
+        ("OXABL_SCHEMA_CACHE_DIR", ""),
+        ("HOME", home.to_str().unwrap()),
+        ("XDG_CACHE_HOME", home.to_str().unwrap()),
+    ];
+    for _ in 0..2 {
+        assert_eq!(ws.check(&env).parsed, 1);
+    }
+    let left: Vec<_> = fs::read_dir(&home).unwrap().flatten().collect();
+    assert!(
+        left.is_empty(),
+        "a test build wrote below the home: {left:?}"
+    );
+    assert!(ws.entries().is_empty());
+}
+
+#[test]
+fn a_read_keeps_an_entry_from_being_the_first_to_go() {
+    let ws = Workspace::new(&[("a.df", CUSTOMER)]);
+    let schema = |n: usize| {
+        fs::write(
+            ws.path().join("schema/a.df"),
+            format!("{CUSTOMER}ADD FIELD \"F{n}\" OF \"Customer\" AS integer\n"),
+        )
+        .unwrap();
+    };
+    let past = |path: &Path, seconds: u64| {
+        let at = SystemTime::now() - Duration::from_secs(seconds);
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    };
+    for n in 0..16 {
+        schema(n);
+        ws.check(&[]);
+    }
+    let entries = ws.entries();
+    assert_eq!(entries.len(), 16);
+    // Schema 0 made the oldest entry; every entry is old, schema 0 the most.
+    schema(0);
+    let first = entries
+        .iter()
+        .find(|path| {
+            let hit = fs::metadata(path).unwrap().modified().unwrap();
+            entries
+                .iter()
+                .all(|other| fs::metadata(other).unwrap().modified().unwrap() >= hit)
+        })
+        .unwrap()
+        .clone();
+    for (n, path) in entries.iter().enumerate() {
+        past(path, 1000 + n as u64);
+    }
+    past(&first, 100_000);
+    assert_eq!(ws.check(&[]).parsed, 0, "the entry of schema 0");
+    schema(99);
+    ws.check(&[]);
+    let after = ws.entries();
+    assert_eq!(after.len(), 16);
+    assert!(
+        after.contains(&first),
+        "the entry that was read was removed"
+    );
 }
 
 #[test]

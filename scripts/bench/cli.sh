@@ -73,7 +73,8 @@ if [ ${#missing[@]} -gt 0 ]; then
 fi
 
 # Every run parses the schema, so each tool and each commit measures the same
-# work. Set OXABL_SCHEMA_CACHE=on to measure runs that read the cache.
+# work. To measure runs that read the cache, set OXABL_SCHEMA_CACHE to
+# anything but off, with OXABL_SCHEMA_CACHE_DIR and OXABL_CACHE_MODE=developer.
 export OXABL_SCHEMA_CACHE=${OXABL_SCHEMA_CACHE:-off}
 
 mkdir -p "$out"

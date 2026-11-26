@@ -283,25 +283,34 @@ reads the schema cache (see [the schema cache](overview.md)). The cost is large
 for a project with thousands of tables, and it is the same for each command, so
 it decides the time of a `check` of one file. `cli.sh` sets
 `OXABL_SCHEMA_CACHE=off`, so each run parses the schema and two commits compare.
-To measure a run that reads the cache, set `OXABL_SCHEMA_CACHE=on` and
-`OXABL_SCHEMA_CACHE_DIR` to an empty directory, run the command once (it
-writes the entry), and measure the second run.
+To measure a run that reads the cache, unset `OXABL_SCHEMA_CACHE` (only `off`
+has a meaning), set `OXABL_SCHEMA_CACHE_DIR` to an empty directory, and set
+`OXABL_CACHE_MODE=developer` (the cache is off in any other mode, and `CI`
+selects another mode). Run the command once (it writes the entry), and measure
+the second run.
 
 Instructions of `oxabl check` of one file (callgrind, release binary, rustc
 1.100.0):
 
 | Input | Before | Parse, no cache | First run (writes the entry) | Next runs (read the entry) |
 | --- | --- | --- | --- | --- |
-| 5 `.df` files, 3,000 tables, 25,300 fields (copies of `sp2k.df` with new table names), a program of 3 lines | 436.8 M | 334.8 M | 379.6 M | 117.3 M |
+| 5 `.df` files, 3,000 tables, 25,300 fields (copies of `sp2k.df` with new table names), a program of 3 lines | 436.8 M | 334.8 M | 395.2 M | 131.1 M |
 | the `erp` preset (1,500 tables, 30,000 fields), `src/app/m0/p0.p` | 3,580 M | 3,525 M | 3,521 M | 3,411 M |
 | the `ci` preset, `check -j 1 src` (40 tables) | 1,229.8 M | 1,225.7 M | 1,229.6 M | 1,222.5 M |
 | `check big.p` (no schema) | 1,275.3 M | 1,266.7 M | | |
+
+The other rows were measured before the entry got its hash. The hash adds about
+14 M for 4 MB of entry (blake3), so a later run of the `erp` row costs a little
+more than the table says (the entry is larger there).
 
 The `.df` files of a real project have more attributes for each field than the
 generated ones (`LABEL`, `HELP`, `COLUMN-LABEL`, `VIEW-AS`), so the parse costs
 more there, and the cache gains more. The parser makes no string for the
 keywords any more, and the cache costs the hash of the `.df` files and the
-encode of the entry on the first run.
+encode of the entry on the first run. A later run hashes the entry again to check
+it. The build is identified by the size, the times and the inode of the
+executable, not by a hash of its bytes: that hash costs about 15 ms in each run,
+more than the cache saves.
 
 The bench `load_files_cached:sp2k` of `crates/oxabl_schema` (in memory) is the
 decode of an entry: 134 µs, against 353 µs for `load_files:sp2k`, which parses.

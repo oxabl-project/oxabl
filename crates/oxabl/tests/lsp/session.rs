@@ -113,7 +113,12 @@ impl Session {
             Stdio::from(std::fs::File::create(&stderr).unwrap())
         };
         // No core dump from a daemon that crashes: it inherits the limit.
-        let mut child = Command::new("sh")
+        let mut command = Command::new("sh");
+        match launch.schema_cache {
+            Some(directory) => command.env("OXABL_SCHEMA_CACHE_DIR", directory),
+            None => command.env_remove("OXABL_SCHEMA_CACHE_DIR"),
+        };
+        let mut child = command
             .arg("-c")
             .arg(r#"ulimit -c 0 && exec "$@""#)
             .arg("sh")
@@ -356,6 +361,9 @@ pub struct Launch<'a> {
     /// Give stderr a pipe that the session holds and does not read, in place of a
     /// file. [`Session::stderr`] is then empty.
     pub stderr_pipe: bool,
+    /// The directory of the schema cache (`OXABL_SCHEMA_CACHE_DIR`). By default
+    /// the session has none, and a test build keeps the cache off.
+    pub schema_cache: Option<&'a Path>,
 }
 
 fn signal(pid: u32, signal: i32) -> i32 {

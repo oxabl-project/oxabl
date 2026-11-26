@@ -47,7 +47,7 @@ schemars = { version = "0.8", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
 tokio = { version = "1", features = ["rt", "net", "time"], optional = true }
 sha2 = { version = "0.10", optional = true }
-rustix = { version = "1", features = ["process"], optional = true }
+rustix = { version = "1", features = ["fs", "process"], optional = true }
 # The schema cache hashes the `.df` files it keys an entry by.
 blake3 = { version = "1", optional = true }
 
