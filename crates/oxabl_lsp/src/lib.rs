@@ -1722,6 +1722,7 @@ impl<'c> Server<'c> {
                     self.hovers.cancel(&id);
                     self.cancel_completion(&id);
                     self.references.cancel(&id);
+                    self.cancel_reference_lens(&id);
                     self.outlines.requests.cancel(&id);
                 }
             }

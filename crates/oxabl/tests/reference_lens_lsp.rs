@@ -1894,11 +1894,11 @@ fn waiting_resolves_and_searches_hold_no_threads_of_their_own() {
             }
         }
     }
-    // A runner for each of two batches, a thread for each find references
-    // request, and a thread for each of these five that waits for the
-    // workspace pass. No thread for a resolve that waits, and no new thread to
-    // analyse a file: the searches share the ones that exist.
-    let allowed = 2 + 3 + 5;
+    // A runner for each of the three batches, a thread for each find
+    // references request, and a thread for each of these six that waits for
+    // the workspace pass. No thread for a resolve that waits, and no new
+    // thread to analyse a file: the searches share the ones that exist.
+    let allowed = 3 + 3 + 6;
     eprintln!("the daemon went from {before} to {most} threads");
     assert!(
         most - before <= allowed,
@@ -1915,4 +1915,235 @@ fn waiting_resolves_and_searches_hold_no_threads_of_their_own() {
         );
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+}
+
+/// A class `app.<name>` with a lens for the class, `Size`, `Run` and `Stop`,
+/// and `callers` programs that name it and call `Run`, with `marker` in each.
+fn held_class(files: &mut Vec<(String, String)>, name: &str, callers: usize, marker: &str) {
+    files.push((
+        format!("app/{name}.cls"),
+        format!(
+            "CLASS app.{name}:\n\
+             \x20   DEFINE PUBLIC PROPERTY Size AS INTEGER NO-UNDO GET. SET.\n\
+             \x20   METHOD PUBLIC VOID Run():\n    END METHOD.\n\
+             \x20   METHOD PUBLIC VOID Stop():\n    END METHOD.\n\
+             END CLASS.\n"
+        ),
+    ));
+    for n in 0..callers {
+        files.push((
+            format!("{name}{n}.p"),
+            format!(
+                "{marker}\nDEFINE VARIABLE o AS CLASS app.{name} NO-UNDO.\n\
+                 o = NEW app.{name}().\no:Run().\n"
+            ),
+        ));
+    }
+}
+
+fn workspace_of(files: &[(String, String)]) -> Workspace {
+    let mut borrowed: Vec<(&str, &str)> = vec![("oxabl.toml", CONFIG)];
+    borrowed.extend(
+        files
+            .iter()
+            .map(|(name, text)| (name.as_str(), text.as_str())),
+    );
+    Workspace::new(&borrowed)
+}
+
+/// Open `app/<name>.cls`, with `extra` after its text, and give its lenses.
+fn open_class(session: &mut Session, ws: &Workspace, name: &str, extra: &str) -> Vec<Value> {
+    let path = ws.path(&format!("app/{name}.cls"));
+    let text = std::fs::read_to_string(&path).unwrap() + extra;
+    session.open(&path, &text);
+    lenses(session, &path)
+}
+
+fn send_resolve(session: &mut Session, lens: &Value) -> u64 {
+    let id = session.next_request_id();
+    session.send(json!({
+        "jsonrpc": "2.0", "id": id, "method": "codeLens/resolve", "params": lens
+    }));
+    id
+}
+
+/// The messages until `done` says that all are in, or `limit` passes.
+fn messages_until(
+    session: &Session,
+    limit: std::time::Duration,
+    mut done: impl FnMut(&[Value]) -> bool,
+) -> Vec<Value> {
+    let deadline = std::time::Instant::now() + limit;
+    let mut seen = Vec::new();
+    while !done(&seen) {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or_else(|| panic!("no end in {limit:?}: {seen:#?}"));
+        if let Some(message) = session.try_next(left) {
+            seen.push(message);
+        }
+    }
+    seen
+}
+
+fn answer_to(seen: &[Value], id: u64) -> Option<&Value> {
+    seen.iter()
+        .find(|message| message["id"] == json!(id) && message.get("method").is_none())
+}
+
+/// The files of the test log line of a lens search.
+fn searched_files(seen: &[Value]) -> Option<Vec<String>> {
+    seen.iter().find_map(|message| {
+        let line = message["params"]["message"].as_str()?;
+        let (_, files) = line
+            .strip_prefix("oxabl-test: ")?
+            .split_once(" reference lenses searched ")?;
+        Some(
+            files
+                .split('|')
+                .filter(|file| !file.is_empty())
+                .map(str::to_string)
+                .collect(),
+        )
+    })
+}
+
+#[test]
+fn a_batch_whose_resolves_are_all_cancelled_stops() {
+    let callers = 24;
+    let mut files = Vec::new();
+    held_class(
+        &mut files,
+        "A",
+        callers,
+        "/* OXABL-TEST-HOLD:daemon.reference-unit@1000 */",
+    );
+    held_class(&mut files, "B", 1, "");
+    let ws = workspace_of(&files);
+    let mut session = start(&ws);
+    let listed = open_class(
+        &mut session,
+        &ws,
+        "A",
+        "/* OXABL-TEST-COUNT:lsp.reference-lens */\n",
+    );
+    assert_eq!(listed.len(), 4);
+    // The workspace pass is current, so the batch is in its search of the
+    // callers when the cancels come.
+    let b = ws.path("app/B.cls");
+    let b_text = std::fs::read_to_string(&b).unwrap();
+    session.open(&b, &b_text);
+    assert_eq!(find_references(&mut session, &b, &b_text, "Run()").0, 1);
+
+    let ids: Vec<u64> = listed
+        .iter()
+        .map(|lens| send_resolve(&mut session, lens))
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    for id in &ids {
+        session.send(json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}}));
+    }
+    let seen = messages_until(&session, std::time::Duration::from_secs(60), |seen| {
+        ids.iter().all(|&id| answer_to(seen, id).is_some()) && searched_files(seen).is_some()
+    });
+    for &id in &ids {
+        let answer = answer_to(&seen, id).unwrap();
+        assert_eq!(
+            answer["error"]["code"],
+            json!(-32800),
+            "a cancelled resolve gave {answer}"
+        );
+    }
+    // The search stopped: it did not analyse every caller.
+    let analysed = searched_files(&seen).unwrap();
+    assert!(
+        analysed.len() < callers,
+        "the search analysed {} of {callers} callers after every resolve was cancelled",
+        analysed.len()
+    );
+}
+
+#[test]
+fn a_kept_title_and_a_short_batch_do_not_wait_for_a_long_batch() {
+    let mut files = Vec::new();
+    held_class(
+        &mut files,
+        "A",
+        12,
+        "/* OXABL-TEST-HOLD:daemon.reference-unit@3000 */",
+    );
+    held_class(
+        &mut files,
+        "B",
+        12,
+        "/* OXABL-TEST-HOLD:daemon.reference-unit@3000 */",
+    );
+    held_class(&mut files, "C", 1, "");
+    // No other file names `E`: its batch needs no thread of the pool, only
+    // a runner.
+    held_class(&mut files, "E", 0, "");
+    let ws = workspace_of(&files);
+    let mut session = start(&ws);
+    let count = "/* OXABL-TEST-COUNT:lsp.reference-lens */\n";
+    let a = open_class(&mut session, &ws, "A", "");
+    let b = open_class(&mut session, &ws, "B", "");
+    let c = open_class(&mut session, &ws, "C", count);
+    let e = open_class(&mut session, &ws, "E", "");
+    // A title of `C` that read the workspace pass is kept.
+    let (first, logged) = resolve_at_once(&mut session, &c[2..3]);
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert_eq!(title(&first[0]), exact(1));
+
+    // Two long batches, then a kept title and a new file.
+    let long: Vec<u64> = [&a[0], &b[0]]
+        .into_iter()
+        .map(|lens| send_resolve(&mut session, lens))
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let kept = send_resolve(&mut session, &c[2]);
+    let short = send_resolve(&mut session, &e[2]);
+    let seen = messages_until(&session, std::time::Duration::from_secs(60), |seen| {
+        answer_to(seen, kept).is_some() && answer_to(seen, short).is_some()
+    });
+    for id in &long {
+        assert!(
+            answer_to(&seen, *id).is_none(),
+            "a long batch ended before the kept title and the short batch: {seen:#?}"
+        );
+    }
+    assert_eq!(title(&answer_to(&seen, kept).unwrap()["result"]), exact(1));
+    assert_eq!(title(&answer_to(&seen, short).unwrap()["result"]), exact(0));
+    // The kept title made no search.
+    assert!(
+        searched_files(&seen).is_none(),
+        "the kept title made a new search: {seen:#?}"
+    );
+    messages_until(&session, std::time::Duration::from_secs(120), |seen| {
+        long.iter().all(|&id| answer_to(seen, id).is_some())
+    });
+}
+
+#[test]
+fn a_panic_for_one_lens_in_a_file_costs_only_that_lens() {
+    let mut files = Vec::new();
+    held_class(&mut files, "A", 0, "");
+    files.push((
+        "user.p".to_string(),
+        "/* OXABL-TEST-PANIC:daemon.reference-part:Run */\n\
+         DEFINE VARIABLE o AS CLASS app.A NO-UNDO.\n\
+         o = NEW app.A().\no:Run().\no:Stop().\no:Size = 1.\n"
+            .to_string(),
+    ));
+    let ws = workspace_of(&files);
+    let mut session = start(&ws);
+    let listed = open_class(&mut session, &ws, "A", "");
+    let (answers, _) = resolve_at_once(&mut session, &listed);
+    let titles: Vec<String> = answers.iter().map(title).collect();
+    assert_eq!(titles[0], exact(2), "the class: {titles:#?}");
+    assert_eq!(titles[1], exact(1), "`Size`: {titles:#?}");
+    assert!(
+        titles[2].starts_with("0+ references · incomplete: 1 file(s) that can name `Run`"),
+        "`Run`: {titles:#?}"
+    );
+    assert_eq!(titles[3], exact(1), "`Stop`: {titles:#?}");
 }

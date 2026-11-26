@@ -62,12 +62,9 @@ waits for its search holds no analysis thread, and a request that waits for a
 workspace pass holds no place in the pool. A thread of the pool that has had
 no work for 5 seconds ends. The allocator keeps the memory that a thread freed
 until the thread ends, so this gives the memory of a large search back soon
-after it: on a workspace of about 14,000 files, the daemon held 1.36 GB just
-after the reference lenses of a large class, of which 0.30 GB was in use
-(heaptrack), and 0.36 GB once the threads had ended. A `$/cancelRequest` stops a request while it
-waits for the pass (the pass goes on and is kept for later requests), and
-between two files. The request answers
-`RequestCancelled`.
+after it. A `$/cancelRequest` stops a request while it waits for the pass (the
+pass goes on and is kept for later requests), and between two files. The
+request answers `RequestCancelled`.
 
 The search starts from a current workspace pass. It reuses a walk for added
 files for at most one second (a poll of `oxabl/freshness` reuses one for two),
@@ -246,8 +243,8 @@ most visible place that it can without a message on every request:
 
 Each request analyses the unit that asks again (expand, parse, resolve; no type
 check). A search over other files analyses each of them the same way, on
-the shared pool, and reads the outline of each file a
-resolution names once per file. A lookup of the name at an offset, of the call
+the shared pool, and reads the outline of each file a resolution names once
+per file. A lookup of the name at an offset, of the call
 that holds a `RUN` name and of the routine that holds a call is a binary
 search; the declared symbols and each callee's item are built once per
 request. A referent that every use writes in full (a variable, a routine, a
@@ -266,8 +263,8 @@ times the calls cost more than 40 times the time. Nothing is memoized between
 requests. The reference lenses of a file share one search: each other file
 is analysed once for all of them (`docs/design/reference-lenses.md`), and the
 targets of its sites and the places of its declarations are found once for
-all the declarations (`oxabl_pipeline::ReferenceMemo`). The
-first request that searches other files waits for the workspace pass that
+all the declarations (`oxabl_pipeline::ReferenceMemo`). The first request
+that searches other files waits for the workspace pass that
 `workspace/symbol` and `oxabl/impact` also wait for.
 
 Measured with a release build on 16 threads, over a generated workspace of

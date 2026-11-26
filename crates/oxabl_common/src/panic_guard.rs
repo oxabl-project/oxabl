@@ -174,6 +174,11 @@ pub mod panic_sites {
     /// [`hold_if_injected`](super::hold_if_injected). The marker is in that
     /// file.
     pub const REFERENCE_UNIT: &str = "daemon.reference-unit";
+    /// What one other file of a references search holds of one referent,
+    /// for [`panic_if_injected`](super::panic_if_injected) with the
+    /// referent's name after a colon (`daemon.reference-part:Run`). The
+    /// marker is in that file.
+    pub const REFERENCE_PART: &str = "daemon.reference-part";
     /// The reference-count lens search after its answer, before the title is
     /// kept, for [`hold_if_injected`](super::hold_if_injected).
     pub const LSP_REFERENCE_LENS_ANSWER: &str = "lsp.answered-reference-lens";

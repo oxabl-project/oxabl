@@ -432,23 +432,33 @@ impl Server<'_> {
             epoch,
         };
         // The lenses of the file that the same unit counts, made as
-        // `textDocument/codeLens` makes them.
+        // `textDocument/codeLens` makes them, from the same outline. It is
+        // made here, so no lock waits for a parse.
         let wanted = (data.kind, data.offset);
-        let lenses = || {
-            let mut found: Vec<(Kind, u32)> = self
-                .documents
-                .get(&uri)
-                .and_then(|doc| oxabl_pipeline::outline(&doc.text()).ok())
-                .map(|symbols| lens_sites(&path, &symbols))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(kind, _, name)| (kind, name))
-                .filter(|(kind, _)| root_of(*kind) == root)
-                .collect();
-            if !found.contains(&wanted) {
-                found.push(wanted);
-            }
-            found
+        let mut lenses: Vec<(Kind, u32)> = match self.documents.get(&uri) {
+            Some(doc) => self
+                .outlines
+                .get_or_compute(&uri, doc.version, || oxabl_pipeline::outline(&doc.text()))
+                .map(|symbols| lens_sites(&path, symbols))
+                .unwrap_or_default(),
+            None => Vec::new(),
+        }
+        .into_iter()
+        .map(|(kind, _, name)| (kind, name))
+        .filter(|(kind, _)| root_of(*kind) == root)
+        .collect();
+        if !lenses.contains(&wanted) {
+            lenses.push(wanted);
+        }
+        // The text, to hold the search in a test that asks for it.
+        let hold_text = oxabl_common::INJECTION_ENABLED
+            .then(|| self.documents.get(&uri).map(|doc| doc.text().to_string()))
+            .flatten();
+        let plan = Plan {
+            key: batch_key,
+            path: path.clone(),
+            lenses,
+            hold_text,
         };
         let cancel = self.references.start(&req.id);
         let waiter = Waiter {
@@ -456,7 +466,6 @@ impl Server<'_> {
             lens,
             data,
             cancel,
-            kept,
         };
         let job = BatchJob {
             host: self.host.clone(),
@@ -466,15 +475,33 @@ impl Server<'_> {
             in_flight: self.references.clone(),
             cache: self.reference_cache.clone(),
         };
-        // The text, to hold the search in a test that asks for it.
-        let hold_text = || {
-            oxabl_common::INJECTION_ENABLED
-                .then(|| self.documents.get(&uri).map(|doc| doc.text().to_string()))
-                .flatten()
-        };
-        self.lens_batches
-            .join(batch_key, path.clone(), waiter, lenses, hold_text, job);
+        match kept {
+            Some((title, pass)) => self.lens_batches.check(
+                Check {
+                    waiter,
+                    title,
+                    pass,
+                    plan,
+                },
+                job,
+            ),
+            None => self.lens_batches.join(plan, waiter, &job),
+        }
         Ok(())
+    }
+
+    /// `$/cancelRequest` for `id`: a resolve that waits for a batch or for
+    /// the check of its kept title is answered at once, and a batch that no
+    /// resolve waits for stops.
+    pub(crate) fn cancel_reference_lens(&mut self, id: &RequestId) {
+        for waiter in self.lens_batches.cancel(id) {
+            self.references.finish(&waiter.id);
+            let _ = self.respond(Response::new_err(
+                waiter.id,
+                ErrorCode::RequestCanceled as i32,
+                CANCELLED.to_string(),
+            ));
+        }
     }
 }
 
@@ -495,8 +522,14 @@ fn lens_sites(path: &std::path::Path, symbols: &[OutlineSymbol]) -> Vec<(Kind, u
     sites
 }
 
-/// How many batches of one client run at one time.
-const RUNNERS: usize = 2;
+/// The most batches of one client that run at one time. Each batch has a
+/// runner of its own up to this bound, so a short batch does not wait for a
+/// long one. A runner mostly waits: the shared pool of the daemon bounds the
+/// work of every search.
+const MAX_RUNNERS: usize = 16;
+
+/// What a cancelled resolve is told.
+const CANCELLED: &str = "oxabl-lsp: the request was cancelled";
 
 /// What tells two batches apart: the file, the version of its text, the unit
 /// that is analysed, and the state of the session. A resolve made after an
@@ -516,8 +549,26 @@ struct Waiter {
     lens: CodeLens,
     data: LensData,
     cancel: Arc<AtomicBool>,
-    /// A kept title whose workspace pass must be checked.
-    kept: Option<(Title, Pass)>,
+}
+
+/// The batch a resolve joins, or starts when no open batch has its key.
+struct Plan {
+    key: BatchKey,
+    /// The file of the lenses.
+    path: PathBuf,
+    /// The kind and name byte of each lens of the file.
+    lenses: Vec<(Kind, u32)>,
+    hold_text: Option<String>,
+}
+
+/// A resolve with a kept title that read a workspace pass. The title holds
+/// while that pass is the one that find references reads now; otherwise the
+/// resolve joins the batch of `plan`.
+struct Check {
+    waiter: Waiter,
+    title: Title,
+    pass: Pass,
+    plan: Plan,
 }
 
 /// What a batch needs of the server.
@@ -553,10 +604,7 @@ enum Outcome {
 }
 
 fn cancelled() -> Outcome {
-    Outcome::Error(
-        ErrorCode::RequestCanceled as i32,
-        "oxabl-lsp: the request was cancelled".to_string(),
-    )
+    Outcome::Error(ErrorCode::RequestCanceled as i32, CANCELLED.to_string())
 }
 
 /// One search for the lenses of a file.
@@ -594,10 +642,17 @@ struct Queue {
     /// The batches that wait for a runner.
     waiting: std::collections::VecDeque<Arc<Batch>>,
     runners: usize,
+    /// The kept titles that wait for the next check of the workspace pass.
+    checks: Vec<Check>,
+    /// The kept titles of the check that runs.
+    checking: Vec<Check>,
+    /// Whether a thread checks the kept titles.
+    checker: bool,
 }
 
-/// The lens batches of a client, and the runners that work them off: at
-/// most [`RUNNERS`] threads, whatever the number of resolves.
+/// The lens batches of a client, and the runners that work them off: a
+/// thread for each batch, at most [`MAX_RUNNERS`], whatever the number of
+/// resolves. Kept titles are checked apart, so they never wait for a batch.
 #[derive(Clone, Default)]
 pub(crate) struct Batches {
     queue: Arc<Mutex<Queue>>,
@@ -610,19 +665,11 @@ impl Batches {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Put `waiter` in the open batch of `key`, or in a new one of `lenses`.
-    fn join(
-        &self,
-        key: BatchKey,
-        path: PathBuf,
-        waiter: Waiter,
-        lenses: impl FnOnce() -> Vec<(Kind, u32)>,
-        hold_text: impl FnOnce() -> Option<String>,
-        job: BatchJob,
-    ) {
+    /// Put `waiter` in the open batch of `plan`'s key, or in a new one.
+    fn join(&self, plan: Plan, waiter: Waiter, job: &BatchJob) {
         let wanted = (waiter.data.kind, waiter.data.offset);
         let mut queue = self.lock();
-        if let Some(batch) = queue.open.get(&key).cloned() {
+        if let Some(batch) = queue.open.get(&plan.key).cloned() {
             let mut state = batch.lock();
             if !state.closed
                 && let Some(at) = batch.lenses.iter().position(|lens| *lens == wanted)
@@ -638,21 +685,20 @@ impl Batches {
                 return;
             }
         }
-        let lenses = lenses();
         let batch = Arc::new(Batch {
-            key: key.clone(),
-            path,
+            key: plan.key.clone(),
+            path: plan.path,
             state: Mutex::new(BatchState {
                 waiters: vec![waiter],
-                outcomes: vec![None; lenses.len()],
+                outcomes: vec![None; plan.lenses.len()],
                 closed: false,
             }),
-            lenses,
-            hold_text: hold_text(),
+            lenses: plan.lenses,
+            hold_text: plan.hold_text,
         });
-        queue.open.insert(key, Arc::clone(&batch));
+        queue.open.insert(plan.key, Arc::clone(&batch));
         queue.waiting.push_back(batch);
-        if queue.runners >= RUNNERS {
+        if queue.runners >= MAX_RUNNERS {
             return;
         }
         let spawned = oxabl_common::stack::builder()
@@ -691,6 +737,109 @@ impl Batches {
                 }
             }
         }
+    }
+
+    /// Answer `check` with its kept title when its workspace pass is still
+    /// the current one, or put it in a batch. One thread checks the kept
+    /// titles of a client, and ends when none is left.
+    fn check(&self, check: Check, job: BatchJob) {
+        let mut queue = self.lock();
+        queue.checks.push(check);
+        if queue.checker {
+            return;
+        }
+        let spawned = oxabl_common::stack::builder()
+            .name("oxabl-reference-lens-check".to_string())
+            .spawn({
+                let batches = self.clone();
+                let job = job.clone();
+                move || batches.run_checks(&job)
+            });
+        if spawned.is_ok() {
+            queue.checker = true;
+            return;
+        }
+        // No thread to check: count them again.
+        let checks = std::mem::take(&mut queue.checks);
+        drop(queue);
+        for check in checks {
+            self.join(check.plan, check.waiter, &job);
+        }
+    }
+
+    /// Check the kept titles in rounds: one look at the workspace pass for
+    /// every title that waits when the round starts.
+    fn run_checks(&self, job: &BatchJob) {
+        loop {
+            {
+                let mut queue = self.lock();
+                if queue.checks.is_empty() {
+                    queue.checker = false;
+                    return;
+                }
+                queue.checking = std::mem::take(&mut queue.checks);
+            }
+            // Every resolve of the round cancelled: no need to know.
+            let stop = || self.lock().checking.is_empty();
+            let current =
+                oxabl_common::catch_panic(|| Pass::current(&job.host, &job.session_root, &stop))
+                    .ok()
+                    .flatten();
+            let round = std::mem::take(&mut self.lock().checking);
+            for check in round {
+                if current
+                    .as_ref()
+                    .is_some_and(|current| check.pass.same(current))
+                {
+                    job.send(check.waiter, &Outcome::Title(check.title));
+                } else {
+                    self.join(check.plan, check.waiter, job);
+                }
+            }
+        }
+    }
+
+    /// Take the resolve `id` out of the check or batch it waits in. A batch
+    /// that no resolve waits for closes, and a closed batch that waits for a
+    /// runner goes.
+    fn cancel(&self, id: &RequestId) -> Vec<Waiter> {
+        let mut guard = self.lock();
+        let queue = &mut *guard;
+        let mut gone = Vec::new();
+        for checks in [&mut queue.checks, &mut queue.checking] {
+            let (out, kept): (Vec<Check>, Vec<Check>) = std::mem::take(checks)
+                .into_iter()
+                .partition(|check| check.waiter.id == *id);
+            *checks = kept;
+            gone.extend(out.into_iter().map(|check| check.waiter));
+        }
+        for batch in queue.open.values() {
+            let mut state = batch.lock();
+            let Some(at) = state.waiters.iter().position(|waiter| waiter.id == *id) else {
+                continue;
+            };
+            gone.push(state.waiters.remove(at));
+            if state.waiters.is_empty() {
+                state.closed = true;
+            }
+        }
+        let reaped: Vec<Arc<Batch>> = queue
+            .waiting
+            .iter()
+            .filter(|batch| batch.lock().closed)
+            .cloned()
+            .collect();
+        queue.waiting.retain(|batch| !batch.lock().closed);
+        for batch in reaped {
+            if queue
+                .open
+                .get(&batch.key)
+                .is_some_and(|open| Arc::ptr_eq(open, &batch))
+            {
+                queue.open.remove(&batch.key);
+            }
+        }
+        gone
     }
 
     /// Work off the waiting batches, then end.
@@ -757,30 +906,6 @@ fn reap(batch: &Batch, job: &BatchJob) -> bool {
 fn run_batch(batch: &Batch, job: &BatchJob) {
     let (host, session_root) = (&job.host, job.session_root.as_path());
     let stop = || reap(batch, job);
-    // A kept title that read a workspace pass holds while the pass is the
-    // one that find references reads now.
-    let checks = batch
-        .lock()
-        .waiters
-        .iter()
-        .any(|waiter| waiter.kept.is_some());
-    if checks {
-        let current = Pass::current(host, session_root, &stop);
-        let answered: Vec<Waiter> = {
-            let mut state = batch.lock();
-            let (fresh, old): (Vec<Waiter>, Vec<Waiter>) = std::mem::take(&mut state.waiters)
-                .into_iter()
-                .partition(|waiter| {
-                    matches!((&waiter.kept, &current), (Some((_, pass)), Some(current)) if pass.same(current))
-                });
-            state.waiters = old;
-            fresh
-        };
-        for mut waiter in answered {
-            let (title, _) = waiter.kept.take().expect("partitioned on a kept title");
-            job.send(waiter, &Outcome::Title(title));
-        }
-    }
     if stop() {
         return;
     }

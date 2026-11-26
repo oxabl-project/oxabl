@@ -310,23 +310,42 @@ pub fn answer_batch(
             .iter()
             .map(|&s| {
                 let (referent, incoming) = &referents[s];
-                (
-                    s,
-                    unit_part(unit, referent, *incoming, &mut read, &mut memo),
-                )
+                // A panic costs this referent in this unit, not the others.
+                let part = oxabl_common::catch_panic(|| {
+                    if oxabl_common::INJECTION_ENABLED {
+                        oxabl_common::panic_if_injected(
+                            &format!(
+                                "{}:{}",
+                                oxabl_common::panic_sites::REFERENCE_PART,
+                                referent.name
+                            ),
+                            &unit.source,
+                        );
+                    }
+                    unit_part(unit, referent, *incoming, &mut read, &mut memo)
+                })
+                .map_err(|panic| {
+                    // What the panic left behind is not trusted.
+                    (read, memo) = (HashMap::new(), ReferenceMemo::default());
+                    format!("its analysis failed: {panic}")
+                });
+                (s, part)
             })
             .collect::<Vec<_>>()
     });
     if stop() {
-        return cancelled();
+        return BatchAnswer {
+            analysed: remote.analysed,
+            ..cancelled()
+        };
     }
     let analysed = remote.analysed;
     // The parts of each unit, by search.
-    let mut parts: Vec<Option<Result<Vec<Option<TextedPart>>, String>>> =
+    let mut parts: Vec<Option<Result<Vec<Option<PartOutcome>>, String>>> =
         (0..units.len()).map(|_| None).collect();
     for (u, outcome) in remote.outcomes {
         parts[u] = Some(outcome.map(|found| {
-            let mut by_search: Vec<Option<TextedPart>> =
+            let mut by_search: Vec<Option<PartOutcome>> =
                 (0..searches.len()).map(|_| None).collect();
             for (s, part) in found {
                 by_search[s] = Some(part);
@@ -340,7 +359,8 @@ pub fn answer_batch(
         for &u in &unit_of[s] {
             match &mut parts[u] {
                 Some(Ok(by_search)) => match by_search[s].take() {
-                    Some(part) => remote.push(part),
+                    Some(Ok(part)) => remote.push(part),
+                    Some(Err(reason)) => failed.push((units[u].clone(), reason)),
                     None => failed.push((units[u].clone(), "it was not searched".to_string())),
                 },
                 Some(Err(reason)) => failed.push((units[u].clone(), reason.clone())),
@@ -665,6 +685,9 @@ fn graph_or_stop(
 
 /// What one unit gives of a referent, with the texts of the files it names.
 type TextedPart = (Part, HashMap<PathBuf, Arc<str>>);
+
+/// What one unit gives of a referent, or why it gives nothing.
+type PartOutcome = Result<TextedPart, String>;
 
 /// What one unit gives.
 enum Part {

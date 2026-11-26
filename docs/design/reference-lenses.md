@@ -48,20 +48,44 @@ files, so one search costs about as much as the search of one lens.
 
 A resolve that comes while the batch of its file runs joins the batch. It
 waits as data, with no thread of its own, and gets its answer when the batch
-has counted its lens. The batch counts the lenses that a resolve waits for
-first. The batch keeps every title that it can keep (see "Cost"), so a later
-resolve of another lens of the file is a lookup. A batch is for one version of
-the text, one unit and one state of the session: a resolve after an edit, a
-change of the configuration or schema, or a change on disk starts a new batch.
+has counted its lens. The search counts all lenses at the same time. After the
+search, the batch gives the answers of the lenses that a resolve waits for
+first, and does the override check (see below) for them first. The batch keeps
+every title that it can keep (see "Cost"), so a later resolve of another lens
+of the file is a lookup. A batch is for one version of the text, one unit and
+one state of the session: a resolve after an edit, a change of the
+configuration or schema, or a change on disk starts a new batch. The lenses of
+a batch come from the outline cache of the server, which
+`textDocument/codeLens` filled for the same version of the text, so a new
+batch does not parse the text again. The server makes the list of lenses
+before it takes the lock of the batches.
 
-Each client has at most two runners (threads) that run batches; a later batch
-waits in a queue. The other files are analysed on the pool of threads that
-every search of the daemon shares (`docs/design/references.md`). The member lenses also ask whether the member overrides or
+Each batch has its own runner (a thread), up to 16 for each client, so a
+short batch does not wait for the end of a long one. A runner mostly waits:
+the other files are analysed on the pool of threads that every search of the
+daemon shares (`docs/design/references.md`), so the analyses in progress do
+not grow with the number of batches. A batch over the limit waits in a queue
+for a runner. The member lenses also ask whether the member overrides or
 implements another (see below). The batch asks this for all its members with
 one more analysis of the unit.
 
-`$/cancelRequest` stops a resolve. When every resolve of a batch is cancelled,
-the batch stops: while it waits for the workspace pass, and between two files.
+A resolve with a kept title that read a workspace pass (see "Cost") does not
+join a batch. One thread for each client checks whether the pass of the kept
+titles is still the current one, for every such resolve that waits, and ends
+when none is left. When the pass is current, the resolve gets the kept title.
+Otherwise it joins the batch of its file.
+
+`$/cancelRequest` stops a resolve, and the server answers `RequestCancelled`
+at once: also when the resolve waits for the check of a kept title, or waits
+in a batch that waits for a runner. When every resolve of a batch is
+cancelled, the batch stops:
+
+- A batch that waits for a runner goes from the queue.
+- A batch that runs stops before its search, while it waits for the workspace
+  pass, and between two other files.
+- A batch does not stop while it analyses the unit that asks, while it
+  analyses one other file, or while it does the override check. These end and
+  their answers are dropped.
 
 A resolve for text that has changed since the lens was made answers
 `ContentModified`. The offsets in the data are for the old text. The client
@@ -206,18 +230,19 @@ The first resolve of a file costs one search (see "One search for the lenses
 of a file"), however many lenses the file has. The lens needs no work until
 one lens of the file is seen.
 
-The server keeps the title of each lens that a batch counted. A second
-resolve of the same lens (the same file, unit, declaration and text version) runs no new
-search while the session is unchanged: the generations of the buffers, the
-configuration and the schema are the same, and no watched file changed on
-disk. A kept title also holds the workspace pass that its search read. On a
-resolve the server checks, as find references does, that this pass is still
-the current one: the pass is built again when a file of the workspace changes,
-also with no watcher event (a client with no watcher, an include path outside
-the folder). So a count is never older than the answer of find references for
-the same symbol. A change on disk that is reported while a search runs
-empties the cache and moves a counter that the search checked before it keeps
-its title, so the answer of that search is not kept.
+The server keeps the title of each lens that a batch counted. A second resolve
+of the same lens (the same file, unit, declaration and text version) runs no
+new search while the session is unchanged: the generations of the buffers, the
+configuration and the schema are the same, and no watched file changed on disk.
+A kept title also holds the workspace pass that its search read. On a resolve
+the server checks, as find references does, that this pass is still the current
+one (on the thread that checks kept titles, see "One search for the lenses of a
+file"): the pass is built again when a file of the workspace changes, also with
+no watcher event (a client with no watcher, an include path outside the
+folder). So a count is never older than the answer of find references for the
+same symbol. A change on disk that is reported while a search runs empties the
+cache and moves a counter that the search checked before it keeps its title, so
+the answer of that search is not kept.
 
 An answer that a later request can change with no edit is not kept: a
 workspace pass that was not ready or that failed, or a title with no count.
@@ -227,8 +252,9 @@ Each title holds every place of its answer, so the cache also stops at 100,000
 places in all (a title with more places is not kept) and at 4,096 titles.
 
 An edit changes the version of the text. VS Code asks for the lenses again
-after each edit, and then every lens that is in view runs its search again.
-This per-edit cost is the reason the setting is off by default.
+after each edit, and then the lenses that are in view start a new batch: one
+search for the file again. This per-edit cost is the reason the setting is
+off by default.
 
 ## The client asks again
 
@@ -269,15 +295,29 @@ the exact counts of a workspace that has none; the refresh request after a
 save, a disk change and an edit of another file, and one request for a burst;
 the effect lenses with the reference lenses beside them; and the batch: the
 lenses of a file that are resolved at once have the counts and lists that each
-lens has alone, and one search analyses each other file once for all the
-lenses of the file; and the threads: resolves that wait and searches that run
-together start no thread for each resolve and no new thread to analyse a file,
-and the threads of the searches end soon after them (a file with `OXABL-TEST-HOLD:daemon.reference-unit@<ms>` makes its analysis
-wait, in test builds only). A source with `OXABL-TEST-COUNT:lsp.reference-lens` makes
-the server write the files that the search of each batch analysed to the log
-(`window/logMessage`), in test builds only. The cache bounds
-are tested in `crates/oxabl_lsp/src/reference_lens.rs`, because no client can see
-the size of the cache. The `reference-lenses` scenario of
+lens has alone, one search analyses each other file once for all the lenses of
+the file, a batch whose resolves are all cancelled answers each of them
+`RequestCancelled` and stops before it analyses every other file, a kept title
+and the batch of another file do not wait for two long batches, and a panic
+for one lens in a file costs only that lens; and the threads: resolves that
+wait and searches that run together start no thread for each resolve and no
+new thread to analyse a file, and the threads of the searches end soon after
+them. In test builds only, a file with
+`OXABL-TEST-HOLD:daemon.reference-unit@<ms>` makes its analysis in a search
+wait, a file with `OXABL-TEST-PANIC:daemon.reference-part:<name>` panics when
+a search collects the places of the referent `<name>` in it, and a source with
+`OXABL-TEST-COUNT:lsp.reference-lens` makes the server write the files that
+the search of each batch analysed to the log (`window/logMessage`). The cache
+bounds are tested in `crates/oxabl_lsp/src/reference_lens.rs`, because no
+client can see the size of the cache. The `reference-lenses` scenario of
 `clients/vscode/test/e2e` shows the lenses in a real VS Code, clicks the
 procedure lens and the program lens, and counts the rows of the references
 view against the number on the lens.
+
+`crates/oxabl_pipeline/benches/references_bench.rs` measures the two parts of
+a batch that grow with the workspace and with the lenses of a file, on a
+synthetic workspace in memory (a class with 70 methods and 2,000 programs that
+name it): `references/search_every_lens_of_a_class` finds the files of each
+lens (`Referent::search`), and `references/sites_of_a_unit_for_every_lens`
+collects the places of each lens in one program with one `ReferenceMemo`
+(`Navigation::references_with`).
