@@ -338,6 +338,33 @@ fn a_fifo_at_the_path_of_an_entry_does_not_stop_the_run() {
 }
 
 #[test]
+fn a_directory_at_the_path_of_an_entry_is_a_miss() {
+    let ws = Workspace::new(&[("a.df", CUSTOMER)]);
+    let off = ws.check(&[("OXABL_SCHEMA_CACHE", "off")]);
+    ws.check(&[]);
+    let entry = ws.entries().remove(0);
+    fs::remove_file(&entry).unwrap();
+    fs::create_dir(&entry).unwrap();
+    // Files in the directory give it a size in the range of an entry, also on
+    // a filesystem that counts only the names.
+    for n in 0..64 {
+        fs::write(entry.join(format!("f{n}")), [0u8; 64]).unwrap();
+    }
+
+    for _ in 0..2 {
+        let run = ws.check(&[]);
+        assert_eq!(run.parsed, 1, "a directory was read as an entry");
+        same_output(&off, &run);
+    }
+    assert!(entry.is_dir());
+    assert_eq!(
+        ws.entries(),
+        vec![entry],
+        "a write that failed left its temporary file"
+    );
+}
+
+#[test]
 fn a_test_run_never_touches_the_cache_of_the_user() {
     let ws = Workspace::new(&[("a.df", CUSTOMER)]);
     let home = ws.path().join("home");

@@ -37,17 +37,18 @@ pub fn install() {
 
 struct DiskCache {
     directory: PathBuf,
-    /// Hash of the executable (`oxabl_daemon::build_identity`), so a new build
-    /// never reads an entry of an old one. Made at the first key: a run that
-    /// loads no schema does not read the executable.
-    build: std::sync::OnceLock<Option<[u8; 32]>>,
+    /// What identifies the running build, so a new build never reads an entry
+    /// of an old one.
+    build: Build,
 }
 
 impl DiskCache {
     /// `None` when the cache is off: `OXABL_SCHEMA_CACHE=off`, a cache mode
     /// other than `developer` (the cache trusts every process of the user, as
     /// the local build cache does), or no known directory. With no known build (the
-    /// executable cannot be read) every key is empty and no entry is read or written. A
+    /// executable cannot be read) every key is empty and no entry is read or written.
+    /// It finds the build now, at the start of the process, before an update can
+    /// put another executable at its path. A
     /// test build uses only a directory that `OXABL_SCHEMA_CACHE_DIR` names, so
     /// a test never reads or writes the cache of the user.
     fn from_environment() -> Option<Self> {
@@ -72,7 +73,7 @@ impl DiskCache {
         };
         Some(DiskCache {
             directory,
-            build: std::sync::OnceLock::new(),
+            build: Build::of_running_executable(),
         })
     }
 
@@ -83,7 +84,7 @@ impl DiskCache {
 
 impl SchemaCache for DiskCache {
     fn key(&self, files: &[SchemaSource<'_>]) -> String {
-        let Some(build) = self.build.get_or_init(build_identity) else {
+        let Some(build) = self.build.identity() else {
             return String::new();
         };
         let mut hasher = blake3::Hasher::new();
@@ -135,23 +136,58 @@ impl DiskCache {
         create_private_directory(&self.directory)?;
         private_directory(&self.directory)?;
         let target = self.entry(key);
-        // Unique in the process and among processes, so two writers of one key
-        // never share a file.
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let temporary = target.with_extension(format!(
-            "{}-{}.tmp",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let written =
-            write_private(&temporary, key, entry).and_then(|()| fs::rename(&temporary, &target));
-        if written.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        written?;
+        let temporary = target.with_extension(temporary_extension());
+        write_through(&temporary, &target, key, entry)?;
         prune(&self.directory);
         Ok(())
     }
+}
+
+/// `<pid>-<number>-<random>.tmp`. The number makes it unique in the process, and
+/// the random part among processes that have the same pid (in two PID
+/// namespaces that share a home).
+fn temporary_extension() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    // Each `RandomState` has new random keys.
+    let mut random = std::collections::hash_map::RandomState::new().build_hasher();
+    random.write_u128(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    );
+    format!(
+        "{}-{}-{:016x}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+        random.finish()
+    )
+}
+
+/// Writes the entry to `temporary` and renames it to `target`. It removes
+/// `temporary` after a failure only when it made the file: a file that was
+/// there is the file of another writer.
+fn write_through(
+    temporary: &Path,
+    target: &Path,
+    key: &str,
+    payload: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(temporary)?;
+    let written = file
+        .write_all(&entry_hash(key, payload))
+        .and_then(|()| file.write_all(payload))
+        .and_then(|()| fs::rename(temporary, target));
+    if written.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    written
 }
 
 /// `$XDG_CACHE_HOME/oxabl/schema`, or `~/.cache/oxabl/schema`
@@ -165,14 +201,66 @@ fn default_directory(xdg_cache_home: Option<PathBuf>, home: Option<PathBuf>) -> 
         .or_else(|| home.map(|home| home.join(".cache/oxabl/schema")))
 }
 
-/// What identifies the executable that runs: its version, and the size, the
-/// times, the inode and the device of its file. The change time and the inode
-/// cannot be set by `touch`, `cp -p`, `rsync -a` or an archive, so another
-/// build with the size and the modification time of this one has another
-/// identity. A hash of the bytes would cost about 15 ms in each run.
-/// `None` when the file cannot be read, so the cache is off.
-fn build_identity() -> Option<[u8; 32]> {
-    let meta = fs::metadata(std::env::current_exe().ok()?).ok()?;
+/// The identity of the running build. It reads the executable through a handle
+/// that it opens at the start of the process: on Linux `/proc/self/exe`, which
+/// is the running file also after another file replaced it at its path.
+/// Elsewhere the path of the executable, so an update in the short time before
+/// the open can still give the identity of the new file.
+struct Build {
+    #[cfg(unix)]
+    identity: Option<[u8; 32]>,
+    /// The hash of the bytes costs about 15 ms, so it is made at the first key:
+    /// a run that loads no schema does not read the executable.
+    #[cfg(not(unix))]
+    executable: Option<fs::File>,
+    #[cfg(not(unix))]
+    identity: std::sync::OnceLock<Option<[u8; 32]>>,
+}
+
+impl Build {
+    fn of_running_executable() -> Self {
+        let executable = if cfg!(target_os = "linux") {
+            fs::File::open("/proc/self/exe")
+        } else {
+            std::env::current_exe().and_then(fs::File::open)
+        };
+        #[cfg(unix)]
+        {
+            Build {
+                identity: executable.ok().and_then(|file| metadata_identity(&file)),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Build {
+                executable: executable.ok(),
+                identity: std::sync::OnceLock::new(),
+            }
+        }
+    }
+
+    /// `None` when the executable cannot be read, so the cache is off.
+    fn identity(&self) -> Option<&[u8; 32]> {
+        #[cfg(unix)]
+        {
+            self.identity.as_ref()
+        }
+        #[cfg(not(unix))]
+        {
+            self.identity
+                .get_or_init(|| bytes_identity(self.executable.as_ref()?))
+                .as_ref()
+        }
+    }
+}
+
+/// The version, and the size, the times, the inode and the device of the
+/// executable. The change time and the inode cannot be set by `touch`, `cp -p`,
+/// `rsync -a` or an archive, so another build with the size and the
+/// modification time of this one has another identity in practice.
+#[cfg(unix)]
+fn metadata_identity(executable: &fs::File) -> Option<[u8; 32]> {
+    let meta = executable.metadata().ok()?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
     hasher.update(&meta.len().to_le_bytes());
@@ -184,7 +272,6 @@ fn build_identity() -> Option<[u8; 32]> {
             .as_nanos()
             .to_le_bytes(),
     );
-    #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         for part in [
@@ -196,14 +283,15 @@ fn build_identity() -> Option<[u8; 32]> {
             hasher.update(&part.to_le_bytes());
         }
     }
-    #[cfg(not(unix))]
-    {
-        let id = &oxabl_daemon::build_identity().id;
-        if id.is_empty() {
-            return None;
-        }
-        hasher.update(id.as_bytes());
-    }
+    Some(*hasher.finalize().as_bytes())
+}
+
+/// The version and a hash of the bytes of the executable.
+#[cfg(not(unix))]
+fn bytes_identity(mut executable: &fs::File) -> Option<[u8; 32]> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    std::io::copy(&mut executable, &mut hasher).ok()?;
     Some(*hasher.finalize().as_bytes())
 }
 
@@ -272,19 +360,9 @@ fn private_directory(directory: &Path) -> std::io::Result<()> {
     }
 }
 
-fn write_private(path: &Path, key: &str, payload: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(path)?;
-    file.write_all(&entry_hash(key, payload))?;
-    file.write_all(payload)
-}
-
 /// Whether `name` is an entry (`<64 hex digits>.bin`) or a temporary file of
-/// ours (`<64 hex digits>.<pid>-<number>.tmp`): nothing else in the directory is touched.
+/// ours (`<64 hex digits>.<pid>-<number>-<16 hex digits>.tmp`): nothing else in
+/// the directory is touched.
 fn kind_of(name: &OsStr) -> Option<bool> {
     let name = name.to_str()?;
     let (stem, rest) = name.split_once('.')?;
@@ -294,9 +372,11 @@ fn kind_of(name: &OsStr) -> Option<bool> {
     if rest == "bin" {
         return Some(true);
     }
-    let (pid, number) = rest.strip_suffix(".tmp")?.split_once('-')?;
+    let mut parts = rest.strip_suffix(".tmp")?.split('-');
+    let (pid, number, random) = (parts.next()?, parts.next()?, parts.next()?);
     let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-    (digits(pid) && digits(number)).then_some(false)
+    let random = random.len() == 16 && random.bytes().all(|b| b.is_ascii_hexdigit());
+    (parts.next().is_none() && digits(pid) && digits(number) && random).then_some(false)
 }
 
 /// Removes the entries beyond `MAX_ENTRIES`, the longest unused first (a read
@@ -326,5 +406,62 @@ fn prune(directory: &Path) {
     let excess = entries.len().saturating_sub(MAX_ENTRIES);
     for (_, path) in entries.into_iter().take(excess) {
         let _ = fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// The random part of a temporary name: the pid and the number are the same
+    /// in two processes with the same pid in two PID namespaces.
+    fn random_part(extension: &str) -> &str {
+        extension
+            .strip_suffix(".tmp")
+            .unwrap()
+            .rsplit('-')
+            .next()
+            .unwrap()
+    }
+
+    #[test]
+    fn two_writers_with_one_pid_and_number_get_two_temporary_names() {
+        let first = temporary_extension();
+        let second = temporary_extension();
+        for extension in [&first, &second] {
+            let name = format!("{KEY}.{extension}");
+            assert_eq!(
+                kind_of(OsStr::new(&name)),
+                Some(false),
+                "{name} is not a temporary file of ours"
+            );
+        }
+        assert_ne!(
+            random_part(&first),
+            random_part(&second),
+            "the random part of {first} and {second} is the same"
+        );
+    }
+
+    #[test]
+    fn a_write_does_not_remove_the_temporary_file_of_another_writer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join(format!("{KEY}.bin"));
+        let temporary = target.with_extension(temporary_extension());
+        fs::write(&temporary, b"another writer").unwrap();
+
+        assert!(write_through(&temporary, &target, KEY, b"entry").is_err());
+        assert!(
+            temporary.exists(),
+            "the write removed the temporary file of another writer"
+        );
+        assert_eq!(
+            fs::read(&temporary).unwrap(),
+            b"another writer",
+            "the write changed the temporary file of another writer"
+        );
+        assert!(!target.exists());
     }
 }

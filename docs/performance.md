@@ -381,9 +381,11 @@ generated ones (`LABEL`, `HELP`, `COLUMN-LABEL`, `VIEW-AS`), so the parse costs
 more there, and the cache gains more. The parser makes no string for the
 keywords any more, and the cache costs the hash of the `.df` files and the
 encode of the entry on the first run. A later run hashes the entry again to check
-it. The build is identified by the size, the times and the inode of the
-executable, not by a hash of its bytes: that hash costs about 15 ms in each run,
-more than the cache saves.
+it. On Linux and macOS, the build is identified by the size, the times and the
+inode of the executable, not by a hash of its bytes: that hash costs about 15 ms
+in each run, more than the cache saves. On other systems it is the hash of the
+bytes, made at the first schema load, so a run that loads a schema there pays
+those 15 ms.
 
 The bench `load_files_cached:sp2k` of `crates/oxabl_schema` (in memory) is the
 decode of an entry: 134 µs, against 353 µs for `load_files:sp2k`, which parses.
