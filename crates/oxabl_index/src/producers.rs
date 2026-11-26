@@ -979,7 +979,7 @@ mod tests {
             (format!("{others}{TRIGGERED}{others}"), &["v-a", "v-t"]),
             (format!("{TRIGGERED}{TRIGGERED}"), &["v-t"]),
             (format!("{{trig.i}}\n{others}"), &["v-a"]),
-            (format!("{{trig.i}}\n{{trig.i}}"), &["v-t"]),
+            ("{trig.i}\n{trig.i}".to_string(), &["v-t"]),
             (
                 format!(
                     "DEFINE NEW SHARED VARIABLE v-u AS CHARACTER VIEW-AS FILL-IN TRIGGERS:\nON LEAVE DO:\n{others}"
