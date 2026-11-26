@@ -36,9 +36,10 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use oxabl_common::{Diagnostic, LintSeverityMap};
-use oxabl_schema::{Schema, SchemaLoader};
+use oxabl_schema::{Schema, SchemaCache, SchemaLoader};
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
     EncodedFileSystem, FeaturesConfig, IncludeEntry, LintConfig, PreprocessorConfig,
@@ -551,6 +552,17 @@ fn derive(
     )
 }
 
+static SCHEMA_CACHE: OnceLock<Box<dyn SchemaCache>> = OnceLock::new();
+
+/// Let every schema load of this process go through `cache`, so a load of
+/// `.df` files it already holds parses nothing. Returns `false` and keeps the
+/// first cache when one is already set.
+///
+/// A process that never calls this parses its `.df` files on each load.
+pub fn set_schema_cache(cache: Box<dyn SchemaCache>) -> bool {
+    SCHEMA_CACHE.set(cache).is_ok()
+}
+
 /// The schema a configuration names, and whether one was loaded.
 ///
 /// `--schema` replaces the configured set rather than adding to it; absent it,
@@ -580,7 +592,11 @@ fn load_schema(
     if preprocessor.databases.is_none() {
         preprocessor.inferred_databases = Some(logical_database_names(&files));
     }
-    let (schema, diags) = SchemaLoader::load_files(&files, &EncodedFileSystem::new(decoding));
+    let (schema, diags) = SchemaLoader::load_files_cached(
+        &files,
+        &EncodedFileSystem::new(decoding),
+        SCHEMA_CACHE.get().map(|cache| &**cache),
+    );
     warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
     (schema, true)
 }

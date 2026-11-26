@@ -119,6 +119,15 @@ impl Session {
         };
         // No core dump from a daemon that crashes: it inherits the limit.
         let mut command = Command::new("sh");
+        match launch.schema_cache {
+            // `CI` (set on CI runners) or `OXABL_CACHE_MODE` turns the cache off.
+            Some(directory) => command
+                .env("OXABL_SCHEMA_CACHE_DIR", directory)
+                .env_remove("CI")
+                .env_remove("OXABL_CACHE_MODE")
+                .env_remove("OXABL_SCHEMA_CACHE"),
+            None => command.env_remove("OXABL_SCHEMA_CACHE_DIR"),
+        };
         command
             .arg("-c")
             .arg(r#"ulimit -c 0 && exec "$@""#)
@@ -447,6 +456,11 @@ pub struct Launch<'a> {
     /// Give stderr a pipe that the session holds and does not read, in place of a
     /// file. [`Session::stderr`] is then empty.
     pub stderr_pipe: bool,
+    /// The directory of the schema cache (`OXABL_SCHEMA_CACHE_DIR`). The session
+    /// then removes `CI`, `OXABL_CACHE_MODE` and `OXABL_SCHEMA_CACHE`, so the
+    /// cache is on also on a CI runner. By default the session has none, and a
+    /// test build keeps the cache off.
+    pub schema_cache: Option<&'a Path>,
     /// Environment variables for `oxabl lsp`, and so for the daemon it starts.
     pub env: &'a [(&'a str, &'a str)],
 }

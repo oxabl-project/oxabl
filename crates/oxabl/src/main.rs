@@ -18,6 +18,7 @@ mod build_run;
 mod display_path;
 mod explain;
 mod paths;
+mod schema_cache;
 mod self_update;
 mod skill;
 mod watch;
@@ -688,6 +689,7 @@ fn main() -> ExitCode {
     // an upgrade of the binary is replaced.
     oxabl_daemon::set_build_version(env!("CARGO_PKG_VERSION"));
     let cli = Cli::parse();
+    schema_cache::install();
     // The server runs for hours: its check starts first. A command that ends
     // soon schedules its check after it has done its work.
     let after = matches!(
@@ -705,6 +707,12 @@ fn main() -> ExitCode {
         && let Some(built) = SourceMap::built()
     {
         eprintln!("oxabl-test: source maps built: {built}");
+    }
+    // Test builds only: a test reads how many schema files the command parsed.
+    if std::env::var_os("OXABL_TEST_SCHEMA_PARSES").is_some()
+        && let Some(parsed) = oxabl_common::schema_files_parsed()
+    {
+        eprintln!("oxabl-test: schema files parsed: {parsed}");
     }
     // Test builds only: a test reads how many scope records the searches read.
     if std::env::var_os("OXABL_TEST_SCOPES_READ").is_some()

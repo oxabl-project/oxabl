@@ -6,6 +6,7 @@ mod lint_severity;
 mod panic_guard;
 mod source_map;
 pub mod stack;
+mod test_counts;
 #[doc(hidden)]
 pub mod test_tally;
 mod virtual_span;
@@ -23,4 +24,5 @@ pub use panic_guard::{
     hold_if_injected_with, injected_limit, panic_if_injected, panic_sites,
 };
 pub use source_map::SourceMap;
+pub use test_counts::{schema_file_parsed, schema_files_parsed};
 pub use virtual_span::VirtualSpan;
