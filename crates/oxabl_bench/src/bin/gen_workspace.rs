@@ -154,7 +154,7 @@ fn print_stats(s: &Stats) {
     println!("FIND / FOR EACH          {} / {}", c.find, c.for_each);
     println!("RUN / NEW class          {} / {}", c.run, c.new_object);
     println!(
-        "NEW SHARED / SHARED      {} / {}",
-        c.new_shared, c.define_shared
+        "NEW SHARED / SHARED      {} / {} ({} producer files)",
+        c.new_shared, c.define_shared, c.producers
     );
 }

@@ -218,7 +218,10 @@ workspace, and `the_erp_preset_has_the_shape_of_a_large_real_workspace` in
 | Temp-tables (files that have one), datasets | 18,886 (6,704), 233 | 16,924 (6,346), 212 |
 | Internal procedures, functions, methods | 40,697, 7,237, 10,752 | 34,504, 6,844, 11,247 |
 | `RUN`, `FIND`, `FOR EACH`, `NEW` class | 71,900, 93,653, 30,471, 8,525 | 66,363, 90,745, 31,941, 7,750 |
-| `NEW SHARED` lines (files), `DEFINE SHARED` lines | 2,000 (447), 545 | 2,215 (447), 480 |
+| `NEW SHARED` lines (files), `DEFINE SHARED` lines | 2,000 (447), 545 | 2,235 (447), 550 |
+
+The test compares `&SCOPED-DEFINE` and `&GLOBAL-DEFINE` together (4,231 real,
+4,953 generated), because the preset has few `&GLOBAL-DEFINE` lines.
 
 The generator models these shapes, each with a knob in
 `crates/oxabl_bench/src/generate.rs` (`Knobs`):
@@ -250,6 +253,10 @@ The generator models these shapes, each with a knob in
   a temp-table and how many each has. `dataset_every` sets the datasets.
 - **`SHARED`.** `shared_producers` programs define `NEW SHARED` variables and
   a temp-table, and `shared_consumers` programs define the same `SHARED`.
+  Producers are on even runnable programs and consumers on odd ones, never on
+  a launcher. Each knob is an upper bound: a small `--programs` value gives
+  fewer producers, and no producer gives no consumer. `--stats` prints the
+  count of producer files. Every `SHARED` set has a producer.
 
 What the preset does not model:
 
@@ -418,7 +425,7 @@ it), the release binary of `oxabl check src` took 22.4 s and 237 CPU-seconds
 had a heap peak of 317 MB and 244 million allocation calls.
 `oxabl format --check src` took 2.0 s and 21 CPU-seconds, with a peak RSS of
 574 MB, a heap peak of 138 MB and 28 million allocation calls. A real
-workspace of 10,385 roots took 15.5 to 20 s on 16 threads, 182 to 192
+workspace of 10,386 roots took 15.5 to 20 s on 16 threads, 182 to 192
 CPU-seconds (17.5 to 19.5 ms for each root) and 828 to 843 MB of peak RSS.
 
 The share of the instructions of `check -j 1` on the `medium` workspace

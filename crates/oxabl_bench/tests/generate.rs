@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use oxabl_analyze::DiagnosticSource;
 use oxabl_bench::fixtures::in_memory;
@@ -48,6 +49,44 @@ fn small_erp() -> Knobs {
         tables: 50,
         ..erp
     }
+}
+
+/// The `erp` workspace, generated once for the tests that read all of it.
+fn erp() -> &'static oxabl_bench::generate::Workspace {
+    static ERP: OnceLock<oxabl_bench::generate::Workspace> = OnceLock::new();
+    ERP.get_or_init(|| generate(&Preset::Erp.knobs()))
+}
+
+/// The share of the references that go to the most used 1% of the targets.
+fn top_percent_share(targets: &BTreeMap<String, usize>) -> f64 {
+    let mut counts: Vec<usize> = targets.values().copied().collect();
+    counts.sort_unstable_by(|a, b| b.cmp(a));
+    let top = (counts.len() / 100).max(1);
+    counts[..top].iter().sum::<usize>() as f64 / counts.iter().sum::<usize>() as f64
+}
+
+/// The targets of the lines that start with `prefix`, with their counts: the
+/// first word after the prefix, or after `= NEW ` when `prefix` is `NEW`.
+fn targets(workspace: &oxabl_bench::generate::Workspace, prefix: &str) -> BTreeMap<String, usize> {
+    let mut found = BTreeMap::new();
+    for line in workspace.roots().flat_map(|f| f.text.lines()) {
+        let rest = if prefix == "NEW" {
+            line.split_once("= NEW ").map(|(_, r)| r)
+        } else {
+            line.trim_start().strip_prefix(prefix)
+        };
+        if let Some(rest) = rest {
+            let name: String = rest
+                .chars()
+                .take_while(|c| !matches!(c, ' ' | '('))
+                .collect();
+            // `RUN` also names internal procedures, which have no path.
+            if prefix == "NEW" || name.ends_with(".p") {
+                *found.entry(name).or_insert(0) += 1;
+            }
+        }
+    }
+    found
 }
 
 /// The findings of each kind over every root, as `code -> count`, and
@@ -159,7 +198,8 @@ fn the_ci_preset_has_its_shape() {
 /// band that the preset must stay inside.
 #[test]
 fn the_erp_preset_has_the_shape_of_a_large_real_workspace() {
-    let s = generate(&Preset::Erp.knobs()).stats();
+    let workspace = erp();
+    let s = workspace.stats();
     let within = |what: &str, got: usize, want: usize, percent: usize| {
         let (lo, hi) = (want * (100 - percent) / 100, want * (100 + percent) / 100);
         assert!(
@@ -179,29 +219,44 @@ fn the_erp_preset_has_the_shape_of_a_large_real_workspace() {
     within("closure, p50", s.closure.p50, 24, 30);
     within("expanded lines, mean", s.expanded_lines.mean, 3_418, 10);
     assert!(s.depth.max <= 6 && s.depth.p99 >= 5, "{:?}", s.depth);
+    within("levels of nesting, p50", s.depth.p50, 3, 40);
     within("largest direct fan-in", s.top_direct_fan_in[0], 4_925, 15);
     assert!(
         s.direct_fan_in.p50 <= 2 && s.direct_fan_in.p90 <= 8,
         "{s:?}"
     );
     let c = &s.counts;
-    within("&SCOPED-DEFINE", c.scoped_define, 4_231, 20);
+    within(
+        "&SCOPED-DEFINE and &GLOBAL-DEFINE",
+        c.scoped_define + c.global_define,
+        4_231,
+        20,
+    );
     within("&IF", c.if_directive, 2_901, 15);
     within("{&name}", c.name_refs, 40_428, 15);
     within("temp-tables", c.temp_tables, 18_886, 15);
     within("datasets", c.datasets, 233, 25);
     within("classes", c.classes, 2_176, 1);
     within("NEW SHARED", c.new_shared, 2_000, 15);
+    assert_eq!(c.producers, 447, "producer files");
+    within("DEFINE SHARED", c.define_shared, 545, 20);
     within("FIND", c.find, 93_653, 15);
     within("FOR EACH", c.for_each, 30_471, 15);
     within("RUN", c.run, 71_900, 15);
     within("NEW class", c.new_object, 8_525, 20);
     within("methods", c.methods, 10_752, 15);
+    within("procedures", c.procedures, 40_697, 20);
+    within("functions", c.functions, 7_237, 15);
+    // Real references lean to a few targets (shares from the preset's skew).
+    let run = top_percent_share(&targets(workspace, "RUN "));
+    let new = top_percent_share(&targets(workspace, "NEW"));
+    assert!(run > 0.15, "the top 1% of RUN targets take {run:.3}");
+    assert!(new > 0.15, "the top 1% of NEW targets take {new:.3}");
 }
 
 #[test]
 fn the_launchers_are_nothing_but_includes() {
-    let workspace = generate(&Preset::Erp.knobs());
+    let workspace = erp();
     let launchers: Vec<_> = workspace
         .roots()
         .filter(|f| f.text.starts_with("/* Launcher"))
@@ -225,7 +280,62 @@ fn the_launchers_are_nothing_but_includes() {
 
 #[test]
 fn every_shared_definition_has_a_producer() {
-    let workspace = generate(&small_erp());
+    // 120 runnable programs for 6 producers, then strides of 1 and 2.
+    for (programs, shared_producers, shared_consumers) in [
+        (120, 6, 4),
+        (40, 6, 4),
+        (14, 6, 4),
+        (11, 6, 4),
+        (7, 6, 4),
+        (3, 6, 4),
+        (120, 2, 9),
+        (14, 100, 100),
+    ] {
+        let knobs = Knobs {
+            programs,
+            shared_producers,
+            shared_consumers,
+            ..small_erp()
+        };
+        let workspace = generate(&knobs);
+        let programs = workspace.roots().filter(|f| f.path.starts_with("src/"));
+        let defined = |access: &str| -> std::collections::BTreeSet<String> {
+            workspace
+                .roots()
+                .flat_map(|f| f.text.lines())
+                .filter_map(|l| l.strip_prefix(&format!("DEFINE {access} VARIABLE ")))
+                .map(|l| l.split(' ').next().unwrap().to_string())
+                .collect()
+        };
+        let produced = defined("NEW SHARED");
+        let consumed = defined("SHARED");
+        let missing: Vec<_> = consumed.difference(&produced).collect();
+        assert!(
+            missing.is_empty(),
+            "{} programs: no producer of {missing:?}",
+            knobs.programs
+        );
+        let launchers = (knobs.programs as f64 * knobs.launcher_share) as usize;
+        let runnable = knobs.programs - launchers;
+        assert_eq!(
+            workspace.stats().counts.producers,
+            knobs.shared_producers.min(runnable / 2),
+            "{} programs",
+            knobs.programs
+        );
+        // No program is both, and none of them is a launcher.
+        for f in programs {
+            let both = f.text.contains("DEFINE NEW SHARED") && f.text.contains("\nDEFINE SHARED");
+            assert!(!both, "{} produces and consumes", f.path);
+            if f.text.starts_with("/* Launcher") {
+                assert!(!f.text.contains("SHARED"), "{} is a launcher", f.path);
+            }
+        }
+    }
+    let workspace = erp();
+    let c = &workspace.stats().counts;
+    assert_eq!(c.producers, 447);
+    // The default preset: producers and consumers on the full list.
     let defined = |access: &str| -> std::collections::BTreeSet<String> {
         workspace
             .roots()
@@ -234,11 +344,7 @@ fn every_shared_definition_has_a_producer() {
             .map(|l| l.split(' ').next().unwrap().to_string())
             .collect()
     };
-    let produced = defined("NEW SHARED");
-    let consumed = defined("SHARED");
-    assert!(!produced.is_empty() && !consumed.is_empty());
-    let missing: Vec<_> = consumed.difference(&produced).collect();
-    assert!(missing.is_empty(), "no producer of {missing:?}");
+    assert!(defined("SHARED").is_subset(&defined("NEW SHARED")));
 }
 
 #[test]

@@ -282,11 +282,14 @@ pub struct Knobs {
     pub temp_table_share: f64,
     /// A dataset over the temp-tables of every this many includes. 0 for none.
     pub dataset_every: usize,
-    /// Programs that define `NEW SHARED` variables and a temp-table.
+    /// Programs that define `NEW SHARED` variables and a temp-table: an upper
+    /// bound, since a producer needs a runnable program of its own
+    /// (`--stats` prints the count written).
     pub shared_producers: usize,
     /// `NEW SHARED` variables of a producer.
     pub shared_vars: usize,
-    /// Programs that define `SHARED` what a producer defines.
+    /// Programs that define `SHARED` what a producer defines: an upper bound,
+    /// and 0 when there is no producer.
     pub shared_consumers: usize,
     /// Tables of the schema.
     pub tables: usize,
@@ -577,6 +580,8 @@ pub struct Counts {
     pub new_object: usize,
     pub run: usize,
     pub new_shared: usize,
+    /// Files with a `DEFINE NEW SHARED` line.
+    pub producers: usize,
     pub define_shared: usize,
 }
 
@@ -1178,6 +1183,17 @@ pub fn generate(knobs: &Knobs) -> Workspace {
 
     // Programs.
     let stride = |count: usize| (knobs.programs / count.max(1)).max(1);
+    // The producers and consumers that fit: one per two runnable programs
+    // at most, each kind on its own parity.
+    let slots = runnable.len() / 2;
+    let producers = knobs.shared_producers.min(slots);
+    let consumers = if producers > 0 {
+        knobs.shared_consumers.min(slots)
+    } else {
+        0
+    };
+    let producer_gap = (slots / producers.max(1)).max(1);
+    let consumer_gap = (slots / consumers.max(1)).max(1);
     for (n, name) in programs.iter().enumerate() {
         let launcher = n >= runnable.len();
         let mut out = if launcher {
@@ -1256,17 +1272,19 @@ pub fn generate(knobs: &Knobs) -> Workspace {
             out.push_str(&tt);
             names
         };
-        let producer = knobs.shared_producers > 0
-            && n % stride(knobs.shared_producers) == 2
-            && n / stride(knobs.shared_producers) < knobs.shared_producers;
-        let consumer = knobs.shared_consumers > 0
-            && n % stride(knobs.shared_consumers) == 4
-            && n / stride(knobs.shared_consumers) < knobs.shared_consumers;
+        // Producers sit on the even runnable programs and consumers on the
+        // odd ones, spread over the list, so none shares a program and
+        // every consumer set has a producer.
+        let producer = n % 2 == 0 && n / 2 % producer_gap == 0 && n / 2 / producer_gap < producers;
+        let consumer = n % 2 == 1
+            && producers > 0
+            && n / 2 % consumer_gap == 0
+            && n / 2 / consumer_gap < consumers;
         if producer || consumer {
             let set = if producer {
-                n / stride(knobs.shared_producers)
+                n / 2 / producer_gap
             } else {
-                n / stride(knobs.shared_consumers) % knobs.shared_producers.max(1)
+                n / 2 / consumer_gap % producers
             };
             let access = if producer { "NEW SHARED" } else { "SHARED" };
             for v in 0..knobs.shared_vars {
@@ -1513,6 +1531,7 @@ impl Workspace {
                 continue;
             }
             let mut tables = 0;
+            let new_shared = c.new_shared;
             for line in file.text.lines() {
                 let t = line.trim_start();
                 let words = |prefix: &str| t.starts_with(prefix) as usize;
@@ -1537,6 +1556,7 @@ impl Workspace {
                 c.new_shared += (t.starts_with("DEFINE NEW SHARED")) as usize;
                 c.define_shared += words("DEFINE SHARED");
             }
+            c.producers += (c.new_shared > new_shared) as usize;
             c.temp_tables += tables;
             if tables > 0 {
                 c.files_with_temp_tables += 1;
