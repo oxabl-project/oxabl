@@ -750,8 +750,9 @@ impl Parser<'_> {
             || self.check(Kind::No)
             || self.check(Kind::Question)
         {
+            let source = self.source;
             let token = self.advance();
-            let literal = token_to_literal(token).ok_or_else(|| ParseError {
+            let literal = token_to_literal(token, source).ok_or_else(|| ParseError {
                 message: "Failed to convert token to literal".to_string(),
                 span: Span {
                     start: token.start as u32,
@@ -764,9 +765,9 @@ impl Parser<'_> {
         // Include file reference in expression position: {file.i}
         if self.check(Kind::IncludeReference) {
             let token = self.advance().clone();
-            let path_and_args = match &token.value {
-                TokenValue::String(s) => s.to_string(),
-                _ => self.source[token.start + 1..token.end - 1]
+            let path_and_args = match token.text(self.source) {
+                Some(text) => text.to_string(),
+                None => self.source[token.start + 1..token.end - 1]
                     .trim()
                     .to_string(),
             };

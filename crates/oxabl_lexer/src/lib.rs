@@ -66,10 +66,23 @@ pub struct Token {
     pub end: usize,
 
     /// The value of the token.
-    /// For literals it will be the value of the literal (2, 1.3, "Thing", true)
-    /// Escaped identifiers carry their normalized spelling; ordinary
-    /// identifiers and keywords have no value.
+    /// For literals it will be the value of the literal (2, 1.3, true). A
+    /// string literal, a date constant and an include reference give the place
+    /// of their text in the source ([`TokenValue::Text`], read it with
+    /// [`Token::text`]). Escaped identifiers carry their normalized spelling;
+    /// ordinary identifiers and keywords have no value.
     pub value: TokenValue,
+}
+
+impl Token {
+    /// The text of a [`TokenValue::Text`] value in `source`, the text that
+    /// was lexed. `None` for another value, or when `source` is not that text.
+    pub fn text<'s>(&self, source: &'s str) -> Option<&'s str> {
+        match self.value {
+            TokenValue::Text { start, end } => source.get(start..end),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,7 +91,17 @@ pub enum TokenValue {
     Integer(i32),
     BigInt(i64),
     Decimal(Decimal),
+    /// The normalized spelling of an identifier with a backslash escape.
     String(OxablAtom),
+    /// The byte range of the text of a string literal (without its quotes and
+    /// its `:U` suffix), a date constant (its spelling) or an include
+    /// reference (between its braces, trimmed), in the source that was
+    /// lexed. Read it with [`Token::text`]. The lexer does not intern it: the
+    /// global atom set is shared by all threads.
+    Text {
+        start: usize,
+        end: usize,
+    },
     Boolean(bool),
 }
 
@@ -496,7 +519,7 @@ impl<'a> Lexer<'a> {
             // The value of a date constant depends on the `-d` startup
             // parameter, so the token keeps its spelling.
             Kind::DateLiteral => {
-                value = TokenValue::String(OxablAtom::from(&self.source[start..end]));
+                value = TokenValue::Text { start, end };
             }
             Kind::StringLiteral => {
                 // use +1 and -1 to remove the quotes from our string literal
@@ -511,15 +534,21 @@ impl<'a> Lexer<'a> {
                     } else {
                         end - 1 // strip closing quote only
                     };
-                value = TokenValue::String(OxablAtom::from(&self.source[start + 1..content_end]));
+                value = TokenValue::Text {
+                    start: start + 1,
+                    end: content_end,
+                };
             }
             Kind::KwTrue => value = TokenValue::Boolean(true),
             Kind::KwFalse => value = TokenValue::Boolean(false),
             Kind::IncludeReference => {
                 // Store trimmed content between braces (excluding { and })
                 let inner = &self.source[start + 1..end - 1];
-                let trimmed = inner.trim();
-                value = TokenValue::String(OxablAtom::from(trimmed));
+                let from = start + 1 + (inner.len() - inner.trim_start().len());
+                value = TokenValue::Text {
+                    start: from,
+                    end: from + inner.trim().len(),
+                };
             }
             Kind::IncludeArgReference => {
                 // Store the positional argument index
@@ -1201,6 +1230,15 @@ mod tests {
         }
     }
 
+    /// The [`TokenValue::Text`] of the first `text` in `source`.
+    fn text_in(source: &str, text: &str) -> TokenValue {
+        let start = source.find(text).expect("the text is in the source");
+        TokenValue::Text {
+            start,
+            end: start + text.len(),
+        }
+    }
+
     fn collect_tokens(source: &str) -> Vec<Token> {
         let mut lexer = Lexer::new(source);
         let mut tokens = Vec::new();
@@ -1316,12 +1354,7 @@ mod tests {
             (Kind::IntegerLiteral, 12, 14, TokenValue::Integer(10)),
             (Kind::Colon, 14, 15, TokenValue::None),
             (Kind::Message, 20, 27, TokenValue::None),
-            (
-                Kind::StringLiteral,
-                28,
-                35,
-                TokenValue::String(OxablAtom::from("hello".to_string())),
-            ),
+            (Kind::StringLiteral, 28, 35, text_in(source, "hello")),
             (Kind::Period, 35, 36, TokenValue::None),
             (Kind::End, 37, 40, TokenValue::None),
             (Kind::Period, 40, 41, TokenValue::None),
@@ -1410,7 +1443,7 @@ mod tests {
             Kind::StringLiteral,
             0,
             14,
-            TokenValue::String(OxablAtom::from("hello~nworld".to_string())),
+            text_in(source, "hello~nworld"),
             source,
         );
     }
@@ -1812,7 +1845,7 @@ end."#;
             Kind::StringLiteral,
             0,
             13,
-            TokenValue::String(OxablAtom::from("hello world".to_string())),
+            text_in(source, "hello world"),
             source,
         );
     }
@@ -1827,7 +1860,7 @@ end."#;
             Kind::StringLiteral,
             0,
             2,
-            TokenValue::String(OxablAtom::from("".to_string())),
+            TokenValue::Text { start: 1, end: 1 },
             source,
         );
     }
@@ -1843,7 +1876,7 @@ end."#;
             Kind::StringLiteral,
             0,
             10,
-            TokenValue::String(OxablAtom::from("adjust".to_string())),
+            text_in(source, "adjust"),
             source,
         );
     }
@@ -2017,7 +2050,8 @@ end."#;
             let tokens = kinds_and_texts(source);
             assert_eq!(tokens[2], (Kind::DateLiteral, date), "{source}");
             let token = &collect_tokens(source)[2];
-            assert_eq!(token.value, TokenValue::String(OxablAtom::from(date)));
+            assert_eq!(token.value, text_in(source, date));
+            assert_eq!(token.text(source), Some(date));
         }
         assert_eq!(
             kinds_and_texts("02/01/2026.").last(),
@@ -2291,7 +2325,7 @@ end."#;
             Kind::IncludeReference,
             0,
             8,
-            TokenValue::String(OxablAtom::from("file.i")),
+            text_in(source, "file.i"),
             source,
         );
     }
@@ -2306,7 +2340,7 @@ end."#;
             Kind::IncludeReference,
             0,
             19,
-            TokenValue::String(OxablAtom::from("mod/subdir/file.i")),
+            text_in(source, "mod/subdir/file.i"),
             source,
         );
     }
@@ -2321,7 +2355,7 @@ end."#;
             Kind::IncludeReference,
             0,
             19,
-            TokenValue::String(OxablAtom::from("file.i NEW shared")),
+            text_in(source, "file.i NEW shared"),
             source,
         );
     }
@@ -2336,7 +2370,7 @@ end."#;
             Kind::IncludeReference,
             0,
             34,
-            TokenValue::String(OxablAtom::from(r#"file.i &name="value" &other=test"#)),
+            text_in(source, r#"file.i &name="value" &other=test"#),
             source,
         );
     }
@@ -2351,7 +2385,7 @@ end."#;
             Kind::IncludeReference,
             0,
             10,
-            TokenValue::String(OxablAtom::from("file.i")),
+            text_in(source, "file.i"),
             source,
         );
     }
@@ -2467,10 +2501,7 @@ end."#;
         let source = "{globals/globals.i} message \"hello\".";
         let tokens = collect_tokens(source);
         assert_eq!(tokens[0].kind, Kind::IncludeReference);
-        assert_eq!(
-            tokens[0].value,
-            TokenValue::String(OxablAtom::from("globals/globals.i"))
-        );
+        assert_eq!(tokens[0].value, text_in(source, "globals/globals.i"));
         assert_eq!(tokens[1].kind, Kind::Message);
     }
 

@@ -7,7 +7,7 @@
 //! syntax says what it names.
 
 use oxabl_ast::Span;
-use oxabl_lexer::{Kind, Lexer, Token, TokenValue, tokenize};
+use oxabl_lexer::{Kind, Lexer, Token, tokenize};
 
 use crate::deps::EdgeKind;
 
@@ -366,7 +366,7 @@ impl Scan<'_> {
         let name = match self.kind(first) {
             Kind::StringLiteral => {
                 let token = &self.tokens[first];
-                let TokenValue::String(value) = &token.value else {
+                let Some(value) = token.text(self.text) else {
                     return first;
                 };
                 Name {
