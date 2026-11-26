@@ -305,7 +305,8 @@
     "configurationDefaults": {
       "[abl]": {
         "editor.formatOnSave": true,
-        "editor.defaultFormatter": "oxabl-project.oxabl"
+        "editor.defaultFormatter": "oxabl-project.oxabl",
+        "editor.suggest.selectionMode": "whenQuickSuggestion"
       },
       "evenBetterToml.schema.associations": {
         "**/oxabl.toml": "./schemas/oxabl.schema.json"
