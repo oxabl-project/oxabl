@@ -2029,6 +2029,17 @@ impl<'c> Server<'c> {
     fn handle_watched_files(&mut self, params: DidChangeWatchedFilesParams) {
         self.outlines.invalidate_includes();
         let now = std::time::Instant::now();
+        let changed: Vec<PathBuf> = params
+            .changes
+            .iter()
+            .filter_map(|event| uri_to_path(&event.uri))
+            .collect();
+        if let Some(bases) = self
+            .host
+            .with(|sessions| Some(sessions.get(&self.session_root)?.completion_bases()))
+        {
+            bases.forget_listings(&changed);
+        }
         // A file on disk changed: no session generation says so.
         self.reference_cache.clear();
         let mut schema_changed = false;
