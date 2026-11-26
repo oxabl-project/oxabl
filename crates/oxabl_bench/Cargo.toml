@@ -23,9 +23,15 @@ oxabl_semantic = { path = "../oxabl_semantic" }
 oxabl_analyze = { path = "../oxabl_analyze" }
 oxabl_index = { path = "../oxabl_index" }
 
+# Only the `[[bench]]` targets run under `cargo bench`, so Criterion options
+# after `--` reach them and no libtest harness refuses them.
+[lib]
+bench = false
+
 [[bin]]
 name = "gen-workspace"
 path = "src/bin/gen_workspace.rs"
+bench = false
 
 [[bench]]
 name = "e2e_bench"

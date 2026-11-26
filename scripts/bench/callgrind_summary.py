@@ -10,7 +10,11 @@ costs and the caller tree. Prints the instruction total, the inclusive share
 and the call count of `tokenize` and `parse_program`, and the self share of
 the allocator and of memcpy/memmove. A C library with no symbols shows its
 functions as addresses (memcpy among them): their self share is
-`unnamed_self`. Standard library only; run it with `python3 -I`.
+`unnamed_self`.
+
+A call counts as "full" when its caller's cost for each call is a tenth of the
+most expensive caller's or more, and "small" otherwise: `full_calls` is about the number of
+times the command lexes or parses a whole file, and `full_callers` names them. Standard library only; run it with `python3 -I`.
 """
 
 import json
@@ -18,7 +22,7 @@ import re
 import subprocess
 import sys
 
-ROW = re.compile(r"^\s*([\d,]+) \(\s*[\d.]+%\)\s+(<|\*|>)?\s*(.*?)(?: \((\d+)x\))?(?: \[.*\])?$")
+ROW = re.compile(r"^\s*([\d,]+) \(\s*([\d.]+)%\)\s+(<|\*|>)?\s*(.*?)(?: \((\d+)x\))?(?: \[.*\])?$")
 TOTAL = re.compile(r"^\s*([\d,]+) \(100\.0%\)\s+PROGRAM TOTALS")
 
 STAGES = {
@@ -53,8 +57,8 @@ def costs(lines):
     found = {}
     for line in lines:
         m = ROW.match(line)
-        if m and m.group(2) is None:
-            name = function(m.group(3).strip())
+        if m and m.group(3) is None:
+            name = function(m.group(4).strip())
             found[name] = found.get(name, 0) + int(m.group(1).replace(",", ""))
     return found
 
@@ -67,28 +71,34 @@ def total(lines):
     raise SystemExit("callgrind_summary: no PROGRAM TOTALS line")
 
 
+# A caller whose calls cost less than this part of the most expensive caller,
+# for each call, is "small": the formatter lexes short pieces of text many
+# times, which is not a lex of a whole file. Per call, so a walk of many small
+# roots still counts each root's lex as full.
+FULL_PART = 0.1
+
+
 def calls(lines, pattern):
-    """Sum of the (Nx) of the callers of each function that matches."""
-    count = 0
+    """(all calls, full calls, [(caller, calls, share)] of the full callers)
+    of each function that matches."""
+    rows_of = []
     block = []
     for line in lines + [""]:
         if line.strip():
             block.append(line)
             continue
-        callers = 0
-        hit = False
-        for row in block:
-            m = ROW.match(row)
-            if not m:
-                continue
-            if m.group(2) == "<" and m.group(4):
-                callers += int(m.group(4))
-            if m.group(2) == "*" and pattern.search(function(m.group(3).strip())):
-                hit = True
-        if hit:
-            count += callers
+        rows = [m for m in map(ROW.match, block) if m]
+        if any(m.group(3) == "*" and pattern.search(function(m.group(4).strip())) for m in rows):
+            for m in rows:
+                if m.group(3) == "<" and m.group(5):
+                    cost = int(m.group(1).replace(",", ""))
+                    rows_of.append((function(m.group(4).strip()), int(m.group(5)), cost, float(m.group(2))))
         block = []
-    return count
+    if not rows_of:
+        return 0, 0, []
+    largest = max(cost / n for _, n, cost, _ in rows_of)
+    full = [(c, n, share) for c, n, cost, share in rows_of if cost / n >= FULL_PART * largest]
+    return sum(n for _, n, _, _ in rows_of), sum(n for _, n, _ in full), full
 
 
 def main():
@@ -107,9 +117,12 @@ def main():
     summary = {"instructions": instructions}
     for stage, pattern in STAGES.items():
         cost = sum(c for name, c in inclusive.items() if pattern.search(name))
+        every, full, callers = calls(tree, pattern)
         summary[stage] = {
             "share": round(100.0 * cost / instructions, 1),
-            "calls": calls(tree, pattern),
+            "calls": every,
+            "full_calls": full,
+            "full_callers": [{"caller": c, "calls": n, "share": sh} for c, n, sh in callers],
         }
     for key, pattern in (
         ("allocator_self", ALLOCATOR),
@@ -123,7 +136,9 @@ def main():
         return
 
     def stage(key):
-        return f"{summary[key]['share']}% ({summary[key]['calls']} calls)"
+        st = summary[key]
+        small = st["calls"] - st["full_calls"]
+        return f"{st['share']}% ({st['full_calls']} full + {small} small)"
 
     cells = [
         f"{instructions:,}",

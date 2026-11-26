@@ -40,7 +40,7 @@ jobs:
   codspeed-memory:
     name: Run benchmarks (memory)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 

@@ -20,12 +20,13 @@ reads the disk, but outside the measured part.
 | Bench | Input | Surface |
 | --- | --- | --- |
 | `check/file` | `resources/lsp_bench.p` and its two includes | `oxabl check <file>`: the lint run, then the format check, on a new pipeline |
-| `check/workspace` | the 300 roots of the generated `ci` workspace | `oxabl check <dir>`: one pipeline for the walk |
+| `check/workspace` | the 300 roots of the generated `ci` workspace: no finding, no drift | `oxabl check <dir>`: one pipeline for the walk |
+| `check/workspace_include_findings` | the same, with three unused variables in each hot include (1,281 findings in includes) | `oxabl check <dir>` where shared includes have findings: the fold of include findings (`IncludeRows` in `oxabl_analyze`) |
 | `format/file_end_to_end` | `lsp_bench.p` | `oxabl format`, Format Document: `FormatPipeline::format` from the text |
 | `navigation/definitions` | `lsp_bench.p` | one go to definition request: expansion, analysis, query |
 | `navigation/links` | the `ci` root with the most includes | one document links request |
 | `workspace_symbols/query` | the `ci` workspace, on disk | one `oxabl/symbolSearch` request after the workspace pass |
-| `daemon_cycle/features_on_one_revision` | `lsp_bench.p` | an edit, then the diagnostics, semantic tokens, inlay hints and outline of that revision |
+| `daemon_cycle/features_on_one_revision` | `lsp_bench.p` | an edit, then the diagnostics, semantic tokens, inlay hints, outline and document links of that revision. No schema is loaded, so the inlay hints have almost no work |
 | `lexer/large_mixed/{lsp_bench,1mb}` | `lsp_bench.p`; the ten error-free `bench_parser_*` fixtures 40 times (1,048,400 bytes) | `oxabl conformance` |
 | `parser/large_mixed/{lsp_bench,1mb}` | the same | `oxabl conformance` |
 | `semantic/large/lsp_bench/{declare,resolve,check}` | `lsp_bench.p` with its includes expanded | `oxabl analyze` |
@@ -38,7 +39,14 @@ reads the disk, but outside the measured part.
 history stays comparable. `parser/temp_tables_v2` is the corrected copy.
 `parser/pipeline_with_includes` reads its includes from the disk, and the
 Simulation instrument does not count system calls; the `_in_memory` bench is
-the same input with no system call.
+the same input with no system call. The expansion of that input has two parse
+errors, so both benches also measure error recovery;
+`tests/fixtures_parse.rs` pins the two errors.
+
+The counting allocator of the `oxabl_bench` and `daemon_features_bench` benches
+adds a few atomic operations to each allocation. So their instruction counts
+are not comparable with those of the older `lexer/*` and `parser/*` benches,
+which use the plain system allocator.
 
 ### Rules for a new bench
 
@@ -56,7 +64,7 @@ the same input with no system call.
 ### Run the benches
 
 ```sh
-cargo bench -p oxabl_bench                                  # e2e_bench and large_bench
+cargo bench -p oxabl_bench                                  # e2e_bench and large_bench (the library has no bench)
 cargo bench -p oxabl_bench --bench e2e_bench -- check/      # one group
 cargo bench -p oxabl_daemon --bench daemon_features_bench
 cargo bench -p oxabl_bench -- --warm-up-time 1 --measurement-time 3   # a quick run
@@ -68,11 +76,12 @@ cargo bench -p oxabl_bench -- --warm-up-time 1 --measurement-time 3   # a quick 
 
 The benches of `oxabl_bench` and `daemon_features_bench` install a counting
 global allocator (`oxabl_bench::alloc::Counting`, over the system allocator).
-Before Criterion measures a bench, the bench runs one time under
-`oxabl_bench::alloc::measure` and prints one row to stderr:
+Before Criterion measures a bench, the bench runs one time to fill the lazy
+statics and caches, then one time under `oxabl_bench::alloc::measure`, and
+prints one row to stderr:
 
 ```text
-memory check/file: 44857 allocations, 28645632 bytes requested, peak 11078973 bytes
+memory check/file: 44569 allocations, 28481330 bytes requested, peak 10916557 bytes, retained 0 bytes
 ```
 
 - `allocations`: calls of `alloc`, `alloc_zeroed` and `realloc`.
@@ -80,16 +89,24 @@ memory check/file: 44857 allocations, 28645632 bytes requested, peak 11078973 by
   of its sizes.
 - `peak`: the most bytes live at one time during the run, above the live bytes
   at its start.
+- `retained`: the bytes still live after the run, above the live bytes at its
+  start. Not 0 when the bench keeps what it made (the semantic passes return
+  their tables).
+
+Both runs happen also when a Criterion filter leaves the bench out.
 
 Set `OXABL_BENCH_MEMORY=<file>` to append each row to the file as one JSON
-object, to compare two commits:
+object, to compare two commits. Give an absolute path: `cargo bench` runs each
+bench in the directory of its crate.
 
 ```sh
 OXABL_BENCH_MEMORY=$PWD/target/mem-before.jsonl cargo bench -p oxabl_bench -- --warm-up-time 1 --measurement-time 1
 ```
 
 The counts are for the system allocator and do not depend on the time, so they
-are the same on a loaded machine.
+are the same on a loaded machine. They can differ by a few hundred between
+machines, libc versions and Rust toolchains: compare two commits on the same
+machine with the same toolchain.
 
 ### CodSpeed's Memory instrument
 
@@ -109,9 +126,13 @@ compares the allocations and the bytes with a budget:
 | lex | 169 | 1,245,667 |
 | parse | 11,877 | 3,943,096 |
 
-The test fails when a number is more than 2% above its budget. It also fails
-when a number is more than 10% below its budget: then lower the budget in the
-same pull request, so the gain stays.
+The counts are the same on each run of one toolchain. The test fails when a
+number is more than 0.5% above its budget. It also fails when a number is more
+than 0.5% below its budget, and the message gives the new number: lower the
+budget in the same pull request, so the gain stays. A new stable Rust can move
+the counts (CI uses the newest stable). Then re-measure with
+`cargo test -p oxabl_bench --test alloc_budget -- --nocapture` and set the
+budgets to the printed numbers.
 
 ### Type sizes
 
@@ -130,8 +151,12 @@ CARGO_INCREMENTAL=0 cargo +nightly rustc -q -p oxabl_ast --lib --target-dir targ
 ## The generated workspace
 
 `scripts/bench/gen-workspace` writes a synthetic ABL workspace. The same knobs
-give the same files, byte for byte. Every file is synthetic, and every root
-preprocesses and parses with no finding (`crates/oxabl_bench/tests/generate.rs`).
+give the same files, byte for byte, on one platform (the file sizes use
+floating point, so another libm can differ). Every file is synthetic. Every
+root preprocesses and parses with no finding, and `oxabl format` changes no
+root and no include (`crates/oxabl_bench/tests/generate.rs`, on `ci` and a
+small `erp`). `--include-findings N` writes N unused variables in each hot
+include, so each root that reads one has findings in an include.
 
 ```sh
 scripts/bench/gen-workspace --preset erp --stats          # the shape, no files
@@ -157,8 +182,13 @@ tables of the `.df` schema.
 ## The command line
 
 `scripts/bench/cli.sh` measures the binary that ships. It builds the release
-binary, generates `big.p` (1 MB) and a workspace below `target/bench-cli`, and
-runs `check`, `format --check`, `conformance -j 1` and `explain`:
+binary, generates `big.p` (1 MB) and two workspaces below `target/bench-cli`
+(one clean, one with findings in its hot includes), and runs `check`,
+`format --check`, `conformance -j 1` and `explain`. It finds the binary
+through cargo, so `CARGO_TARGET_DIR` is followed. An input is made again when
+what makes it changed (a stamp file beside it holds a hash of the generator or
+of the fixtures), and is written to a temporary name first, so an interrupted
+run leaves no partial input.
 
 ```sh
 scripts/bench/cli.sh                                  # every surface, every tool
@@ -169,16 +199,27 @@ scripts/bench/cli.sh --tools callgrind --only check-lsp,check-ws
 | Tool | Binary | Numbers |
 | --- | --- | --- |
 | `time` (GNU `time -v`) | release (jemalloc) | wall time, peak RSS |
-| `heaptrack` | release with `--features system-allocator` | peak heap, allocation calls |
+| `heaptrack` | release with `RUSTFLAGS="--cfg oxabl_system_allocator"` | peak heap, allocation calls |
 | `callgrind` | release (jemalloc) | instructions; inclusive share and calls of `tokenize` and `parse_program`; self share of the allocator, of `memcpy` and of C library code with no symbols |
 
 heaptrack and valgrind's DHAT see only the C library's allocator, and the
-`oxabl` binary uses jemalloc. The cargo feature `system-allocator` of `oxabl`
-builds the binary with the system allocator for them. Never release it.
+`oxabl` binary uses jemalloc. The flag `--cfg oxabl_system_allocator` builds the
+binary with the system allocator for them. It is a flag and not a cargo
+feature, so no dependent crate and no `--all-features` build can turn jemalloc
+off. `cli.sh` builds that binary in its own target directory
+(`<target>/system-allocator`) and stops when it still links jemalloc.
 
 A missing tool comes from nixpkgs through `nix shell` when `nix` is on `PATH`.
-The script exits with a non-zero status when a command fails (a status other
-than 0, or 1 for findings or drift).
+
+Each surface has the exit status that its input gives: `check` exits 1 on
+`lsp_bench.p`, `big.p` and the workspace with include findings
+(`--include-findings`), and 0 on the clean workspace; `format --check` exits 1
+on `big.p` and 0 on the workspace; `conformance` and `explain` exit 0. `check`
+also exits 1 when it cannot read or analyse a file, so the status alone cannot
+tell a finding from a failure. A run fails when a command exits with another
+status, or writes a line to stderr that starts with `error:` (an analysis or
+formatting failure, a file it cannot read). A failed run gives numbers for
+less work, which look like a gain.
 
 ### Read the numbers
 
@@ -186,8 +227,14 @@ than 0, or 1 for findings or drift).
   size only.
 - Instruction counts from callgrind are the same on each run. Compare two
   commits with them when the machine is loaded.
-- `tokenize` and `parse_program` show how many times a command lexes and parses
-  the same text, and the share of the run that this costs.
+- `tokenize` and `parse_program` show the share of the run and the calls, as
+  "N full + M small". A call is full when its caller pays, for each call, at
+  least a tenth of what the most expensive caller pays: a lex or parse of a
+  whole file. The formatter also lexes short pieces of text many times
+  (`blanks::normalize`); these are the small calls. So on one file, "5 full"
+  means that the command lexes the file five times. In a walk, divide by the
+  number of files. `callgrind_summary.py` without `--row` names each full
+  caller with its calls and its share.
 - When the C library has no symbols, `memcpy` shows as an address. Its cost is
   then in the column `unnamed libc self`.
 
@@ -221,40 +268,50 @@ The job `codspeed-memory` uses the Memory instrument (see [Memory](#memory)).
 
 ## Baseline
 
-x86-64 Linux, rustc 1.100.0, a machine that was not idle. Criterion times are
-the mean of 10 samples.
+x86-64 Linux, rustc 1.100.0. The machine was loaded, so this table has no
+times: read them on CodSpeed. The memory numbers are of the warm run.
 
-| Bench | Time | Allocations | Bytes requested | Peak |
-| --- | --- | --- | --- | --- |
-| `check/file` | 11.0 ms | 44,857 | 28.6 MB | 11.1 MB |
-| `check/workspace` | 244 ms | 645,769 | 464 MB | 4.1 MB |
-| `format/file_end_to_end` | 7.7 ms | 19,961 | 16.2 MB | 10.1 MB |
-| `navigation/definitions` | 9.5 ms | 27,689 | 13.7 MB | 5.6 MB |
-| `navigation/links` | 2.7 ms | 7,197 | 5.3 MB | 2.4 MB |
-| `workspace_symbols/query` | 0.75 ms | 5,395 | 0.6 MB | 0.5 MB |
-| `daemon_cycle/features_on_one_revision` | 23.2 ms | 75,568 | 39.9 MB | 8.3 MB |
-| `parser/large_mixed/lsp_bench` | 1.9 ms | | | |
-| `parser/large_mixed/1mb` | 18.4 ms | 74,226 | 53.0 MB | 29.8 MB |
-| `semantic/large/lsp_bench/resolve` | 0.47 ms | 12 | 0.35 MB | 0.34 MB |
-| `semantic/large/nested_blocks/declare` | 1.9 ms | 4,798 | 12.8 MB | 6.5 MB |
-| `semantic/large/nested_blocks/resolve` | 14.4 ms | 14 | 1.8 MB | 1.7 MB |
+| Bench | Allocations | Bytes requested | Peak |
+| --- | --- | --- | --- |
+| `check/file` | 44,569 | 28.5 MB | 10.9 MB |
+| `check/workspace` | 618,870 | 457.1 MB | 3.1 MB |
+| `check/workspace_include_findings` | 634,521 | 457.2 MB | 3.1 MB |
+| `format/file_end_to_end` | 19,961 | 16.2 MB | 10.1 MB |
+| `navigation/definitions` | 27,690 | 13.7 MB | 5.6 MB |
+| `navigation/links` | 7,198 | 5.3 MB | 2.4 MB |
+| `workspace_symbols/query` | 5,395 | 0.6 MB | 0.5 MB |
+| `daemon_cycle/features_on_one_revision` | 87,891 | 47.2 MB | 6.9 MB |
+| `lexer/large_mixed/lsp_bench` | 169 | 1.2 MB | 1.2 MB |
+| `lexer/large_mixed/1mb` | 43 | 10.1 MB | 10.1 MB |
+| `parser/large_mixed/lsp_bench` | 11,877 | 3.9 MB | 2.6 MB |
+| `parser/large_mixed/1mb` | 74,226 | 53.0 MB | 29.8 MB |
+| `semantic/large/lsp_bench/declare` | 43 | 0.9 MB | 0.4 MB |
+| `semantic/large/lsp_bench/resolve` | 12 | 0.35 MB | 0.34 MB |
+| `semantic/large/nested_blocks/declare` | 4,798 | 12.8 MB | 6.5 MB |
+| `semantic/large/nested_blocks/resolve` | 14 | 1.8 MB | 1.7 MB |
 
-`scripts/bench/cli.sh` on the same machine (`ci` workspace):
+`scripts/bench/cli.sh` on the same machine (`ci` workspace). Wall time and RSS
+are rough:
 
 | Surface | Wall | Peak RSS | Heap peak | Allocation calls | Instructions | `tokenize` | `parse_program` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `check lsp_bench.p` | 0.01 s | 24 MB | 10.5 MB | 45,471 | 107.9 M | 36.5% (172 calls) | 25.1% (3 calls) |
-| `check big.p` | 5.09 s | 120 MB | 100.2 MB | 623,866 | 66,943 M | 0.6% | 0.3% |
-| `check src` (300 roots) | 0.04 s | 57 MB | 16.6 MB | 819,211 | 1,512 M | 34.3% | 29.0% |
-| `format --check big.p` | 0.08 s | 98 MB | 89.7 MB | 154,855 | 457 M | 49.1% (3 calls) | 16.2% (1 call) |
-| `conformance -j 1 big.p` | 0.03 s | 59 MB | 41.1 MB | 74,854 | 160 M | 43.4% | 46.2% |
-| `explain lsp_bench.p` | 0.01 s | 20 MB | 7.0 MB | 25,058 | 46.3 M | 17.1% | 20.1% |
+| `check lsp_bench.p` | 0.04 s | 29 MB | 10.5 MB | 45,472 | 107.6 M | 36.6% (5 full + 167 small) | 25.2% (3 full) |
+| `check big.p` | 7.76 s | 122 MB | 100.2 MB | 623,866 | 66,898 M | 0.6% (6 full + 159 small) | 0.3% (3 full) |
+| `check src` (300 roots) | 0.06 s | 56 MB | 16.7 MB | 823,688 | 1,533 M | 34.2% (2,222 full) | 29.3% (1,622 full) |
+| `check --include-findings src` (300 roots, findings in includes) | 0.07 s | 55 MB | 16.7 MB | 995,569 | 1,818 M | 28.9% (2,198 full) | 24.6% (1,598 full) |
+| `format --check big.p` | 0.10 s | 93 MB | 89.7 MB | 154,855 | 457 M | 49.1% (3 full) | 16.2% (1 full) |
+| `format --check src` (300 roots) | 0.01 s | 30 MB | 4.0 MB | 160,963 | 372 M | 47.2% (900 full) | 16.7% (300 full) |
+| `conformance -j 1 big.p` | 0.04 s | 53 MB | 41.1 MB | 74,854 | 160 M | 43.3% (1 full) | 46.2% (1 full) |
+| `explain lsp_bench.p` | 0.01 s | 18 MB | 7.0 MB | 25,059 | 46.4 M | 17.0% (1 full) | 20.0% (1 full) |
 
-On the `erp` workspace (7,000 roots, 16 cores, a loaded machine), `oxabl check
-src` took 23.3 s with a peak RSS of 1,523 MB, a heap peak of 1.34 GB and 417
-million allocation calls; `oxabl format --check src` took 1.6 s and 275 MB.
+On the `erp` workspace (7,000 roots, 16 cores, a loaded machine, before the
+generated text was made format-clean), `oxabl check src` took 23.3 s with a
+peak RSS of 1,523 MB, a heap peak of 1.34 GB and 417 million allocation calls;
+`oxabl format --check src` took 1.6 s and 275 MB.
 
-`check big.p` spends 98% of its instructions in `SourceMap::new`, called for
-each label of each finding when the findings are reported
-(`LabelPlaces::rows` in `crates/oxabl/src/main.rs`). The in-process benches do
-not report findings, so only `cli.sh` shows this cost.
+`check big.p` spends 98% of its instructions in `SourceMap::new`, which
+`LabelPlaces::rows` (`crates/oxabl/src/main.rs`) builds for each label of each
+finding when the findings are reported (10,895 findings on `big.p`). This is a
+regression, not an expected cost: the same run took 1,183 M instructions
+before related locations were added to the findings. Issue #570 tracks it. The
+in-process benches do not report findings, so only `cli.sh` shows it.

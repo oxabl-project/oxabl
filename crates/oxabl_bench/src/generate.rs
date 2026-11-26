@@ -73,6 +73,9 @@ pub struct Knobs {
     pub tables: usize,
     /// Fields of each table, at least 2.
     pub fields: usize,
+    /// Findings in each hot include: this many unused variables. Every root
+    /// that reads the include reports them. 0 for none.
+    pub include_findings: usize,
 }
 
 /// A named set of knobs.
@@ -128,6 +131,7 @@ impl Preset {
                 dataset_every: 5,
                 tables: 40,
                 fields: 8,
+                include_findings: 0,
             },
             Preset::Medium => Knobs {
                 programs: 600,
@@ -162,6 +166,7 @@ impl Preset {
                 dataset_every: 10,
                 tables: 1_500,
                 fields: 20,
+                include_findings: 0,
             },
         }
     }
@@ -275,13 +280,13 @@ impl Writer<'_> {
         }
     }
 
-    fn temp_table(out: &mut String, name: &str, access: &str) {
+    fn temp_table(out: &mut String, name: &str, access: &str, ind: &str) {
         writeln!(
             out,
-            "DEFINE {access}TEMP-TABLE {name} NO-UNDO\n    \
-             FIELD id AS INTEGER\n    \
-             FIELD label AS CHARACTER\n    \
-             FIELD amount AS DECIMAL\n    \
+            "{ind}DEFINE {access}TEMP-TABLE {name} NO-UNDO\n{ind}    \
+             FIELD id AS INTEGER\n{ind}    \
+             FIELD label AS CHARACTER\n{ind}    \
+             FIELD amount AS DECIMAL\n{ind}    \
              INDEX pk IS PRIMARY UNIQUE id."
         )
         .unwrap();
@@ -319,9 +324,9 @@ impl Writer<'_> {
                 out,
                 "&SCOPED-DEFINE {p}-step-{k} {k}\n\
                  &IF DEFINED(TRACE-ON) &THEN\n\
-                 {ind}MESSAGE \"trace\" {{&{p}-step-{k}}}.\n\
+                 {ind}    MESSAGE \"trace\" {{&{p}-step-{k}}}.\n\
                  &ELSE\n\
-                 {ind}{p}-total = {p}-total + {{&{p}-step-{k}}}.\n\
+                 {ind}    {p}-total = {p}-total + {{&{p}-step-{k}}}.\n\
                  &ENDIF"
             )
             .unwrap();
@@ -405,7 +410,7 @@ impl Writer<'_> {
             .map(|t| format!("tt-{prefix}-{t}"))
             .collect();
         for name in &names {
-            Self::temp_table(out, name, "");
+            Self::temp_table(out, name, "", "");
         }
         let every = self.knobs.dataset_every;
         if every > 0 && ordinal.is_multiple_of(every) && names.len() >= 2 {
@@ -514,6 +519,13 @@ pub fn generate(knobs: &Knobs) -> Workspace {
         )
         .unwrap();
         Writer::variables(&mut out, &prefix, "");
+        for u in 0..knobs.include_findings {
+            writeln!(
+                out,
+                "DEFINE VARIABLE {prefix}-unused-{u} AS INTEGER NO-UNDO."
+            )
+            .unwrap();
+        }
         let scope = Scope {
             prefix: prefix.clone(),
             temp_tables,
@@ -638,7 +650,7 @@ pub fn generate(knobs: &Knobs) -> Workspace {
         Writer::variables(&mut out, &prefix, "");
         out.push_str("r-text = pi-text.\n");
         let temp_tables = vec![format!("tt-{prefix}-0")];
-        Writer::temp_table(&mut out, &temp_tables[0], "");
+        Writer::temp_table(&mut out, &temp_tables[0], "", "");
         let scope = Scope {
             prefix,
             temp_tables,
@@ -667,7 +679,7 @@ pub fn generate(knobs: &Knobs) -> Workspace {
         )
         .unwrap();
         let tt = format!("tt-c{n}");
-        Writer::temp_table(&mut out, &tt, "PRIVATE ");
+        Writer::temp_table(&mut out, &tt, "PRIVATE ", "    ");
         if base {
             writeln!(
                 out,

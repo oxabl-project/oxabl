@@ -1,8 +1,12 @@
 //! Allocation budgets of one lex and one parse of `resources/lsp_bench.p`.
 //!
-//! A change that allocates more fails here. A change that allocates much less
-//! fails too, so its pull request lowers the budget and the gain is kept. The
-//! numbers are for the system allocator on x86-64 Linux.
+//! The counts are the same on every run of one toolchain. A change that
+//! allocates more fails here. A change that allocates less fails too, so its
+//! pull request lowers the budget and the gain is kept. The numbers are for
+//! the system allocator on x86-64 Linux with the stable Rust of CI: a new Rust
+//! release can move them (a different growth of `Vec`, for example). Then
+//! re-measure with `cargo test -p oxabl_bench --test alloc_budget -- --nocapture`
+//! and set the budgets to the printed numbers.
 
 use oxabl_bench::alloc::{Counting, Usage, measure};
 use oxabl_bench::fixtures;
@@ -12,10 +16,10 @@ use oxabl_parser::Parser;
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
-/// A measured number may be this much above its budget (noise between
-/// toolchains), and the budget is stale when the number is this much below it.
-const ABOVE: f64 = 0.02;
-const BELOW: f64 = 0.10;
+/// The band around a budget, as a share of it, on both sides: room for a small
+/// difference between toolchains and no more. A gain larger than this must
+/// lower the budget.
+const BAND: f64 = 0.005;
 
 struct Budget {
     what: &'static str,
@@ -30,13 +34,16 @@ fn check(budget: &Budget, usage: Usage) -> Vec<String> {
         ("bytes", usage.bytes, budget.bytes),
     ] {
         let what = budget.what;
-        if measured as f64 > limit as f64 * (1.0 + ABOVE) {
+        if measured as f64 > limit as f64 * (1.0 + BAND) {
             problems.push(format!(
-                "{what}: {measured} {name}, over the budget of {limit}"
+                "{what}: {measured} {name}, over the budget of {limit} by more than {}%",
+                BAND * 100.0
             ));
-        } else if (measured as f64) < limit as f64 * (1.0 - BELOW) {
+        } else if (measured as f64) < limit as f64 * (1.0 - BAND) {
             problems.push(format!(
-                "{what}: {measured} {name}, far below the budget of {limit}: lower the budget"
+                "{what}: {measured} {name}, below the budget of {limit} by more than {}%: \
+                 a gain, so lower the budget to {measured} in this pull request",
+                BAND * 100.0
             ));
         }
     }

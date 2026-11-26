@@ -90,8 +90,13 @@ fn bench_passes(c: &mut Criterion, name: &str, source: &str) {
     let schema = Schema::empty();
     let ctx = AnalysisContext::new(FileId::new(1), source, &schema);
     // The memory of the resolve and check passes alone, on the output of the
-    // passes before them.
+    // passes before them, after one warm-up run of all three.
     {
+        let (tree, mut symbols, _d, rev) = declare_pass(program, &ctx);
+        let (refs, mut types, _rd) = resolve_pass(program, &ctx, &tree, &mut symbols, rev);
+        drop(check_pass(
+            program, &ctx, &tree, &symbols, &refs, &mut types,
+        ));
         let (tree, mut symbols, _d, rev) = declare_pass(program, &ctx);
         let ((refs, mut types, _rd), usage) =
             alloc::measure(|| resolve_pass(program, &ctx, &tree, &mut symbols, rev));

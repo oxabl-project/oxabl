@@ -21,9 +21,13 @@ use criterion::measurement::WallTime;
 /// is one JSON object on its own line, appended.
 pub const MEMORY_FILE_VARIABLE: &str = "OXABL_BENCH_MEMORY";
 
-/// Bench `f` as `<group>/<name>`, after one run of it under
-/// [`alloc::measure`]. The allocations, bytes and peak of that run go to
-/// stderr, and to the file that [`MEMORY_FILE_VARIABLE`] names.
+/// Bench `f` as `<group>/<name>`, after one warm-up run and one run under
+/// [`alloc::measure`]. The warm-up fills the lazy statics and caches, so the
+/// measured run is one iteration and no one-time setup. Its allocations,
+/// bytes, peak and retained bytes go to stderr, and to the file that
+/// [`MEMORY_FILE_VARIABLE`] names.
+///
+/// Both runs happen even when a Criterion filter leaves the bench out.
 ///
 /// The binary must install [`alloc::Counting`] as its global allocator.
 pub fn bench<T>(
@@ -32,6 +36,7 @@ pub fn bench<T>(
     name: &str,
     mut f: impl FnMut() -> T,
 ) {
+    drop(f());
     let (value, usage) = alloc::measure(&mut f);
     drop(value);
     report(&format!("{group_name}/{name}"), usage);
@@ -42,13 +47,13 @@ pub fn bench<T>(
 /// [`MEMORY_FILE_VARIABLE`] when it is set.
 pub fn report(id: &str, usage: alloc::Usage) {
     eprintln!(
-        "memory {id}: {} allocations, {} bytes requested, peak {} bytes",
-        usage.allocations, usage.bytes, usage.peak
+        "memory {id}: {} allocations, {} bytes requested, peak {} bytes, retained {} bytes",
+        usage.allocations, usage.bytes, usage.peak, usage.retained
     );
     if let Some(path) = std::env::var_os(MEMORY_FILE_VARIABLE) {
         let row = format!(
-            "{{\"bench\":\"{id}\",\"allocations\":{},\"bytes\":{},\"peak\":{}}}\n",
-            usage.allocations, usage.bytes, usage.peak
+            "{{\"bench\":\"{id}\",\"allocations\":{},\"bytes\":{},\"peak\":{},\"retained\":{}}}\n",
+            usage.allocations, usage.bytes, usage.peak, usage.retained
         );
         let written = std::fs::OpenOptions::new()
             .create(true)

@@ -7,7 +7,7 @@ use std::path::Path;
 use oxabl_analyze::DiagnosticSource;
 use oxabl_bench::fixtures::in_memory;
 use oxabl_bench::generate::{Knobs, Preset, generate};
-use oxabl_pipeline::LintPipeline;
+use oxabl_pipeline::{FormatPipeline, LintPipeline};
 
 /// Every feature of the ERP preset, at a size a test can analyse.
 fn small_erp() -> Knobs {
@@ -28,13 +28,29 @@ fn small_erp() -> Knobs {
     }
 }
 
-/// The findings of each kind over every root, as `code -> count`.
+/// The findings of each kind over every root, as `code -> count`, and
+/// `format:drift` for each root or include that `oxabl format` would change.
 fn findings(knobs: &Knobs) -> BTreeMap<String, usize> {
     let workspace = generate(knobs);
     let dir = Path::new("/gen");
     let (fs, config) = in_memory(&workspace, dir);
     let run = LintPipeline::new(&config, &fs);
+    let format = FormatPipeline::new(config.style.clone());
     let mut found = BTreeMap::new();
+    for file in workspace
+        .files
+        .iter()
+        .filter(|f| f.root || f.path.ends_with(".i"))
+    {
+        let outcome = format.format(&file.text);
+        assert!(outcome.not_formatted().is_none(), "{} formats", file.path);
+        if outcome.changed() {
+            if !found.contains_key("format:drift") {
+                eprintln!("{}: drifts", file.path);
+            }
+            *found.entry("format:drift".to_string()).or_insert(0) += 1;
+        }
+    }
     for root in workspace.roots() {
         let path = dir.join(&root.path);
         let result = run.with_file(&path).run(&root.text);
@@ -44,6 +60,12 @@ fn findings(knobs: &Knobs) -> BTreeMap<String, usize> {
             root.path,
             result.failure()
         );
+        // The findings in an include, as the root's run folds them
+        // (`include_origin`, which `check --include-findings` reports).
+        for d in result.include_origin() {
+            let code = format!("include:{}:{:?}", d.source.as_str(), d.diagnostic.code);
+            *found.entry(code).or_insert(0) += 1;
+        }
         for source in [
             DiagnosticSource::Parse,
             DiagnosticSource::Preproc,
@@ -94,8 +116,38 @@ fn the_erp_preset_has_its_shape() {
     assert!(s.roots_over_30000_lines >= 100, "{s:?}");
 }
 
+/// The hot includes of `knobs` that the roots read, counted once for each root.
+fn hot_reads(knobs: &Knobs) -> usize {
+    let workspace = generate(knobs);
+    workspace
+        .roots()
+        .map(|root| {
+            root.includes
+                .iter()
+                .filter(|&&id| workspace.files[id].path.starts_with("inc/hot/"))
+                .count()
+        })
+        .sum()
+}
+
 #[test]
-fn every_root_parses_with_no_finding() {
+fn each_root_reports_the_findings_of_the_hot_includes_it_reads() {
+    let knobs = Knobs {
+        include_findings: 3,
+        ..Preset::Ci.knobs()
+    };
+    let reads = hot_reads(&knobs);
+    assert!(reads > 400, "{reads} reads of a hot include");
+    let found = findings(&knobs);
+    let expected = BTreeMap::from([(
+        "include:lint:DiagnosticCode(\"LINT0002\")".to_string(),
+        3 * reads,
+    )]);
+    assert_eq!(found, expected);
+}
+
+#[test]
+fn every_root_parses_with_no_finding_and_no_drift() {
     for (name, knobs) in [("ci", Preset::Ci.knobs()), ("small erp", small_erp())] {
         let found = findings(&knobs);
         assert!(found.is_empty(), "{name}: {found:?}");

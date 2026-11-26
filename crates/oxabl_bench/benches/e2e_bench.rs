@@ -6,7 +6,11 @@
 //!   the lint run and then the format check, the calls of `CheckPass`, on a
 //!   new pipeline (an empty cross-file index), as each `oxabl check` starts.
 //! - `check/workspace`: the same over the 300 roots of the generated `ci`
-//!   workspace (`oxabl_bench::generate`), with one pipeline for the walk.
+//!   workspace (`oxabl_bench::generate`), with one pipeline for the walk. The
+//!   roots have no finding and no drift.
+//! - `check/workspace_include_findings`: the same workspace with three unused
+//!   variables in each hot include, so each root that reads one folds the
+//!   findings of the include (`IncludeRows` in `oxabl_analyze`).
 //! - `format/file_end_to_end`: `FormatPipeline::format` from the source text
 //!   of `lsp_bench.p`, as `oxabl format` and Format Document call it.
 //! - `navigation/definitions`: one go to definition request on `lsp_bench.p`:
@@ -20,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use oxabl_bench::alloc::Counting;
-use oxabl_bench::generate::{Preset, generate};
+use oxabl_bench::generate::{Knobs, Preset, generate};
 use oxabl_bench::{bench, fixtures};
 use oxabl_pipeline::{FormatPipeline, LintPipeline, PipelineConfig};
 use oxabl_workspace::FileSystem;
@@ -29,7 +33,8 @@ use oxabl_workspace::FileSystem;
 static ALLOCATOR: Counting = Counting;
 
 /// What `CheckPass::root` does with one root: lint, then the format check.
-/// Returns the findings and whether the file drifted.
+/// Returns the findings, with those in its includes, and whether the file
+/// drifted.
 fn check_root(
     lint: &LintPipeline<'_>,
     format: &FormatPipeline,
@@ -44,7 +49,8 @@ fn check_root(
         "{} formats",
         path.display()
     );
-    (result.all().count(), outcome.changed())
+    let findings = result.all().count() + result.include_origin().len();
+    (findings, outcome.changed())
 }
 
 fn check_walk(
@@ -73,18 +79,32 @@ fn bench_check_and_format(c: &mut Criterion) {
         check_walk(&config, &fs, &format, &one)
     });
 
-    let workspace = generate(&Preset::Ci.knobs());
-    let dir = Path::new("/gen");
-    let (ws_fs, ws_config) = fixtures::in_memory(&workspace, dir);
-    let roots: Vec<(PathBuf, String)> = workspace
-        .roots()
-        .map(|root| (dir.join(&root.path), root.text.clone()))
-        .collect();
-    assert_eq!(roots.len(), 300);
-    let ws_format = FormatPipeline::new(ws_config.style.clone());
-    bench(&mut group, "check", "workspace", || {
-        check_walk(&ws_config, &ws_fs, &ws_format, &roots)
-    });
+    for (name, include_findings) in [("workspace", 0), ("workspace_include_findings", 3)] {
+        let knobs = Knobs {
+            include_findings,
+            ..Preset::Ci.knobs()
+        };
+        let workspace = generate(&knobs);
+        let dir = Path::new("/gen");
+        let (ws_fs, ws_config) = fixtures::in_memory(&workspace, dir);
+        let roots: Vec<(PathBuf, String)> = workspace
+            .roots()
+            .map(|root| (dir.join(&root.path), root.text.clone()))
+            .collect();
+        assert_eq!(roots.len(), 300);
+        let ws_format = FormatPipeline::new(ws_config.style.clone());
+        let findings = check_walk(&ws_config, &ws_fs, &ws_format, &roots);
+        // The clean workspace has none; the other has one row for each finding
+        // of a hot include in each root that reads it.
+        assert_eq!(
+            findings == 0,
+            include_findings == 0,
+            "{name}: {findings} findings"
+        );
+        bench(&mut group, "check", name, || {
+            check_walk(&ws_config, &ws_fs, &ws_format, &roots)
+        });
+    }
     group.finish();
 
     let mut group = c.benchmark_group("format");

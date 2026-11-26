@@ -1,7 +1,7 @@
 //! Write a synthetic ABL workspace.
 //!
 //! Usage: gen-workspace [--preset ci|medium|erp] [--seed N] [--programs N]
-//!        [--classes N] [--stats] <dir>
+//!        [--classes N] [--include-findings N] [--stats] <dir>
 //!
 //! The directory must not exist or must be empty. `--stats` prints the shape
 //! and writes nothing when no directory is given.
@@ -13,7 +13,7 @@ use oxabl_bench::generate::{Preset, generate};
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: gen-workspace [--preset ci|medium|erp] [--seed N] [--programs N] [--classes N] [--stats] <dir>"
+        "usage: gen-workspace [--preset ci|medium|erp] [--seed N] [--programs N] [--classes N] [--include-findings N] [--stats] <dir>"
     );
     ExitCode::from(2)
 }
@@ -23,6 +23,7 @@ fn main() -> ExitCode {
     let mut seed = None;
     let mut programs = None;
     let mut classes = None;
+    let mut include_findings = None;
     let mut stats = false;
     let mut dir: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
@@ -54,6 +55,10 @@ fn main() -> ExitCode {
                 Some(n) => classes = Some(n as usize),
                 None => return usage(),
             },
+            "--include-findings" => match number("--include-findings") {
+                Some(n) => include_findings = Some(n as usize),
+                None => return usage(),
+            },
             "--stats" => stats = true,
             "-h" | "--help" => {
                 let _ = usage();
@@ -77,6 +82,9 @@ fn main() -> ExitCode {
     }
     if let Some(classes) = classes {
         knobs.classes = classes;
+    }
+    if let Some(n) = include_findings {
+        knobs.include_findings = n;
     }
     let workspace = generate(&knobs);
 

@@ -115,16 +115,19 @@ self-update = [
     "dep:rustix",
 ]
 
-# Build the CLI with the system allocator instead of jemalloc. For heap
-# profilers such as heaptrack and valgrind's DHAT, which see only the calls of
-# the C library's allocator (`scripts/bench/cli.sh`). Never in a release.
-system-allocator = ["cli"]
-
 # The CLI's allocator. Its workers allocate heavily on every core, where
 # jemalloc is markedly faster than the system allocator. MSVC and wasm keep
 # the system one.
 [target.'cfg(not(any(target_env = "msvc", target_arch = "wasm32")))'.dependencies]
 tikv-jemallocator = { version = "0.7", optional = true }
+
+[lints.rust]
+# `RUSTFLAGS="--cfg oxabl_system_allocator"` builds the CLI with the system
+# allocator instead of jemalloc, for heap profilers such as heaptrack and
+# valgrind's DHAT, which see only the C library's allocator
+# (`scripts/bench/cli.sh`). A flag and not a cargo feature, so no dependent
+# crate and no `--all-features` build can turn jemalloc off.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(oxabl_system_allocator)'] }
 
 [dev-dependencies]
 tempfile = "3"
