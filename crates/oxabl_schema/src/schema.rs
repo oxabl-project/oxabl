@@ -84,7 +84,7 @@ impl TableId {
 /// only by the loader when two merged `.df` files disagree on a field type
 /// (`SCHEMA0012`) — downstream consumers treat an `Error`-typed field as
 /// poisoned.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SchemaType {
     Integer,
     Int64,
@@ -136,7 +136,7 @@ impl SchemaType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Field {
     pub name: OxablAtom,
     pub display_name: String,
@@ -176,7 +176,7 @@ impl Field {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IndexField {
     pub name: OxablAtom,
     pub display_name: String,
@@ -185,7 +185,7 @@ pub struct IndexField {
     pub unsorted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Index {
     pub name: OxablAtom,
     pub display_name: String,
@@ -199,7 +199,7 @@ pub struct Index {
     pub source: FileSpan,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Table {
     pub name: OxablAtom,
     pub display_name: String,
@@ -219,7 +219,7 @@ pub struct Table {
 /// A database sequence declared by `ADD SEQUENCE`.
 ///
 /// A bound the `.df` writes as `?` (no limit) is `None`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Sequence {
     pub name: OxablAtom,
     pub display_name: String,
@@ -353,6 +353,19 @@ impl Schema {
             && self.source_files.iter().zip(paths).enumerate().all(
                 |(at, ((file, recorded), path))| file.raw() == at as u32 + 1 && recorded == path,
             )
+    }
+
+    /// Feed `state` everything that decides what the schema answers: its tables
+    /// and sequences in their order, with the `.df` files they come from, and
+    /// whether the metaschema is on. It walks no hash map, so a schema that
+    /// the loader parsed and one that the cache gave back feed the same
+    /// bytes. The revision is left out: it counts loads.
+    pub fn hash_content<H: std::hash::Hasher>(&self, state: &mut H) {
+        use std::hash::Hash;
+        self.arena.hash(state);
+        self.sequences.hash(state);
+        self.source_files.hash(state);
+        self.metaschema.hash(state);
     }
 
     /// Record that `file` is the `.df` at `path`. The loader calls this.
