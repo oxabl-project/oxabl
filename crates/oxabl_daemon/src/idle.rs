@@ -128,6 +128,17 @@ impl Activity {
         self.lock().clients
     }
 
+    /// Refuse every later client and return `true` when none is connected now; with a
+    /// client connected, change nothing and return `false`. The check and the refusal
+    /// share one lock, so no client is admitted between them.
+    pub fn close_if_no_client(&self) -> bool {
+        let mut state = self.lock();
+        if state.clients == 0 {
+            state.closing = true;
+        }
+        state.closing
+    }
+
     /// Count background work that must finish before the daemon may exit, such as a
     /// workspace pass that outlives the request that started it.
     pub fn work(self: &Arc<Self>) -> Busy {

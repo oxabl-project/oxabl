@@ -447,7 +447,7 @@ impl RootThread {
                         RootState::Gone(reason) => reason,
                         // A client is a reason to trust the path less than the open
                         // directory; with none, a restart costs little.
-                        RootState::Replaced(reason) if activity.clients() == 0 => reason,
+                        RootState::Replaced(reason) if activity.close_if_no_client() => reason,
                         RootState::Replaced(reason) => {
                             if !std::mem::replace(&mut reported_replaced, true) {
                                 use std::io::Write as _;
@@ -465,6 +465,10 @@ impl RootThread {
                         }
                         RootState::Unknown(_) => continue,
                     };
+                    // The check may have blocked past the end of the accept loop.
+                    if flag.load(Ordering::SeqCst) {
+                        break;
+                    }
                     use std::io::Write as _;
                     let _ = writeln!(
                         std::io::stderr(),

@@ -459,9 +459,8 @@ fn a_replaced_workspace_root_keeps_a_daemon_that_has_a_client() {
     });
 }
 
-/// The idle exit must not need the socket file. A daemon whose runtime directory was
-/// deleted (a test that cleaned up) used to decide to exit and then wait for a
-/// connection that could not reach it, for ever.
+/// The idle exit does not need the socket file: a daemon whose socket file was
+/// removed still exits when it is idle.
 #[test]
 fn an_idle_daemon_exits_after_its_socket_file_was_removed() {
     with_base_dir(|| {
@@ -552,4 +551,23 @@ fn a_root_that_cannot_be_checked_keeps_its_daemon() {
             .expect("the daemon stops when asked");
         daemon.thread.join().expect("the loop ends cleanly");
     });
+}
+
+/// Once the daemon decides to exit with no client, no client is admitted; with a
+/// client, the decision is refused and clients are still admitted.
+#[test]
+fn closing_for_no_client_refuses_later_clients_and_never_cuts_a_connected_one() {
+    let activity = Arc::new(oxabl_daemon::Activity::default());
+    let client = activity.admit().expect("a client is admitted");
+    assert!(
+        !activity.close_if_no_client(),
+        "the daemon closed with a client connected"
+    );
+    let second = activity.admit().expect("still open with a client");
+    drop((client, second));
+    assert!(activity.close_if_no_client(), "no client is connected");
+    assert!(
+        activity.admit().is_none(),
+        "a client was admitted after the daemon closed"
+    );
 }

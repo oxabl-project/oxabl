@@ -195,8 +195,8 @@ fn a_daemon_with_a_connected_client_does_not_exit_idle() {
     assert_serves(&mut second, &root);
 }
 
-/// The idle exit must not need the socket file: a test that deleted its runtime
-/// directory before its daemon went idle left the daemon for ever.
+/// The idle exit does not need the socket file: a daemon whose runtime directory was
+/// deleted still exits when it is idle.
 #[test]
 fn an_idle_daemon_exits_after_its_runtime_directory_was_removed() {
     let parent = tempfile::tempdir().unwrap();
