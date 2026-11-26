@@ -138,6 +138,9 @@ pub fn format_ranges(
     style: &StyleGuide,
     ranges: &[Range<usize>],
 ) -> Result<Vec<RangeEdit>, RangeBail> {
+    if !program.errors.is_empty() {
+        return Err(RangeBail::File(FormatBail::ParseErrors));
+    }
     let tokens = oxabl_lexer::tokenize(source);
     format_ranges_with_tokens(source, &tokens, program, style, ranges)
 }

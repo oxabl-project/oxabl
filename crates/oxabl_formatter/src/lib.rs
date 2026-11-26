@@ -57,7 +57,7 @@ pub use attach::{CommentMap, NodeComments, attach};
 pub use range::{RangeBail, RangeEdit, RangeFailure, format_ranges, try_format_ranges};
 
 use oxabl_common::{InternalPanic, SourceMap, catch_panic, panic_if_injected, panic_sites};
-use oxabl_lexer::Token;
+use oxabl_lexer::{Kind, Token};
 use oxabl_parser::Program;
 use oxabl_style::StyleGuide;
 use std::fmt;
@@ -169,6 +169,9 @@ impl From<InternalPanic> for FormatFailure {
 /// See the [crate docs](crate) for the v1 layout-only scope and the reflow
 /// no-op contract.
 pub fn format(source: &str, program: &Program, style: &StyleGuide) -> Result<String, FormatBail> {
+    if !program.errors.is_empty() {
+        return Err(FormatBail::ParseErrors);
+    }
     format_with_tokens(source, &oxabl_lexer::tokenize(source), program, style)
 }
 
@@ -176,6 +179,12 @@ pub fn format(source: &str, program: &Program, style: &StyleGuide) -> Result<Str
 ///
 /// `tokens` must be `oxabl_lexer::tokenize(source)`, the tokens that `program`
 /// was parsed from. [`format()`] lexes `source` itself and calls this.
+///
+/// The function checks only that `tokens` end in the [`Kind::Eof`] token at the
+/// end of `source`; tokens of another text fail that check and give
+/// [`FormatBail::SemanticGuardTripped`]. Other tokens that do not match `source`
+/// can still panic, so call [`try_format_source`] when you do not hold the
+/// tokens of this exact text.
 pub fn format_with_tokens(
     source: &str,
     tokens: &[Token],
@@ -198,6 +207,14 @@ pub(crate) struct LineFormat {
     pub anchors: Vec<Option<usize>>,
 }
 
+/// Whether `tokens` end in the `Eof` token at the end of `source`, as the tokens
+/// of `source` do.
+fn tokens_end_source(source: &str, tokens: &[Token]) -> bool {
+    tokens
+        .last()
+        .is_some_and(|t| t.kind == Kind::Eof && t.end == source.len())
+}
+
 /// [`format()`] with the map from source lines to output lines.
 pub(crate) fn format_with_lines(
     source: &str,
@@ -207,6 +224,9 @@ pub(crate) fn format_with_lines(
 ) -> Result<LineFormat, FormatBail> {
     if !program.errors.is_empty() {
         return Err(FormatBail::ParseErrors);
+    }
+    if !tokens_end_source(source, source_tokens) {
+        return Err(FormatBail::SemanticGuardTripped);
     }
     let sm = SourceMap::new(source);
     let cmap = attach::attach(program, &sm);
@@ -324,6 +344,23 @@ mod tests {
         );
         // The bail's own message survives the extra wrapper.
         assert_eq!(err.to_string(), FormatBail::ParseErrors.to_string());
+    }
+
+    #[test]
+    fn tokens_of_another_text_bail() {
+        let src = "DO:\n  MESSAGE \"hi\".\nEND.\n";
+        let program = parse(src);
+        let style = StyleGuide::default_base();
+        let longer = tokenize("DO:\n  MESSAGE \"hi there\".\nEND.\n");
+        assert_eq!(
+            format_with_tokens(src, &longer, &program, &style),
+            Err(FormatBail::SemanticGuardTripped)
+        );
+        assert_eq!(
+            format_with_tokens(src, &[], &program, &style),
+            Err(FormatBail::SemanticGuardTripped)
+        );
+        assert!(format_with_tokens(src, &tokenize(src), &program, &style).is_ok());
     }
 
     #[test]

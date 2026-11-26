@@ -238,11 +238,12 @@ less work, which look like a gain.
   "N full + M small". A call is full when its caller pays, for each call, at
   least a tenth of what the most expensive caller pays: a lex or parse of a
   whole file. Some passes lex short pieces of text many times (the resolve
-  pass, and the formatter's `apply_end_type`); these are the small calls. So on one file, "5 full"
-  means that the command lexes the file five times. In a walk, the count is
-  not a number for each root: the index lexes and parses the includes too
-  (`index_parsed`), so read the callers. `callgrind_summary.py` without `--row` names each full
-  caller with its calls and its share.
+  pass, and the formatter's `apply_end_type`); these are the small calls. So
+  on one file, "5 full" means that the command lexes the file five times. In a
+  walk, the count is not a number for each root: the index lexes and parses
+  the includes too (`index_parsed`), so read the callers.
+  `callgrind_summary.py` without `--row` names each full caller with its calls
+  and its share.
 - When the C library has no symbols, `memcpy` shows as an address. Its cost is
   then in the column `unnamed libc self`.
 
@@ -312,9 +313,21 @@ are rough:
 | `explain lsp_bench.p` | 0.01 s | 18 MB | 7.0 MB | 25,059 | 46.4 M | 17.0% (1 full) | 20.0% (1 full) |
 
 The rows above are from before the formatter took the tokens of its caller
-(`format_with_tokens`). With that change, `check lsp_bench.p` takes 94.5 M
-instructions (`tokenize` 4 full calls, 0 small), and `format --check src` takes
-288.6 M (600 full calls), on the same machine and toolchain.
+(`format_with_tokens`), and before `check` built each file's line table once.
+For this change alone, from commit `2285153` on the same machine and
+toolchain: `check lsp_bench.p` goes from 103.6 M to 94.5 M instructions
+(`tokenize`: 4 full calls, 0 small), and `format --check src` goes from 355.8 M
+to 288.6 M (600 full calls instead of 900). The warm run of `check/file` makes
+44,318 allocations (27.2 MB requested, peak 9.7 MB) and `format/file_end_to_end`
+makes 19,710 (14.9 MB, peak 8.9 MB); the memory table above has the numbers
+from before.
+
+The test-only feature `test-counters` of `oxabl_lexer` counts the lexers and
+the calls of `tokenize`. Cargo unifies a feature of a dev-dependency over a
+workspace build, so a workspace-wide build, such as `cargo test --workspace` or
+the CodSpeed CPU build, has it on. Its cost is up to three atomic additions
+for each lexer, which is very small, and a build of the shipped binary does
+not have it.
 
 On the `erp` workspace (7,000 roots, 16 cores, a loaded machine, before the
 generated text was made format-clean), `oxabl check src` took 23.3 s with a

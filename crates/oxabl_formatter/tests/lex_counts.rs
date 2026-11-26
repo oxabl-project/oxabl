@@ -38,12 +38,12 @@ fn spaced() -> String {
         .replace("\nEND.", "\n\nEND.")
 }
 
-/// `(lexers built, bytes lexed)` by `run`.
-fn counted<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
-    let (l0, b0) = lex_counts().expect("the test build counts lexers");
+/// `(lexers built, bytes lexed, calls of tokenize)` by `run`.
+fn counted<T>(run: impl FnOnce() -> T) -> (T, usize, usize, usize) {
+    let (l0, b0, t0) = lex_counts();
     let out = run();
-    let (l1, b1) = lex_counts().unwrap();
-    (out, l1 - l0, b1 - b0)
+    let (l1, b1, t1) = lex_counts();
+    (out, l1 - l0, b1 - b0, t1 - t0)
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn the_formatter_lexes_the_source_once_and_the_candidate_once() {
 
     // A caller that lexes and parses, then formats through `try_format_source`.
     let src = tight();
-    let (out, lexes, bytes) = counted(|| try_format_source(&src, &style).unwrap());
+    let (out, lexes, bytes, tokenizes) = counted(|| try_format_source(&src, &style).unwrap());
     assert_ne!(out, src, "the fixture must have a change to make");
     assert_eq!(
         lexes, 2,
@@ -63,12 +63,21 @@ fn the_formatter_lexes_the_source_once_and_the_candidate_once() {
         src.len() + out.len(),
         "the two lexes must be of the whole source and the whole candidate"
     );
+    assert_eq!(tokenizes, 2, "no pass may collect tokens besides those two");
 
-    // With blank runs, the blank-line pass lexes single lines. Together they stay
-    // below one more lex of the file.
+    // With blank runs, the blank-line pass lexes single lines. It walks the lexer
+    // and collects no token vector for them, and together they stay below one
+    // more lex of the file.
     let src = spaced();
-    let (out, lexes, bytes) = counted(|| try_format_source(&src, &style).unwrap());
-    assert!(lexes >= 2);
+    let (out, lexes, bytes, tokenizes) = counted(|| try_format_source(&src, &style).unwrap());
+    assert!(
+        lexes > 2,
+        "the fixture must make the blank-line pass lex lines"
+    );
+    assert_eq!(
+        tokenizes, 2,
+        "the blank-line pass must not collect a token vector for each line"
+    );
     let extra = bytes - (src.len() + out.len());
     assert!(
         extra < src.len(),
@@ -80,7 +89,7 @@ fn the_formatter_lexes_the_source_once_and_the_candidate_once() {
     let src = tight();
     let tokens = tokenize(&src);
     let program = Parser::new(&tokens, &src).parse_program();
-    let (out, lexes, bytes) = counted(|| format_with_tokens(&src, &tokens, &program, &style));
+    let (out, lexes, bytes, _) = counted(|| format_with_tokens(&src, &tokens, &program, &style));
     let out = out.unwrap();
     assert_eq!(lexes, 1, "format_with_tokens must lex the candidate only");
     assert_eq!(bytes, out.len());
@@ -88,7 +97,7 @@ fn the_formatter_lexes_the_source_once_and_the_candidate_once() {
     // A range: the source, the whole-file candidate for the layout, and the
     // candidate of the edits.
     let range = 0..src.len() / 2;
-    let (edits, lexes, _) =
+    let (edits, lexes, _, _) =
         counted(|| try_format_ranges(&src, &style, std::slice::from_ref(&range)).unwrap());
     assert!(!edits.is_empty(), "the range must have edits");
     assert_eq!(
