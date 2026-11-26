@@ -122,7 +122,7 @@ pub(crate) fn index_lines(out: &mut String, indexes: &[EffectiveIndex]) {
 
 /// The ABL keyword of a schema type; `None` for a type the `.df` did not
 /// give in a form oxabl reads.
-fn type_name(data_type: &SchemaType) -> Option<String> {
+pub(crate) fn type_name(data_type: &SchemaType) -> Option<String> {
     let name = match data_type {
         SchemaType::Integer => "INTEGER",
         SchemaType::Int64 => "INT64",

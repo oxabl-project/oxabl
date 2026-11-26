@@ -16,9 +16,9 @@ use std::collections::HashMap;
 
 use lsp_server::{ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionTextEdit,
-    Documentation, InsertReplaceEdit, InsertTextFormat, MarkupContent, MarkupKind,
-    PositionEncodingKind, Range, TextEdit, Uri,
+    Command, CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams,
+    CompletionTextEdit, Documentation, InsertReplaceEdit, InsertTextFormat, MarkupContent,
+    MarkupKind, PositionEncodingKind, Range, TextEdit, Uri,
 };
 use oxabl_daemon::canonical_path;
 use oxabl_daemon::completion::{
@@ -255,11 +255,28 @@ fn resolve_query(data: &Value) -> Option<ResolveQuery> {
     if let Some(doc) = data.get("doc").and_then(Value::as_u64) {
         return Some(ResolveQuery::Doc(u16::try_from(doc).ok()?));
     }
+    if let Some(path) = data.get("path").and_then(Value::as_str) {
+        let entry = data.get("entry").and_then(Value::as_str)?;
+        return Some(ResolveQuery::Path {
+            path: path.to_string(),
+            entry: entry.into(),
+        });
+    }
+    let number = |key: &str| {
+        data.get(key)
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+    };
     let base = data.get("base").and_then(Value::as_u64)?;
-    let symbol = data.get("symbol").and_then(Value::as_u64)?;
+    if let Some(table) = number("table") {
+        return Some(match number("field") {
+            Some(field) => ResolveQuery::Field { base, table, field },
+            None => ResolveQuery::Table { base, table },
+        });
+    }
     Some(ResolveQuery::Symbol {
         base,
-        symbol: u32::try_from(symbol).ok()?,
+        symbol: number("symbol")?,
     })
 }
 
@@ -294,7 +311,20 @@ fn render(
                 ItemData::None => None,
                 ItemData::Doc(doc) => Some(json!({ "doc": doc })),
                 ItemData::Symbol(symbol) => Some(json!({ "base": base, "symbol": symbol })),
+                ItemData::Table(table) => Some(json!({ "base": base, "table": table })),
+                ItemData::Field { table, field } => {
+                    Some(json!({ "base": base, "table": table, "field": field }))
+                }
+                ItemData::Path(data) => {
+                    Some(json!({ "path": data.path, "entry": data.entry.to_string_lossy() }))
+                }
             };
+            // A directory asks for the list of its entries.
+            let command = (item.kind == ItemKind::Folder).then(|| Command {
+                title: "Suggest".to_string(),
+                command: "editor.action.triggerSuggest".to_string(),
+                arguments: None,
+            });
             CompletionItem {
                 filter_text: Some(item.label.clone()),
                 label: item.label,
@@ -304,6 +334,7 @@ fn render(
                 text_edit: Some(edit),
                 insert_text_format: item.snippet.then_some(InsertTextFormat::SNIPPET),
                 data,
+                command,
                 ..Default::default()
             }
         })

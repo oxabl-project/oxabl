@@ -315,6 +315,7 @@ impl FileSystem for InMemoryFileSystem {
     /// no file lies below `dir`.
     fn list_dir(&self, dir: &Path) -> Option<Vec<DirEntry>> {
         let mut entries: Vec<DirEntry> = Vec::new();
+        let mut seen: rustc_hash::FxHashSet<(&std::ffi::OsStr, bool)> = Default::default();
         for path in self.files.keys() {
             let Ok(below) = path.strip_prefix(dir) else {
                 continue;
@@ -323,10 +324,12 @@ impl FileSystem for InMemoryFileSystem {
             let Some(std::path::Component::Normal(first)) = parts.next() else {
                 continue;
             };
-            let name = first.to_string_lossy().into_owned();
             let is_dir = parts.next().is_some();
-            if !entries.iter().any(|e| e.name == name && e.is_dir == is_dir) {
-                entries.push(DirEntry { name, is_dir });
+            if seen.insert((first, is_dir)) {
+                entries.push(DirEntry {
+                    name: first.to_string_lossy().into_owned(),
+                    is_dir,
+                });
             }
         }
         (!entries.is_empty()).then_some(entries)
