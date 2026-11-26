@@ -121,10 +121,17 @@ impl Listener {
                 // The holder has the lock and has registered nothing readable yet, so
                 // there is no pid to name and claiming one would be a guess.
                 registry::DaemonState::Crashed(_) | registry::DaemonState::Absent => format!(
-                    "another process holds the start lock for {} and has not \
+                    "another process holds the start lock {} for {} and has not \
                      registered a daemon yet. Wait for it: the lock is released when \
                      the process that holds it exits. Never remove the lock file while \
                      that process runs.",
+                    // Only a sentence is at stake here: `acquire_root_lock` resolved
+                    // this same path a moment ago to open the lock it just found held,
+                    // so the error arm is unreachable — and a refusal must not be
+                    // replaced by a second, unrelated failure over a message.
+                    registry::lock_path_for(&workspace_root)
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|error| error.to_string()),
                     workspace_root.display(),
                 ),
             };

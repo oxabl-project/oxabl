@@ -5,7 +5,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,6 +28,10 @@ pub struct Session {
     messages: mpsc::Receiver<Value>,
     registration: PathBuf,
     stderr: PathBuf,
+    /// The read end of stderr, for a session started with [`Launch::stderr_pipe`].
+    stderr_pipe: Option<ChildStderr>,
+    /// Whether dropping the session stops its daemon.
+    stops_daemon: bool,
     next_id: u64,
     /// The answer to `initialize`.
     pub initialized: Value,
@@ -57,7 +61,13 @@ impl Session {
     /// Start with `params` added to the `initialize` parameters, and return the
     /// messages the server sent before its answer as well.
     pub fn start_with_params(root: &Path, params: Value) -> (Session, Vec<Value>) {
-        let mut session = Session::launch(root, params);
+        Session::launch(root, params).await_initialize()
+    }
+
+    /// Wait for the answer to `initialize` of a launched session, send `initialized`,
+    /// and return the messages the server sent before its answer as well.
+    pub fn await_initialize(self) -> (Session, Vec<Value>) {
+        let mut session = self;
         let mut early = Vec::new();
         session.initialized = session.wait_for(|m| {
             let answer = m["id"] == json!(0) && m.get("method").is_none();
@@ -79,13 +89,29 @@ impl Session {
     /// [`Session::launch`], with `before` run on the path of the registration file
     /// before `oxabl lsp` starts.
     pub fn launch_after(root: &Path, params: Value, before: impl FnOnce(&Path)) -> Session {
+        Session::launch_with(root, params, Launch::default(), before)
+    }
+
+    /// [`Session::launch_after`], with the runtime directory and stderr of `launch`.
+    pub fn launch_with(
+        root: &Path,
+        params: Value,
+        launch: Launch<'_>,
+        before: impl FnOnce(&Path),
+    ) -> Session {
         let base = tempfile::tempdir().unwrap();
+        let runtime = launch.runtime.unwrap_or(base.path());
         let registration = registration_path_in(
-            &base.path().join("oxabl").join("daemon"),
+            &runtime.join("oxabl").join("daemon"),
             &canonical_root(root).unwrap(),
         );
         before(&registration);
         let stderr = base.path().join("lsp.stderr");
+        let stderr_target = if launch.stderr_pipe {
+            Stdio::piped()
+        } else {
+            Stdio::from(std::fs::File::create(&stderr).unwrap())
+        };
         // No core dump from a daemon that crashes: it inherits the limit.
         let mut child = Command::new("sh")
             .arg("-c")
@@ -93,15 +119,16 @@ impl Session {
             .arg("sh")
             .arg(OXABL_BIN)
             .arg("lsp")
-            .env("XDG_RUNTIME_DIR", base.path())
-            .env("XDG_CACHE_HOME", base.path())
-            .env("HOME", base.path())
+            .env("XDG_RUNTIME_DIR", runtime)
+            .env("XDG_CACHE_HOME", runtime)
+            .env("HOME", runtime)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(std::fs::File::create(&stderr).unwrap())
+            .stderr(stderr_target)
             .spawn()
             .unwrap();
         let stdin = child.stdin.take().unwrap();
+        let stderr_pipe = child.stderr.take();
         let mut stdout = child.stdout.take().unwrap();
         let (tx, messages) = mpsc::channel();
         thread::spawn(move || {
@@ -126,6 +153,8 @@ impl Session {
             messages,
             registration,
             stderr,
+            stderr_pipe,
+            stops_daemon: true,
             next_id: 1,
             initialized: Value::Null,
             _base: base,
@@ -160,6 +189,15 @@ impl Session {
             thread::sleep(Duration::from_millis(20));
         }
         None
+    }
+
+    /// Kill `oxabl lsp` and close the read end of its stderr, as an editor does when
+    /// it closes, and leave its daemon running.
+    pub fn end_client(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.stderr_pipe = None;
+        self.stops_daemon = false;
     }
 
     /// What `oxabl lsp` and its daemon wrote to stderr so far.
@@ -272,7 +310,8 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        if let Ok(bytes) = std::fs::read(&self.registration)
+        if self.stops_daemon
+            && let Ok(bytes) = std::fs::read(&self.registration)
             && let Ok(registration) = serde_json::from_slice::<Registration>(&bytes)
         {
             signal(registration.pid, 15);
@@ -280,6 +319,17 @@ impl Drop for Session {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Where [`Session::launch_with`] runs `oxabl lsp`.
+#[derive(Default)]
+pub struct Launch<'a> {
+    /// A runtime directory that several sessions share, so they find one daemon.
+    /// By default each session has its own.
+    pub runtime: Option<&'a Path>,
+    /// Give stderr a pipe that the session holds and does not read, in place of a
+    /// file. [`Session::stderr`] is then empty.
+    pub stderr_pipe: bool,
 }
 
 fn signal(pid: u32, signal: i32) -> i32 {

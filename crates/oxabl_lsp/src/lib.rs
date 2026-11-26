@@ -369,7 +369,6 @@ fn find_or_start_daemon(
     // so the loop keeps polling and reports it only at the deadline.
     let mut busy: Option<String> = None;
     let mut refusal: Option<String> = None;
-    let mut captured: Option<CapturedStderr> = None;
     // A shared limit that an earlier attempt has used up leaves no time to start a daemon.
     if Instant::now() >= limit {
         anyhow::bail!(
@@ -379,6 +378,7 @@ fn find_or_start_daemon(
         );
     }
     loop {
+        let mut absent = false;
         match oxabl_daemon::discover(root) {
             oxabl_daemon::Discovery::Live(registration) => return Ok(registration),
             oxabl_daemon::Discovery::VersionMismatch(registration) => match &mut stopping {
@@ -435,54 +435,40 @@ fn find_or_start_daemon(
             // should not be the one reported, and one that has not will be read again
             // on the next pass.
             oxabl_daemon::Discovery::Undecided(reason) => refusal = Some(reason),
-            oxabl_daemon::Discovery::Absent => {
-                if let Some(status) = child.as_mut().and_then(|child| child.try_wait().ok()?) {
-                    let captured = captured.take();
-                    if status.code()
-                        != Some(i32::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD))
-                    {
-                        if let Some(captured) = captured {
-                            eprint!("{}", captured.finish());
-                        }
-                        anyhow::bail!(
-                            "the oxabl daemon this client started for {} exited ({status}) \
-                             before it served the root; its error is above",
-                            root.display()
-                        );
-                    }
-                    // A live process holds the start lock: the kernel releases it when
-                    // the holder exits.
-                    child_exit = Some(status);
-                    child = None;
-                }
-                if child.is_none() && last_start.is_none_or(|at| at.elapsed() >= restart_interval) {
-                    let executable =
-                        std::env::current_exe().context("locating the oxabl executable")?;
-                    // The first start writes to the editor's log. A restart repeats
-                    // the first one's refusal once a second, so its output is kept: it
-                    // is shown only if the restart fails for another reason.
-                    let mut command = Command::new(executable);
-                    command
-                        .arg("daemon")
-                        .arg(root)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(if started {
-                            Stdio::piped()
-                        } else {
-                            Stdio::inherit()
-                        });
-                    let mut spawned = command.spawn().context("starting the oxabl daemon")?;
-                    captured = spawned.stderr.take().map(CapturedStderr::start);
-                    child = Some(spawned);
-                    if started {
-                        restart_interval = (restart_interval * 2).min(RESTART_MAX);
-                    }
-                    started = true;
-                    starts += 1;
-                    last_start = Some(Instant::now());
-                }
+            oxabl_daemon::Discovery::Absent => absent = true,
+        }
+        // Whatever discovery said: a daemon that exited for a reason other than the
+        // start lock fails the same way on every start, so it is reported at once.
+        if let Some(status) = child.as_mut().and_then(|child| child.try_wait().ok()?) {
+            if !lost_start_lock(status) {
+                return Err(exited_before_serving(root, status, refusal.as_deref()));
             }
+            // A live process holds the start lock: the kernel releases it when the
+            // holder exits.
+            child_exit = Some(status);
+            child = None;
+        }
+        if absent && child.is_none() && last_start.is_none_or(|at| at.elapsed() >= restart_interval)
+        {
+            let executable = std::env::current_exe().context("locating the oxabl executable")?;
+            // Every daemon writes to the editor's log, never to a pipe of this process,
+            // because it may outlive this process. A restart does not repeat the first
+            // start's refusal of the start lock.
+            let mut command = Command::new(executable);
+            command
+                .arg("daemon")
+                .arg(root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit());
+            if started {
+                command.arg("--quiet-if-locked");
+                restart_interval = (restart_interval * 2).min(RESTART_MAX);
+            }
+            child = Some(command.spawn().context("starting the oxabl daemon")?);
+            started = true;
+            starts += 1;
+            last_start = Some(Instant::now());
         }
         let running = child
             .as_mut()
@@ -515,11 +501,11 @@ fn find_or_start_daemon(
     }
     if let Some(child) = child.as_mut() {
         match child.try_wait() {
+            Ok(Some(status)) if !lost_start_lock(status) => {
+                return Err(exited_before_serving(root, status, refusal.as_deref()));
+            }
             Ok(Some(status)) => child_exit = Some(status),
             Ok(None) => {
-                if let Some(captured) = &captured {
-                    eprint!("{}", captured.snapshot());
-                }
                 let probe = refusal
                     .as_ref()
                     .map(|reason| format!(" The last look for it said: {reason}."))
@@ -528,7 +514,7 @@ fn find_or_start_daemon(
                     "the oxabl daemon did not become ready in time: the daemon this client \
                      started for {} (pid {}) still runs after {} s and does not serve the \
                      root.{probe} It is left running, and the next start finds it when it is \
-                     ready; stop it with `kill {}`. Its stderr is above",
+                     ready; stop it with `kill {}`. What it wrote is above",
                     root.display(),
                     child.id(),
                     progress.limit.as_secs(),
@@ -550,56 +536,27 @@ fn find_or_start_daemon(
     }
 }
 
-/// The stderr of a daemon that `oxabl lsp` restarted, read on a thread until the daemon
-/// closes it. The text is kept up to [`CAPTURE_LIMIT`] bytes, and the thread goes on
-/// reading past it, so the daemon never blocks or fails on a full or closed pipe.
+/// Whether a daemon exited because another process holds the start lock of its root.
 #[cfg(unix)]
-struct CapturedStderr {
-    text: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
-    reader: std::thread::JoinHandle<()>,
+fn lost_start_lock(status: std::process::ExitStatus) -> bool {
+    status.code() == Some(i32::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD))
 }
 
+/// The error for a started daemon that exited for another reason than the start lock.
 #[cfg(unix)]
-const CAPTURE_LIMIT: usize = 64 * 1024;
-
-#[cfg(unix)]
-impl CapturedStderr {
-    fn start(mut stderr: std::process::ChildStderr) -> Self {
-        use std::io::Read;
-        let text = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let kept = std::sync::Arc::clone(&text);
-        let reader = std::thread::spawn(move || {
-            let mut chunk = [0u8; 4096];
-            while let Ok(read) = stderr.read(&mut chunk) {
-                if read == 0 {
-                    return;
-                }
-                let mut kept = kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                let room = CAPTURE_LIMIT.saturating_sub(kept.len()).min(read);
-                kept.extend_from_slice(&chunk[..room]);
-            }
-        });
-        CapturedStderr { text, reader }
-    }
-
-    /// What the daemon wrote so far.
-    fn snapshot(&self) -> String {
-        let text = self
-            .text
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        String::from_utf8_lossy(&text).into_owned()
-    }
-
-    /// Everything the daemon wrote, for a daemon that has exited.
-    fn finish(self) -> String {
-        let _ = self.reader.join();
-        let text = self
-            .text
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        String::from_utf8_lossy(&text).into_owned()
-    }
+fn exited_before_serving(
+    root: &Path,
+    status: std::process::ExitStatus,
+    refusal: Option<&str>,
+) -> anyhow::Error {
+    let probe = refusal
+        .map(|reason| format!(" The last look for it said: {reason}."))
+        .unwrap_or_default();
+    anyhow::anyhow!(
+        "the oxabl daemon this client started for {} exited ({status}) before it served \
+         the root; its error is above.{probe}",
+        root.display()
+    )
 }
 
 /// The longest wait for a daemon to serve the root, from the first look for it,

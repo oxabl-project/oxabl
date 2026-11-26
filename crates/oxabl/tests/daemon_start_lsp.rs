@@ -16,7 +16,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use session::{Session, file_uri};
+use session::{Launch, Session, file_uri};
 
 /// Longer than the fixed two-second wait the server once had.
 const SLOW: &str = "OXABL-TEST-HOLD:daemon.ready@3500";
@@ -312,6 +312,62 @@ fn a_wait_that_ends_with_a_running_daemon_names_what_the_client_could_not_read()
     );
 }
 
+/// A started daemon that exits while the client cannot read the registration is
+/// reported at once, with its exit, and not as a wait that ran out.
+#[test]
+fn a_daemon_that_exits_while_its_registration_is_unreadable_is_reported_at_once() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = tempfile::tempdir().unwrap();
+    let root = workspace(
+        parent.path(),
+        "ws-OXABL-TEST-HOLD:daemon.ready@4000-OXABL-TEST-PANIC:daemon.ready-OXABL-TEST-LIMIT@30000",
+    );
+    let started = Instant::now();
+    let mut session = Session::launch(&root, json!({}));
+    let socket = session.registration_path().with_extension("sock");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !socket.exists() {
+        assert!(Instant::now() < deadline, "the daemon binds its socket");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The daemon holds for 4 s from about now, then exits.
+    let bound = Instant::now();
+    let directory = socket.parent().unwrap();
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let changed = started.elapsed();
+
+    let status = session.wait_exit(Duration::from_secs(40));
+    let ended = bound.elapsed();
+    let stderr = session.stderr();
+    assert!(
+        changed < Duration::from_secs(3),
+        "the test changed the directory {changed:?} after the start, too late to test it"
+    );
+    assert!(status.is_some_and(|status| !status.success()), "{stderr}");
+    // A wait that missed the exit would go on for 2 s more after it.
+    assert!(
+        ended < Duration::from_millis(5500),
+        "`oxabl lsp` ended {ended:?} after the daemon bound its socket, not at its exit"
+    );
+    let verdict = stderr
+        .lines()
+        .rfind(|line| line.starts_with("oxabl lsp: "))
+        .unwrap_or_default();
+    assert!(
+        verdict.contains("exited (exit status: 101) before it served the root"),
+        "the final message names the exit of the daemon: {stderr}"
+    );
+    assert!(
+        verdict.contains("ignoring any daemon registration"),
+        "the final message gives what the last look said: {verdict}"
+    );
+    assert!(
+        stderr.contains("injected test panic"),
+        "the error of the daemon is shown: {stderr}"
+    );
+}
+
 /// While another process holds the start lock, the daemons that `oxabl lsp` starts
 /// lose it. Only the first one writes to the editor's log, and the server is served
 /// once the lock is free.
@@ -362,4 +418,67 @@ fn a_restarted_daemon_that_fails_shows_its_own_error() {
         !stderr.contains("if you are sure nothing is starting"),
         "no text advises to remove a lock that a process holds: {stderr}"
     );
+}
+
+/// A daemon that a restart started serves other editors after the editor that started
+/// it has closed, also when it writes to stderr then: the read end of its stderr was
+/// that editor's and is closed.
+#[test]
+fn a_restarted_daemon_outlives_the_client_that_started_it() {
+    let parent = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let root = workspace(parent.path(), "ws");
+    let launch = || Launch {
+        runtime: Some(runtime.path()),
+        ..Launch::default()
+    };
+
+    // Client A finds the start lock held, so the daemon that serves it is a restart.
+    let holder = std::cell::RefCell::new(None);
+    let mut first = Session::launch_with(
+        &root,
+        json!({}),
+        Launch {
+            stderr_pipe: true,
+            ..launch()
+        },
+        |registration| *holder.borrow_mut() = Some(hold_start_lock(registration, 2)),
+    );
+    first.initialized = first.wait_for(|m| m["id"] == json!(0) && m.get("method").is_none());
+    holder.borrow_mut().take().unwrap().join().unwrap();
+    let pid = first.daemon_pid().expect("a daemon serves client A");
+    let _daemon = KillOnDrop(pid);
+    first.end_client();
+    drop(first);
+
+    let (mut second, _) =
+        Session::launch_with(&root, json!({}), launch(), |_| {}).await_initialize();
+    assert_eq!(
+        second.daemon_pid(),
+        Some(pid),
+        "client B is served by the daemon that client A started"
+    );
+    // The analysis of this buffer panics, and the daemon writes that to stderr.
+    let failing = root.join("fails.p");
+    second.open(
+        &failing,
+        &format!("/* OXABL-TEST-PANIC:lsp.diagnostics */\n{MAIN}"),
+    );
+    let main = root.join("main.p");
+    second.open(&main, MAIN);
+    let published = second.wait_for(|m| m["method"] == "textDocument/publishDiagnostics");
+    assert_eq!(
+        published["params"]["uri"],
+        json!(file_uri(&main)),
+        "the buffer whose analysis panics publishes nothing"
+    );
+    let answer = second.request(
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": file_uri(&main)}}),
+    );
+    assert!(
+        answer["result"].to_string().contains("cName"),
+        "client B is still served after the daemon wrote to a closed stderr: {answer}"
+    );
+    assert!(alive(pid), "the daemon still runs");
 }
