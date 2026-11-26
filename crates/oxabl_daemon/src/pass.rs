@@ -249,7 +249,8 @@ struct Input {
 /// What one file gives to a pass.
 pub(crate) struct KeptFile {
     part: FilePart,
-    symbols: Vec<SymbolRow>,
+    /// The row of the file itself, and the rows of what it declares.
+    symbols: Vec<Arc<SymbolRow>>,
 }
 
 /// A kept file, and what it depends on. Cheap to clone.
@@ -296,12 +297,28 @@ pub(crate) struct KeptPass {
     /// Whether the `SHARED` producer map was built, and so each entry has its
     /// `shared` names. When it was not, no analysis read it.
     scanned: bool,
+    /// The rows of the schema tables, which only the configuration changes.
+    tables: Arc<[Arc<SymbolRow>]>,
+    /// The graph that the entries were joined into; `None` until the pass
+    /// that made this one has joined them. The next pass starts from it.
+    graph: Option<Arc<ReverseGraph>>,
+}
+
+/// What a join of the parts of a pass starts from: the graph of the earlier
+/// pass, and the parts that changed.
+struct JoinBase<'b> {
+    graph: &'b ReverseGraph,
+    /// The parts of the earlier pass that this pass analysed again, and those
+    /// of the files that are gone.
+    removed: Vec<&'b FilePart>,
+    /// The files that this pass analysed.
+    again: &'b [PathBuf],
 }
 
 /// A completed pass: the graph and the symbol rows, and the parts to keep.
 pub(crate) struct Built {
     pub graph: Arc<ReverseGraph>,
-    pub symbols: Arc<Vec<SymbolRow>>,
+    pub symbols: Arc<Vec<Arc<SymbolRow>>>,
     pub kept: Arc<KeptPass>,
     /// How many files the pass analysed.
     pub analysed: usize,
@@ -349,20 +366,54 @@ impl ConfigKey {
 /// A hash of the schema (`Schema::hash_content`). A schema
 /// that was parsed and one that was read from the cache give the same hash.
 fn schema_hash(config: &PipelineConfig) -> blake3::Hash {
-    struct Hashing(blake3::Hasher);
-    impl std::hash::Hasher for Hashing {
-        fn write(&mut self, bytes: &[u8]) {
-            self.0.update(bytes);
-        }
+    let mut hashing = BufferedBlake3::new();
+    config.schema.hash_content(&mut hashing);
+    hashing.digest()
+}
 
-        fn finish(&self) -> u64 {
-            let digest = self.0.finalize();
-            u64::from_le_bytes(digest.as_bytes()[..8].try_into().expect("32 bytes"))
+/// A [`std::hash::Hasher`] that feeds BLAKE3 the bytes it is given.
+///
+/// `Hash` writes a field at a time. BLAKE3 takes a block at a time, and a write
+/// of a few bytes to it costs more than the bytes do, so the writes wait in a
+/// buffer and go in blocks. The digest is that of the bytes in one write.
+struct BufferedBlake3 {
+    hasher: blake3::Hasher,
+    pending: Vec<u8>,
+}
+
+impl BufferedBlake3 {
+    const BLOCK: usize = 16 * 1024;
+
+    fn new() -> Self {
+        BufferedBlake3 {
+            hasher: blake3::Hasher::new(),
+            pending: Vec::with_capacity(Self::BLOCK),
         }
     }
-    let mut hashing = Hashing(blake3::Hasher::new());
-    config.schema.hash_content(&mut hashing);
-    hashing.0.finalize()
+
+    fn digest(&self) -> blake3::Hash {
+        let mut hasher = self.hasher.clone();
+        hasher.update(&self.pending);
+        hasher.finalize()
+    }
+}
+
+impl std::hash::Hasher for BufferedBlake3 {
+    fn write(&mut self, bytes: &[u8]) {
+        if self.pending.len() + bytes.len() > Self::BLOCK {
+            self.hasher.update(&self.pending);
+            self.pending.clear();
+        }
+        if bytes.len() > Self::BLOCK {
+            self.hasher.update(bytes);
+        } else {
+            self.pending.extend_from_slice(bytes);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        u64::from_le_bytes(self.digest().as_bytes()[..8].try_into().expect("32 bytes"))
+    }
 }
 
 /// The inspection of each analysis: the symbol rows of a file.
@@ -514,11 +565,15 @@ pub(crate) fn full_pass(context: &PassContext<'_>, files: Vec<PathBuf>) -> Built
     let analysed = context.analyse(&files, &Producers::Lazy(&producers));
     let seen = context.fs.inner().take();
     let mut kept = KeptPass::empty(ConfigKey::of(context.config));
+    kept.tables = table_symbols(context.config)
+        .into_iter()
+        .map(Arc::new)
+        .collect();
     kept.install(&files, analysed, None, &seen);
     kept.files = files;
     kept.take_lazy_scans(&sink, &seen);
     let analysed = kept.files.len();
-    kept.finish(context.config, analysed)
+    kept.finish(context.config, analysed, None)
 }
 
 impl KeptPass {
@@ -530,6 +585,8 @@ impl KeptPass {
             files: Vec::new(),
             entries: HashMap::new(),
             scanned: false,
+            tables: Arc::from([]),
+            graph: None,
         }
     }
 
@@ -732,30 +789,52 @@ impl KeptPass {
                 .map(|(path, entry)| (path.clone(), entry.clone()))
                 .collect(),
             scanned: self.scanned,
+            tables: Arc::clone(&self.tables),
+            graph: None,
         };
         kept.compact();
         kept
     }
 
     /// Join the kept parts into the graph and the symbol rows.
-    fn finish(mut self, config: &PipelineConfig, analysed: usize) -> Built {
+    fn finish(
+        mut self,
+        config: &PipelineConfig,
+        analysed: usize,
+        base: Option<JoinBase<'_>>,
+    ) -> Built {
         self.compact();
         let fs = config.file_system();
         let run = LintPipeline::new(config, &fs);
-        let graph = ReverseGraph::from_parts(
-            &run,
-            &self.files,
-            self.files.iter().map(|path| &self.entries[path].file.part),
-        );
-        let mut symbols = file_symbols(&self.files);
-        for path in &self.files {
-            symbols.extend(self.entries[path].file.symbols.iter().cloned());
-        }
-        symbols.extend(table_symbols(config));
+        let parts: Vec<&FilePart> = self
+            .files
+            .iter()
+            .map(|path| &self.entries[path].file.part)
+            .collect();
+        let graph = match base {
+            Some(base) => {
+                let added: Vec<&FilePart> = base
+                    .again
+                    .iter()
+                    .map(|path| &self.entries[path].file.part)
+                    .collect();
+                ReverseGraph::updated(base.graph, &run, &self.files, &parts, &base.removed, &added)
+            }
+            None => ReverseGraph::from_parts(&run, &self.files, parts.iter().copied()),
+        };
+        drop(parts);
+        let graph = Arc::new(graph);
+        self.graph = Some(Arc::clone(&graph));
+        let mut symbols: Vec<Arc<SymbolRow>> = self
+            .files
+            .iter()
+            .flat_map(|path| self.entries[path].file.symbols.iter().cloned())
+            .chain(self.tables.iter().cloned())
+            .collect();
         symbols.sort_by(|left, right| left.id.cmp(&right.id));
         symbols.dedup_by(|left, right| left.id == right.id);
         Built {
-            graph: Arc::new(graph),
+            graph,
             symbols: Arc::new(symbols),
             kept: Arc::new(self),
             analysed,
@@ -882,6 +961,11 @@ impl KeptPass {
                 ),
                 None => (self.absorb(path, [&observed], seen), None),
             };
+            let symbols = file_symbols(std::slice::from_ref(path))
+                .into_iter()
+                .chain(symbols)
+                .map(Arc::new)
+                .collect();
             self.entries.insert(
                 path.clone(),
                 Entry {
@@ -948,6 +1032,7 @@ pub(crate) fn incremental_pass(
     let again = kept.to_analyse(&files, &changed);
     if again.is_empty() && files == previous.files {
         kept.files = files;
+        kept.graph = previous.graph.clone();
         return Refreshed::Same(Arc::new(kept));
     }
     context.progress.set_total(again.len());
@@ -971,7 +1056,19 @@ pub(crate) fn incremental_pass(
     if let Some(sink) = sink {
         kept.take_lazy_scans(&sink, &seen);
     }
-    Refreshed::Built(kept.finish(context.config, again.len()))
+    let analysed_again: HashSet<&PathBuf> = again.iter().collect();
+    let removed: Vec<&FilePart> = previous
+        .entries
+        .iter()
+        .filter(|(path, _)| !kept.entries.contains_key(*path) || analysed_again.contains(path))
+        .map(|(_, entry)| &entry.file.part)
+        .collect();
+    let base = previous.graph.as_deref().map(|graph| JoinBase {
+        graph,
+        removed,
+        again: &again,
+    });
+    Refreshed::Built(kept.finish(context.config, again.len(), base))
 }
 
 /// The map of `SHARED` producers over `files` after a scan of `again`, with
@@ -1061,4 +1158,37 @@ pub(crate) fn table_symbols(config: &PipelineConfig) -> Vec<SymbolRow> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::hash::Hasher;
+
+    // The digest does not depend on how the bytes are cut into writes: small
+    // writes, a write over a block, and a write that ends on a block edge.
+    #[test]
+    fn the_buffered_hash_is_the_hash_of_the_bytes() {
+        let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+        let expected = blake3::hash(&bytes);
+        let cuts: [&[usize]; 4] = [
+            &[1],
+            &[7, 100, 5_000],
+            &[BufferedBlake3::BLOCK - 1, 1, BufferedBlake3::BLOCK, 60_000],
+            &[BufferedBlake3::BLOCK + 1, 3],
+        ];
+        for sizes in cuts {
+            let mut hashing = BufferedBlake3::new();
+            let mut rest = bytes.as_slice();
+            for &size in sizes.iter().cycle() {
+                if rest.is_empty() {
+                    break;
+                }
+                let (now, later) = rest.split_at(size.min(rest.len()));
+                hashing.write(now);
+                rest = later;
+            }
+            assert_eq!(hashing.digest(), expected, "cuts {sizes:?}");
+        }
+    }
 }
