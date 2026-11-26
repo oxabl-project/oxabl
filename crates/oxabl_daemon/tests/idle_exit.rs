@@ -248,3 +248,136 @@ fn a_removed_lock_file_never_lets_two_holders_share_one_root() {
         assert!(taken.load(Ordering::SeqCst) > 0, "the lock was taken");
     });
 }
+
+/// A daemon of `root` on its own thread. `ended` receives a message when its accept
+/// loop returns.
+struct Serving {
+    socket: std::path::PathBuf,
+    stopper: oxabl_daemon::Stopper,
+    ended: std::sync::mpsc::Receiver<()>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+fn serve(root: &Path, idle_timeout: Option<Duration>) -> Serving {
+    let mut listener = Listener::bind(root).expect("the socket binds");
+    listener.set_idle_timeout(idle_timeout);
+    let socket = listener.socket_path().to_path_buf();
+    let stopper = listener.stopper();
+    let host = Arc::new(SessionHost::new());
+    let dispatch = Arc::new(default_dispatch());
+    let (ended, ended_rx) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let _ = listener.accept_loop(dispatch, host);
+        drop(listener);
+        let _ = ended.send(());
+    });
+    Serving {
+        socket,
+        stopper,
+        ended: ended_rx,
+        thread,
+    }
+}
+
+/// A root that is deleted ends the daemon within a few seconds, with a client still
+/// connected: an editor whose folder is gone has nothing left to ask.
+#[test]
+fn a_removed_workspace_root_ends_the_daemon_with_a_client_connected() {
+    with_base_dir(|| {
+        let workspace = tempfile::tempdir().expect("a workspace root");
+        let root = workspace.path().join("project");
+        std::fs::create_dir(&root).expect("the root");
+        let daemon = serve(&root, None);
+        let (connection, threads) =
+            connection_over(UnixStream::connect(&daemon.socket).expect("the daemon listens"));
+        let handshake = call(
+            &connection,
+            1,
+            method::HANDSHAKE,
+            serde_json::to_value(HandshakeRequest::new(
+                ClientKind::Desktop,
+                root.to_string_lossy(),
+            ))
+            .unwrap(),
+        );
+        assert!(handshake.error.is_none(), "{:?}", handshake.error);
+        assert!(
+            daemon.ended.try_recv().is_err(),
+            "the daemon serves while its root exists"
+        );
+
+        std::fs::remove_dir_all(&root).expect("the root is removed");
+        daemon
+            .ended
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the daemon ends after its root is removed");
+        daemon.thread.join().expect("the loop ends cleanly");
+        drop(connection);
+        threads.shutdown();
+        let left: Vec<_> = std::fs::read_dir(daemon.socket.parent().expect("a directory"))
+            .expect("the registration directory")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        assert!(left.is_empty(), "the daemon left {left:?} behind");
+    });
+}
+
+/// A root replaced by another directory with the same name is not the root the daemon
+/// started for.
+#[test]
+fn a_replaced_workspace_root_ends_the_daemon() {
+    with_base_dir(|| {
+        let workspace = tempfile::tempdir().expect("a workspace root");
+        let root = workspace.path().join("project");
+        std::fs::create_dir(&root).expect("the root");
+        let daemon = serve(&root, None);
+
+        // The new directory exists before the old one goes, so no inode is reused.
+        let other = workspace.path().join("other");
+        std::fs::create_dir(&other).expect("the other directory");
+        let aside = workspace.path().join("aside");
+        std::fs::rename(&root, &aside).expect("the root moves away");
+        std::fs::rename(&other, &root).expect("another directory takes its name");
+        daemon
+            .ended
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the daemon ends after its root is replaced");
+        daemon.thread.join().expect("the loop ends cleanly");
+    });
+}
+
+/// The idle exit must not need the socket file. A daemon whose runtime directory was
+/// deleted (a test that cleaned up) used to decide to exit and then wait for a
+/// connection that could not reach it, for ever.
+#[test]
+fn an_idle_daemon_exits_after_its_socket_file_was_removed() {
+    with_base_dir(|| {
+        let workspace = tempfile::tempdir().expect("a workspace root");
+        let daemon = serve(workspace.path(), Some(Duration::from_millis(500)));
+        std::fs::remove_file(&daemon.socket).expect("the socket file is removed");
+        daemon
+            .ended
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the idle daemon exits without its socket file");
+        daemon.thread.join().expect("the loop ends cleanly");
+    });
+}
+
+/// A root that cannot be checked is not a root that is gone.
+#[test]
+fn a_root_that_exists_keeps_its_daemon() {
+    with_base_dir(|| {
+        let workspace = tempfile::tempdir().expect("a workspace root");
+        let daemon = serve(workspace.path(), None);
+        assert!(
+            daemon.ended.recv_timeout(Duration::from_secs(3)).is_err(),
+            "the daemon exited while its root exists"
+        );
+        daemon.stopper.stop();
+        daemon
+            .ended
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the daemon stops when asked");
+        daemon.thread.join().expect("the loop ends cleanly");
+    });
+}

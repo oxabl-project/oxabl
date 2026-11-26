@@ -15,6 +15,11 @@ use serde_json::{Value, json};
 
 const OXABL_BIN: &str = env!("CARGO_BIN_EXE_oxabl");
 
+/// The idle timeout of a test's daemon, unless the test sets its own. A test that
+/// ends without stopping its daemon (a killed test binary) leaves it for this long
+/// at most.
+const TEST_IDLE_TIMEOUT: &str = "2m";
+
 /// The `file:` URI of an absolute path, with a space escaped as clients do.
 pub fn file_uri(path: &Path) -> String {
     format!("file://{}", path.display()).replace(' ', "%20")
@@ -113,7 +118,8 @@ impl Session {
             Stdio::from(std::fs::File::create(&stderr).unwrap())
         };
         // No core dump from a daemon that crashes: it inherits the limit.
-        let mut child = Command::new("sh")
+        let mut command = Command::new("sh");
+        command
             .arg("-c")
             .arg(r#"ulimit -c 0 && exec "$@""#)
             .arg("sh")
@@ -122,6 +128,11 @@ impl Session {
             .env("XDG_RUNTIME_DIR", runtime)
             .env("XDG_CACHE_HOME", runtime)
             .env("HOME", runtime)
+            .env("OXABL_DAEMON_IDLE_TIMEOUT", TEST_IDLE_TIMEOUT);
+        for (name, value) in launch.env {
+            command.env(name, value);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr_target)
@@ -335,16 +346,71 @@ impl Session {
 }
 
 impl Drop for Session {
+    /// Stop `oxabl lsp` and its daemon, by pid, also when the test panics. The daemon
+    /// is found in its registration and, when it has not registered yet, among the
+    /// children of `oxabl lsp`.
     fn drop(&mut self) {
-        if self.stops_daemon
-            && let Ok(bytes) = std::fs::read(&self.registration)
-            && let Ok(registration) = serde_json::from_slice::<Registration>(&bytes)
-        {
-            signal(registration.pid, 15);
+        let mut daemons = Vec::new();
+        if self.stops_daemon {
+            daemons.extend(self.daemon_pid());
+            daemons.extend(child_pids(self.child.id()));
+            daemons.sort_unstable();
+            daemons.dedup();
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        stop_processes(&daemons);
     }
+}
+
+/// Stop each process with SIGTERM, and with SIGKILL when it is still there after
+/// 5 s.
+pub fn stop_processes(pids: &[u32]) {
+    for &pid in pids {
+        signal(pid, 15);
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pids.iter().any(|&pid| is_running(pid)) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    for &pid in pids {
+        if is_running(pid) {
+            signal(pid, 9);
+        }
+    }
+}
+
+/// Whether the process `pid` exists and has not ended. A process that ended and
+/// waits for its parent is not running.
+pub fn is_running(pid: u32) -> bool {
+    if signal(pid, 0) != 0 {
+        return false;
+    }
+    // The third field of `/proc/<pid>/stat` after the command is the state.
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .is_none_or(|state| state != "Z" && state != "X"),
+        Err(_) => true,
+    }
+}
+
+/// The children of process `pid`, where `/proc` names them. Empty elsewhere.
+fn child_pids(pid: u32) -> Vec<u32> {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+    tasks
+        .flatten()
+        .filter_map(|task| std::fs::read_to_string(task.path().join("children")).ok())
+        .flat_map(|children| {
+            children
+                .split_whitespace()
+                .filter_map(|child| child.parse().ok())
+                .collect::<Vec<u32>>()
+        })
+        .collect()
 }
 
 /// Where [`Session::launch_with`] runs `oxabl lsp`.
@@ -356,6 +422,8 @@ pub struct Launch<'a> {
     /// Give stderr a pipe that the session holds and does not read, in place of a
     /// file. [`Session::stderr`] is then empty.
     pub stderr_pipe: bool,
+    /// Environment variables for `oxabl lsp`, and so for the daemon it starts.
+    pub env: &'a [(&'a str, &'a str)],
 }
 
 fn signal(pid: u32, signal: i32) -> i32 {

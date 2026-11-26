@@ -30,13 +30,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use lsp_server::{Connection, Message};
 
 use crate::dispatch::Dispatch;
 use crate::registry;
+use crate::root_watch::{self, RootState, RootWatch};
 use crate::server;
 use crate::session::SessionHost;
 
@@ -308,18 +309,52 @@ impl Listener {
             }
             None => None,
         };
+        // The root the host is bound to is the canonical one, so the watch follows
+        // the directory and not a link to it.
+        let root = host.bound_root().unwrap_or(&self.workspace_root);
+        let root_watch = RootWatch::new(root)?;
+        self.listener.set_nonblocking(true)?;
         let mut clients = Vec::new();
         let mut reported_spawn_failure = false;
-        for stream in self.listener.incoming() {
+        let mut root_gone = false;
+        let mut next_root_check = Instant::now() + root_watch::CHECK_INTERVAL;
+        loop {
             if self.stopping.load(Ordering::SeqCst) {
                 break;
             }
-            let stream = match stream {
-                Ok(stream) => stream,
+            if Instant::now() >= next_root_check {
+                next_root_check = Instant::now() + root_watch::CHECK_INTERVAL;
+                if let RootState::Gone(reason) = root_watch.check() {
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "oxabl daemon: {reason}, so this daemon exits"
+                    );
+                    root_gone = true;
+                    break;
+                }
+            }
+            let stream = match self.listener.accept() {
+                Ok((stream, _)) => stream,
+                // Nothing to accept. The wait ends at the next check of the root, so a
+                // stop is seen even when its throwaway connection cannot reach a socket
+                // file that was removed.
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    wait_for_client(&self.listener, next_root_check);
+                    continue;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 // One failed accept is not a reason to stop serving the clients
-                // already connected.
-                Err(_) => continue,
+                // already connected. The pause keeps a lasting failure from spinning.
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
             };
+            // A socket of a non-blocking listener can inherit the mode.
+            if stream.set_nonblocking(false).is_err() {
+                continue;
+            }
             // The daemon has decided to exit. The stream closes unread, which its
             // client reads as "no daemon here" and looks again.
             let Some(busy) = activity.admit() else {
@@ -372,15 +407,31 @@ impl Listener {
             }
         }
         activity.end();
-        // Let every client finish in flight rather than cutting responses off.
-        for client in clients {
-            let _ = client.join();
-        }
         if let Some(watcher) = watcher {
             let _ = watcher.join();
         }
+        // Let every client finish in flight rather than cutting responses off. A root
+        // that is gone has no client worth waiting for: the process ends them.
+        if !root_gone {
+            for client in clients {
+                let _ = client.join();
+            }
+        }
         Ok(())
     }
+}
+
+/// Block until `listener` has a client to accept, or until `deadline`.
+fn wait_for_client(listener: &UnixListener, deadline: Instant) {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let left = deadline.saturating_duration_since(Instant::now());
+    let timeout = Timespec {
+        tv_sec: left.as_secs() as _,
+        tv_nsec: left.subsec_nanos() as _,
+    };
+    let mut fds = [PollFd::new(listener, PollFlags::IN)];
+    // An interrupted or failed wait only makes the loop look again.
+    let _ = poll(&mut fds, Some(&timeout));
 }
 
 impl Drop for Listener {
@@ -398,7 +449,7 @@ impl Drop for Listener {
     /// can register for this root before the registration here is gone.
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket_path);
-        let _ = registry::unregister(&self.workspace_root);
+        let _ = registry::unregister_beside_socket(&self.socket_path);
         if let Some(lock) = self.lock.take() {
             lock.remove();
         }
@@ -438,9 +489,10 @@ pub struct Stopper {
 impl Stopper {
     /// Stop accepting.
     ///
-    /// The flag alone is not enough: `incoming()` blocks, so nothing would observe it
-    /// until the next client arrived. A throwaway connection is made to wake the
-    /// accept, which then sees the flag and breaks.
+    /// The flag alone is not enough: the accept loop waits for a client, so a
+    /// throwaway connection wakes it at once. When that connection cannot reach the
+    /// socket (its file was removed with the runtime directory), the loop still sees
+    /// the flag at its next check of the root, within [`root_watch::CHECK_INTERVAL`].
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         let _ = UnixStream::connect(&self.socket_path);
