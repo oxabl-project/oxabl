@@ -13,7 +13,7 @@
 //! complete answer.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use oxabl_ast::Span;
@@ -532,11 +532,12 @@ impl Referent {
             .into_iter()
             .filter(|file| !is_include_fragment(file) && *file != origin)
             .collect();
-        for unit in units {
-            if unit != origin && !ordered.contains(&unit) {
-                ordered.push(unit);
-            }
-        }
+        let first: HashSet<PathBuf> = ordered.iter().cloned().collect();
+        ordered.extend(
+            units
+                .into_iter()
+                .filter(|unit| *unit != origin && !first.contains(unit)),
+        );
         let mut gaps = Vec::new();
         let found = ordered.len();
         if found > limit {
@@ -577,6 +578,17 @@ impl Referent {
             counts,
         }
     }
+}
+
+/// What a unit resolves for [`Navigation::references_with`], kept for the
+/// other referents searched in the same unit: the targets of each site, and
+/// the place of each declaration. It belongs to one unit.
+#[derive(Debug, Default)]
+pub struct ReferenceMemo {
+    /// By site, once resolved.
+    site_keys: Vec<Option<Option<Vec<Key>>>>,
+    /// The place of each declared symbol that has one, with its name.
+    declared: Option<Vec<(Target, VirtualSpan)>>,
 }
 
 /// What makes two call items one: the file, the name's bytes, the folded name
@@ -896,7 +908,13 @@ impl Navigation<'_, '_> {
     /// Every place in this unit that names `referent`: the uses, and the
     /// declarations this unit holds.
     pub fn references(&self, referent: &Referent) -> UnitReferences {
-        let (occurrences, unplaced, unresolved_names) = self.occurrences(referent);
+        self.references_with(referent, &mut ReferenceMemo::default())
+    }
+
+    /// [`references`](Self::references), with what the unit resolves kept in
+    /// `memo` for the next referent of the same unit. The answer is the same.
+    pub fn references_with(&self, referent: &Referent, memo: &mut ReferenceMemo) -> UnitReferences {
+        let (occurrences, unplaced, unresolved_names) = self.occurrences(referent, memo);
         let unresolved_calls = self.unresolved_calls(referent, &occurrences);
         let mut gaps = Vec::new();
         let root = self.root_path().unwrap_or_default();
@@ -996,16 +1014,23 @@ impl Navigation<'_, '_> {
     /// The occurrences of `referent`, how many sites named it in text that
     /// has no place in a file, and how many names spelled like it did not
     /// resolve.
-    fn occurrences(&self, referent: &Referent) -> (Vec<Occurrence>, usize, usize) {
+    fn occurrences(
+        &self,
+        referent: &Referent,
+        memo: &mut ReferenceMemo,
+    ) -> (Vec<Occurrence>, usize, usize) {
         let keys = &referent.keys;
         let symbols = &self.model.semantic.symbols;
+        if memo.site_keys.len() != symbols.sites().len() {
+            memo.site_keys = vec![None; symbols.sites().len()];
+        }
         let mut found: Vec<Occurrence> = Vec::new();
         let mut unplaced = 0;
         // Names spelled like the referent, by the place they name: whether
         // some site there resolved. A qualified name (`tt.field`) can have a
         // resolved site and an unresolved one for one place.
         let mut spelled: HashMap<(u32, u32), bool> = HashMap::new();
-        for site in symbols.sites() {
+        for (at, site) in symbols.sites().iter().enumerate() {
             // A site whose text does not hold the name cannot name a referent
             // that is always written whole: no resolution needed.
             if referent.whole_name
@@ -1015,7 +1040,9 @@ impl Navigation<'_, '_> {
             {
                 continue;
             }
-            let named = self.site_keys(&site.target, site.span);
+            let named = memo.site_keys[at]
+                .get_or_insert_with(|| self.site_keys(&site.target, site.span))
+                .as_ref();
             let resolved = named.as_ref().is_some_and(|keys| !keys.is_empty());
             // A resolved site of any kind marks its place; only a reference
             // that did not resolve can leave one unresolved.
@@ -1056,17 +1083,25 @@ impl Navigation<'_, '_> {
                 None => unplaced += 1,
             }
         }
-        for (_, symbol) in symbols.iter() {
-            if symbol.declaration == oxabl_ast::NodeId::DUMMY {
-                continue;
-            }
-            if let Some(place) = self.place(symbol.name_span)
-                && keys.contains(&Key::At(place.clone()))
+        let declared = memo.declared.get_or_insert_with(|| {
+            symbols
+                .iter()
+                .filter(|(_, symbol)| symbol.declaration != oxabl_ast::NodeId::DUMMY)
+                .filter_map(|(_, symbol)| {
+                    self.place(symbol.name_span)
+                        .map(|place| (place, symbol.name_span))
+                })
+                .collect()
+        });
+        for (place, name_span) in declared.iter() {
+            if keys
+                .iter()
+                .any(|key| matches!(key, Key::At(target) if target == place))
             {
                 found.push(Occurrence {
-                    place,
+                    place: place.clone(),
                     declaration: true,
-                    expanded: symbol.name_span,
+                    expanded: *name_span,
                 });
             }
         }
@@ -1836,10 +1871,20 @@ fn field_and_table(
 /// Whether `text` holds `name`, ignoring ASCII case.
 fn contains_folded(text: &str, name: &str) -> bool {
     let (text, name) = (text.as_bytes(), name.as_bytes());
-    name.is_empty()
-        || text
-            .windows(name.len())
-            .any(|window| window.eq_ignore_ascii_case(name))
+    let Some((&first, rest)) = name.split_first() else {
+        return true;
+    };
+    if text.len() < name.len() {
+        return false;
+    }
+    // Only a byte that folds to the first byte of the name can start it.
+    let last = text.len() - name.len();
+    memchr::memchr2_iter(
+        first.to_ascii_lowercase(),
+        first.to_ascii_uppercase(),
+        &text[..=last],
+    )
+    .any(|at| text[at + 1..at + name.len()].eq_ignore_ascii_case(rest))
 }
 
 /// Whether `text` has a word, outside string literals, that is `name` or,

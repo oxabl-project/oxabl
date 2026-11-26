@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use oxabl_index::calls::MAX_SITES;
 use oxabl_pipeline::{
-    CallItem, Gap, IncomingCall, ItemKey, Occurrence, OutgoingCall, Referent, Target, UnitIncoming,
-    UnitReferences, dedupe_spans, fold_gaps,
+    CallItem, Gap, IncomingCall, ItemKey, Occurrence, OutgoingCall, ReferenceMemo, Referent,
+    Target, UnitIncoming, UnitReferences, dedupe_spans, fold_gaps,
 };
 
 use crate::SessionHost;
@@ -228,10 +228,10 @@ pub fn answer_batch(
         analysed: Vec::new(),
     };
     let locals = match analyse(host, session_root, root, |unit| {
-        let mut read = HashMap::new();
+        let (mut read, mut memo) = (HashMap::new(), ReferenceMemo::default());
         queries
             .iter()
-            .map(|query| local_answer(unit, query, &mut read))
+            .map(|query| local_answer(unit, query, &mut read, &mut memo))
             .collect::<Vec<_>>()
     }) {
         None => return every(ReferenceError::Modified),
@@ -354,12 +354,12 @@ pub fn answer_batch(
         }
     };
     let remote = search_units(host, session_root, &units, stop, |unit, at| {
-        let mut read = HashMap::new();
+        let (mut read, mut memo) = (HashMap::new(), ReferenceMemo::default());
         wanted[at]
             .iter()
             .map(|&s| {
                 let (referent, incoming) = referents[s];
-                (s, unit_part(unit, referent, incoming, &mut read))
+                (s, unit_part(unit, referent, incoming, &mut read, &mut memo))
             })
             .collect::<Vec<_>>()
     });
@@ -517,12 +517,14 @@ impl Pending {
 }
 
 /// What one unit holds of `referent`, with the texts of the files it names.
-/// `read` keeps the texts the unit has read, for the other referents.
+/// `read` and `memo` keep what the unit has read and resolved, for the other
+/// referents.
 fn unit_part(
     unit: &NavigationUnit<'_, '_, '_>,
     referent: &Referent,
     incoming: bool,
     read: &mut HashMap<PathBuf, Option<Arc<str>>>,
+    memo: &mut ReferenceMemo,
 ) -> TextedPart {
     let mut texts = HashMap::new();
     let part = if incoming {
@@ -532,7 +534,7 @@ fn unit_part(
         }
         Part::Incoming(found)
     } else {
-        let found = unit.navigation.references(referent);
+        let found = unit.navigation.references_with(referent, memo);
         for occurrence in &found.occurrences {
             read_into(unit, read, &mut texts, &occurrence.place.path);
         }
@@ -549,6 +551,7 @@ fn local_answer(
     unit: &NavigationUnit<'_, '_, '_>,
     query: &ReferenceQuery,
     read: &mut HashMap<PathBuf, Option<Arc<str>>>,
+    memo: &mut ReferenceMemo,
 ) -> Local {
     let navigation = unit.navigation;
     let mut answer = ReferenceAnswer::default();
@@ -582,7 +585,7 @@ fn local_answer(
         ReferenceQuery::References { file, offset, .. } => {
             match navigation.referent_at(&unit.spelled(file), *offset) {
                 Some(referent) => {
-                    let (part, texts) = unit_part(unit, &referent, false, read);
+                    let (part, texts) = unit_part(unit, &referent, false, read, memo);
                     Local::Search(referent, part, texts)
                 }
                 None => Local::Done(answer),
@@ -590,14 +593,14 @@ fn local_answer(
         }
         ReferenceQuery::Program => match navigation.program_referent() {
             Some(referent) => {
-                let (part, texts) = unit_part(unit, &referent, false, read);
+                let (part, texts) = unit_part(unit, &referent, false, read, memo);
                 Local::Search(referent, part, texts)
             }
             None => Local::Done(answer),
         },
         ReferenceQuery::Incoming(item) => match navigation.referent_of(item) {
             Some(referent) => {
-                let (part, texts) = unit_part(unit, &referent, true, read);
+                let (part, texts) = unit_part(unit, &referent, true, read, memo);
                 Local::Search(referent, part, texts)
             }
             None => Local::Done(answer),

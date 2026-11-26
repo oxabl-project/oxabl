@@ -256,7 +256,9 @@ for N = 2,000 and 0.9 to 1.2 s for N = 16,000 (release, a loaded machine), and
 the test `outgoing_calls_cost_about_linear_time_in_the_calls` fails when 16
 times the calls cost more than 40 times the time. Nothing is memoized between
 requests. The reference lenses of a file share one search: each other file
-is analysed once for all of them (`docs/design/reference-lenses.md`). The
+is analysed once for all of them (`docs/design/reference-lenses.md`), and the
+targets of its sites and the places of its declarations are found once for
+all the declarations (`oxabl_pipeline::ReferenceMemo`). The
 first request that searches other files waits for the workspace pass that
 `workspace/symbol` and `oxabl/impact` also wait for.
 
