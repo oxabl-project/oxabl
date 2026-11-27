@@ -77,6 +77,7 @@ which use the plain system allocator.
 cargo bench -p oxabl_bench                                  # e2e_bench and large_bench (the library has no bench)
 cargo bench -p oxabl_bench --bench e2e_bench -- check/      # one group
 cargo bench -p oxabl_daemon --bench daemon_features_bench
+cargo bench -p oxabl_daemon --bench hierarchy_bench       # the first and the next subtypes request
 cargo bench -p oxabl_bench -- --warm-up-time 1 --measurement-time 3   # a quick run
 ```
 
