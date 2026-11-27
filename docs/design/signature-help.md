@@ -171,16 +171,24 @@ holds the reference of the root file, never one of an include below it.
 The entries are known whole, and the declaration has a signature, only when:
 
 - the expansion arrived whole: no include in the file did not resolve, none
-  could not be read, and the expanded text parses;
+  could not be read, none expanded to no text, and the expanded text parses.
+  This is a check of the whole file: one include that fails it, anywhere in a
+  class that has a parameter include, leaves every member of that class with
+  no signature;
 - the include is one plain `{file}` reference, and neither it nor an include
   below it holds a `{&name}` reference or an `&IF` (the text of the include
   may differ from one compile to another);
-- every include that the file writes in the parameter lists of a class, in the
-  main block of a program (outside its procedures and functions), or in a
-  procedure is the entry of a parameter list. An include that declares no
-  parameter, such as one of variables, is not known to declare none, so it
-  hides the parameters as before. For a class, an include outside its parameter
-  lists and its bodies still hides the constructors.
+- every include that the file writes in the main block of a program (outside
+  its procedures and functions), or in a procedure, is the entry of a
+  parameter list. An include that declares no parameter, such as one of
+  variables, is not known to declare none, so it hides the parameters as
+  before.
+
+A method or constructor whose parameter include is not known whole has no
+signature, and the other members of the class keep theirs. The overloads of one
+method name are one set, and so are the constructors: one that is not known
+whole leaves the set with no signature. For a class, an include outside its
+parameter lists and its bodies still hides the constructors.
 
 A `{&name}` reference or an `&IF` in the parameter list is checked in the text
 of the file as before.
@@ -189,6 +197,18 @@ A method or constructor that an include declares is not read: only the members
 that the file writes have a signature. The routines of the analysed unit are
 read from its expanded text, and group their includes the same way.
 
+The routines of the unit list a `{&name}` value one parameter at a time: the
+text of a `{&name}` value has no reference of its own, so `FUNCTION Fp
+({&P}, INPUT x AS INTEGER)` with `&SCOPED-DEFINE P {inc/std-params.i}` shows
+every parameter that the value declares. The routines of the unit do not
+refuse a `{&name}` reference in a parameter list, as before; only the
+declarations that are read from the text of another file do (see "Which
+declarations of a method").
+
+When a procedure of another program has both a parameter include and an `&IF`,
+the expansion shows only the branch that this compile picks, so the text as
+written decides: such a procedure has no signature.
+
 ### The active parameter and the arguments
 
 The arguments of a call are counted in the expanded unit, so a caller that
@@ -196,8 +216,10 @@ passes an include of arguments (`oDoc:SetData({inc/std-args.i}, "D1",
 OUTPUT lOk)`) has the arguments that the include expands to. The active
 parameter is the entry that takes the argument at the cursor. The cursor in the
 arguments that the include covers marks the include entry. After them, it marks
-the next parameter. The overload pick reads the flat list of the parameters,
-so an include entry takes as many arguments as it has parameters.
+the next parameter. The cursor directly before the `{` of an include of
+arguments is outside the reference: it asks about the first argument. The
+overload pick reads the flat list of the parameters, so an include entry takes
+as many arguments as it has parameters.
 
 ### The seam for the built-in classes
 
@@ -369,6 +391,16 @@ the navigation model already built). One signature help took about 8 ms
 `Navigation` does on its first request. Both are in the 50 ms interactive
 budget, and neither runs on the main loop of the server.
 
+`crates/oxabl_pipeline/benches/signature_include_bench.rs` measures one
+signature help request and the hints of 20 calls into a class of 400 methods
+that all start with the same parameter include
+(`signature_include/signature_help`, `signature_include/parameter_hints`). A
+request expands the class file once and reads only the members it asks about,
+and each include file is lexed once. The build of the include tree and the
+search for the include of a parameter are linear in the methods of the class
+(binary search in the regions of the expansion, and a list of children for each
+expansion that is built once).
+
 ## Tests
 
 `crates/oxabl/tests/signature_help_lsp.rs` runs the real server over stdio. It
@@ -379,4 +411,12 @@ case of this document.
 includes: a method, a constructor, a program, a procedure of a handle and the
 routines of the unit; the active parameter in and after the include, with
 plain arguments and with an include of arguments; the hints; the hover; and
-each case where the expansion is not known whole.
+each case where the expansion is not known whole, and a class with one method
+that is next to others that are.
+
+`crates/oxabl_pipeline/tests/signature_include_cost.rs` counts the calls of
+`tokenize` of a request: they do not follow the methods of the class, and an
+include file is lexed once for all the methods that write it.
+`crates/oxabl_pipeline/tests/signature_include_root.rs` tests that a routine of
+the unit with a parameter include has no signature when the text that is read
+for the unit is not the text that was analysed.

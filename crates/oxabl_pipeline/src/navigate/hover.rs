@@ -28,7 +28,7 @@ use oxabl_workspace::is_include_fragment;
 
 mod like;
 
-use super::folding::{Entry, Folding, Loaded, class_includes};
+use super::folding::{Entry, Folding, Loaded};
 use super::{Navigation, Parsed, Target, search};
 use crate::effects::{Elsewhere, Routine};
 use crate::keyword_docs::{DocKind, FUNCTION_ABBREVIATIONS, KEYWORD_DOCS, KeywordDoc};
@@ -538,21 +538,11 @@ impl Navigation<'_, '_> {
         let path = self.path_of(file)?;
         let text = self.run.file_system().read(&path).ok()?;
         let loaded = Loaded::new(text.clone(), Parsed::of(&text));
-        let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
         // A parameter list that holds an include shows it as one entry, when
         // the file's expansion is whole.
         let expand = loaded
-            .parsed
-            .program
-            .statements
-            .iter()
-            .find(|s| {
-                matches!(
-                    s.kind,
-                    StatementKind::Class { .. } | StatementKind::Interface { .. }
-                )
-            })
-            .is_some_and(|class| !class_includes(&raw, class).in_parameters.is_empty());
+            .class_scan()
+            .is_some_and(|scan| scan.includes.in_parameters);
         let view = loaded
             .view(self, &path, expand)
             .or_else(|| loaded.view(self, &path, false))?;
@@ -984,6 +974,13 @@ pub(crate) fn doc_markdown(doc: &KeywordDoc) -> String {
     )
 }
 
+/// Whether byte `at` lies in one of `ranges`, which are in order with none
+/// inside another.
+fn skipped(ranges: &[(u32, u32)], at: u32) -> bool {
+    let next = ranges.partition_point(|&(start, _)| start <= at);
+    next > 0 && at < ranges[next - 1].1
+}
+
 /// A parsed text, for rendering the declarations in it.
 pub(super) struct Source<'t> {
     text: &'t str,
@@ -1014,6 +1011,18 @@ impl<'t> Source<'t> {
     pub(super) fn entries<'a>(&self, parameters: Vec<&'a Statement>) -> Option<Vec<Entry<'a>>> {
         match self.folding {
             Some(folding) => folding.entries(parameters),
+            None => Some(parameters.into_iter().map(Entry::Param).collect()),
+        }
+    }
+
+    /// As [`entries`](Self::entries) for a declaration that is not known
+    /// whole: each include as written, with no count.
+    pub(super) fn entries_as_written<'a>(
+        &self,
+        parameters: Vec<&'a Statement>,
+    ) -> Option<Vec<Entry<'a>>> {
+        match self.folding {
+            Some(folding) => folding.entries_as_written(parameters),
             None => Some(parameters.into_iter().map(Entry::Param).collect()),
         }
     }
@@ -1054,14 +1063,12 @@ impl<'t> Source<'t> {
     }
 
     /// The `{...}` and `{N}` references that start in `from..to`, outside the
-    /// `skip` ranges.
+    /// `skip` ranges (in order, none inside another).
     pub(super) fn includes_in(&self, from: u32, to: u32, skip: &[(u32, u32)]) -> Vec<Span> {
+        debug_assert!(skip.windows(2).all(|pair| pair[0].1 <= pair[1].0));
         self.tokens_in(from, to)
             .filter(|(_, t)| matches!(t.kind, Kind::IncludeReference | Kind::IncludeArgReference))
-            .filter(|(_, t)| {
-                let start = t.start as u32;
-                !skip.iter().any(|&(a, b)| a <= start && start < b)
-            })
+            .filter(|(_, t)| !skipped(skip, t.start as u32))
             .map(|(_, t)| Span {
                 start: t.start as u32,
                 end: t.end as u32,
@@ -1081,7 +1088,8 @@ impl<'t> Source<'t> {
 
     /// Whether a token in `from..to`, outside the `skip` ranges, may expand to
     /// other text: a `{&name}` reference, `&IF`, and when `includes` is set an
-    /// include. The text then shows only part of what the compiler reads.
+    /// include. The text then shows only part of what the compiler reads. The
+    /// `skip` ranges are in order, none inside another.
     pub(super) fn may_expand(
         &self,
         from: u32,
@@ -1089,13 +1097,13 @@ impl<'t> Source<'t> {
         skip: &[(u32, u32)],
         includes: bool,
     ) -> bool {
+        debug_assert!(skip.windows(2).all(|pair| pair[0].1 <= pair[1].0));
         self.tokens_in(from, to).any(|(_, t)| {
             let expands = t.kind == Kind::PreprocIf
                 || (includes
                     && matches!(t.kind, Kind::IncludeReference | Kind::IncludeArgReference))
                 || self.token_text(t).starts_with("{&");
-            let start = t.start as u32;
-            expands && !skip.iter().any(|&(a, b)| a <= start && start < b)
+            expands && !skipped(skip, t.start as u32)
         })
     }
 
@@ -1406,10 +1414,11 @@ impl<'t> Source<'t> {
             }
             _ => return None,
         };
-        // A list that is not known whole is written parameter by parameter.
+        // The parameters of an include that is not known whole are not what
+        // every compile declares, so the include shows as written.
         let entries = self
             .entries(parameters.clone())
-            .unwrap_or_else(|| parameters.into_iter().map(Entry::Param).collect());
+            .or_else(|| self.entries_as_written(parameters))?;
         let parameters: Vec<String> = entries
             .iter()
             .filter(|entry| !matches!(entry, Entry::Include(group) if group.count() == 0))

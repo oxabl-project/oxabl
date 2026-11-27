@@ -30,7 +30,7 @@ use oxabl_semantic::{
     reachable_overloads,
 };
 
-use super::folding::{Entry, Loaded, View, bodies_of, class_includes};
+use super::folding::{Entry, Loaded, class_may_hide_members};
 use super::hover::{
     Source, doc_markdown, find_declaration, find_doc, full_function_name, parameters_of, type_name,
 };
@@ -539,18 +539,14 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         let symbols = &self.nav.model.semantic.symbols;
         let path = self.nav.path_of(file)?;
         let loaded = self.load(&path)?;
-        let (found, _, _) = class_of(&loaded.parsed.program.statements)?;
-        let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
-        if class_may_hide_members(&raw, found, false) {
+        let scan = loaded.class_scan()?;
+        if scan.hides_members {
             return None;
         }
-        let in_parameters = class_includes(&raw, found).in_parameters;
-        let view = loaded.view(self.nav, &path, !in_parameters.is_empty())?;
+        let includes = &scan.includes;
+        let view = loaded.view(self.nav, &path, includes.in_parameters)?;
         let source = view.source();
         let (_, class, body) = class_of(view.statements)?;
-        if !includes_accounted(&source, &view, &class, body, &in_parameters) {
-            return None;
-        }
         let declared: Vec<Sig> = body
             .iter()
             .filter(|member| {
@@ -636,22 +632,18 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         if let Some(file) = symbols.class_file(class) {
             let path = self.nav.path_of(file)?;
             let loaded = self.load(&path)?;
-            let (found, _, _) = class_of(&loaded.parsed.program.statements)?;
-            let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
-            if class_may_hide_members(&raw, found, false) {
+            let scan = loaded.class_scan()?;
+            if scan.hides_members {
                 return None;
             }
             // An include outside the parameter lists may declare a constructor.
-            let includes = class_includes(&raw, found);
+            let includes = &scan.includes;
             if !includes.elsewhere.is_empty() {
                 return None;
             }
-            let view = loaded.view(self.nav, &path, !includes.in_parameters.is_empty())?;
+            let view = loaded.view(self.nav, &path, includes.in_parameters)?;
             let source = view.source();
             let (_, name, body) = class_of(view.statements)?;
-            if !includes_accounted(&source, &view, &name, body, &includes.in_parameters) {
-                return None;
-            }
             return constructors(
                 &source,
                 &name,
@@ -1101,50 +1093,6 @@ fn accounts_for(sig: &Sig, includes: &[Span]) -> bool {
     })
 }
 
-/// Whether every include of `includes`, written in a parameter list of the
-/// class, is one entry of the parameter list of a method or constructor of
-/// `body` that the file writes.
-fn includes_accounted(
-    source: &Source,
-    view: &View,
-    class: &str,
-    body: &[Statement],
-    includes: &[Span],
-) -> bool {
-    if includes.is_empty() {
-        return true;
-    }
-    let short = class.rsplit('.').next().unwrap_or(class);
-    let sigs: Vec<Sig> = body
-        .iter()
-        .filter(|member| {
-            matches!(
-                member.kind,
-                StatementKind::Method { .. } | StatementKind::Constructor { .. }
-            ) && view.written_here(member.span.start)
-        })
-        .filter_map(|member| sig_of(source, member, &[], Some(short), None))
-        .collect();
-    includes
-        .iter()
-        .all(|site| sigs.iter().any(|sig| accounts_for(sig, &[*site])))
-}
-
-/// Whether a class may declare members the text does not show: a `{&name}`
-/// reference or `&IF` outside the bodies of its methods, constructors,
-/// destructor and property accessors, and
-/// when `includes` is set an include. The analysis expands the includes of a
-/// class, and the methods are checked against it; the constructors are read
-/// from the text alone.
-fn class_may_hide_members(source: &Source, class: &Statement, includes: bool) -> bool {
-    let (StatementKind::Class { body, .. } | StatementKind::Interface { body, .. }) = &class.kind
-    else {
-        return true;
-    };
-    let bodies = bodies_of(body);
-    source.may_expand(class.span.start, class.span.end, &bodies, includes)
-}
-
 /// The parameters of a function: those of its `FORWARD` (or `IN`) prototype,
 /// those its body defines, or, for a definition that leaves out its list after
 /// a `FORWARD` in `scope`, those of that prototype.
@@ -1359,7 +1307,9 @@ impl Navigation<'_, '_> {
     /// reach.
     pub fn signature_help(&self, file: &Path, offset: u32) -> Option<SignatureHelp> {
         let file = search::normalize_lexically(file);
-        if self.include_at(&file, offset).is_some() {
+        // The cursor directly before an include of arguments asks about its
+        // first argument, so only a cursor inside the reference is refused.
+        if self.include_inside(&file, offset).is_some() {
             return None;
         }
         let virt = self.expanded_at(&file, offset).or_else(|| {

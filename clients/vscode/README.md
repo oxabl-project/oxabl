@@ -336,10 +336,11 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   (2 parameters)`, in the signature and in the hover. The arguments for the
   include get one hint, on the first of them, that names the include. A
   declaration whose include holds a `{&name}` reference or an `&IF`, or did
-  not arrive, shows no signature. After you edit a function in one file, the hints of
-  a call in another open file can show the old parameter names until that
-  file changes again. The signature help follows VS Code's
-  `editor.parameterHints.enabled`.
+  not arrive, shows no signature, and the other methods of its class keep
+  theirs. Its hover shows the include with no count. After you edit a
+  function in one file, the hints of a call in another open file can show the
+  old parameter names until that file changes again. The signature help
+  follows VS Code's `editor.parameterHints.enabled`.
 - **ABL Schema view.** The Explorer has an **ABL Schema** view of the `.df`
   files that `[workspace.schema]` in `oxabl.toml` names, with no database
   connection: each file is a database, with its tables, their fields and

@@ -12,7 +12,7 @@
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use oxabl_analyze::ExpandedFile;
@@ -39,6 +39,9 @@ pub(super) struct Group<'a> {
     pub text: String,
     /// Every parameter the include declares, in order.
     pub params: Vec<&'a Statement>,
+    /// Whether the include is known whole, so that `params` is what every
+    /// compile declares. A label of a group that is not known says no count.
+    pub whole: bool,
 }
 
 impl Group<'_> {
@@ -58,8 +61,12 @@ impl Group<'_> {
             .count()
     }
 
-    /// `{inc/std-params.i} (2 parameters)`.
+    /// `{inc/std-params.i} (2 parameters)`; the reference alone when the
+    /// include is not known whole.
     pub fn label(&self) -> String {
+        if !self.whole {
+            return self.text.clone();
+        }
         let count = self.count();
         let noun = if count == 1 {
             "parameter"
@@ -87,14 +94,26 @@ pub(super) struct FoldingCache {
     built: OnceCell<Built>,
     /// The text of the file that was expanded, as written.
     root_text: OnceCell<Option<Arc<str>>>,
-    /// Whether the include at a site (by start) is read whole, per site.
-    whole: RefCell<HashMap<u32, bool>>,
+    /// Whether the include of a region (by its place in the list of
+    /// expansions) is read whole.
+    whole: RefCell<HashMap<usize, bool>>,
+    /// Whether the text of an include file is the same for every compile, by
+    /// path. Each expansion has an id of its own, so the path is what finds
+    /// the expansions of one file.
+    whole_files: RefCell<HashMap<PathBuf, bool>>,
 }
 
 struct Built {
+    /// The expansions that the file writes itself, in order of place.
     regions: Vec<Region>,
-    /// The enclosing expansion and the text of each expansion.
-    tree: Vec<(Option<usize>, Option<oxabl_common::FileId>)>,
+    /// The expansions, each with the ones written in it.
+    nodes: Vec<Node>,
+}
+
+struct Node {
+    path: PathBuf,
+    file: Option<oxabl_common::FileId>,
+    children: Vec<usize>,
 }
 
 /// The way from the expanded parameters of a declaration to the entries that
@@ -122,7 +141,7 @@ impl<'t> Folding<'t> {
     fn built(&self) -> &Built {
         self.cache.built.get_or_init(|| {
             let expansions = self.expanded.include_expansions();
-            let regions = expansions
+            let mut regions: Vec<Region> = expansions
                 .iter()
                 .enumerate()
                 .filter(|(_, expansion)| expansion.parent.is_none())
@@ -132,9 +151,32 @@ impl<'t> Folding<'t> {
                     index,
                 })
                 .collect();
-            let tree = expansions.iter().map(|e| (e.parent, e.file)).collect();
-            Built { regions, tree }
+            regions.sort_by_key(|region| region.expanded.start);
+            let mut nodes: Vec<Node> = expansions
+                .iter()
+                .map(|expansion| Node {
+                    path: expansion.path.to_path_buf(),
+                    file: expansion.file,
+                    children: Vec::new(),
+                })
+                .collect();
+            for (at, expansion) in expansions.iter().enumerate() {
+                // A parent is an earlier expansion.
+                if let Some(parent) = expansion.parent.filter(|&parent| parent < at) {
+                    nodes[parent].children.push(at);
+                }
+            }
+            Built { regions, nodes }
         })
+    }
+
+    /// The region that holds byte `at` of the expanded text.
+    fn region_at(&self, at: u32) -> Option<&Region> {
+        let regions = &self.built().regions;
+        let next = regions.partition_point(|region| region.expanded.start <= at);
+        regions[..next]
+            .last()
+            .filter(|region| region.expanded.contains(&at))
     }
 
     fn root_text(&self) -> Option<&Arc<str>> {
@@ -146,16 +188,25 @@ impl<'t> Folding<'t> {
     /// declaration is not known whole: an include that is not one plain
     /// `{file}` reference, or that holds a `{&name}` reference or an `&IF`.
     pub fn entries<'a>(&self, parameters: Vec<&'a Statement>) -> Option<Vec<Entry<'a>>> {
+        self.group(parameters, true)
+    }
+
+    /// As [`entries`](Self::entries) for a declaration that is not known
+    /// whole: each include is one entry, written as the file writes it, and
+    /// its label says no count. The parameters that the expansion picked are
+    /// not shown as if the declaration wrote them.
+    pub fn entries_as_written<'a>(&self, parameters: Vec<&'a Statement>) -> Option<Vec<Entry<'a>>> {
+        self.group(parameters, false)
+    }
+
+    fn group<'a>(&self, parameters: Vec<&'a Statement>, strict: bool) -> Option<Vec<Entry<'a>>> {
         let mut out: Vec<Entry<'a>> = Vec::new();
         for statement in parameters {
             let at = statement.span.start;
             // The text of a `{&name}` value has no reference of its own: its
             // parameters are listed one by one.
             let Some((region, site)) = self
-                .built()
-                .regions
-                .iter()
-                .find(|r| r.expanded.contains(&at))
+                .region_at(at)
                 .and_then(|region| Some((region, region.site?)))
             else {
                 out.push(Entry::Param(statement));
@@ -167,17 +218,31 @@ impl<'t> Folding<'t> {
                 group.params.push(statement);
                 continue;
             }
-            let text = self.reference(site)?;
-            if !self.read_whole(region) {
+            let plain = self.reference(site);
+            let whole = plain.is_some() && self.read_whole(region);
+            if strict && !whole {
                 return None;
             }
+            let text = match plain {
+                Some(text) => text,
+                None => self.site_text(site)?,
+            };
             out.push(Entry::Include(Group {
                 site,
                 text,
                 params: vec![statement],
+                whole,
             }));
         }
         Some(out)
+    }
+
+    /// The bytes of the reference at `site`, on one line.
+    fn site_text(&self, site: Span) -> Option<String> {
+        let text = self
+            .root_text()?
+            .get(site.start as usize..site.end as usize)?;
+        Some(text.split_whitespace().collect::<Vec<_>>().join(" "))
     }
 
     /// The include reference at `site`, on one line. `None` when the bytes
@@ -201,43 +266,42 @@ impl<'t> Folding<'t> {
     /// Whether the text of the include of `region`, and of the includes below
     /// it, is the same for every compile: no `{&name}` reference and no `&IF`.
     fn read_whole(&self, region: &Region) -> bool {
-        let key = region.site.map_or(0, |site| site.start);
-        if let Some(known) = self.cache.whole.borrow().get(&key) {
+        if let Some(known) = self.cache.whole.borrow().get(&region.index) {
             return *known;
         }
-        let tree = &self.built().tree;
-        let whole = (0..tree.len())
-            .filter(|&at| below(tree, at, region.index))
-            .all(|at| {
-                let Some(file) = tree[at].1 else {
-                    return true;
-                };
-                let Some(text) = self.expanded.source_text(file) else {
-                    return false;
-                };
-                let tokens: Vec<Token> = oxabl_lexer::tokenize(text);
-                !Source::new(text, &tokens).may_expand(0, u32::MAX, &[], false)
-            });
-        self.cache.whole.borrow_mut().insert(key, whole);
+        let nodes = &self.built().nodes;
+        // A child is a later expansion than its parent, so the walk ends.
+        let mut pending = vec![region.index];
+        let mut whole = true;
+        while let Some(at) = pending.pop() {
+            if !self.node_whole(&nodes[at]) {
+                whole = false;
+                break;
+            }
+            pending.extend(&nodes[at].children);
+        }
+        self.cache.whole.borrow_mut().insert(region.index, whole);
         whole
     }
-}
 
-/// Whether expansion `at` is `ancestor` or is written in it, at any depth.
-fn below(
-    tree: &[(Option<usize>, Option<oxabl_common::FileId>)],
-    mut at: usize,
-    ancestor: usize,
-) -> bool {
-    // The tree is finite: a parent is an earlier expansion.
-    loop {
-        if at == ancestor {
+    /// Whether the text of the include file of `node` is the same for every
+    /// compile. One lex for each file.
+    fn node_whole(&self, node: &Node) -> bool {
+        let Some(file) = node.file else {
             return true;
+        };
+        if let Some(known) = self.cache.whole_files.borrow().get(&node.path) {
+            return *known;
         }
-        match tree[at].0 {
-            Some(parent) if parent < at => at = parent,
-            _ => return false,
-        }
+        let whole = self.expanded.source_text(file).is_some_and(|text| {
+            let tokens: Vec<Token> = oxabl_lexer::tokenize(text);
+            !Source::new(text, &tokens).may_expand(0, u32::MAX, &[], false)
+        });
+        self.cache
+            .whole_files
+            .borrow_mut()
+            .insert(node.path.clone(), whole);
+        whole
     }
 }
 
@@ -246,6 +310,7 @@ pub(super) struct Loaded {
     pub text: Arc<str>,
     pub parsed: Parsed,
     unfolded: OnceCell<Option<Unfolded>>,
+    scan: OnceCell<Option<ClassScan>>,
 }
 
 /// A file with its includes expanded, and the expanded text parsed.
@@ -269,7 +334,28 @@ impl Loaded {
             text,
             parsed,
             unfolded: OnceCell::new(),
+            scan: OnceCell::new(),
         }
+    }
+
+    /// The scan of the first class or interface of the file, as written.
+    /// `None` when the file holds none.
+    pub fn class_scan(&self) -> Option<&ClassScan> {
+        self.scan
+            .get_or_init(|| {
+                let class = self.parsed.program.statements.iter().find(|statement| {
+                    matches!(
+                        statement.kind,
+                        StatementKind::Class { .. } | StatementKind::Interface { .. }
+                    )
+                })?;
+                let raw = Source::new(&self.text, &self.parsed.tokens);
+                Some(ClassScan {
+                    hides_members: class_may_hide_members(&raw, class, false),
+                    includes: class_includes(&raw, class),
+                })
+            })
+            .as_ref()
     }
 
     /// The declarations of the file at `path`. With `expand` set, the file
@@ -377,9 +463,10 @@ impl Navigation<'_, '_> {
 }
 
 /// The bytes of a class that hold no member: the bodies of its methods,
-/// constructors, destructor and property accessors.
+/// constructors, destructor and property accessors, in order.
 pub(super) fn bodies_of(body: &[Statement]) -> Vec<(u32, u32)> {
-    body.iter()
+    let mut bodies: Vec<(u32, u32)> = body
+        .iter()
         .flat_map(|member| -> Vec<(u32, u32)> {
             let from_first = |body: &[Statement]| {
                 body.first()
@@ -399,13 +486,15 @@ pub(super) fn bodies_of(body: &[Statement]) -> Vec<(u32, u32)> {
                 _ => Vec::new(),
             }
         })
-        .collect()
+        .collect();
+    bodies.sort_unstable();
+    bodies
 }
 
 /// The include references of a class, outside the bodies of its members.
 pub(super) struct ClassIncludes {
-    /// Those in the parameter list of a method or constructor.
-    pub in_parameters: Vec<Span>,
+    /// A parameter list of a method or constructor holds an include.
+    pub in_parameters: bool,
     /// Those anywhere else: they may declare members.
     pub elsewhere: Vec<Span>,
 }
@@ -415,12 +504,12 @@ pub(super) fn class_includes(source: &Source, class: &Statement) -> ClassInclude
     let (StatementKind::Class { body, .. } | StatementKind::Interface { body, .. }) = &class.kind
     else {
         return ClassIncludes {
-            in_parameters: Vec::new(),
+            in_parameters: false,
             elsewhere: source.includes_in(class.span.start, class.span.end, &[]),
         };
     };
     let mut skip = bodies_of(body);
-    let mut in_parameters = Vec::new();
+    let mut in_parameters = false;
     for member in body {
         if !matches!(
             member.kind,
@@ -429,12 +518,36 @@ pub(super) fn class_includes(source: &Source, class: &Statement) -> ClassInclude
             continue;
         }
         if let Some((open, close)) = source.parameter_list(member) {
-            in_parameters.extend(source.includes_in(open, close, &[]));
+            in_parameters |= !source.includes_in(open, close, &[]).is_empty();
             skip.push((open, close));
         }
     }
+    skip.sort_unstable();
     ClassIncludes {
         in_parameters,
         elsewhere: source.includes_in(class.span.start, class.span.end, &skip),
     }
+}
+
+/// Whether a class may declare members the text does not show: a `{&name}`
+/// reference or `&IF` outside the bodies of its methods, constructors,
+/// destructor and property accessors, and
+/// when `includes` is set an include. The analysis expands the includes of a
+/// class, and the methods are checked against it; the constructors are read
+/// from the text alone.
+pub(super) fn class_may_hide_members(source: &Source, class: &Statement, includes: bool) -> bool {
+    let (StatementKind::Class { body, .. } | StatementKind::Interface { body, .. }) = &class.kind
+    else {
+        return true;
+    };
+    let bodies = bodies_of(body);
+    source.may_expand(class.span.start, class.span.end, &bodies, includes)
+}
+
+/// What a scan of the text of a class file finds. One scan serves every call
+/// into the file.
+pub(super) struct ClassScan {
+    /// The class may declare members that the text does not show.
+    pub hides_members: bool,
+    pub includes: ClassIncludes,
 }

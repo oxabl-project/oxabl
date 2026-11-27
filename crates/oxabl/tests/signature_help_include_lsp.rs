@@ -201,7 +201,16 @@ fn hints(session: &mut Session, case: &Case) -> Vec<(String, String)> {
             let line = hint["position"]["line"].as_u64().unwrap() as usize;
             let column = hint["position"]["character"].as_u64().unwrap() as usize;
             let source_line = case.text.lines().nth(line).unwrap();
-            let at: usize = source_line.chars().take(column).map(char::len_utf8).sum();
+            // `character` counts UTF-16 code units.
+            let mut units = 0;
+            let at = source_line
+                .char_indices()
+                .find(|(_, c)| {
+                    let reached = units >= column;
+                    units += c.len_utf16();
+                    reached
+                })
+                .map_or(source_line.len(), |(at, _)| at);
             (
                 hint["label"].as_str().unwrap().to_string(),
                 source_line[at..].to_string(),
@@ -387,6 +396,12 @@ fn a_caller_with_an_include_of_arguments_counts_it_as_the_arguments_it_expands_t
             json!(2),
         ),
         ("RUN prog.p ({inc/std-args.i}, ‸\"D1\").\n", json!(1)),
+        // Directly before the reference: the place of its first argument.
+        (
+            "oDoc:SetData(‸{inc/std-args.i}, \"D1\", OUTPUT lDone).\n",
+            json!(0),
+        ),
+        ("RUN prog.p (‸{inc/std-args.i}, \"D1\").\n", json!(0)),
     ] {
         assert_eq!(active(&mut ws, &mut session, marked), wanted, "{marked}");
     }
@@ -728,4 +743,229 @@ fn a_call_that_is_still_being_typed_reaches_a_procedure_with_a_parameter_include
         ["Local({inc/std-input.i} (2 parameters), INPUT pcDocNum AS CHARACTER)"]
     );
     assert_eq!(answer["signatures"][0]["activeParameter"], json!(0));
+}
+
+// ---------------------------------------------------------------------------
+// A member that is not known whole hides no other member
+// ---------------------------------------------------------------------------
+
+/// A class with one whole method and a method for each of two ways that a
+/// parameter include is not known whole.
+fn rough_workspace() -> Workspace {
+    let ws = closed_workspace();
+    // A `{&name}` value that the reference's `&T=` argument supplies.
+    ws.write("inc/named.i", "INPUT pcA AS {&T}\n");
+    ws.write(
+        "app/Rough.cls",
+        "CLASS app.Rough:\n\
+         \x20   CONSTRUCTOR PUBLIC Rough({inc/std-params.i}, INPUT pcNote AS CHARACTER):\n\
+         \x20   END CONSTRUCTOR.\n\
+         \x20   METHOD PUBLIC VOID Whole({inc/std-params.i}, INPUT pcB AS INTEGER):\n\
+         \x20   END METHOD.\n\
+         \x20   METHOD PUBLIC VOID Named({inc/named.i &T=CHARACTER}, INPUT pcB AS INTEGER):\n\
+         \x20   END METHOD.\n\
+         \x20   METHOD PUBLIC VOID Cond({inc/with-if.i}, INPUT pcB AS INTEGER):\n\
+         \x20   END METHOD.\n\
+         END CLASS.\n",
+    );
+    // Two constructors, one of them not known whole.
+    ws.write(
+        "app/RoughCtors.cls",
+        "CLASS app.RoughCtors:\n\
+         \x20   CONSTRUCTOR PUBLIC RoughCtors({inc/std-params.i}, INPUT pcNote AS CHARACTER):\n\
+         \x20   END CONSTRUCTOR.\n\
+         \x20   CONSTRUCTOR PUBLIC RoughCtors({inc/named.i &T=CHARACTER}, INPUT pcNote AS INTEGER):\n\
+         \x20   END CONSTRUCTOR.\n\
+         END CLASS.\n",
+    );
+    ws
+}
+
+const ROUGH: &str =
+    "DEFINE VARIABLE o AS app.Rough NO-UNDO.\no = NEW app.Rough(cCompany, cUser, \"n\").\n";
+
+#[test]
+fn a_method_that_is_not_known_whole_hides_no_other_method_of_its_class() {
+    let mut ws = rough_workspace();
+    let mut session = hint_session(&ws);
+    let case = ws.program(
+        &mut session,
+        &format!("{ROUGH}o:Whole(‸cCompany, cUser, 1).\n"),
+    );
+    assert_eq!(
+        labels(&help(&mut session, &case)),
+        ["Whole({inc/std-params.i} (2 parameters), INPUT pcB AS INTEGER): VOID"]
+    );
+    for method in ["Named", "Cond"] {
+        let case = ws.program(&mut session, &format!("{ROUGH}o:{method}(‸cCompany, 1).\n"));
+        assert_eq!(help(&mut session, &case), Value::Null, "{method}");
+    }
+    // The hints too: one for the include and one for `pcB`, only on `Whole`.
+    let case = ws.program(
+        &mut session,
+        &format!(
+            "{ROUGH}o:Whole(cCompany, cUser, 1).\no:Named(cCompany, 1).\n\
+             o:Cond(cCompany, 1).\n‸"
+        ),
+    );
+    let hints = hints(&mut session, &case);
+    let hints: Vec<(&str, &str)> = hints
+        .iter()
+        .map(|(label, rest)| (label.as_str(), rest.as_str()))
+        .collect();
+    // `NEW app.Rough(...)` has hints of its own: skip them.
+    assert_eq!(
+        &hints[hints.len() - 2..],
+        [
+            ("{inc/std-params.i}:", "cCompany, cUser, 1)."),
+            ("pcB:", "1)."),
+        ]
+    );
+    assert!(
+        !hints.iter().any(|(label, _)| label.starts_with("pcA")),
+        "{hints:?}"
+    );
+}
+
+#[test]
+fn a_constructor_that_is_not_known_whole_leaves_the_set_of_constructors_unknown() {
+    let mut ws = rough_workspace();
+    let mut session = session_for(&ws);
+    // `Rough` has one constructor, and it is whole: it gets a signature next
+    // to the methods that are not.
+    let case = ws.program(
+        &mut session,
+        "DEFINE VARIABLE o AS app.Rough NO-UNDO.\no = NEW app.Rough(‸cCompany, cUser, \"n\").\n",
+    );
+    assert_eq!(
+        labels(&help(&mut session, &case)),
+        ["Rough({inc/std-params.i} (2 parameters), INPUT pcNote AS CHARACTER)"]
+    );
+    let case = ws.program(
+        &mut session,
+        "DEFINE VARIABLE o AS app.RoughCtors NO-UNDO.\n\
+         o = NEW app.RoughCtors(‸cCompany, cUser, \"n\").\n",
+    );
+    assert_eq!(help(&mut session, &case), Value::Null);
+}
+
+#[test]
+fn hover_of_a_declaration_that_is_not_known_whole_writes_the_include_with_no_count() {
+    let mut ws = rough_workspace();
+    let mut session = session_for(&ws);
+    for (member, include) in [
+        ("Named", "{inc/named.i &T=CHARACTER}"),
+        ("Cond", "{inc/with-if.i}"),
+    ] {
+        let case = ws.program(&mut session, &format!("{ROUGH}o:‸{member}(cCompany, 1).\n"));
+        let text = hover(&mut session, &case).expect("a hover");
+        assert!(
+            text.contains(&format!("{member} ({include}, INPUT pcB AS INTEGER)"))
+                && !text.contains("pcA")
+                && !text.contains("parameter"),
+            "{member}: {text}"
+        );
+    }
+}
+
+#[test]
+fn a_member_that_an_include_declares_has_a_hover_of_its_own_beside_a_parameter_include() {
+    let mut ws = Workspace::new();
+    ws.write(
+        "inc/part-method.i",
+        "METHOD PUBLIC VOID Extra(INPUT e AS INTEGER):\nEND METHOD.\n",
+    );
+    ws.write(
+        "app/Parts.cls",
+        "CLASS app.Parts:\n{inc/part-method.i}\n\
+         \x20   METHOD PUBLIC VOID Go({inc/std-params.i}, INPUT pcB AS INTEGER):\n\
+         \x20   END METHOD.\nEND CLASS.\n",
+    );
+    let mut session = session_for(&ws);
+    let marked = "DEFINE VARIABLE o AS app.Parts NO-UNDO.\no = NEW app.Parts().\n";
+    // The include declares `Extra`, so the class file does not write it.
+    let case = ws.program(&mut session, &format!("{marked}o:‸Extra(1).\n"));
+    assert_eq!(hover(&mut session, &case), None);
+    let case = ws.program(&mut session, &format!("{marked}o:‸Go(\"a\", \"b\", 1).\n"));
+    let text = hover(&mut session, &case).expect("a hover");
+    assert!(
+        text.contains("Go ({inc/std-params.i} (2 parameters), INPUT pcB AS INTEGER)"),
+        "{text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A `{&name}` value in the parameter list of a routine of the unit
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_name_value_in_the_list_of_a_routine_of_the_unit_lists_one_parameter_at_a_time() {
+    let mut ws = Workspace::new();
+    let mut session = session_for(&ws);
+    let case = ws.program(
+        &mut session,
+        "&SCOPED-DEFINE P {inc/std-params.i}\n\
+         FUNCTION Fp RETURNS INTEGER ({&P}, INPUT x AS INTEGER):\n\
+         \x20   RETURN x.\nEND FUNCTION.\n\
+         DEFINE VARIABLE i AS INTEGER NO-UNDO.\ni = Fp(cCompany, cUser, ‸\n",
+    );
+    let answer = help(&mut session, &case);
+    assert_eq!(
+        labels(&answer),
+        [
+            "Fp(INPUT pcCompany AS CHARACTER, INPUT pcUser AS CHARACTER, INPUT x AS INTEGER): INTEGER"
+        ]
+    );
+    assert_eq!(answer["signatures"][0]["activeParameter"], json!(2));
+}
+
+// ---------------------------------------------------------------------------
+// The positions of the hints count UTF-16 code units
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_hint_after_text_outside_the_basic_plane_lands_on_its_argument() {
+    let mut ws = Workspace::new();
+    let mut session = hint_session(&ws);
+    let case = ws.program(
+        &mut session,
+        "/* 𝄞 */ oDoc:SetData(cCompany, cUser, \"D1\", OUTPUT lDone).\n‸",
+    );
+    assert_eq!(
+        hints(&mut session, &case)[0],
+        (
+            "{inc/std-params.i}:".to_string(),
+            "cCompany, cUser, \"D1\", OUTPUT lDone).".to_string()
+        )
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `RUN p IN h`: a procedure with an `&IF` beside its parameter include
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_procedure_of_a_handle_with_an_if_beside_its_parameter_include_has_no_signature() {
+    let mut ws = Workspace::new();
+    // The expansion keeps the branch that this compile picks, and shows no
+    // `&IF`: only the text as written does.
+    ws.write(
+        "lib-if.p",
+        "PROCEDURE hq:\n    {inc/std-input.i}\n\
+         &IF DEFINED(NOT-SET) = 0 &THEN\n\
+         \x20   DEFINE INPUT PARAMETER pcExtra AS INTEGER NO-UNDO.\n&ENDIF\n\
+         \x20   DEFINE INPUT PARAMETER pcDocNum AS CHARACTER NO-UNDO.\nEND PROCEDURE.\n",
+    );
+    let mut session = session_for(&ws);
+    let case = ws.program(
+        &mut session,
+        "RUN lib-if.p PERSISTENT SET hLib.\nRUN hq IN hLib (‸\n",
+    );
+    assert_eq!(help(&mut session, &case), Value::Null);
+    // The same procedure with no `&IF` has its signature.
+    let case = ws.program(
+        &mut session,
+        "RUN lib.p PERSISTENT SET hLib.\nRUN hp IN hLib (‸\n",
+    );
+    assert!(help(&mut session, &case).is_object());
 }

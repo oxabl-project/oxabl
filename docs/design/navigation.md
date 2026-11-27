@@ -109,8 +109,10 @@ parameter list as one entry, as the declaration writes it, with the count of
 the parameters it declares: `METHOD PUBLIC VOID SetData ({inc/std-params.i} (2
 parameters), INPUT pcDocNum AS CHARACTER)`. It never lists the parameters of
 the include. A declaration that is not known whole (see "A parameter include"
-in `signature-help.md`) is written parameter by parameter, as the parser read
-it.
+in `signature-help.md`) shows the include as the file writes it, with no
+count: `METHOD PUBLIC VOID Go ({inc/with-if.i}, INPUT pcB AS INTEGER)`. The
+expansion picked one branch of an `&IF`, or one value of a `{&name}`, so its
+parameters are not listed as if the declaration wrote them.
 
 A temp-table that is defined `LIKE` another table has the fields and indexes of
 that table. One definition gives them: `EffectiveTable::declare` in
