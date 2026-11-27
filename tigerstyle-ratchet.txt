@@ -1,5 +1,6 @@
 # TigerStyle lint ratchet (see docs/TIGER_STYLE.md).
 # Regenerate after lowering counts with: cargo xtask tigerstyle --update
+oxabl allow:clippy::too_many_arguments 1
 oxabl clippy::cast_possible_truncation 3
 oxabl clippy::cast_possible_wrap 4
 oxabl clippy::disallowed_methods 2
@@ -8,6 +9,7 @@ oxabl clippy::fn_params_excessive_bools 1
 oxabl clippy::let_underscore_must_use 23
 oxabl clippy::too_many_arguments 8
 oxabl clippy::too_many_lines 15
+oxabl_analyze allow:clippy::too_many_arguments 3
 oxabl_analyze clippy::cast_possible_truncation 3
 oxabl_analyze clippy::expect_used 1
 oxabl_analyze clippy::too_many_arguments 8
@@ -48,6 +50,7 @@ oxabl_daemon clippy::let_underscore_must_use 38
 oxabl_daemon clippy::too_many_arguments 10
 oxabl_daemon clippy::too_many_lines 12
 oxabl_daemon unsafe_code 4
+oxabl_effects allow:clippy::too_many_arguments 2
 oxabl_effects clippy::cast_possible_truncation 8
 oxabl_effects clippy::expect_used 1
 oxabl_effects clippy::let_underscore_must_use 12
@@ -62,6 +65,7 @@ oxabl_flow clippy::expect_used 2
 oxabl_flow clippy::let_underscore_must_use 18
 oxabl_flow clippy::too_many_arguments 1
 oxabl_flow clippy::too_many_lines 8
+oxabl_formatter allow:clippy::too_many_arguments 1
 oxabl_formatter clippy::cast_possible_truncation 1
 oxabl_formatter clippy::cast_possible_wrap 13
 oxabl_formatter clippy::cast_sign_loss 5
@@ -75,6 +79,7 @@ oxabl_index clippy::expect_used 3
 oxabl_index clippy::let_underscore_must_use 1
 oxabl_index clippy::too_many_arguments 4
 oxabl_index clippy::too_many_lines 7
+oxabl_lexer allow:clippy::too_many_lines 3
 oxabl_lint clippy::cast_possible_truncation 15
 oxabl_lint clippy::expect_used 1
 oxabl_lint clippy::too_many_arguments 10
@@ -107,11 +112,13 @@ oxabl_schema clippy::cast_sign_loss 1
 oxabl_schema clippy::expect_used 1
 oxabl_schema clippy::too_many_lines 2
 oxabl_schema unsafe_code 1
+oxabl_scope allow:clippy::too_many_arguments 1
 oxabl_scope clippy::cast_possible_truncation 34
 oxabl_scope clippy::expect_used 2
 oxabl_scope clippy::let_underscore_must_use 20
 oxabl_scope clippy::too_many_arguments 8
 oxabl_scope clippy::too_many_lines 10
+oxabl_semantic allow:clippy::too_many_arguments 1
 oxabl_semantic clippy::cast_possible_truncation 15
 oxabl_semantic clippy::expect_used 2
 oxabl_semantic clippy::too_many_arguments 18

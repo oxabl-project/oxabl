@@ -3,8 +3,14 @@
 //! Runs `cargo clippy --workspace --lib --bins --message-format=json` with
 //! `CLIPPY_CONF_DIR` pointing at `xtask/tigerstyle` and `-W` for every lint in
 //! the target TigerStyle set, then compares the per-(crate, lint) counts
-//! against `tigerstyle-ratchet.txt`. Any count above the committed baseline
-//! fails the check; `--update` writes the current counts back to the baseline.
+//! against `tigerstyle-ratchet.txt`. It also counts, per crate, the
+//! `#[allow]` and `#[expect]` attributes that name a tracked lint (key
+//! `allow:<lint>`), because such an attribute hides a finding. Any count that
+//! differs from the committed baseline fails the check: a higher count is a
+//! regression, and a lower one must be written down with `--update` in the
+//! same change, so that the next change cannot spend it.
+
+mod allows;
 
 use crate::Context;
 use crate::checks::Outcome;
@@ -135,7 +141,57 @@ fn collect_counts(root: &Path) -> Result<Counts, String> {
         ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(count_diagnostics(&stdout))
+    let mut counts = count_diagnostics(&stdout);
+    count_attributes(&stdout, &mut counts)?;
+    Ok(counts)
+}
+
+/// Add the `allow:<lint>` counts of each workspace package that clippy
+/// checked. No workspace package in clippy's output is an error: the counts
+/// would read as zero and pass.
+fn count_attributes(json_lines: &str, counts: &mut Counts) -> Result<(), String> {
+    let packages = workspace_packages(json_lines);
+    if packages.is_empty() {
+        return Err(
+            "cargo clippy reported no workspace package (its JSON output changed?)\n".to_owned(),
+        );
+    }
+    for (package, dir) in packages {
+        let mut attributes = BTreeMap::new();
+        allows::count_package(&dir, &TRACKED_LINTS, &mut attributes)?;
+        for (lint, count) in attributes {
+            counts.insert((package.clone(), lint), count);
+        }
+    }
+    Ok(())
+}
+
+/// The name and directory of each workspace package in clippy's
+/// `compiler-artifact` messages.
+fn workspace_packages(json_lines: &str) -> BTreeMap<String, PathBuf> {
+    let mut packages = BTreeMap::new();
+    for line in json_lines.lines() {
+        if !line.contains("\"reason\":\"compiler-artifact\"") {
+            continue;
+        }
+        let Some(package_id) = extract_json_string(line, "\"package_id\":\"") else {
+            continue;
+        };
+        if !package_id.starts_with("path+file://") {
+            continue;
+        }
+        let Some(manifest) = extract_json_string(line, "\"manifest_path\":\"") else {
+            continue;
+        };
+        let (Some(package), Some(dir)) = (
+            package_name_from_id(&package_id),
+            Path::new(&manifest).parent(),
+        ) else {
+            continue;
+        };
+        packages.insert(package, dir.to_path_buf());
+    }
+    packages
 }
 
 fn count_diagnostics(json_lines: &str) -> Counts {
@@ -257,29 +313,31 @@ fn compare_counts(baseline: &Counts, current: &Counts) -> Outcome {
         }
     }
 
+    let mut message = String::new();
     if !regressions.is_empty() {
-        let mut message =
-            String::from("TigerStyle ratchet regression(s) detected (see docs/TIGER_STYLE.md):\n");
+        message.push_str("TigerStyle ratchet regression(s) detected (see docs/TIGER_STYLE.md):\n");
         for line in &regressions {
             message.push_str(line);
             message.push('\n');
         }
-        return Err(message);
     }
-
-    let total: u64 = current.values().sum();
-    let mut summary =
-        format!("tigerstyle ratchet ok ({total} tracked findings across workspace)\n");
     if !improvements.is_empty() {
-        summary.push_str(
-            "Improvements available (run `cargo xtask tigerstyle --update` to lock in):\n",
+        message.push_str(
+            "TigerStyle count(s) went down: run `cargo xtask tigerstyle --update` and commit \
+             tigerstyle-ratchet.txt in this change, so the gain stays:\n",
         );
         for line in &improvements {
-            summary.push_str(line);
-            summary.push('\n');
+            message.push_str(line);
+            message.push('\n');
         }
     }
-    Ok(summary)
+    if !message.is_empty() {
+        return Err(message);
+    }
+    let total: u64 = current.values().sum();
+    Ok(format!(
+        "tigerstyle ratchet ok ({total} tracked findings and allows across workspace)\n"
+    ))
 }
 
 #[cfg(test)]
@@ -330,7 +388,32 @@ mod tests {
 
         let mut improved = baseline.clone();
         improved.insert(("oxabl_parser".into(), "clippy::too_many_lines".into()), 8);
-        let report = compare_counts(&baseline, &improved).expect("improvement passes");
-        assert!(report.contains("10 -> 8"));
+        let message = compare_counts(&baseline, &improved).expect_err("a lower count fails");
+        assert!(message.contains("10 -> 8"));
+        assert!(message.contains("--update"));
+
+        assert!(compare_counts(&baseline, &baseline).is_ok());
+        assert!(
+            compare_counts(&baseline, &Counts::new()).is_err(),
+            "counts that all read as zero must fail"
+        );
+    }
+
+    #[test]
+    fn finds_workspace_packages_in_artifacts() {
+        let lines = concat!(
+            r#"{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#serde@1.0.0","manifest_path":"/cargo/serde/Cargo.toml"}"#,
+            "\n",
+            r#"{"reason":"compiler-artifact","package_id":"path+file:///repo/crates/oxabl_lexer#3.0.0","manifest_path":"/repo/crates/oxabl_lexer/Cargo.toml"}"#,
+            "\n",
+        );
+        let packages = workspace_packages(lines);
+        assert_eq!(packages.len(), 1);
+        assert_eq!(
+            packages.get("oxabl_lexer").map(PathBuf::as_path),
+            Some(Path::new("/repo/crates/oxabl_lexer"))
+        );
+        let mut counts = Counts::new();
+        assert!(count_attributes("", &mut counts).is_err());
     }
 }
