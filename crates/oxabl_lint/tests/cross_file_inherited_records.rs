@@ -136,6 +136,24 @@ fn a_for_each_over_an_inherited_buffer_reads_its_table() {
 }
 
 #[test]
+fn a_bare_field_in_the_where_of_an_inherited_for_each_resolves_to_its_table() {
+    let source = child("FOR EACH cust_ WHERE Name = \"x\": END.");
+    let (sem, findings) = analyse(&source, BASE);
+
+    assert_eq!(codes(&findings), Vec::<&str>::new(), "{findings:?}");
+    assert_eq!(
+        sem.symbols.get(sole_resolved(&sem, "name")).kind,
+        SymbolKind::Field,
+        "the bare field resolves through the inherited buffer"
+    );
+    let reads: Vec<_> = symbols_named(&sem, "cust_")
+        .into_iter()
+        .filter(|s| sem.symbols.get(*s).table_id.is_some())
+        .collect();
+    assert!(!reads.is_empty(), "the implicit buffer reads Customer");
+}
+
+#[test]
 fn a_buffer_of_an_inherited_temp_table_reads_no_schema_table() {
     let source = child("FIND FIRST ttbuf_. MESSAGE ttbuf_.f.");
     let (sem, findings) = analyse(&source, BASE);
