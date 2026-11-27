@@ -305,7 +305,7 @@ Verify: `cargo test -p oxabl --test skill_drift --test skill_rules`.
 
 ## Step 11. Final checks
 
-- `cargo fmt --all -- --check`, `cargo clippy --workspace -- -D warnings`,
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo clippy -p oxabl --all-targets --features remote-cache,self-update --locked -- -D warnings`,
   `cargo test --workspace` (with `CARGO_BUILD_JOBS` as set).
 - `cargo fmt --manifest-path fuzz/Cargo.toml -- --check` and

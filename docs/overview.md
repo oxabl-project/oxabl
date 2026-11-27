@@ -639,7 +639,7 @@ Every push and PR to `master` runs the following checks (all must pass):
 - `cargo check` — compilation
 - `cargo test` — full test suite
 - `cargo fmt --check` — formatting
-- `cargo clippy -D warnings` — lints
+- `cargo clippy --all-targets -D warnings` — lints, with the tests and benches built, so a bench that no longer compiles fails the pull request
 - `Self-update` — the self-update tests, and clippy with the `remote-cache` and `self-update` features
 - `Install script` — `scripts/install.sh` under `shellcheck`, dash and bash, against a fake release server
 
