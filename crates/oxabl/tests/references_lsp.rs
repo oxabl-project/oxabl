@@ -1712,7 +1712,7 @@ fn resolved_sites(session: &Session, file: &Path) -> usize {
             let (count, named) = rest.split_once(' ')?;
             (named == label).then(|| count.parse::<usize>().unwrap())
         })
-        .last()
+        .next_back()
         .unwrap_or(0)
 }
 
