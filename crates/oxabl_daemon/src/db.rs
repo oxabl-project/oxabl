@@ -1506,6 +1506,14 @@ pub enum NavigationQuery {
     /// The signatures of the call around byte `offset` of `file`, which is the
     /// root or an include its expansion reads.
     SignatureHelp { file: PathBuf, offset: u32 },
+    /// The text that the call fill writes after the name that ends at byte
+    /// `offset` of `file`, which is the root or an include its expansion
+    /// reads: the answer of `oxabl/callArguments`.
+    CallFill {
+        file: PathBuf,
+        offset: u32,
+        arguments: oxabl_pipeline::completion::CallArguments,
+    },
     /// The links written in the root itself.
     Links,
     /// The semantic tokens of `file`, which is the root or an include its
@@ -1529,6 +1537,9 @@ pub struct NavigationAnswer {
     pub highlights: Vec<oxabl_pipeline::Highlight>,
     /// The signatures of a [`NavigationQuery::SignatureHelp`] call.
     pub signature_help: Option<oxabl_pipeline::SignatureHelp>,
+    /// The snippet of a [`NavigationQuery::CallFill`], and whether the
+    /// client then shows signature help.
+    pub call_fill: Option<(String, bool)>,
     /// The tokens of a [`NavigationQuery::SemanticTokens`] file; the text of
     /// the file is the only entry of `texts`.
     pub tokens: Vec<oxabl_pipeline::SemanticToken>,
@@ -1555,6 +1566,14 @@ pub fn compute_navigation(
     overlay: HashMap<PathBuf, Arc<str>>,
     query: &NavigationQuery,
 ) -> Option<Result<NavigationAnswer, String>> {
+    if let NavigationQuery::CallFill {
+        file,
+        offset,
+        arguments,
+    } = query
+    {
+        return call_fill(snapshot, schema, root, overlay, file, *offset, *arguments);
+    }
     let first = navigate(snapshot, schema, root, overlay.clone(), query)?;
     let (NavigationQuery::SignatureHelp { file, offset }, Ok(answer)) = (query, &first) else {
         return Some(first);
@@ -1577,6 +1596,48 @@ pub fn compute_navigation(
         Some(Ok(second)) if second.signature_help.is_some() => Some(Ok(second)),
         _ => Some(first),
     }
+}
+
+/// The answer to a [`NavigationQuery::CallFill`]: one analysis of the
+/// unit with the call after the name opened, as signature help reads a call
+/// that is still being typed.
+fn call_fill(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    mut overlay: HashMap<PathBuf, Arc<str>>,
+    file: &Path,
+    offset: u32,
+    arguments: oxabl_pipeline::completion::CallArguments,
+) -> Option<Result<NavigationAnswer, String>> {
+    use oxabl_pipeline::completion::{fill_call, open_call};
+    let key = crate::session::canonical_path(file);
+    let text = overlay
+        .get(&key)
+        .cloned()
+        .or_else(|| snapshot.config().fs.read(file).ok());
+    let Some((text, opened)) =
+        text.and_then(|text| Some((Arc::clone(&text), open_call(&text, offset)?)))
+    else {
+        return Some(Ok(NavigationAnswer::default()));
+    };
+    overlay.insert(key, Arc::from(opened.text.as_str()));
+    let keyword_case = snapshot.config().pipeline.style.keyword_case;
+    with_navigation(snapshot, schema, root, overlay, |unit| {
+        let file = unit.spelled(file);
+        NavigationAnswer {
+            call_fill: fill_call(
+                unit.navigation,
+                &file,
+                &text,
+                offset,
+                &opened,
+                keyword_case,
+                arguments,
+            ),
+            ..NavigationAnswer::default()
+        }
+    })
 }
 
 fn navigate(
@@ -1657,6 +1718,8 @@ fn navigate(
                     .texts
                     .insert(search::normalize_lexically(&file), text);
             }
+            // Answered by `call_fill`.
+            NavigationQuery::CallFill { .. } => {}
             NavigationQuery::Links => {
                 answer.links = unit.navigation.links();
                 answer

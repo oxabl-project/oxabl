@@ -66,6 +66,7 @@ fn ask(fs: &dyn FileSystem, name: &str, marked: &str) -> Option<CompletionList> 
         fragment: false,
         stale: false,
         tokens: None,
+        callees: None,
     };
     let request = CompletionRequest {
         text: &text,
@@ -73,6 +74,7 @@ fn ask(fs: &dyn FileSystem, name: &str, marked: &str) -> Option<CompletionList> 
         path: &path,
         keyword_case: KeywordCase::Uppercase,
         snippets: false,
+        call_arguments: Default::default(),
         trigger: None,
         config: &config,
         listing: &FreshListing(fs),

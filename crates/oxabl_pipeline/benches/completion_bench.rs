@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use oxabl_pipeline::completion::{
-    CompletionBase, CompletionRequest, FreshListing, Prior, complete, lex, wants_base,
+    CompletionBase, CompletionRequest, DeclaredCallees, FreshListing, Prior, complete, lex,
+    wants_base,
 };
 use oxabl_pipeline::{LintPipeline, PipelineConfig};
 use oxabl_schema::test_support::schema_from_df;
@@ -124,11 +125,18 @@ fn bench_completion(c: &mut Criterion) {
             path: &path,
             keyword_case: KeywordCase::Uppercase,
             snippets: true,
+            call_arguments: Default::default(),
             trigger: None,
             config: &config,
             listing: &listing,
         };
         let base_tokens = lex(&text);
+        // The daemon makes the table once for each base, off the request path.
+        let callees = DeclaredCallees::of(
+            &handle
+                .navigation_with(&expansion, Arc::clone(&model), &none)
+                .expect("it preprocesses"),
+        );
         let ask = |request: &CompletionRequest<'_>, base_text: &str| {
             let navigation = handle
                 .navigation_with(&expansion, Arc::clone(&model), &none)
@@ -139,6 +147,7 @@ fn bench_completion(c: &mut Criterion) {
                 fragment: false,
                 stale: false,
                 tokens: Some(&base_tokens),
+                callees: Some(&callees),
             };
             complete(request, Some(&base)).map_or(0, |list| list.items.len())
         };
@@ -221,11 +230,17 @@ fn bench_large_directory(c: &mut Criterion) {
             path: &path,
             keyword_case: KeywordCase::Uppercase,
             snippets: true,
+            call_arguments: Default::default(),
             trigger: None,
             config: &config,
             listing: &listing,
         };
         let tokens = lex(&text);
+        let callees = DeclaredCallees::of(
+            &handle
+                .navigation_with(&expansion, Arc::clone(&model), &none)
+                .expect("it preprocesses"),
+        );
         let ask = || {
             let navigation = handle
                 .navigation_with(&expansion, Arc::clone(&model), &none)
@@ -236,6 +251,7 @@ fn bench_large_directory(c: &mut Criterion) {
                 fragment: false,
                 stale: false,
                 tokens: Some(&tokens),
+                callees: Some(&callees),
             };
             complete(&request, Some(&base)).map_or(0, |list| list.items.len())
         };

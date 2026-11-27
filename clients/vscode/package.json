@@ -228,6 +228,21 @@
           "default": true,
           "markdownDescription": "Show the declarations of include files in the Outline view, the breadcrumbs and Go to Symbol in File, under the `{file.i}` reference that brings them in. An include that oxabl cannot expand shows with a marker. The declarations belong to the include file, so choosing one puts the cursor on the reference; press F12 there to open the file. Changing it restarts the language server."
         },
+        "oxabl.completion.callArguments": {
+          "type": "string",
+          "enum": [
+            "fill",
+            "parentheses",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Write the arguments: one placeholder for each parameter, named after it, with its mode when it is not INPUT. Tab moves to the next one.",
+            "Write the parentheses and put the cursor in them.",
+            "Write the name only."
+          ],
+          "default": "fill",
+          "markdownDescription": "What a procedure, function or program chosen from completion writes after its name. With `fill`, `RUN DoWork` becomes `RUN DoWork (piCount, OUTPUT pcName).`, with one placeholder for each parameter, and a function `Twice(piValue)`. A routine whose parameters oxabl does not know gets no arguments, and one with several declarations (`DATE`) gets its parentheses and signature help. Applied automatically when changed; no window reload needed."
+        },
         "oxabl.semanticTokens.enable": {
           "type": "boolean",
           "default": true,

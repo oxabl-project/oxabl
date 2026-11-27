@@ -886,9 +886,9 @@ with `isIncomplete` and `items`, also when `items` is empty.
 | `sortText` | The rank, as fixed-width digits |
 | `filterText` | The label. For a path it is the whole path, because the client filters on the text of the replace range |
 | `textEdit` | Replaces the word with the inserted text (`InsertReplaceEdit` when the client supports it) |
-| `insertTextFormat` | `Snippet` only for a snippet item, and only when the client supports snippets |
+| `insertTextFormat` | `Snippet` only for a snippet item or a call item with its arguments (`docs/design/call-fill.md`), and only when the client supports snippets |
 | `additionalTextEdits` | The `USING` edit |
-| `command` | `editor.action.triggerSuggest` for a package or directory item |
+| `command` | `editor.action.triggerSuggest` for a package or directory item; `editor.action.triggerParameterHints` for a call item that opens its parentheses; `oxabl.fillCall` for a call item whose arguments come after the insert (`docs/design/call-fill.md`) |
 | `data` | What resolve needs (below) |
 
 | Item | `kind` | `detail` |
@@ -1033,9 +1033,11 @@ The first request after a document opens makes its base and can take longer.
 - **.NET types (#465).** `USING System.* FROM ASSEMBLY` and members of .NET
   types. A .NET catalog is one more `ClassSource`. Until then, a receiver of a
   .NET type gives `null`.
-- **Signature help and parameter names (#438).** Completion inserts the name
-  of a method or function without parentheses or parameters. Signature help
-  reads `SurfaceMember::signatures`.
+- **Signature help and parameter names (#438).** A procedure, a function or
+  a program item writes its call with one placeholder for each parameter
+  (`docs/design/call-fill.md`). A method item writes its name only until
+  member completion takes the seam described there. Signature help reads
+  `SurfaceMember::signatures`.
 - **One-line descriptions (#473)** fill `MemberDoc::summary` and the keyword
   documentation of resolve.
 - **Doc comments (#450)** can add the comment of a declaration to resolve.

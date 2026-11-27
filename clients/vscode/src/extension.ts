@@ -7,6 +7,8 @@ import {
 
 import { CliManager, resolveBinary } from "./binary";
 import { BuildController } from "./builds";
+import { FILL_CALL, fillCall } from "./callFill";
+import { completionSettings } from "./callFillModel";
 import { binaryVersion, supportsYield } from "./cli";
 import {
   inlayHintSettings,
@@ -77,6 +79,7 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     vscode.commands.registerCommand("oxabl.showExpandedUnit", () => expandedUnits.show()),
     vscode.commands.registerCommand("oxabl.selectIncluderContext", () => includerContexts.select()),
     vscode.commands.registerCommand("oxabl.goToSuperMethod", () => goToSuperMethod(() => client)),
+    vscode.commands.registerCommand(FILL_CALL, () => fillCall(() => client)),
     vscode.commands.registerCommand(
       SHOW_REFERENCES,
       (uri: string, position: { line: number; character: number }, places: unknown) =>
@@ -102,6 +105,11 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
       if (event.affectsConfiguration("oxabl.semanticTokens")) {
         void client?.sendNotification("workspace/didChangeConfiguration", {
           settings: { oxabl: { semanticTokens: readSemanticTokens() } },
+        });
+      }
+      if (event.affectsConfiguration("oxabl.completion")) {
+        void client?.sendNotification("workspace/didChangeConfiguration", {
+          settings: { oxabl: { completion: readCompletion() } },
         });
       }
       if (event.affectsConfiguration("oxabl.referenceLenses")) {
@@ -222,6 +230,11 @@ function readSemanticTokens(): { enable: boolean } {
   return semanticTokenSettings(config.get<boolean>("enable"));
 }
 
+/** The `oxabl.completion.callArguments` setting, for the server. */
+function readCompletion(): ReturnType<typeof completionSettings> {
+  return completionSettings(vscode.workspace.getConfiguration("oxabl.completion").get("callArguments"));
+}
+
 /** The `oxabl.referenceLenses.enable` setting, for the server. */
 function readReferenceLenses(): { enable: boolean } {
   const config = vscode.workspace.getConfiguration("oxabl.referenceLenses");
@@ -295,6 +308,7 @@ async function startClient(): Promise<void> {
       semanticTokens: readSemanticTokens(),
       referenceLenses: readReferenceLenses(),
       outline: readOutline(),
+      completion: readCompletion(),
     },
     synchronize: {
       // The server watches these itself, but forwarding the events lets live

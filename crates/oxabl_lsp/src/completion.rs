@@ -24,10 +24,11 @@ use oxabl_daemon::canonical_path;
 use oxabl_daemon::completion::{
     BaseKey, CompletionQuery, ResolveQuery, compute_completion, compute_resolve,
 };
-use oxabl_pipeline::completion::{CompletionList, ItemData, ItemKind};
+use oxabl_pipeline::completion::{CallArguments, CompletionList, ItemAction, ItemData, ItemKind};
 use ropey::Rope;
 use serde_json::{Value, json};
 
+use crate::call_fill;
 use crate::navigation::HoverGate;
 use crate::position::{byte_to_position, position_to_byte};
 use crate::{Server, uri_to_path};
@@ -44,17 +45,24 @@ pub(crate) fn capability() -> CompletionOptions {
     }
 }
 
-/// What the client takes in a completion item.
+/// What the client takes in a completion item, and the completion settings.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Options {
     /// `snippetSupport`: snippet items.
     pub snippets: bool,
     /// `insertReplaceSupport`: an `InsertReplaceEdit`.
     pub insert_replace: bool,
+    /// `completion.callArguments`.
+    pub call_arguments: CallArguments,
+    /// The client has the command [`call_fill::COMMAND`].
+    pub fill_command: bool,
 }
 
 impl Options {
-    pub(crate) fn from_client(caps: &lsp_types::ClientCapabilities) -> Self {
+    pub(crate) fn from_client(
+        caps: &lsp_types::ClientCapabilities,
+        initialization: Option<&Value>,
+    ) -> Self {
         let item = caps
             .text_document
             .as_ref()
@@ -63,6 +71,10 @@ impl Options {
         Options {
             snippets: item.and_then(|i| i.snippet_support).unwrap_or(false),
             insert_replace: item.and_then(|i| i.insert_replace_support).unwrap_or(false),
+            call_arguments: initialization
+                .and_then(call_fill::call_arguments_in)
+                .unwrap_or_default(),
+            fill_command: initialization.is_some_and(call_fill::fill_command_in),
         }
     }
 }
@@ -116,6 +128,7 @@ impl Server<'_> {
                 text,
                 offset,
                 snippets: options.snippets,
+                call_arguments: options.call_arguments,
                 trigger,
                 overlay: if root.is_some() {
                     session.buffer_overlay()
@@ -319,12 +332,26 @@ fn render(
                     Some(json!({ "path": data.path, "entry": data.entry.to_string_lossy() }))
                 }
             };
-            // A directory asks for the list of its entries.
-            let command = (item.kind == ItemKind::Folder).then(|| Command {
-                title: "Suggest".to_string(),
-                command: "editor.action.triggerSuggest".to_string(),
-                arguments: None,
-            });
+            let command = |title: &str, command: &str| {
+                Some(Command {
+                    title: title.to_string(),
+                    command: command.to_string(),
+                    arguments: None,
+                })
+            };
+            let command = match item.action {
+                // A directory asks for the list of its entries.
+                _ if item.kind == ItemKind::Folder => {
+                    command("Suggest", "editor.action.triggerSuggest")
+                }
+                ItemAction::ParameterHints => {
+                    command("Signature help", "editor.action.triggerParameterHints")
+                }
+                ItemAction::FillCall if options.fill_command => {
+                    command("Fill the call", call_fill::COMMAND)
+                }
+                ItemAction::FillCall | ItemAction::None => None,
+            };
             CompletionItem {
                 filter_text: Some(item.label.clone()),
                 label: item.label,

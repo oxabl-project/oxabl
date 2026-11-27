@@ -118,8 +118,8 @@ A call has no signature when:
 - a candidate has no parameter list, or no declaration in the text agrees with
   it,
 - the file of a class, constructor, procedure or program does not parse, or
-  holds an `{include}`, a `{&name}` reference or an `&IF` where its members or
-  parameters may be, or
+  holds an `{include}` that is not one of the parameter includes below, a
+  `{&name}` reference or an `&IF` where its members or parameters may be, or
 - the receiver is a handle, a built-in class or a .NET class.
 
 A file that is read as text is checked in its tokens, not in its statements,
@@ -132,13 +132,72 @@ places are:
   declaration;
 - a class: the whole class, except the bodies of its methods and
   constructors, where no member is declared. A reference in a method body does
-  not hide the method. For the methods an `{include}` does not count, because
-  the analysis expands it and the methods are checked against the analysis; for
-  the constructors it does, because they are read from the text alone.
+  not hide the method. For the methods an `{include}` outside a parameter
+  list does not count, because the analysis expands it and the methods are
+  checked against the analysis; for the constructors it does, because they are
+  read from the text alone.
 
 A reference that the compiler expands to nothing still hides the declaration:
 oxabl does not expand it. The guards are `program_may_hide_parameters`,
 `class_may_hide_members` and `Source::may_expand`.
+
+### A parameter include
+
+Many code bases start each parameter list with an include that declares a block
+of shared parameters (`METHOD PUBLIC VOID SetData({inc/std-params.i}, INPUT
+pcDocNum AS CHARACTER)`, or `{inc/std-input.i}` with `DEFINE INPUT PARAMETER`
+statements at the start of a program or procedure). Such an include is one
+entry of the signature, as the declaration writes it, with the count of the
+parameters it declares:
+
+```text
+SetData({inc/std-params.i} (2 parameters), INPUT pcDocNum AS CHARACTER, OUTPUT plOk AS LOGICAL): VOID
+```
+
+The signature never lists the parameters of the include: such an include often
+declares a dozen or more. The label of the entry holds the text of the
+reference as written (arguments of the include too, on one line). A count of
+one reads `(1 parameter)`. A `RETURN` parameter is not counted, as it is no
+argument.
+
+The analysis already expands the include, so it knows the parameters. A file
+that is read as text holds only the reference, which the parser skips in a
+parameter list. So when such a file has an include in a parameter list, or an
+include in the main block of a program or in a procedure, oxabl expands it
+(`Loaded::view` in `navigate/folding.rs`), and `Folding::entries` groups the
+parameters of the expansion by the include that wrote them. The include entry
+holds the reference of the root file, never one of an include below it.
+
+The entries are known whole, and the declaration has a signature, only when:
+
+- the expansion arrived whole: no include in the file did not resolve, none
+  could not be read, and the expanded text parses;
+- the include is one plain `{file}` reference, and neither it nor an include
+  below it holds a `{&name}` reference or an `&IF` (the text of the include
+  may differ from one compile to another);
+- every include that the file writes in the parameter lists of a class, in the
+  main block of a program (outside its procedures and functions), or in a
+  procedure is the entry of a parameter list. An include that declares no
+  parameter, such as one of variables, is not known to declare none, so it
+  hides the parameters as before. For a class, an include outside its parameter
+  lists and its bodies still hides the constructors.
+
+A `{&name}` reference or an `&IF` in the parameter list is checked in the text
+of the file as before.
+
+A method or constructor that an include declares is not read: only the members
+that the file writes have a signature. The routines of the analysed unit are
+read from its expanded text, and group their includes the same way.
+
+### The active parameter and the arguments
+
+The arguments of a call are counted in the expanded unit, so a caller that
+passes an include of arguments (`oDoc:SetData({inc/std-args.i}, "D1",
+OUTPUT lOk)`) has the arguments that the include expands to. The active
+parameter is the entry that takes the argument at the cursor. The cursor in the
+arguments that the include covers marks the include entry. After them, it marks
+the next parameter. The overload pick reads the flat list of the parameters,
+so an include entry takes as many arguments as it has parameters.
 
 ### The seam for the built-in classes
 
@@ -246,6 +305,11 @@ it, the hint is `OUTPUT name:` or `INPUT-OUTPUT name:`.
   A name of fewer than three letters counts only as the same name or as the
   parameter without its prefix. The code of ABL projects names a variable and
   its parameter alike, so a hint for such an argument repeats the text.
+- A parameter include gets one hint, on the first argument that stands for its
+  parameters, and the hint is the reference of the include: `{inc/std-params.i}:`.
+  The other arguments for the include get none. The arguments after them get
+  the names of their parameters. An argument that an include of arguments
+  wrote gets no hint (see the rule on the bytes of the shown file below).
 - A parameter with no name (`$N` in a prototype) gets no hint.
 - A hint is placed in the bytes of the shown file. An argument written by a
   macro or an include of another file gives none.
@@ -310,3 +374,9 @@ budget, and neither runs on the main loop of the server.
 `crates/oxabl/tests/signature_help_lsp.rs` runs the real server over stdio. It
 has a test for each acceptance criterion of the issue, and each fail-closed
 case of this document.
+
+`crates/oxabl/tests/signature_help_include_lsp.rs` tests the parameter
+includes: a method, a constructor, a program, a procedure of a handle and the
+routines of the unit; the active parameter in and after the include, with
+plain arguments and with an include of arguments; the hints; the hover; and
+each case where the expansion is not known whole.

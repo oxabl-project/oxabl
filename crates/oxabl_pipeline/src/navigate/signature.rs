@@ -18,10 +18,9 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use oxabl_ast::{
-    AccessModifier, NodeId, ParameterDirection, ParameterType, Statement, StatementKind,
+    AccessModifier, NodeId, ParameterDirection, ParameterType, Span, Statement, StatementKind,
 };
 use oxabl_common::VirtualSpan;
 use oxabl_lexer::{Kind, Token};
@@ -31,6 +30,7 @@ use oxabl_semantic::{
     reachable_overloads,
 };
 
+use super::folding::{Entry, Loaded, View, bodies_of, class_includes};
 use super::hover::{
     Source, doc_markdown, find_declaration, find_doc, full_function_name, parameters_of, type_name,
 };
@@ -38,6 +38,11 @@ use super::{Navigation, Parsed, search};
 use crate::builtin_signatures::{parameter_ranges, syntaxes};
 use crate::hints::{InlayHint, InlayKind};
 use crate::keyword_docs::DocKind;
+
+mod callee;
+
+use callee::argument_keyword;
+pub use callee::{ArgumentKeyword, CallAt, Callee, CalleeParameter};
 
 /// How many tokens a scan from the cursor reads before it gives up.
 const MAX_SCAN: usize = 20_000;
@@ -57,7 +62,8 @@ pub struct SignatureHelp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignatureInfo {
     pub label: String,
-    /// The bytes of each parameter in `label`.
+    /// The bytes of each parameter in `label`. An include that declares
+    /// several parameters is one.
     pub parameters: Vec<Range<usize>>,
     /// The parameter the cursor's argument fills in this signature; `None`
     /// when it has no parameter there.
@@ -69,7 +75,11 @@ pub struct SignatureInfo {
 /// One declaration, as the resolver reads it.
 struct Sig {
     info: SignatureInfo,
+    /// The parameters a call passes arguments for, in order. An include
+    /// contributes each of its parameters.
     params: Vec<Param>,
+    /// The entries of `info.parameters`, with the arguments each one takes.
+    slots: Vec<Slot>,
     /// The parameters as an overload pick reads them; `None` when one is not a
     /// plain definition.
     call: Option<Vec<CallParam>>,
@@ -82,11 +92,37 @@ struct Sig {
     modes_known: bool,
 }
 
+/// One entry of the parameter list: a parameter, or an include.
+#[derive(Clone)]
+struct Slot {
+    /// How many arguments the entry takes.
+    width: usize,
+    /// The include reference as written and its place in the declaring file;
+    /// `None` for a parameter.
+    include: Option<(String, Span)>,
+}
+
+impl Sig {
+    /// The entry that takes argument `at`, and whether `at` is the first
+    /// argument of that entry.
+    fn slot_of(&self, at: usize) -> Option<(usize, bool)> {
+        let mut first = 0;
+        for (index, slot) in self.slots.iter().enumerate() {
+            if at < first + slot.width {
+                return Some((index, at == first));
+            }
+            first += slot.width;
+        }
+        None
+    }
+}
+
 struct Param {
     /// `None` for an unnamed parameter.
     name: Option<String>,
     /// `None` when the declaration does not state it.
     mode: Option<ParamMode>,
+    keyword: ArgumentKeyword,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -357,12 +393,6 @@ fn same_list(text: &[CallParam], analysed: &[CallParam]) -> bool {
         })
 }
 
-/// A file read for its declarations.
-struct Loaded {
-    text: Arc<str>,
-    parsed: Parsed,
-}
-
 /// Reads the routine a call reaches.
 struct Resolver<'n, 's, 'a> {
     nav: &'n Navigation<'s, 'a>,
@@ -390,7 +420,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
                 .program
                 .errors
                 .is_empty()
-                .then(|| Rc::new(Loaded { text, parsed }))
+                .then(|| Rc::new(Loaded::new(text, parsed)))
         });
         self.files
             .borrow_mut()
@@ -490,7 +520,8 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
     /// The declaration of the routine whose name is at `name` in the unit.
     fn unit_sig(&self, name: VirtualSpan) -> Option<Sig> {
         let parsed = self.nav.parsed();
-        let source = Source::new(&self.nav.expanded.text, &parsed.tokens);
+        let folding = self.nav.folding();
+        let source = Source::new(&self.nav.expanded.text, &parsed.tokens).folded(&folding);
         let found = find_declaration(&parsed.program.statements, name)?;
         sig_of(
             &source,
@@ -514,9 +545,16 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         let symbols = &self.nav.model.semantic.symbols;
         let path = self.nav.path_of(file)?;
         let loaded = self.load(&path)?;
-        let (found, class, body) = class_of(&loaded.parsed.program.statements)?;
-        let source = Source::new(&loaded.text, &loaded.parsed.tokens);
-        if class_may_hide_members(&source, found, false) {
+        let (found, _, _) = class_of(&loaded.parsed.program.statements)?;
+        let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
+        if class_may_hide_members(&raw, found, false) {
+            return None;
+        }
+        let in_parameters = class_includes(&raw, found).in_parameters;
+        let view = loaded.view(self.nav, &path, !in_parameters.is_empty())?;
+        let source = view.source();
+        let (_, class, body) = class_of(view.statements)?;
+        if !includes_accounted(&source, &view, &class, body, &in_parameters) {
             return None;
         }
         let declared: Vec<Sig> = body
@@ -524,6 +562,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
             .filter(|member| {
                 matches!(&member.kind, StatementKind::Method { name: n, .. }
                     if n.name.eq_ignore_ascii_case(name))
+                    && view.written_here(member.span.start)
             })
             .filter_map(|member| sig_of(&source, member, &[], None, Some(class.as_str())))
             .collect();
@@ -562,30 +601,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         if !doc.reserved && self.nav.may_hide_routines(node) {
             return None;
         }
-        let documentation = doc_markdown(doc);
-        let sigs: Vec<Sig> = syntaxes(full)
-            .map(|builtin| Sig {
-                info: SignatureInfo {
-                    label: builtin.label.to_string(),
-                    parameters: parameter_ranges(builtin),
-                    active_parameter: None,
-                    documentation: Some(documentation.clone()),
-                },
-                params: builtin
-                    .params
-                    .iter()
-                    .map(|_| Param {
-                        name: None,
-                        mode: None,
-                    })
-                    .collect(),
-                call: None,
-                repeats: builtin.repeats,
-                max_args: builtin.max_args,
-                modes_known: false,
-            })
-            .collect();
-        (!sigs.is_empty()).then_some(sigs)
+        builtin_table_sigs(full, doc)
     }
 
     /// The constructors of class `class` that `access` reaches.
@@ -595,12 +611,30 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         if let Some(file) = symbols.class_file(class) {
             let path = self.nav.path_of(file)?;
             let loaded = self.load(&path)?;
-            let (found, name, body) = class_of(&loaded.parsed.program.statements)?;
-            let source = Source::new(&loaded.text, &loaded.parsed.tokens);
-            if class_may_hide_members(&source, found, true) {
+            let (found, _, _) = class_of(&loaded.parsed.program.statements)?;
+            let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
+            if class_may_hide_members(&raw, found, false) {
                 return None;
             }
-            return constructors(&source, &name, body, access, self.caller_class().as_deref());
+            // An include outside the parameter lists may declare a constructor.
+            let includes = class_includes(&raw, found);
+            if !includes.elsewhere.is_empty() {
+                return None;
+            }
+            let view = loaded.view(self.nav, &path, !includes.in_parameters.is_empty())?;
+            let source = view.source();
+            let (_, name, body) = class_of(view.statements)?;
+            if !includes_accounted(&source, &view, &name, body, &includes.in_parameters) {
+                return None;
+            }
+            return constructors(
+                &source,
+                &name,
+                body,
+                access,
+                self.caller_class().as_deref(),
+                &|at| view.written_here(at),
+            );
         }
         if symbol.declaration == NodeId::DUMMY {
             return self.builtin_constructor_sigs(class);
@@ -609,7 +643,8 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
             return None;
         }
         let parsed = self.nav.parsed();
-        let source = Source::new(&self.nav.expanded.text, &parsed.tokens);
+        let folding = self.nav.folding();
+        let source = Source::new(&self.nav.expanded.text, &parsed.tokens).folded(&folding);
         let found = find_declaration(&parsed.program.statements, symbol.name_span)?;
         let StatementKind::Class { name, body, .. } = &found.statement.kind else {
             return None;
@@ -617,7 +652,14 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         if class_may_hide_members(&source, found.statement, true) {
             return None;
         }
-        constructors(&source, &name.name, body, ConstructorAccess::Own, None)
+        constructors(
+            &source,
+            &name.name,
+            body,
+            ConstructorAccess::Own,
+            None,
+            &|_| true,
+        )
     }
 
     /// The constructors of `class`, a built-in class that no file declares.
@@ -651,11 +693,19 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
             return None;
         };
         if call.kind == CalleeKind::ThisObject {
-            let source = Source::new(&self.nav.expanded.text, &parsed.tokens);
+            let folding = self.nav.folding();
+            let source = Source::new(&self.nav.expanded.text, &parsed.tokens).folded(&folding);
             if class_may_hide_members(&source, class, true) {
                 return None;
             }
-            return constructors(&source, &name.name, body, ConstructorAccess::Own, None);
+            return constructors(
+                &source,
+                &name.name,
+                body,
+                ConstructorAccess::Own,
+                None,
+                &|_| true,
+            );
         }
         let parent = inherits.as_ref()?;
         let symbols = &self.nav.model.semantic.symbols;
@@ -720,35 +770,42 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
             return None;
         };
         let loaded = self.load(path)?;
-        let source = Source::new(&loaded.text, &loaded.parsed.tokens);
-        let found = find_declaration(
+        let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
+        let written = find_declaration(
             &loaded.parsed.program.statements,
             VirtualSpan::new(span.start, span.end),
         )?;
-        Some(vec![sig_of(
-            &source,
-            found.statement,
-            &loaded.parsed.program.statements,
-            None,
-            None,
-        )?])
+        let (from, to) = (written.statement.span.start, written.statement.span.end);
+        if raw.may_expand(from, to, &[], false) {
+            return None;
+        }
+        let includes = raw.includes_in(from, to, &[]);
+        let view = loaded.view(self.nav, path, !includes.is_empty())?;
+        let found = find_declaration(view.statements, view.locate(*span)?)?;
+        let sig = sig_of(&view.source(), found.statement, view.statements, None, None)?;
+        accounts_for(&sig, &includes).then(|| vec![sig])
     }
 
     /// The parameters that the main block of the program at `path` defines.
     fn program_sig(&self, path: &Path, written: &str) -> Option<Vec<Sig>> {
         let loaded = self.load(path)?;
         let statements = &loaded.parsed.program.statements;
-        let source = Source::new(&loaded.text, &loaded.parsed.tokens);
-        if program_may_hide_parameters(&source, statements) {
+        let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
+        if program_may_hide_parameters(&raw, statements, false) {
             return None;
         }
-        Some(vec![signature(
-            &source,
+        let includes = program_includes(&raw, statements);
+        let view = loaded.view(self.nav, path, !includes.is_empty())?;
+        let sig = signature(
+            &view.source(),
             written,
             None,
-            parameters_of(statements),
+            parameters_of(view.statements),
             None,
-        )?])
+        )?;
+        // An include in the main block that declares no parameter may still
+        // declare something the compiler reads as one.
+        accounts_for(&sig, &includes).then(|| vec![sig])
     }
 
     /// The type of the argument in `range`, when its text alone gives it: a
@@ -889,6 +946,7 @@ fn constructors(
     body: &[Statement],
     access: ConstructorAccess,
     caller: Option<&str>,
+    written_here: &dyn Fn(u32) -> bool,
 ) -> Option<Vec<Sig>> {
     let short = class.rsplit('.').next().unwrap_or(class);
     let mut sigs: Vec<Sig> = Vec::new();
@@ -901,11 +959,53 @@ fn constructors(
         else {
             continue;
         };
+        // A constructor that an include declares is not read.
+        if !written_here(member.span.start) {
+            continue;
+        }
         if access.reaches(*declared, class, caller)? {
             sigs.push(sig_of(source, member, &[], Some(short), None)?);
         }
     }
     dedupe(&mut sigs);
+    (!sigs.is_empty()).then_some(sigs)
+}
+
+/// The syntaxes of the built-in function `full` that the table of
+/// `builtin_signatures.rs` holds.
+fn builtin_table_sigs(full: &str, doc: &crate::keyword_docs::KeywordDoc) -> Option<Vec<Sig>> {
+    let documentation = doc_markdown(doc);
+    let sigs: Vec<Sig> = syntaxes(full)
+        .map(|builtin| Sig {
+            info: SignatureInfo {
+                label: builtin.label.to_string(),
+                parameters: parameter_ranges(builtin),
+                active_parameter: None,
+                documentation: Some(documentation.clone()),
+            },
+            params: builtin
+                .params
+                .iter()
+                .map(|_| Param {
+                    name: None,
+                    mode: None,
+                    keyword: ArgumentKeyword::None,
+                })
+                .collect(),
+            slots: builtin
+                .params
+                .iter()
+                .map(|_| Slot {
+                    width: 1,
+                    include: None,
+                })
+                .collect(),
+            call: None,
+            repeats: builtin.repeats,
+            max_args: builtin.max_args,
+            modes_known: false,
+        })
+        .collect();
     (!sigs.is_empty()).then_some(sigs)
 }
 
@@ -977,11 +1077,9 @@ fn sig_of(
     signature(source, &name, returns, parameters, owner)
 }
 
-/// Whether the main block of a file may define parameters the text does not
-/// show: an include, a `{&name}` reference or `&IF` outside its procedures and
-/// functions.
-fn program_may_hide_parameters(source: &Source, statements: &[Statement]) -> bool {
-    let routines: Vec<(u32, u32)> = statements
+/// The procedures and functions of a main block, as byte ranges.
+fn routine_ranges(statements: &[Statement]) -> Vec<(u32, u32)> {
+    statements
         .iter()
         .filter(|s| {
             matches!(
@@ -990,8 +1088,59 @@ fn program_may_hide_parameters(source: &Source, statements: &[Statement]) -> boo
             )
         })
         .map(|s| (s.span.start, s.span.end))
+        .collect()
+}
+
+/// Whether the main block of a file may define parameters the text does not
+/// show: a `{&name}` reference or `&IF` outside its procedures and functions,
+/// and when `includes` is set an include.
+fn program_may_hide_parameters(source: &Source, statements: &[Statement], includes: bool) -> bool {
+    source.may_expand(0, u32::MAX, &routine_ranges(statements), includes)
+}
+
+/// The includes that the main block of a file writes outside its procedures
+/// and functions.
+fn program_includes(source: &Source, statements: &[Statement]) -> Vec<Span> {
+    source.includes_in(0, u32::MAX, &routine_ranges(statements))
+}
+
+/// Whether every include of `includes` is one entry of the parameter list of
+/// `sig`: an include that declares no parameter is not known to declare none.
+fn accounts_for(sig: &Sig, includes: &[Span]) -> bool {
+    includes.iter().all(|site| {
+        sig.slots
+            .iter()
+            .any(|slot| slot.include.as_ref().is_some_and(|(_, at)| at == site))
+    })
+}
+
+/// Whether every include of `includes`, written in a parameter list of the
+/// class, is one entry of the parameter list of a method or constructor of
+/// `body` that the file writes.
+fn includes_accounted(
+    source: &Source,
+    view: &View,
+    class: &str,
+    body: &[Statement],
+    includes: &[Span],
+) -> bool {
+    if includes.is_empty() {
+        return true;
+    }
+    let short = class.rsplit('.').next().unwrap_or(class);
+    let sigs: Vec<Sig> = body
+        .iter()
+        .filter(|member| {
+            matches!(
+                member.kind,
+                StatementKind::Method { .. } | StatementKind::Constructor { .. }
+            ) && view.written_here(member.span.start)
+        })
+        .filter_map(|member| sig_of(source, member, &[], Some(short), None))
         .collect();
-    source.may_expand(0, u32::MAX, &routines, true)
+    includes
+        .iter()
+        .all(|site| sigs.iter().any(|sig| accounts_for(sig, &[*site])))
 }
 
 /// Whether a class may declare members the text does not show: a `{&name}`
@@ -1005,28 +1154,7 @@ fn class_may_hide_members(source: &Source, class: &Statement, includes: bool) ->
     else {
         return true;
     };
-    let bodies: Vec<(u32, u32)> = body
-        .iter()
-        .flat_map(|member| -> Vec<(u32, u32)> {
-            let from_first = |body: &[Statement]| {
-                body.first()
-                    .map(|first| (first.span.start, member.span.end))
-            };
-            match &member.kind {
-                StatementKind::Method { body, .. }
-                | StatementKind::Constructor { body, .. }
-                | StatementKind::Destructor { body } => from_first(body).into_iter().collect(),
-                StatementKind::Property {
-                    get_body, set_body, ..
-                } => [get_body, set_body]
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|body| Some((body.first()?.span.start, body.last()?.span.end)))
-                    .collect(),
-                _ => Vec::new(),
-            }
-        })
-        .collect();
+    let bodies = bodies_of(body);
     source.may_expand(class.span.start, class.span.end, &bodies, includes)
 }
 
@@ -1072,33 +1200,52 @@ fn signature(
     let mut label = format!("{name}(");
     let mut ranges = Vec::new();
     let mut params = Vec::new();
+    let mut slots = Vec::new();
     let mut call = Some(Vec::new());
-    for statement in parameters {
-        let StatementKind::DefineParameter { direction, .. } = &statement.kind else {
-            return None;
+    for entry in source.entries(parameters)? {
+        let (text, statements, include) = match entry {
+            Entry::Param(statement) => (source.parameter(statement)?, vec![statement], None),
+            Entry::Include(group) => {
+                if group.count() == 0 {
+                    continue;
+                }
+                let include = (group.text.clone(), group.site);
+                (group.label(), group.params, Some(include))
+            }
         };
-        // A `RETURN` parameter is not an argument.
-        let Some(mode) = param_mode(direction) else {
+        let mut width = 0;
+        for statement in statements {
+            let StatementKind::DefineParameter { direction, .. } = &statement.kind else {
+                return None;
+            };
+            // A `RETURN` parameter is not an argument.
+            let Some(mode) = param_mode(direction) else {
+                continue;
+            };
+            width += 1;
+            params.push(Param {
+                name: param_name(statement),
+                mode: Some(mode),
+                keyword: argument_keyword(statement),
+            });
+            call = match (call, call_param_of(statement)) {
+                (Some(mut list), Some(param)) => {
+                    list.push(param);
+                    Some(list)
+                }
+                _ => None,
+            };
+        }
+        if width == 0 {
             continue;
-        };
+        }
         if !ranges.is_empty() {
             label.push_str(", ");
         }
-        let text = source.parameter(statement)?;
         let start = label.len();
         label.push_str(&text);
         ranges.push(start..label.len());
-        params.push(Param {
-            name: param_name(statement),
-            mode: Some(mode),
-        });
-        call = match (call, call_param_of(statement)) {
-            (Some(mut list), Some(param)) => {
-                list.push(param);
-                Some(list)
-            }
-            _ => None,
-        };
+        slots.push(Slot { width, include });
     }
     label.push(')');
     if let Some(returns) = returns {
@@ -1113,6 +1260,7 @@ fn signature(
             documentation: owner.map(|class| format!("Declared in {class}.")),
         },
         params,
+        slots,
         call,
         repeats: false,
         max_args: None,
@@ -1129,8 +1277,10 @@ fn sig_clone(sig: &Sig) -> Sig {
             .map(|p| Param {
                 name: p.name.clone(),
                 mode: p.mode,
+                keyword: p.keyword,
             })
             .collect(),
+        slots: sig.slots.clone(),
         call: sig.call.clone(),
         repeats: sig.repeats,
         max_args: sig.max_args,
@@ -1223,6 +1373,53 @@ impl Navigation<'_, '_> {
     /// call does not resolve, or oxabl cannot tell all the declarations it may
     /// reach.
     pub fn signature_help(&self, file: &Path, offset: u32) -> Option<SignatureHelp> {
+        let resolver = Resolver::new(self);
+        let (call, commas, mut sigs) = self.resolved_call(&resolver, file, offset)?;
+        let tokens = &self.parsed().tokens;
+        let text = self.expanded.text.as_str();
+        let open = call.open;
+        let args = arguments(tokens, text, open);
+        let active = match sigs.len() {
+            1 => Some(0),
+            _ if args.items.iter().any(Option::is_none) => None,
+            _ => picked_sig(&sigs, &resolver.reach(tokens, text, &sigs, &args)),
+        };
+        if let Some(at) = active.filter(|at| *at > 0) {
+            let picked = sigs.remove(at);
+            sigs.insert(0, picked);
+        }
+        let signatures = sigs
+            .into_iter()
+            .map(|sig| {
+                let count = sig.info.parameters.len();
+                let active_parameter = match sig.slot_of(commas) {
+                    Some((slot, _)) => Some(slot),
+                    None if sig.repeats && count > 0 && sig.max_args.is_none_or(|m| commas < m) => {
+                        Some(count - 1)
+                    }
+                    None => None,
+                };
+                SignatureInfo {
+                    active_parameter,
+                    ..sig.info
+                }
+            })
+            .collect();
+        Some(SignatureHelp {
+            signatures,
+            active_signature: active.map(|_| 0),
+        })
+    }
+
+    /// The innermost call around byte `offset` of `file` that names a
+    /// callee, the commas before the cursor at its level, and the
+    /// declarations it may reach. `None` as [`Self::signature_help`].
+    fn resolved_call(
+        &self,
+        resolver: &Resolver<'_, '_, '_>,
+        file: &Path,
+        offset: u32,
+    ) -> Option<(Call, usize, Vec<Sig>)> {
         let file = search::normalize_lexically(file);
         if self.include_at(&file, offset).is_some() {
             return None;
@@ -1234,7 +1431,6 @@ impl Navigation<'_, '_> {
         let tokens = &self.parsed().tokens;
         let text = self.expanded.text.as_str();
         let end = tokens.partition_point(|t| t.start < virt as usize);
-        let resolver = Resolver::new(self);
         for (open, commas) in enclosing_opens(tokens, text, end) {
             let Some(call) = call_at(tokens, text, open) else {
                 continue;
@@ -1248,38 +1444,8 @@ impl Navigation<'_, '_> {
             {
                 continue;
             }
-            let mut sigs = resolver.resolve(tokens, text, &call)?;
-            let args = arguments(tokens, text, open);
-            let active = match sigs.len() {
-                1 => Some(0),
-                _ if args.items.iter().any(Option::is_none) => None,
-                _ => picked_sig(&sigs, &resolver.reach(tokens, text, &sigs, &args)),
-            };
-            if let Some(at) = active.filter(|at| *at > 0) {
-                let picked = sigs.remove(at);
-                sigs.insert(0, picked);
-            }
-            let signatures = sigs
-                .into_iter()
-                .map(|sig| {
-                    let count = sig.info.parameters.len();
-                    let active_parameter = match commas {
-                        at if at < count => Some(at),
-                        at if sig.repeats && count > 0 && sig.max_args.is_none_or(|m| at < m) => {
-                            Some(count - 1)
-                        }
-                        _ => None,
-                    };
-                    SignatureInfo {
-                        active_parameter,
-                        ..sig.info
-                    }
-                })
-                .collect();
-            return Some(SignatureHelp {
-                signatures,
-                active_signature: active.map(|_| 0),
-            });
+            let sigs = resolver.resolve(tokens, text, &call)?;
+            return Some((call, commas, sigs));
         }
         None
     }
@@ -1313,20 +1479,49 @@ impl Navigation<'_, '_> {
             let Some(sig) = target.map(|at| &sigs[at]).filter(|sig| sig.modes_known) else {
                 continue;
             };
-            for (arg, param) in args.items.iter().zip(&sig.params) {
-                let (Some((first, last)), Some(name)) = (arg, &param.name) else {
+            for (index, arg) in args.items.iter().enumerate() {
+                let (Some((first, last)), Some((slot, starts_slot))) = (arg, sig.slot_of(index))
+                else {
                     continue;
                 };
+                let included = sig.slots[slot].include.as_ref();
+                // The arguments that stand for the parameters of an include get
+                // one hint, on the first of them.
+                if included.is_some() && !starts_slot {
+                    continue;
+                }
+                let param = &sig.params[index];
                 let written = mode_of(tokens[*first].kind);
                 let body = if written.is_some() {
                     after(tokens, *first).filter(|next| next <= last)
                 } else {
                     Some(*first)
                 };
-                // The argument already says the name.
-                if body == Some(*last) && says_the_name(text_of(tokens, text, *last), name) {
-                    continue;
-                }
+                let (label, tooltip) = match (included, &param.name) {
+                    (Some((text, _)), _) => (
+                        format!("{text}:"),
+                        format!("Parameters declared by `{text}` in `{}`.", sig.info.label),
+                    ),
+                    (None, Some(name)) => {
+                        // The argument already says the name.
+                        if body == Some(*last) && says_the_name(text_of(tokens, text, *last), name)
+                        {
+                            continue;
+                        }
+                        let label = match (param.mode, written) {
+                            (Some(ParamMode::Output), None) => format!("OUTPUT {name}:"),
+                            (Some(ParamMode::InputOutput), None) => {
+                                format!("INPUT-OUTPUT {name}:")
+                            }
+                            _ => format!("{name}:"),
+                        };
+                        (
+                            label,
+                            format!("Parameter `{name}` of `{}`.", sig.info.label),
+                        )
+                    }
+                    (None, None) => continue,
+                };
                 let Some(place) = self.place(VirtualSpan::new(
                     tokens[*first].start as u32,
                     tokens[*first].end as u32,
@@ -1336,16 +1531,11 @@ impl Navigation<'_, '_> {
                 let (Some(span), true) = (place.span, place.path == file) else {
                     continue;
                 };
-                let label = match (param.mode, written) {
-                    (Some(ParamMode::Output), None) => format!("OUTPUT {name}:"),
-                    (Some(ParamMode::InputOutput), None) => format!("INPUT-OUTPUT {name}:"),
-                    _ => format!("{name}:"),
-                };
                 hints.push(InlayHint {
                     at: span.start,
                     kind: InlayKind::Parameter,
                     label,
-                    tooltip: format!("Parameter `{name}` of `{}`.", sig.info.label),
+                    tooltip,
                     after: false,
                 });
             }
@@ -1445,6 +1635,7 @@ mod tests {
                 documentation: None,
             },
             params: Vec::new(),
+            slots: Vec::new(),
             call: None,
             repeats: false,
             max_args: None,

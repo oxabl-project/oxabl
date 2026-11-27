@@ -81,6 +81,15 @@ you also get, with no setup:
   the cursor needs (in a comment or a string, after a statement end), the
   server gives no list, and VS Code shows the words of the open files. See
   [completion.md](https://github.com/oxabl-project/oxabl/blob/master/docs/design/completion.md).
+  Choosing a procedure, a function or a program writes the call with one
+  placeholder for each parameter, named after it, with its mode when it is not
+  `INPUT`: `RUN DoWork (piCount, OUTPUT pcName).`. Tab moves to the next one,
+  and signature help opens. A program gets its arguments a moment after the
+  insert, because the server reads its file then. A routine whose parameters
+  oxabl does not know writes its name only, and one with several declarations
+  (`DATE`) writes its parentheses. `oxabl.completion.callArguments` sets this
+  to `parentheses` or `none`. See
+  [call-fill.md](https://github.com/oxabl-project/oxabl/blob/master/docs/design/call-fill.md).
 - **Document outline.** The Outline view, the breadcrumbs, "Go to Symbol in
   File" (`Ctrl+Shift+O`) and sticky scroll show the declarations of the file:
   classes and their members, procedures, functions, temp-tables with their
@@ -330,7 +339,13 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   turn on `oxabl.inlayHints.parameters`. A call gets hints only when exactly
   one declaration is known, and an argument that already says the name of its
   parameter gets none (the same name, `cName` for `pcName`, or a name that is
-  the end of the other). After you edit a function in one file, the hints of
+  the end of the other). A parameter list that starts with an include
+  (`SetData({inc/std-params.i}, INPUT pcDocNum AS CHARACTER)`) shows the
+  include as one entry with the count of its parameters, `{inc/std-params.i}
+  (2 parameters)`, in the signature and in the hover. The arguments for the
+  include get one hint, on the first of them, that names the include. A
+  declaration whose include holds a `{&name}` reference or an `&IF`, or did
+  not arrive, shows no signature. After you edit a function in one file, the hints of
   a call in another open file can show the old parameter names until that
   file changes again. The signature help follows VS Code's
   `editor.parameterHints.enabled`.
@@ -585,6 +600,7 @@ itself once a day when you run it.
 | `oxabl.trace.server` | `off` | Trace the JSON-RPC traffic with the server, for debugging. |
 | `oxabl.semanticTokens.enable` | `true` | Colour names by what they are, from the language server. The grammar colours everything else. A change applies at once. |
 | `oxabl.referenceLenses.enable` | `false` | Show the number of references above each declaration. Each lens runs a search when it comes into view. A change applies at once. |
+| `oxabl.completion.callArguments` | `fill` | What a procedure, function or program chosen from completion writes after its name: `fill` (one placeholder for each parameter), `parentheses` or `none`. A change applies at once. |
 | `oxabl.outline.includes` | `true` | Show the declarations of include files in the Outline view, the breadcrumbs and Go to Symbol in File, under the `{file.i}` reference. A change restarts the language server. |
 | `oxabl.inlayHints.locks` | `true` | Show the lock a read takes when it names none. A change applies at once. |
 | `oxabl.inlayHints.index` | `true` | Show the index oxabl expects a search to use. Needs no strict rule. |

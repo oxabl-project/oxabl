@@ -47,6 +47,7 @@ import { outline } from "./scenarios/outline.mjs";
 import { schema, schemaConfigAbove } from "./scenarios/schema.mjs";
 import { snippets } from "./scenarios/snippets.mjs";
 import { completion } from "./scenarios/completion.mjs";
+import { callFill } from "./scenarios/call-fill.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
 import {
   updateAuto,
@@ -82,6 +83,7 @@ const SCENARIOS = [
   ["folding", folding],
   ["snippets", snippets],
   ["completion", completion],
+  ["call-fill", callFill],
   ["update-auto", updateAuto],
   ["update-checksum", updateChecksum],
   ["update-notify", updateNotify],

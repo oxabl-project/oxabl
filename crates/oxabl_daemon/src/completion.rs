@@ -20,9 +20,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use oxabl_pipeline::completion::{
-    CompletionBase, CompletionList, CompletionRequest, DirListing, Prior, Token, complete,
-    keyword_documentation, lex, path_documentation, sorted_listing, symbol_documentation,
-    table_documentation, wants_base,
+    CallArguments, CompletionBase, CompletionList, CompletionRequest, DeclaredCallees, DirListing,
+    Prior, Token, complete, keyword_documentation, lex, path_documentation, sorted_listing,
+    symbol_documentation, table_documentation, wants_base,
 };
 use oxabl_pipeline::{Expansion, LintPipeline, Navigation, NavigationModel};
 use oxabl_workspace::{DirEntry, FileSystem};
@@ -68,11 +68,18 @@ pub struct Base {
     /// The tokens of `text`, lexed once: a request lexes only what differs
     /// from them. A refresh fills them before it keeps the base.
     tokens: OnceLock<Vec<Token>>,
+    /// The declarations of the routines, for the call fill. A refresh fills
+    /// them before it keeps the base, because they parse the unit again.
+    callees: OnceLock<DeclaredCallees>,
 }
 
 impl Base {
     fn tokens(&self) -> &[Token] {
         self.tokens.get_or_init(|| lex(&self.text))
+    }
+
+    fn callees(&self, navigation: &Navigation<'_, '_>) -> &DeclaredCallees {
+        self.callees.get_or_init(|| DeclaredCallees::of(navigation))
     }
 
     /// The text and tokens of this base, for a request that reads only what
@@ -290,6 +297,8 @@ pub struct CompletionQuery {
     pub offset: u32,
     /// The client takes snippet items.
     pub snippets: bool,
+    /// What a call item inserts after its name.
+    pub call_arguments: CallArguments,
     /// The character the person typed that made the client ask.
     pub trigger: Option<char>,
     /// The open buffers, by canonical path, for a document in a selected root.
@@ -298,6 +307,13 @@ pub struct CompletionQuery {
     pub config: AnalysisConfig,
     /// The session's configuration generation and schema revision.
     pub generation: (u64, u32),
+}
+
+impl CompletionQuery {
+    /// Whether a call item may get its fill from the base.
+    fn fills(&self) -> bool {
+        self.snippets && self.call_arguments != CallArguments::None
+    }
 }
 
 /// The answer to a [`CompletionQuery`]: the list, or `None` when oxabl does
@@ -324,6 +340,7 @@ pub fn compute_completion(
             path,
             keyword_case: query.config.pipeline.style.keyword_case,
             snippets: query.snippets,
+            call_arguments: query.call_arguments,
             trigger: query.trigger,
             config: &query.config.pipeline,
             listing,
@@ -370,6 +387,7 @@ pub fn compute_completion(
             fragment,
             stale,
             tokens: Some(base.tokens()),
+            callees: query.fills().then(|| base.callees(navigation)),
         };
         complete(&request(query, &document, listing), Some(&completion))
     })
@@ -397,6 +415,7 @@ fn own_base(bases: &Arc<Bases>, query: &CompletionQuery) -> Option<(Arc<Base>, b
                 &query.key,
                 token,
                 Arc::clone(&query.text),
+                query.fills(),
                 move |id| make_own_base(&config, &path, text, id, generation),
             );
         }
@@ -438,6 +457,7 @@ fn make_own_base(
         config: config.clone(),
         generation,
         tokens: OnceLock::new(),
+        callees: OnceLock::new(),
     })
 }
 
@@ -448,6 +468,7 @@ fn refresh(
     key: &BaseKey,
     token: u64,
     text: Arc<str>,
+    callees: bool,
     make: impl FnOnce(u64) -> Option<Base> + Send + 'static,
 ) {
     let spawned = oxabl_common::stack::builder()
@@ -459,6 +480,11 @@ fn refresh(
                 oxabl_common::hold_if_injected(REFRESH_SITE, &text);
                 if let Ok(Some(base)) = oxabl_common::catch_panic(|| make(token)) {
                     base.tokens();
+                    if callees {
+                        with_base(&base, |navigation| {
+                            base.callees(navigation);
+                        });
+                    }
                     bases.store_refreshed(&key, Arc::new(base));
                 }
                 bases.end_refresh(&key, token);
@@ -507,6 +533,7 @@ fn context_base(
                 &query.key,
                 token,
                 Arc::clone(&query.text),
+                query.fills(),
                 move |id| make_context_base(&config, &path, &root, fs, id, generation),
             );
         }
@@ -597,6 +624,7 @@ fn make_context_base(
         config: config.clone(),
         generation,
         tokens: OnceLock::new(),
+        callees: OnceLock::new(),
     })
 }
 

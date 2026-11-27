@@ -123,8 +123,9 @@ pub use lint::{
     encrypted_root_diagnostics,
 };
 pub use navigate::{
-    Highlight, Hover, Link, Navigation, NavigationModel, SemanticKind, SemanticModifiers,
-    SemanticToken, SignatureHelp, SignatureInfo, Target, close_open_call,
+    ArgumentKeyword, CallAt, Callee, CalleeParameter, Highlight, Hover, Link, Navigation,
+    NavigationModel, SemanticKind, SemanticModifiers, SemanticToken, SignatureHelp, SignatureInfo,
+    Target, close_open_call,
 };
 pub use outline::{OutlineKind, OutlineSymbol, outline};
 pub use outline_includes::{

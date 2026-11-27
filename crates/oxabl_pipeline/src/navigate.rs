@@ -38,13 +38,16 @@ use oxabl_workspace::is_include_fragment;
 
 use crate::{Expansion, LintPipeline, OutlineKind, OutlineSymbol, outline};
 
+mod folding;
 pub(crate) mod hover;
 mod semantic;
 mod signature;
 
 pub use hover::Hover;
 pub use semantic::{SemanticKind, SemanticModifiers, SemanticToken};
-pub use signature::{SignatureHelp, SignatureInfo, close_open_call};
+pub use signature::{
+    ArgumentKeyword, CallAt, Callee, CalleeParameter, SignatureHelp, SignatureInfo, close_open_call,
+};
 
 /// Where a name is declared: a file, and the declaring name's bytes in it.
 /// `span` is `None` when the target is the file itself (a program, an include).
@@ -179,6 +182,9 @@ pub struct Navigation<'s, 'a> {
     /// The methods of the expanded unit: the folded name at each name's
     /// span, and the name spans of each folded name.
     methods: OnceCell<Methods>,
+    /// What the grouping of the includes of a parameter list keeps, built on the
+    /// first signature that needs it.
+    folding_cache: folding::FoldingCache,
 }
 
 /// See [`Navigation::methods`].
@@ -314,6 +320,7 @@ impl<'a> LintPipeline<'a> {
             declarations: OnceCell::new(),
             run_sites: OnceCell::new(),
             methods: OnceCell::new(),
+            folding_cache: folding::FoldingCache::default(),
         })
     }
 }
