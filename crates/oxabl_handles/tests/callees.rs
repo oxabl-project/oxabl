@@ -8,7 +8,7 @@ fn analyze(source: &str) -> FileHandles {
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}\n{source}", program.errors);
-    oxabl_handles::analyze_file(&program.statements, source)
+    oxabl_handles::analyze_file(&program.statements, &program.pools, source)
 }
 
 /// The objects of the file, in source order.

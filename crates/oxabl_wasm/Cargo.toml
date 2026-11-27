@@ -43,3 +43,6 @@ oxabl_pipeline = { path = "../oxabl_pipeline", version = "5.0.0", features = [
 # `scripts/build-wasm.sh --verify` for a local verification build — never for the
 # release artifact.
 debug-panic = []
+
+# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+[lints]

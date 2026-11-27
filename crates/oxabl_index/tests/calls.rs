@@ -14,7 +14,7 @@ fn calls(source: &str) -> FileCalls {
     let tokens = oxabl_lexer::tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
-    FileCalls::extract(&program.statements, source, &tokens)
+    FileCalls::extract(&program.statements, &program.pools, source, &tokens)
 }
 
 fn targets(source: &str) -> Vec<(CallKind, CallTarget)> {

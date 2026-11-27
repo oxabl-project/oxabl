@@ -35,7 +35,7 @@ use oxabl_workspace::InMemoryFileSystem;
 // Analyzing a source string
 // ---------------------------------------------------------------------------
 
-pub fn parse(source: &str) -> Vec<Statement> {
+pub fn parse(source: &str) -> oxabl_parser::Program {
     let tokens = tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     assert!(
@@ -43,7 +43,7 @@ pub fn parse(source: &str) -> Vec<Statement> {
         "fixture must parse cleanly: {:?}",
         program.errors
     );
-    program.statements
+    program
 }
 
 /// Analyze `source` against a batch index over `workspace`, searching `paths`.
@@ -51,7 +51,7 @@ pub fn with_paths(
     source: &str,
     workspace: &[(&str, &str)],
     paths: &[&str],
-) -> (Vec<Statement>, Semantic) {
+) -> (oxabl_parser::Program, Semantic) {
     let mut fs = InMemoryFileSystem::new();
     for (path, contents) in workspace {
         fs.insert(PathBuf::from(path), *contents);
@@ -59,24 +59,27 @@ pub fn with_paths(
     let dirs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let index = BatchIndex::new(&fs, &dirs);
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    (stmts, sem)
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx =
+        AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools).with_index(&index);
+    let sem = analyze_file(stmts, &ctx);
+    (program, sem)
 }
 
 /// The common case: one path entry, `/src`.
-pub fn with_index(source: &str, workspace: &[(&str, &str)]) -> (Vec<Statement>, Semantic) {
+pub fn with_index(source: &str, workspace: &[(&str, &str)]) -> (oxabl_parser::Program, Semantic) {
     with_paths(source, workspace, &["/src"])
 }
 
 /// Analyze `source` the way every client does today: no index at all.
-pub fn without_index(source: &str) -> (Vec<Statement>, Semantic) {
+pub fn without_index(source: &str) -> (oxabl_parser::Program, Semantic) {
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
-    (stmts, sem)
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
+    let sem = analyze_file(stmts, &ctx);
+    (program, sem)
 }
 
 // ---------------------------------------------------------------------------
@@ -101,10 +104,12 @@ fn findings_with_index(
     let dirs = vec![PathBuf::from("/src")];
     let index = BatchIndex::new(&fs, &dirs);
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    rule(&stmts, &sem, &ctx)
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx =
+        AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools).with_index(&index);
+    let sem = analyze_file(stmts, &ctx);
+    rule(stmts, &sem, &ctx)
         .into_iter()
         .filter(|d| d.code.0 == code)
         .collect()
@@ -113,10 +118,11 @@ fn findings_with_index(
 /// Findings under `code` that `rule` produces for `source`, with no index.
 fn findings_without_index(source: &str, code: &str, rule: Rule) -> Vec<Diagnostic> {
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
-    rule(&stmts, &sem, &ctx)
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
+    let sem = analyze_file(stmts, &ctx);
+    rule(stmts, &sem, &ctx)
         .into_iter()
         .filter(|d| d.code.0 == code)
         .collect()
@@ -178,20 +184,23 @@ pub fn all_lints_with_index(source: &str, workspace: &[(&str, &str)]) -> Vec<Dia
     let dirs = vec![PathBuf::from("/src")];
     let index = BatchIndex::new(&fs, &dirs);
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    shapes(lint_file(&stmts, &sem, &ctx))
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx =
+        AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools).with_index(&index);
+    let sem = analyze_file(stmts, &ctx);
+    shapes(lint_file(stmts, &sem, &ctx))
 }
 
 /// Every finding all six rules produce for `source`, with no index at all —
 /// today's answer, and the one the index-attached run must match.
 pub fn all_lints_without_index(source: &str) -> Vec<DiagnosticShape> {
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
-    shapes(lint_file(&stmts, &sem, &ctx))
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
+    let sem = analyze_file(stmts, &ctx);
+    shapes(lint_file(stmts, &sem, &ctx))
 }
 
 /// Assert that attaching an index **adds** no diagnostic to `source` — from any
@@ -215,8 +224,10 @@ pub fn all_lints_without_index(source: &str) -> Vec<DiagnosticShape> {
 /// findings of the same code at the same span collapsing into one would itself be
 /// a behavior change worth catching.
 pub fn assert_index_adds_no_diagnostic(source: &str, workspace: &[(&str, &str)]) {
-    let (_, with) = with_index(source, workspace);
-    let (_, without) = without_index(source);
+    let (program, with) = with_index(source, workspace);
+    let _ = &program.statements;
+    let (program, without) = without_index(source);
+    let _ = &program.statements;
     assert_eq!(
         with.diagnostics, without.diagnostics,
         "semantic diagnostics differ for:\n{source}"

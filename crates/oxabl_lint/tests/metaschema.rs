@@ -24,7 +24,6 @@
 //!
 //! Every fixture here is synthetic.
 
-use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, FileId};
 use oxabl_lexer::tokenize;
 use oxabl_lint::{LINT0001, LINT0003, lint_file};
@@ -44,7 +43,7 @@ ADD FIELD "CustNum" OF "Customer" AS integer
 ADD FIELD "Name" OF "Customer" AS character
 "#;
 
-fn parse(source: &str) -> Vec<Statement> {
+fn parse(source: &str) -> oxabl_parser::Program {
     let tokens = tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     assert!(
@@ -52,16 +51,17 @@ fn parse(source: &str) -> Vec<Statement> {
         "fixture must parse cleanly: {:?}",
         program.errors
     );
-    program.statements
+    program
 }
 
 /// Lint `source` with `schema` loaded, the way a configured project runs.
 fn lint_with(source: &str, schema: &Schema) -> Vec<Diagnostic> {
-    let stmts = parse(source);
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema);
+    let program = parse(source);
+    let stmts = &program.statements;
+    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema, &program.pools);
     ctx.schema_loaded = true;
-    let sem = analyze_file(&stmts, &ctx);
-    lint_file(&stmts, &sem, &ctx)
+    let sem = analyze_file(stmts, &ctx);
+    lint_file(stmts, &sem, &ctx)
 }
 
 /// Lint `source` against the application schema plus the built-in catalog.
@@ -404,14 +404,15 @@ fn an_unloaded_schema_is_untouched_by_the_catalog() {
 IF AVAILABLE _file THEN
   MESSAGE _file._File-Name.
 "#;
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     assert!(
         !ctx.schema_loaded,
         "an empty schema must not read as loaded"
     );
-    let sem = analyze_file(&stmts, &ctx);
-    let diags = lint_file(&stmts, &sem, &ctx);
+    let sem = analyze_file(stmts, &ctx);
+    let diags = lint_file(stmts, &sem, &ctx);
 
     // The bare `AVAILABLE` operand is a record name oxabl cannot judge
     // without a schema: unresolved for that reason, never bound to a catalog
@@ -446,10 +447,11 @@ fn a_metaschema_table_is_not_a_user_table_for_emptiness_purposes() {
 fn unqualified_metaschema_fields_in_record_phrase() {
     let source = "FOR EACH _connect NO-LOCK WHERE _connect-usr GE 0: MESSAGE _connect-name. END.";
     for schema in [schema_from_df(APP_DF), Schema::empty()] {
-        let stmts = parse(source);
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-        let sem = analyze_file(&stmts, &ctx);
-        let diags = lint_file(&stmts, &sem, &ctx);
+        let program = parse(source);
+        let stmts = &program.statements;
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
+        let sem = analyze_file(stmts, &ctx);
+        let diags = lint_file(stmts, &sem, &ctx);
         assert!(diags.is_empty(), "loaded={}: {diags:#?}", ctx.schema_loaded);
         for name in ["_connect-usr", "_connect-name"] {
             assert!(
@@ -471,10 +473,11 @@ fn bare_metaschema_fields_require_the_correct_record() {
             "MESSAGE _connect-usr.",
             "FOR EACH _connect: MESSAGE _field-name. END.",
         ] {
-            let stmts = parse(source);
-            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-            let sem = analyze_file(&stmts, &ctx);
-            let diags = lint_file(&stmts, &sem, &ctx);
+            let program = parse(source);
+            let stmts = &program.statements;
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
+            let sem = analyze_file(stmts, &ctx);
+            let diags = lint_file(stmts, &sem, &ctx);
             assert_eq!(codes(&diags), vec![LINT0001], "{source}: {diags:#?}");
         }
     }

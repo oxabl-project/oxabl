@@ -19,18 +19,18 @@ fn dump(source: &str, schema: Option<&oxabl_schema::Schema>) -> String {
         program.errors
     );
     let options = ScopeOptions::default();
-    let flow = oxabl_flow::build_file_with(&program.statements, source, &options.flow);
+    let flow =
+        oxabl_flow::build_file_with(&program.statements, &program.pools, source, &options.flow);
     let scopes = oxabl_scope::analyze_flow(
-        &program.statements,
-        source,
-        &tokens,
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         &flow,
         schema,
         &options,
     );
-    let calls = FileCalls::extract(&program.statements, source, &tokens);
+    let calls = FileCalls::extract(&program.statements, &program.pools, source, &tokens);
     oxabl_effects::analyze_file(
         &program.statements,
+        &program.pools,
         source,
         &tokens,
         &flow,
@@ -81,15 +81,21 @@ fn truncated_calls_never_produce_a_complete_summary() {
     let source = "MESSAGE \"hi\".";
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
-    let flow = oxabl_flow::build_file(&program.statements, source);
-    let scopes =
-        oxabl_scope::analyze_file_with(&program.statements, source, None, &ScopeOptions::default());
+    let flow = oxabl_flow::build_file(&program.statements, &program.pools, source);
+    let scopes = oxabl_scope::analyze_file_with(
+        &program.statements,
+        &program.pools,
+        source,
+        None,
+        &ScopeOptions::default(),
+    );
     let calls = FileCalls {
         truncated: true,
         ..FileCalls::default()
     };
     let effects = oxabl_effects::analyze_file(
         &program.statements,
+        &program.pools,
         source,
         &tokens,
         &flow,

@@ -1250,7 +1250,7 @@ impl<'a> LintPipeline<'a> {
         source: &str,
         inspect: impl FnOnce(&Expansion, &LintResult),
     ) -> Result<oxabl_index::DependencyEdges, String> {
-        self.edge_set_reading(source, inspect, |_, _, _| ())
+        self.edge_set_reading(source, inspect, |_, _, _, _| ())
             .map(|(edges, ())| edges)
     }
 
@@ -1262,8 +1262,8 @@ impl<'a> LintPipeline<'a> {
         source: &str,
         inspect: impl FnOnce(&Expansion, &LintResult),
     ) -> Result<(oxabl_index::DependencyEdges, DynamicCalls), String> {
-        self.edge_set_reading(source, inspect, |program, text, tokens| {
-            FileCalls::extract(program, text, tokens).dynamic
+        self.edge_set_reading(source, inspect, |program, pools, text, tokens| {
+            FileCalls::extract(program, pools, text, tokens).dynamic
         })
     }
 
@@ -1271,7 +1271,12 @@ impl<'a> LintPipeline<'a> {
         &self,
         source: &str,
         inspect: impl FnOnce(&Expansion, &LintResult),
-        read: impl FnOnce(&[oxabl_ast::Statement], &str, &[oxabl_lexer::Token]) -> T,
+        read: impl FnOnce(
+            &[oxabl_ast::Statement],
+            &oxabl_ast::AstPools,
+            &str,
+            &[oxabl_lexer::Token],
+        ) -> T,
     ) -> Result<(oxabl_index::DependencyEdges, T), String> {
         let outcome = catch_panic(|| {
             let expansion = self.expand(source);
@@ -1726,7 +1731,7 @@ impl<'a> LintPipeline<'a> {
     ///
     /// **Unguarded on purpose** (KTD6), like [`collect`](Self::collect).
     pub fn analyze(&self, expansion: &Expansion) -> LintResult {
-        self.analyze_inspecting(expansion, |_, _, _| ()).0
+        self.analyze_inspecting(expansion, |_, _, _, _| ()).0
     }
 
     /// [`analyze`](Self::analyze), and what `inspect` makes of the parse it
@@ -1735,7 +1740,12 @@ impl<'a> LintPipeline<'a> {
     fn analyze_inspecting<T: Default>(
         &self,
         expansion: &Expansion,
-        inspect: impl FnOnce(&[oxabl_ast::Statement], &str, &[oxabl_lexer::Token]) -> T,
+        inspect: impl FnOnce(
+            &[oxabl_ast::Statement],
+            &oxabl_ast::AstPools,
+            &str,
+            &[oxabl_lexer::Token],
+        ) -> T,
     ) -> (LintResult, T) {
         let dependency_paths = expansion.dependency_paths().to_vec();
         let Ok(expanded) = &expansion.inner else {

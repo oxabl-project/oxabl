@@ -43,7 +43,7 @@ fn run_with(
     let tokens = tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema)
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
         .with_lint_severities(severities)
         .with_source_context(context);
     let sem = analyze_file(&program.statements, &ctx);
@@ -275,7 +275,7 @@ fn lint_file_is_the_builtin_registry() {
     let tokens = tokenize(UNUSED);
     let program = Parser::new(&tokens, UNUSED).parse_program();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, UNUSED, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, UNUSED, &schema, &program.pools);
     let sem = analyze_file(&program.statements, &ctx);
     let via_lint_file: Vec<_> = lint_file(&program.statements, &sem, &ctx)
         .into_iter()
@@ -327,7 +327,8 @@ fn run_where_selects_a_subset() {
     let tokens = tokenize(UNUSED);
     let program = Parser::new(&tokens, UNUSED).parse_program();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, UNUSED, &schema).with_lint_severities(map);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, UNUSED, &schema, &program.pools)
+        .with_lint_severities(map);
     let sem = analyze_file(&program.statements, &ctx);
     let codes: Vec<_> = registry
         .run_where(&program.statements, &sem, &ctx, |m| {

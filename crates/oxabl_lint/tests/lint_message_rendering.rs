@@ -70,7 +70,7 @@ fn messages(source: &str, schema: &Schema, with_index: bool) -> Vec<String> {
     let dirs = vec![PathBuf::from("/src")];
     let index = BatchIndex::new(&fs, &dirs);
 
-    let base = AnalysisContext::new(FileId::UNKNOWN, source, schema);
+    let base = AnalysisContext::new(FileId::UNKNOWN, source, schema, &program.pools);
     let ctx = if with_index {
         base.with_index(&index)
     } else {

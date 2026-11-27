@@ -1,4 +1,4 @@
-use crate::{Annotation, Expression, Identifier, NodeId, Span};
+use crate::{Annotation, ExprId, ExprList, Identifier, NodeId, Span};
 use smallvec::SmallVec;
 
 /// Preprocessor conditional block, generic over the content type.
@@ -9,9 +9,9 @@ use smallvec::SmallVec;
 /// - `DataType::PreprocIf(Box<PreprocIf<DataType>>)` — data type level
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreprocIf<T> {
-    pub condition: Expression,
+    pub condition: ExprId,
     pub then_branch: T,
-    pub elseif_branches: Vec<(Expression, T)>,
+    pub elseif_branches: Vec<(ExprId, T)>,
     pub else_branch: Option<T>,
 }
 
@@ -20,14 +20,14 @@ pub struct PreprocIf<T> {
 // (656 bytes), which embed several `Expression`s inline. Gated to
 // 64-bit; bump the bound deliberately if a variant legitimately grows.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<StatementKind>() <= 720);
+const _: () = assert!(std::mem::size_of::<StatementKind>() <= 168);
 
 // Lock the `Statement` wrapper size deliberately (KTD4). The wrapper adds a
 // `NodeId` (4 bytes), a `Span` (8 bytes) and the one-pointer `skipped_tail` on
 // top of `StatementKind`, padded to alignment. Bump the bound deliberately if
 // the wrapper legitimately grows.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<Statement>() <= 720 + 24);
+const _: () = assert!(std::mem::size_of::<Statement>() <= 192);
 
 /// A statement in ABL — an executable unit that performs an action.
 /// All statements are terminated by a period.
@@ -40,7 +40,7 @@ pub enum StatementKind {
     VariableDeclaration {
         name: Identifier,
         type_source: TypeSource,
-        initial_value: Option<Expression>,
+        initial_value: Option<ExprId>,
         no_undo: bool,
         /// Extent/Array, none for scalar, some(0) for dynamic
         extent: Option<u32>,
@@ -62,13 +62,10 @@ pub enum StatementKind {
     VariableDeclarationList(Vec<Statement>),
 
     /// Assignment
-    Assignment {
-        target: Expression,
-        value: Expression,
-    },
+    Assignment { target: ExprId, value: ExprId },
 
     /// Expression Statement
-    ExpressionStatement(Expression),
+    ExpressionStatement(ExprId),
 
     /// Code block
     Block(Vec<Statement>),
@@ -78,31 +75,31 @@ pub enum StatementKind {
         /// loop variable assignment
         loop_var: Option<Identifier>,
         /// the from start value for loops
-        from: Option<Expression>,
+        from: Option<ExprId>,
         /// End value for loops
-        to: Option<Expression>,
+        to: Option<ExprId>,
         /// Step value for loops
-        by: Option<Expression>,
-        while_condition: Option<Expression>,
+        by: Option<ExprId>,
+        while_condition: Option<ExprId>,
         /// Whether the block runs inside a transaction (DO TRANSACTION:)
         transaction: bool,
         /// Expressions of `RETURN`/`THROW` actions in the header's `ON` phrases
-        on_actions: Vec<Expression>,
+        on_actions: ExprList,
         body: Vec<Statement>,
     },
 
     /// IF statements
     If {
-        condition: Expression,
+        condition: ExprId,
         then_branch: Box<Statement>,
         else_branch: Option<Box<Statement>>,
     },
 
     /// REPEAT block
     Repeat {
-        while_condition: Option<Expression>,
+        while_condition: Option<ExprId>,
         /// Expressions of `RETURN`/`THROW` actions in the header's `ON` phrases
-        on_actions: Vec<Expression>,
+        on_actions: ExprList,
         body: Vec<Statement>,
     },
 
@@ -111,10 +108,10 @@ pub enum StatementKind {
         buffer: Identifier,
         // Optional join to parent records
         of_relation: Option<Identifier>,
-        where_clause: Option<Expression>,
+        where_clause: Option<ExprId>,
         lock_type: LockType,
         /// Expressions of `RETURN`/`THROW` actions in the header's `ON` phrases
-        on_actions: Vec<Expression>,
+        on_actions: ExprList,
         body: Vec<Statement>,
     },
 
@@ -123,15 +120,15 @@ pub enum StatementKind {
         find_type: FindType,
         buffer: Identifier,
         /// Key value for direct lookup (FIND Customer 1 syntax)
-        key_value: Option<Expression>,
-        where_clause: Option<Expression>,
+        key_value: Option<ExprId>,
+        where_clause: Option<ExprId>,
         lock_type: LockType,
         no_error: bool,
     },
 
     /// Case statement
     Case {
-        expression: Expression,
+        expression: ExprId,
         when_branches: Vec<WhenBranch>,
         otherwise: Option<Vec<Statement>>,
     },
@@ -162,17 +159,17 @@ pub enum StatementKind {
         target: RunTarget,
         arguments: Vec<RunArgument>,
         /// Handle for `RUN ... IN handle` (run on a persistent server).
-        in_handle: Option<Expression>,
+        in_handle: Option<ExprId>,
         /// Whether `PERSISTENT` was specified.
         persistent: bool,
         /// Handle variable for `PERSISTENT SET hProc`.
-        persistent_handle: Option<Expression>,
+        persistent_handle: Option<ExprId>,
         /// Whether `ASYNCHRONOUS` was specified.
         asynchronous: bool,
         /// Handle variable for `ASYNCHRONOUS SET hAsync`.
-        async_handle: Option<Expression>,
+        async_handle: Option<ExprId>,
         /// Event procedure for `ASYNCHRONOUS ... EVENT-PROCEDURE expr`.
-        event_procedure: Option<Expression>,
+        event_procedure: Option<ExprId>,
         /// Whether `NO-ERROR` was specified.
         no_error: bool,
     },
@@ -209,7 +206,7 @@ pub enum StatementKind {
     /// variables that receive user input (e.g., button responses).
     Message {
         /// Expressions in the message body.
-        items: Vec<Expression>,
+        items: ExprList,
         /// Variables bound by SET or UPDATE clauses.
         set_targets: Vec<Identifier>,
         /// Fields declared by `SET`/`UPDATE name AS type` or `name LIKE field`.
@@ -225,7 +222,7 @@ pub enum StatementKind {
         /// Optional named stream (`PUT STREAM s ...`).
         stream_name: Option<Identifier>,
         /// Value expressions written, in source order.
-        items: Vec<Expression>,
+        items: ExprList,
     },
 
     /// EXPORT statement — writes values to a stream in delimited form.
@@ -237,9 +234,9 @@ pub enum StatementKind {
         /// Optional named stream (`EXPORT STREAM s ...`).
         stream_name: Option<Identifier>,
         /// Optional `DELIMITER` character expression.
-        delimiter: Option<Expression>,
+        delimiter: Option<ExprId>,
         /// Values or records read, in source order.
-        items: Vec<Expression>,
+        items: ExprList,
     },
 
     /// IMPORT statement — reads delimited values from a stream into fields,
@@ -252,9 +249,9 @@ pub enum StatementKind {
         /// Optional named stream (`IMPORT STREAM s ...`).
         stream_name: Option<Identifier>,
         /// Optional `DELIMITER` character expression.
-        delimiter: Option<Expression>,
+        delimiter: Option<ExprId>,
         /// Fields, variables or records written, in source order.
-        targets: Vec<Expression>,
+        targets: ExprList,
     },
 
     /// PAUSE statement — suspends processing for a time or until a key is
@@ -265,9 +262,9 @@ pub enum StatementKind {
     /// [`Statement::skipped_tail`].
     Pause {
         /// Optional duration in seconds (`PAUSE 5`).
-        duration: Option<Expression>,
+        duration: Option<ExprId>,
         /// Optional `MESSAGE` text.
-        message: Option<Expression>,
+        message: Option<ExprId>,
     },
 
     /// DOWN statement — moves the cursor of a down frame forward.
@@ -278,7 +275,7 @@ pub enum StatementKind {
         /// Optional named stream (`DOWN STREAM s ...`).
         stream_name: Option<Identifier>,
         /// Optional number of lines.
-        lines: Option<Expression>,
+        lines: Option<ExprId>,
     },
 
     /// FORM statement — lays out the fields and constants of a frame.
@@ -291,7 +288,7 @@ pub enum StatementKind {
     Form {
         /// Items in source order, including `AT` and `SKIP` operands that are
         /// not literals.
-        items: Vec<Expression>,
+        items: ExprList,
         /// The `name AS type` / `name LIKE field` items, which declare a
         /// variable rather than read one. They are not in `items`.
         fields: Vec<FrameField>,
@@ -306,10 +303,10 @@ pub enum StatementKind {
     /// any `EDITING` block stay in [`Statement::skipped_tail`].
     Update {
         /// Fields, variables or records read and written, in source order.
-        targets: Vec<Expression>,
+        targets: ExprList,
         /// Non-literal expressions of the format options (`VALIDATE`, `WHEN`,
         /// `AT`, ...), read, in source order.
-        options: Vec<Expression>,
+        options: ExprList,
         /// The `name AS type` / `name LIKE field` items, which declare a
         /// variable rather than read one. They are not in `targets`.
         fields: Vec<FrameField>,
@@ -319,9 +316,9 @@ pub enum StatementKind {
     /// Same shape as [`StatementKind::Update`].
     Set {
         /// Fields, variables or records written, in source order.
-        targets: Vec<Expression>,
+        targets: ExprList,
         /// Non-literal expressions of the format options, read, in source order.
-        options: Vec<Expression>,
+        options: ExprList,
         /// The `name AS type` / `name LIKE field` items, which declare a
         /// variable rather than assign one. They are not in `targets`.
         fields: Vec<FrameField>,
@@ -338,9 +335,9 @@ pub enum StatementKind {
         /// Optional named stream (`PROMPT-FOR STREAM s ...`).
         stream_name: Option<Identifier>,
         /// Fields, variables or records named, in source order.
-        targets: Vec<Expression>,
+        targets: ExprList,
         /// Non-literal expressions of the format options, read, in source order.
-        options: Vec<Expression>,
+        options: ExprList,
         /// The `name AS type` / `name LIKE field` items, which declare a
         /// variable rather than read one. They are not in `targets`.
         fields: Vec<FrameField>,
@@ -352,7 +349,7 @@ pub enum StatementKind {
     /// name or a handle expression.
     Get {
         get_type: FindType,
-        query: Expression,
+        query: ExprId,
         /// The lock phrase, when written.
         lock: Option<LockType>,
         no_wait: bool,
@@ -365,9 +362,9 @@ pub enum StatementKind {
     /// (`WHERE PROC-HANDLE = field`, read) are set only for a stored procedure.
     Close {
         kind: CloseKind,
-        target: Expression,
-        status: Option<Expression>,
-        handle: Option<Expression>,
+        target: ExprId,
+        status: Option<ExprId>,
+        handle: Option<ExprId>,
     },
 
     /// REPOSITION statement — moves a query to a row or a record.
@@ -376,8 +373,8 @@ pub enum StatementKind {
     /// the row number, the `ROWID` or `RECID` expressions, or the `FORWARD` and
     /// `BACKWARD` count, in source order; the keywords are not modelled.
     Reposition {
-        query: Expression,
-        operands: Vec<Expression>,
+        query: ExprId,
+        operands: ExprList,
         no_error: bool,
     },
 
@@ -396,9 +393,9 @@ pub enum StatementKind {
     /// nor an expression that ends before the parenthesis leaves the statement
     /// [`StatementKind::Skipped`].
     Accumulate {
-        expression: Expression,
+        expression: ExprId,
         /// The `BY` break groups, in source order.
-        breaks: Vec<Expression>,
+        breaks: ExprList,
     },
 
     /// COLOR statement — sets the terminal colors of fields.
@@ -409,7 +406,7 @@ pub enum StatementKind {
     Color {
         stream_name: Option<Identifier>,
         /// The `VALUE(...)` colors, then the fields, in source order.
-        items: Vec<Expression>,
+        items: ExprList,
     },
 
     /// COPY-LOB statement — copies a large object between a file, a variable or
@@ -420,16 +417,16 @@ pub enum StatementKind {
     /// [NO-ERROR]`. A form whose source or target does not parse leaves the
     /// statement [`StatementKind::Skipped`].
     CopyLob {
-        source: Expression,
+        source: ExprId,
         /// `FILE` was written before the source: it names a file.
         source_file: bool,
-        target: Expression,
+        target: ExprId,
         /// `FILE` was written before the target: it names a file, which is
         /// written, and the target expression is read.
         target_file: bool,
         /// The expressions of `STARTING AT`, `FOR`, `OVERLAY AT` and the code
         /// pages, in source order.
-        options: Vec<Expression>,
+        options: ExprList,
         no_error: bool,
     },
 
@@ -439,9 +436,9 @@ pub enum StatementKind {
     /// expression (`FRAME f`, `BROWSE b`) stays in [`Statement::skipped_tail`].
     Apply {
         /// The event, usually a string literal. `None` only when it does not parse.
-        event: Option<Expression>,
+        event: Option<ExprId>,
         /// The `TO` target.
-        target: Option<Expression>,
+        target: Option<ExprId>,
     },
 
     /// WAIT-FOR statement — blocks until an event occurs on a widget.
@@ -451,7 +448,7 @@ pub enum StatementKind {
     /// stay in [`Statement::skipped_tail`].
     WaitFor {
         /// Widgets and handles waited on, in source order.
-        widgets: Vec<Expression>,
+        widgets: ExprList,
     },
 
     /// ENABLE statement — enables widgets for input.
@@ -461,14 +458,14 @@ pub enum StatementKind {
     /// does not recognise stay in [`Statement::skipped_tail`].
     Enable {
         /// Widgets named, in source order.
-        items: Vec<Expression>,
+        items: ExprList,
     },
 
     /// DISABLE statement — disables widgets for input. Same shape as
     /// [`StatementKind::Enable`]; `DISABLE TRIGGERS` is not this statement.
     Disable {
         /// Widgets named, in source order.
-        items: Vec<Expression>,
+        items: ExprList,
     },
 
     /// HIDE statement — hides widgets.
@@ -480,7 +477,7 @@ pub enum StatementKind {
         /// Optional named stream (`HIDE STREAM s ...`).
         stream_name: Option<Identifier>,
         /// Widgets named, in source order.
-        items: Vec<Expression>,
+        items: ExprList,
     },
 
     /// VIEW statement — shows widgets. Same shape as [`StatementKind::Hide`].
@@ -488,7 +485,7 @@ pub enum StatementKind {
         /// Optional named stream (`VIEW STREAM s ...`).
         stream_name: Option<Identifier>,
         /// Widgets named, in source order.
-        items: Vec<Expression>,
+        items: ExprList,
     },
 
     /// UP statement — moves the cursor of a down frame back. Same shape as
@@ -497,7 +494,7 @@ pub enum StatementKind {
         /// Optional named stream (`UP STREAM s ...`).
         stream_name: Option<Identifier>,
         /// Optional number of lines.
-        lines: Option<Expression>,
+        lines: Option<ExprId>,
     },
 
     /// DEFINE TEMP-TABLE statement.
@@ -595,7 +592,7 @@ pub enum StatementKind {
     /// UNDO/THROW statement.
     ///
     /// `UNDO, THROW NEW Progress.Lang.AppError("msg").`
-    Throw(Expression),
+    Throw(ExprId),
 
     /// ASSIGN statement — multi-target assignment.
     ///
@@ -784,9 +781,9 @@ pub enum StatementKind {
         kind: DeleteObjectKind,
         /// The object being destroyed. Resolved like any other expression, so the
         /// handle it names is credited a read.
-        target: Expression,
+        target: ExprId,
         /// Further handles of `DELETE WIDGET h1 h2 ...`; empty for every other form.
-        extra_targets: Vec<Expression>,
+        extra_targets: ExprList,
         no_error: bool,
     },
 
@@ -794,7 +791,7 @@ pub enum StatementKind {
     ///
     /// `name` is `None` for the unnamed pool.
     DeleteWidgetPool {
-        name: Option<Expression>,
+        name: Option<ExprId>,
         no_error: bool,
     },
 
@@ -802,7 +799,7 @@ pub enum StatementKind {
     ///
     /// `name` is `None` for the unnamed pool.
     CreateWidgetPool {
-        name: Option<Expression>,
+        name: Option<ExprId>,
         persistent: bool,
         no_error: bool,
     },
@@ -811,7 +808,7 @@ pub enum StatementKind {
     Release { buffer: Identifier, no_error: bool },
 
     /// `RELEASE OBJECT com-handle [NO-ERROR].` — release a COM object.
-    ReleaseObject { target: Expression, no_error: bool },
+    ReleaseObject { target: ExprId, no_error: bool },
 
     /// VALIDATE buffer-name [NO-ERROR].
     Validate { buffer: Identifier, no_error: bool },
@@ -847,7 +844,7 @@ pub enum StatementKind {
     PreprocUndefine { name: Identifier },
 
     /// &MESSAGE expression
-    PreprocMessage { expression: Expression },
+    PreprocMessage { expression: ExprId },
 
     /// DEFINE STREAM stream-name.
     DefineStream { name: Identifier },
@@ -906,9 +903,9 @@ pub enum StatementKind {
     /// PUBLISH event-name [FROM publisher-handle] [(args...)].
     Publish {
         /// Event name — string literal or character expression.
-        event_name: Expression,
+        event_name: ExprId,
         /// Optional FROM publisher-handle.
-        from_handle: Option<Expression>,
+        from_handle: Option<ExprId>,
         /// Arguments passed to subscribers (reuses RunArgument).
         arguments: Vec<RunArgument>,
     },
@@ -917,9 +914,9 @@ pub enum StatementKind {
     ///   [RUN-PROCEDURE handler-name] [NO-ERROR].
     Subscribe {
         /// Optional PROCEDURE subscriber-handle.
-        subscriber: Option<Expression>,
+        subscriber: Option<ExprId>,
         /// Event name — string literal or character expression.
-        event_name: Expression,
+        event_name: ExprId,
         /// IN publisher-handle or ANYWHERE (required).
         target: SubscribeTarget,
         /// Optional RUN-PROCEDURE handler name.
@@ -931,11 +928,11 @@ pub enum StatementKind {
     /// `UNSUBSCRIBE [PROCEDURE subscriber-handle] [TO] {event-name | ALL} [IN publisher-handle].`
     Unsubscribe {
         /// Optional PROCEDURE subscriber-handle.
-        subscriber: Option<Expression>,
+        subscriber: Option<ExprId>,
         /// Event name, or None if ALL was specified.
-        event_name: Option<Expression>,
+        event_name: Option<ExprId>,
         /// Optional IN publisher-handle.
-        in_handle: Option<Expression>,
+        in_handle: Option<ExprId>,
     },
 
     /// `DEFINE [access] [STATIC] [ABSTRACT] EVENT event-name SIGNATURE VOID (params...).`
@@ -996,7 +993,7 @@ pub enum StatementKind {
     Next(Option<String>),
 
     /// Return statement with an optional return value expression.
-    Return(Option<Expression>),
+    Return(Option<ExprId>),
 
     /// Empty (just a period)
     Empty,
@@ -1277,13 +1274,13 @@ pub enum FindType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhenBranch {
     /// One or more values to match against the CASE expression.
-    pub values: Vec<Expression>,
+    pub values: ExprList,
     /// Statements to execute when a value matches.
     pub body: Vec<Statement>,
 }
 
 /// Direction qualifier for a procedure parameter (INPUT, OUTPUT, or INPUT-OUTPUT).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterDirection {
     /// Parameter is passed into the procedure.
     Input,
@@ -1311,7 +1308,7 @@ pub enum RunTarget {
         name_span: Span,
     },
     /// Dynamic target via `RUN VALUE(expr)`.
-    Dynamic(Expression),
+    Dynamic(ExprId),
 }
 
 impl RunTarget {
@@ -1341,22 +1338,22 @@ impl RunTarget {
 }
 
 /// A single argument passed to a RUN statement, with its [`ParameterDirection`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunArgument {
     pub direction: ParameterDirection,
-    pub expression: Expression,
+    pub expression: ExprId,
 }
 
 /// A single item in a DISPLAY statement.
 ///
 /// Each display item is an expression with an optional WHEN condition
 /// that controls whether it is displayed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayItem {
     /// The expression to display.
-    pub expression: Expression,
+    pub expression: ExprId,
     /// Optional `WHEN condition` — controls whether this item is displayed.
-    pub when_condition: Option<Expression>,
+    pub when_condition: Option<ExprId>,
 }
 
 /// Source of a type specification — either explicit (`AS type`) or inherited (`LIKE field`).
@@ -1391,7 +1388,7 @@ pub struct TempTableField {
     /// Only meaningful when `type_source` is [`TypeSource::Like`]; always `false` otherwise.
     pub validate: bool,
     /// Optional initial value(s). Scalar fields have one element; array fields may have multiple.
-    pub initial_value: Option<Vec<Expression>>,
+    pub initial_value: Option<ExprList>,
     /// Extent/array size. None for scalar, Some(0) for dynamic extent.
     pub extent: Option<u32>,
     /// The whole definition, from `FIELD` to its last option. Defaults to
@@ -1462,16 +1459,16 @@ pub enum StreamTarget {
     /// An expression target: `VALUE(expr)`, a string literal, a preprocessor
     /// reference, or a keyword target such as `TERMINAL`, `PRINTER`,
     /// `CLIPBOARD` or `OS-DIR(...)`.
-    Expression(Expression),
+    Expression(ExprId),
     /// A bare, unquoted file name.
     FileName(FileName),
 }
 
 impl StreamTarget {
     /// The expression this target holds, or `None` for a bare file name.
-    pub fn expression(&self) -> Option<&Expression> {
+    pub fn expression(&self) -> Option<ExprId> {
         match self {
-            StreamTarget::Expression(e) => Some(e),
+            StreamTarget::Expression(e) => Some(*e),
             StreamTarget::FileName(_) => None,
         }
     }
@@ -1482,7 +1479,7 @@ impl StreamTarget {
 pub enum StreamOperation {
     From(StreamTarget),
     To { target: StreamTarget, append: bool },
-    Through(Expression),
+    Through(ExprId),
     Close,
 }
 
@@ -1496,12 +1493,12 @@ pub enum BufferTarget {
 }
 
 /// A single target = value pair in an ASSIGN statement.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssignPair {
     /// The assignment target (variable or field reference).
-    pub target: Expression,
+    pub target: ExprId,
     /// The value to assign.
-    pub value: Expression,
+    pub value: ExprId,
 }
 
 // =============================================================================
@@ -1585,12 +1582,12 @@ pub enum CreateTarget {
         kind: CreateTargetKind,
         /// The variable or field that receives the new handle. An expression so
         /// that `hArr[i]` and `tt.hq` keep their real target.
-        handle: Expression,
-        widget_pool: Option<Expression>,
+        handle: ExprId,
+        widget_pool: Option<ExprId>,
         /// The class of an [`Automation`](CreateTargetKind::Automation) or
         /// [`Dynamic`](CreateTargetKind::Dynamic) create: the string literal of
         /// `CREATE "Excel.Application" ch`, or the argument of `CREATE VALUE(expr) ch`.
-        class: Option<Expression>,
+        class: Option<ExprId>,
         /// `ASSIGN attribute = expression ...` of a widget create.
         assignments: Vec<CreateAssignment>,
         /// `TRIGGERS: ON event ... END TRIGGERS` of a widget create.
@@ -1599,15 +1596,15 @@ pub enum CreateTarget {
         connect: Option<CreateConnect>,
         /// The `FOR TABLE` operand of `CREATE BUFFER`: a table name or a handle
         /// expression, so a bare name in it may not be a variable.
-        for_table: Option<Expression>,
+        for_table: Option<ExprId>,
     },
 }
 
 /// One `attribute = expression` pair of a widget create's ASSIGN clause.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreateAssignment {
     pub attribute: Identifier,
-    pub value: Expression,
+    pub value: ExprId,
 }
 
 /// One `ON event-list trigger-block` entry of a widget create's TRIGGERS phrase.
@@ -1620,9 +1617,9 @@ pub struct WidgetTrigger {
 }
 
 /// The `CONNECT [TO file]` clause of a COM create.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreateConnect {
-    pub file: Option<Expression>,
+    pub file: Option<ExprId>,
 }
 
 /// The type keyword in a CREATE ... handle statement.
@@ -1731,7 +1728,7 @@ pub struct HandlePassingOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubscribeTarget {
     /// Subscribe to events from a specific publisher handle.
-    InHandle(Expression),
+    InHandle(ExprId),
     /// Subscribe to events from any publisher.
     Anywhere,
 }
@@ -1800,8 +1797,8 @@ pub enum OnAction {
     /// PERSISTENT RUN procedure | VALUE(expr) [IN handle] [(args)].
     PersistentRun {
         procedure: PersistentRunTarget,
-        in_handle: Option<Expression>,
-        arguments: Vec<Expression>,
+        in_handle: Option<ExprId>,
+        arguments: ExprList,
     },
 }
 
@@ -1811,15 +1808,15 @@ pub enum PersistentRunTarget {
     /// A name or path as written, e.g. `myProc` or `lib/util.w`.
     Name(Identifier),
     /// `VALUE(expr)`: the expression inside the parentheses.
-    Value(Expression),
+    Value(ExprId),
 }
 
 impl PersistentRunTarget {
     /// The expression of a `VALUE(expr)` target, `None` for a name.
-    pub fn expression(&self) -> Option<&Expression> {
+    pub fn expression(&self) -> Option<ExprId> {
         match self {
             Self::Name(_) => None,
-            Self::Value(expression) => Some(expression),
+            Self::Value(expression) => Some(*expression),
         }
     }
 }
@@ -1886,12 +1883,12 @@ mod skipped_tests {
     use crate::node_id::NodeId;
     use crate::span::Span;
 
-    fn skipped(names: Vec<&str>, span_start: u32) -> Statement {
+    fn skipped(pool: &mut crate::NamePool, names: Vec<&str>, span_start: u32) -> Statement {
         let mut s = Statement::new(StatementKind::Skipped {
             names: names
                 .into_iter()
                 .map(|n| crate::Identifier {
-                    name: n.to_string(),
+                    name: pool.push(n),
                     span: Span {
                         start: span_start,
                         end: span_start + n.len() as u32,
@@ -1946,8 +1943,33 @@ mod skipped_tests {
     /// than hand-building whole statements.
     #[test]
     fn skipped_equality_discriminates_on_names() {
-        assert_ne!(skipped(vec!["v-total"], 0), skipped(vec!["v-count"], 0));
-        assert_eq!(skipped(vec!["v-total"], 0), skipped(vec!["v-total"], 0));
+        let mut pool = crate::NameInterner::new();
+        let a_id = pool.intern("v-total");
+        let b_id = pool.intern("v-count");
+        let a1 = Statement::new(StatementKind::Skipped {
+            names: vec![crate::Identifier {
+                name: a_id,
+                span: Span { start: 0, end: 7 },
+            }],
+            may_reference_tables: false,
+        });
+        let a2 = Statement::new(StatementKind::Skipped {
+            names: vec![crate::Identifier {
+                name: a_id,
+                span: Span { start: 0, end: 7 },
+            }],
+            may_reference_tables: false,
+        });
+        let b = Statement::new(StatementKind::Skipped {
+            names: vec![crate::Identifier {
+                name: b_id,
+                span: Span { start: 0, end: 7 },
+            }],
+            may_reference_tables: false,
+        });
+        assert_ne!(a1, b);
+        assert_eq!(a1, a2);
+        let _ = skipped;
     }
 
     /// The table-candidate marker participates in structural equality. It is a

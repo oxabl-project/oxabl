@@ -100,7 +100,7 @@ pub fn run(
     if hazards.is_empty() {
         return Vec::new();
     }
-    let paths = paths::Paths::new(program, ctx.source, ctx.tokens);
+    let paths = paths::Paths::new(program, ctx.pools, ctx.source, ctx.tokens);
     let cleared = paths.assigned_before_every_outside_read(&hazards, sem);
     hazards
         .iter()
@@ -172,8 +172,8 @@ mod paths {
     //! block (a bit for each), and only the unit that holds the block is built.
 
     use oxabl_ast::{
-        CreateTarget, Expression, ExpressionKind, NodeId, OnAction, OnKind, RunTarget, Statement,
-        StatementKind as SK, StreamOperation, SubscribeTarget,
+        AstPools, CreateTarget, ExprId, ExprList, ExpressionKind, NodeId, OnAction, OnKind,
+        RunTarget, Statement, StatementKind as SK, StreamOperation, SubscribeTarget,
     };
     use oxabl_flow::dataflow::{Analysis, Direction, solve};
     use oxabl_flow::{
@@ -195,6 +195,7 @@ mod paths {
 
     /// What the walk of the program learned.
     pub(super) struct Paths<'a> {
+        pools: &'a AstPools,
         units: UnitBuilder<'a>,
         uses: FxHashMap<NodeId, Use>,
         no_undo: FxHashSet<NodeId>,
@@ -216,11 +217,19 @@ mod paths {
         /// `tokens` are the ones `program` was parsed from, or none.
         pub(super) fn new(
             program: &'a [Statement],
+            pools: &'a AstPools,
             source: &'a str,
             tokens: &'a [oxabl_lexer::Token],
         ) -> Self {
             let mut paths = Paths {
-                units: UnitBuilder::with_tokens(program, source, tokens, &FlowOptions::default()),
+                pools,
+                units: UnitBuilder::with_tokens(
+                    program,
+                    pools,
+                    source,
+                    tokens,
+                    &FlowOptions::default(),
+                ),
                 uses: FxHashMap::default(),
                 no_undo: FxHashSet::default(),
                 literal_writes: FxHashSet::default(),
@@ -377,7 +386,13 @@ mod paths {
 
         fn stmt(&mut self, s: &Statement) {
             let id = s.id;
-            let read = |this: &mut Self, e: &Expression| this.expr(e, id);
+            let read = |this: &mut Self, e: ExprId| this.expr(e, id);
+            let reads = |this: &mut Self, list: ExprList| {
+                let pools = this.pools;
+                for &e in pools.exprs(list) {
+                    this.expr(e, id);
+                }
+            };
             match &s.kind {
                 SK::VariableDeclaration {
                     initial_value,
@@ -388,48 +403,46 @@ mod paths {
                         self.no_undo.insert(id);
                     }
                     if let Some(e) = initial_value {
-                        read(self, e);
+                        read(self, *e);
                     }
                 }
                 SK::Assignment { target, value } => {
-                    if matches!(target.kind, ExpressionKind::Identifier(_))
-                        && matches!(value.kind, ExpressionKind::Literal(_))
+                    if matches!(self.pools.expr(*target).kind, ExpressionKind::Identifier(_))
+                        && matches!(self.pools.expr(*value).kind, ExpressionKind::Literal(_))
                     {
                         self.literal_writes.insert(id);
                     }
-                    self.target(target, id);
-                    read(self, value);
+                    self.target(*target, id);
+                    read(self, *value);
                 }
                 SK::Assign { assignments } => {
                     for pair in assignments {
-                        self.target(&pair.target, id);
-                        read(self, &pair.value);
+                        self.target(pair.target, id);
+                        read(self, pair.value);
                     }
                 }
                 SK::BufferCopy { assignments, .. } => {
                     for pair in assignments {
-                        self.target(&pair.target, id);
-                        read(self, &pair.value);
+                        self.target(pair.target, id);
+                        read(self, pair.value);
                     }
                 }
-                SK::ExpressionStatement(e) | SK::Throw(e) | SK::Return(Some(e)) => read(self, e),
+                SK::ExpressionStatement(e) | SK::Throw(e) | SK::Return(Some(e)) => read(self, *e),
                 SK::DeleteObject {
                     target,
                     extra_targets,
                     ..
                 } => {
-                    read(self, target);
-                    for e in extra_targets {
-                        read(self, e);
-                    }
+                    read(self, *target);
+                    reads(self, *extra_targets);
                 }
-                SK::ReleaseObject { target, .. } => read(self, target),
+                SK::ReleaseObject { target, .. } => read(self, *target),
                 SK::CreateWidgetPool { name, .. } | SK::DeleteWidgetPool { name, .. } => {
                     if let Some(e) = name {
-                        read(self, e);
+                        read(self, *e);
                     }
                 }
-                SK::PreprocMessage { expression } => read(self, expression),
+                SK::PreprocMessage { expression } => read(self, *expression),
                 SK::Do {
                     from,
                     to,
@@ -440,11 +453,9 @@ mod paths {
                     ..
                 } => {
                     for e in [from, to, by, while_condition].into_iter().flatten() {
-                        read(self, e);
+                        read(self, *e);
                     }
-                    for e in on_actions {
-                        read(self, e);
-                    }
+                    reads(self, *on_actions);
                     self.walk(body);
                 }
                 SK::Repeat {
@@ -453,11 +464,9 @@ mod paths {
                     body,
                 } => {
                     if let Some(e) = while_condition {
-                        read(self, e);
+                        read(self, *e);
                     }
-                    for e in on_actions {
-                        read(self, e);
-                    }
+                    reads(self, *on_actions);
                     self.walk(body);
                 }
                 SK::ForEach {
@@ -467,11 +476,9 @@ mod paths {
                     ..
                 } => {
                     if let Some(e) = where_clause {
-                        read(self, e);
+                        read(self, *e);
                     }
-                    for e in on_actions {
-                        read(self, e);
-                    }
+                    reads(self, *on_actions);
                     self.walk(body);
                 }
                 SK::If {
@@ -479,7 +486,7 @@ mod paths {
                     then_branch,
                     else_branch,
                 } => {
-                    read(self, condition);
+                    read(self, *condition);
                     self.stmt(then_branch);
                     if let Some(e) = else_branch {
                         self.stmt(e);
@@ -490,11 +497,9 @@ mod paths {
                     when_branches,
                     otherwise,
                 } => {
-                    read(self, expression);
+                    read(self, *expression);
                     for w in when_branches {
-                        for v in &w.values {
-                            read(self, v);
-                        }
+                        reads(self, w.values);
                         self.walk(&w.body);
                     }
                     if let Some(o) = otherwise {
@@ -507,7 +512,7 @@ mod paths {
                     ..
                 } => {
                     for e in [key_value, where_clause].into_iter().flatten() {
-                        read(self, e);
+                        read(self, *e);
                     }
                 }
                 SK::Run {
@@ -520,23 +525,23 @@ mod paths {
                     ..
                 } => {
                     if let RunTarget::Dynamic(e) = target {
-                        read(self, e);
+                        read(self, *e);
                     }
                     for a in arguments {
-                        read(self, &a.expression);
+                        read(self, a.expression);
                     }
                     for e in [in_handle, persistent_handle, async_handle, event_procedure]
                         .into_iter()
                         .flatten()
                     {
-                        read(self, e);
+                        read(self, *e);
                     }
                 }
                 SK::Display { items, .. } => {
                     for item in items {
-                        read(self, &item.expression);
+                        read(self, item.expression);
                         if let Some(w) = &item.when_condition {
-                            read(self, w);
+                            read(self, *w);
                         }
                     }
                 }
@@ -548,16 +553,15 @@ mod paths {
                 | SK::Disable { items }
                 | SK::Hide { items, .. }
                 | SK::View { items, .. } => {
-                    for e in items {
-                        read(self, e);
-                    }
+                    reads(self, *items);
                 }
                 SK::Export {
                     delimiter, items, ..
                 } => {
-                    for e in delimiter.iter().chain(items) {
-                        read(self, e);
+                    if let Some(e) = delimiter {
+                        read(self, *e);
                     }
+                    reads(self, *items);
                 }
                 SK::Pause {
                     duration: a,
@@ -568,11 +572,11 @@ mod paths {
                     target: b,
                 } => {
                     for e in a.iter().chain(b) {
-                        read(self, e);
+                        read(self, *e);
                     }
                 }
-                SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, e),
-                SK::Get { query, .. } => read(self, query),
+                SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, *e),
+                SK::Get { query, .. } => read(self, *query),
                 SK::CopyLob {
                     source,
                     target,
@@ -580,31 +584,26 @@ mod paths {
                     options,
                     ..
                 } => {
-                    for e in std::iter::once(source).chain(options) {
-                        read(self, e);
-                    }
+                    read(self, *source);
+                    reads(self, *options);
                     if *target_file {
-                        read(self, target);
+                        read(self, *target);
                     } else {
-                        self.target(target, id);
+                        self.target(*target, id);
                     }
                 }
                 SK::Color { items, .. } => {
-                    for e in items {
-                        read(self, e);
-                    }
+                    reads(self, *items);
                 }
                 SK::Accumulate { expression, breaks } => {
-                    for e in std::iter::once(expression).chain(breaks) {
-                        read(self, e);
-                    }
+                    read(self, *expression);
+                    reads(self, *breaks);
                 }
                 SK::Reposition {
                     query, operands, ..
                 } => {
-                    for e in std::iter::once(query).chain(operands) {
-                        read(self, e);
-                    }
+                    read(self, *query);
+                    reads(self, *operands);
                 }
                 SK::Close {
                     target,
@@ -612,12 +611,12 @@ mod paths {
                     handle,
                     ..
                 } => {
-                    read(self, target);
+                    read(self, *target);
                     if let Some(e) = status {
-                        self.target(e, id);
+                        self.target(*e, id);
                     }
                     if let Some(e) = handle {
-                        read(self, e);
+                        read(self, *e);
                     }
                 }
                 SK::Update {
@@ -626,27 +625,24 @@ mod paths {
                 | SK::Set {
                     targets, options, ..
                 } => {
-                    for e in targets {
+                    for &e in self.pools.exprs(*targets) {
                         self.target(e, id);
                     }
-                    for e in options {
-                        read(self, e);
-                    }
+                    reads(self, *options);
                 }
                 SK::PromptFor {
                     targets, options, ..
                 } => {
-                    for e in targets.iter().chain(options) {
-                        read(self, e);
-                    }
+                    reads(self, *targets);
+                    reads(self, *options);
                 }
                 SK::Import {
                     delimiter, targets, ..
                 } => {
                     if let Some(e) = delimiter {
-                        read(self, e);
+                        read(self, *e);
                     }
-                    for e in targets {
+                    for &e in self.pools.exprs(*targets) {
                         self.target(e, id);
                     }
                 }
@@ -655,12 +651,12 @@ mod paths {
                     from_handle,
                     arguments,
                 } => {
-                    read(self, event_name);
+                    read(self, *event_name);
                     if let Some(e) = from_handle {
-                        read(self, e);
+                        read(self, *e);
                     }
                     for a in arguments {
-                        read(self, &a.expression);
+                        read(self, a.expression);
                     }
                 }
                 SK::Subscribe {
@@ -670,11 +666,11 @@ mod paths {
                     ..
                 } => {
                     if let Some(e) = subscriber {
-                        read(self, e);
+                        read(self, *e);
                     }
-                    read(self, event_name);
+                    read(self, *event_name);
                     if let SubscribeTarget::InHandle(e) = target {
-                        read(self, e);
+                        read(self, *e);
                     }
                 }
                 SK::Unsubscribe {
@@ -683,7 +679,7 @@ mod paths {
                     in_handle,
                 } => {
                     for e in [subscriber, event_name, in_handle].into_iter().flatten() {
-                        read(self, e);
+                        read(self, *e);
                     }
                 }
                 SK::StreamIo { operation, .. } => match operation {
@@ -692,7 +688,7 @@ mod paths {
                             read(self, e);
                         }
                     }
-                    StreamOperation::Through(e) => read(self, e),
+                    StreamOperation::Through(e) => read(self, *e),
                     StreamOperation::Close => {}
                 },
                 SK::Create {
@@ -709,18 +705,18 @@ mod paths {
                         },
                     ..
                 } => {
-                    self.target(handle, id);
+                    self.target(*handle, id);
                     if let Some(e) = for_table {
-                        read(self, e);
+                        read(self, *e);
                     }
-                    for e in [widget_pool.as_ref(), class.as_ref()].into_iter().flatten() {
-                        read(self, e);
+                    for e in [widget_pool, class].into_iter().flatten() {
+                        read(self, *e);
                     }
-                    if let Some(file) = connect.as_ref().and_then(|c| c.file.as_ref()) {
+                    if let Some(file) = connect.as_ref().and_then(|c| c.file) {
                         read(self, file);
                     }
                     for a in assignments {
-                        read(self, &a.value);
+                        read(self, a.value);
                     }
                     for t in triggers {
                         match &t.action {
@@ -730,14 +726,10 @@ mod paths {
                                 in_handle,
                                 arguments,
                             } => {
-                                for e in procedure
-                                    .expression()
-                                    .into_iter()
-                                    .chain(in_handle.iter())
-                                    .chain(arguments)
-                                {
+                                for e in procedure.expression().into_iter().chain(*in_handle) {
                                     read(self, e);
                                 }
+                                reads(self, *arguments);
                             }
                             OnAction::Revert => {}
                         }
@@ -752,14 +744,10 @@ mod paths {
                             in_handle,
                             arguments,
                         } => {
-                            for e in procedure
-                                .expression()
-                                .into_iter()
-                                .chain(in_handle.iter())
-                                .chain(arguments)
-                            {
+                            for e in procedure.expression().into_iter().chain(*in_handle) {
                                 read(self, e);
                             }
+                            reads(self, *arguments);
                         }
                         OnAction::Revert => {}
                     },
@@ -813,25 +801,30 @@ mod paths {
 
         /// An assignment target: a bare name or a subscripted one is a write;
         /// anything inside it (a subscript, a qualifier) is a read.
-        fn target(&mut self, e: &Expression, stmt: NodeId) {
+        fn target(&mut self, id: ExprId, stmt: NodeId) {
+            let pools = self.pools;
+            let e = pools.expr(id);
             match &e.kind {
                 ExpressionKind::Identifier(_) => {
                     self.uses.insert(e.id, Use { stmt, write: true });
                 }
                 ExpressionKind::ArrayAccess { array, index }
-                    if matches!(array.kind, ExpressionKind::Identifier(_)) =>
+                    if matches!(pools.expr(*array).kind, ExpressionKind::Identifier(_)) =>
                 {
-                    self.uses.insert(array.id, Use { stmt, write: true });
-                    self.expr(index, stmt);
+                    self.uses
+                        .insert(pools.expr(*array).id, Use { stmt, write: true });
+                    self.expr(*index, stmt);
                 }
-                _ => self.expr(e, stmt),
+                _ => self.expr(id, stmt),
             }
         }
 
         /// A read of `e` and everything in it.
-        fn expr(&mut self, e: &Expression, stmt: NodeId) {
+        fn expr(&mut self, id: ExprId, stmt: NodeId) {
+            let pools = self.pools;
+            let e = pools.expr(id);
             self.uses.insert(e.id, Use { stmt, write: false });
-            let mut sub = |x: &Expression| self.expr(x, stmt);
+            let mut sub = |x: &ExprId| self.expr(*x, stmt);
             match &e.kind {
                 ExpressionKind::Add(a, b)
                 | ExpressionKind::Minus(a, b)
@@ -864,17 +857,13 @@ mod paths {
                 }
                 ExpressionKind::FunctionCall { arguments, .. }
                 | ExpressionKind::New { arguments, .. } => {
-                    for a in arguments {
-                        sub(a);
-                    }
+                    pools.exprs(*arguments).iter().for_each(sub);
                 }
                 ExpressionKind::MethodCall {
                     object, arguments, ..
                 } => {
                     sub(object);
-                    for a in arguments {
-                        sub(a);
-                    }
+                    pools.exprs(*arguments).iter().for_each(sub);
                 }
                 ExpressionKind::CanFind { where_clause, .. } => {
                     if let Some(w) = where_clause {
@@ -965,11 +954,11 @@ mod paths {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::test_ast;
     use oxabl_ast::{
         DataType, Expression, ExpressionKind, Identifier, IntegerLiteral, Literal, Span, Statement,
         StatementKind, TypeSource,
     };
-    use oxabl_common::FileId;
     use oxabl_schema::Schema;
     use oxabl_semantic::analyze_file;
 
@@ -979,7 +968,7 @@ mod tests {
                 start: 0,
                 end: n.len() as u32,
             },
-            name: n.into(),
+            name: test_ast::name(n),
         }
     }
     fn stmt(k: StatementKind) -> Statement {
@@ -1004,15 +993,19 @@ mod tests {
     }
     fn assign(n: &str) -> Statement {
         stmt(StatementKind::Assignment {
-            target: ident_expr(n),
-            value: Expression::new(ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 0, end: 1 },
-                value: 1,
-            }))),
+            target: test_ast::expr(ident_expr(n)),
+            value: test_ast::expr(Expression::new(ExpressionKind::Literal(Literal::Integer(
+                IntegerLiteral {
+                    span: Span { start: 0, end: 1 },
+                    value: 1,
+                },
+            )))),
         })
     }
     fn read(n: &str) -> Statement {
-        stmt(StatementKind::ExpressionStatement(ident_expr(n)))
+        stmt(StatementKind::ExpressionStatement(test_ast::expr(
+            ident_expr(n),
+        )))
     }
     fn do_block(body: Vec<Statement>) -> Statement {
         stmt(StatementKind::Do {
@@ -1022,15 +1015,16 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
-            on_actions: Vec::new(),
+            on_actions: oxabl_ast::ExprList::EMPTY,
             body,
         })
     }
     fn lint(stmts: Vec<Statement>) -> Vec<Diagnostic> {
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
-        let sem = analyze_file(&stmts, &ctx);
-        run(&stmts, &sem, &ctx)
+        test_ast::with_ctx("", &schema, |ctx| {
+            let sem = analyze_file(&stmts, ctx);
+            run(&stmts, &sem, ctx)
+        })
     }
 
     #[test]

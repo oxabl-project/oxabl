@@ -7,7 +7,7 @@
 //! request reads. The result is a prefix of what [`oxabl_lexer::tokenize`]
 //! gives for the text, and holds all that the request reads.
 
-use std::borrow::Cow;
+use std::ops::Index;
 
 use oxabl_lexer::{Kind, Lexer, Token};
 
@@ -21,20 +21,113 @@ pub struct Prior<'p> {
     pub tokens: &'p [Token],
 }
 
+/// Zero-copy view of a request's token stream: an unchanged prefix borrowed
+/// from `prior` followed by the freshly lexed tail.
+pub(crate) struct TokenStream<'p> {
+    prefix: &'p [Token],
+    tail: Vec<Token>,
+    /// `(common_prefix, common_suffix)` between `prior.text` and the request
+    /// text when they differ, reused by `base::map` so it does not rescan.
+    diff: Option<(usize, usize)>,
+}
+
+impl<'p> TokenStream<'p> {
+    pub(crate) fn from_slice(tokens: &'p [Token]) -> Self {
+        Self {
+            prefix: tokens,
+            tail: Vec::new(),
+            diff: None,
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.prefix.len() + self.tail.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last(&self) -> Option<&Token> {
+        self.tail.last().or_else(|| self.prefix.last())
+    }
+
+    /// Cached `(common_prefix, common_suffix)` if `of_request` already diffed
+    /// `prior.text` against the request text.
+    pub(crate) fn diff(&self) -> Option<(usize, usize)> {
+        self.diff
+    }
+
+    pub(crate) fn partition_point(&self, mut pred: impl FnMut(&Token) -> bool) -> usize {
+        if self.prefix.is_empty() {
+            return self.tail.partition_point(pred);
+        }
+        if let Some(last_prefix) = self.prefix.last()
+            && pred(last_prefix)
+        {
+            return self.prefix.len() + self.tail.partition_point(pred);
+        }
+        self.prefix.partition_point(pred)
+    }
+
+    /// Iterate over tokens in `0..end`, supporting `.rev()`.
+    pub(crate) fn iter_to(&self, end: usize) -> impl DoubleEndedIterator<Item = &Token> {
+        let p_end = end.min(self.prefix.len());
+        let t_end = end.saturating_sub(self.prefix.len()).min(self.tail.len());
+        self.prefix[..p_end].iter().chain(self.tail[..t_end].iter())
+    }
+
+    /// Iterate over tokens in `start..self.len()`, supporting `.rev()`.
+    pub(crate) fn iter_from(&self, start: usize) -> impl DoubleEndedIterator<Item = &Token> {
+        let p_start = start.min(self.prefix.len());
+        let t_start = start.saturating_sub(self.prefix.len()).min(self.tail.len());
+        self.prefix[p_start..]
+            .iter()
+            .chain(self.tail[t_start..].iter())
+    }
+
+    /// Iterate over tokens in `start..end`, supporting `.rev()`.
+    pub(crate) fn iter_range(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> impl DoubleEndedIterator<Item = &Token> {
+        let p_len = self.prefix.len();
+        let p_start = start.min(p_len);
+        let p_end = end.min(p_len).max(p_start);
+        let t_start = start.saturating_sub(p_len).min(self.tail.len());
+        let t_end = end.saturating_sub(p_len).min(self.tail.len()).max(t_start);
+        self.prefix[p_start..p_end]
+            .iter()
+            .chain(self.tail[t_start..t_end].iter())
+    }
+}
+
+impl Index<usize> for TokenStream<'_> {
+    type Output = Token;
+
+    #[inline]
+    fn index(&self, index: usize) -> &Token {
+        let p_len = self.prefix.len();
+        if index < p_len {
+            &self.prefix[index]
+        } else {
+            &self.tail[index - p_len]
+        }
+    }
+}
+
 /// The tokens of `text`, which has the cursor at `cursor`. Without `prior`,
 /// all of them.
-pub(crate) fn of_request<'p>(
-    text: &str,
-    cursor: u32,
-    prior: Option<Prior<'p>>,
-) -> Cow<'p, [Token]> {
+pub(crate) fn of_request<'p>(text: &str, cursor: u32, prior: Option<Prior<'p>>) -> TokenStream<'p> {
     let Some(prior) = prior else {
-        return Cow::Owned(oxabl_lexer::tokenize(text));
+        return TokenStream {
+            prefix: &[],
+            tail: oxabl_lexer::tokenize(text),
+            diff: None,
+        };
     };
-    if prior.text == text {
-        return Cow::Borrowed(prior.tokens);
-    }
     let (prefix, suffix) = common_ends(prior.text.as_bytes(), text.as_bytes());
+    if prefix == prior.text.len() && prefix == text.len() {
+        return TokenStream::from_slice(prior.tokens);
+    }
     // The bytes that a request reads after the cursor, and the bytes that the
     // edit changed: all of them are lexed.
     let bytes = text.as_bytes();
@@ -45,13 +138,12 @@ pub(crate) fn of_request<'p>(
     let need = word_end.max(text.len() - suffix);
     let keep = reusable(prior, prefix);
     let from = keep.checked_sub(1).map_or(0, |last| prior.tokens[last].end);
-    let mut tokens = Vec::with_capacity(keep + 64);
-    tokens.extend_from_slice(&prior.tokens[..keep]);
+    let mut tail = Vec::with_capacity(64);
     let mut after = 0;
     for token in Lexer::starting_at(text, from) {
         let last = token.kind == Kind::Eof;
         let counts = token.start >= need && token.kind != Kind::Comment;
-        tokens.push(token);
+        tail.push(token);
         if last {
             break;
         }
@@ -60,7 +152,11 @@ pub(crate) fn of_request<'p>(
             break;
         }
     }
-    Cow::Owned(tokens)
+    TokenStream {
+        prefix: &prior.tokens[..keep],
+        tail,
+        diff: Some((prefix, suffix)),
+    }
 }
 
 /// The non-comment tokens that a request reads at and after the word: the
@@ -68,17 +164,31 @@ pub(crate) fn of_request<'p>(
 const AFTER: usize = 2;
 
 /// The length of the common start of `old` and `new`, and of their common end
-/// that does not overlap it.
+/// that does not overlap it. Compares 8-byte chunks first to avoid per-byte
+/// loop overhead on large documents.
 pub(crate) fn common_ends(old: &[u8], new: &[u8]) -> (usize, usize) {
-    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-    let room = old.len().min(new.len()) - prefix;
-    let suffix = old
-        .iter()
-        .rev()
-        .zip(new.iter().rev())
-        .take(room)
-        .take_while(|(a, b)| a == b)
-        .count();
+    let min_len = old.len().min(new.len());
+    let mut prefix = 0;
+    while prefix + 8 <= min_len && old[prefix..prefix + 8] == new[prefix..prefix + 8] {
+        prefix += 8;
+    }
+    while prefix < min_len && old[prefix] == new[prefix] {
+        prefix += 1;
+    }
+
+    let room = min_len - prefix;
+    let mut suffix = 0;
+    let old_len = old.len();
+    let new_len = new.len();
+    while suffix + 8 <= room
+        && old[old_len - suffix - 8..old_len - suffix]
+            == new[new_len - suffix - 8..new_len - suffix]
+    {
+        suffix += 8;
+    }
+    while suffix < room && old[old_len - 1 - suffix] == new[new_len - 1 - suffix] {
+        suffix += 1;
+    }
     (prefix, suffix)
 }
 
@@ -153,7 +263,7 @@ mod tests {
 
     /// What a request reads: all tokens up to the end of the edit, and the
     /// two non-comment tokens after.
-    fn covered(full: &[Token], tokens: &[Token], to: usize) -> bool {
+    fn covered(full: &[Token], tokens: &TokenStream<'_>, to: usize) -> bool {
         let first = full
             .iter()
             .position(|token| token.start >= to)
@@ -180,7 +290,8 @@ mod tests {
                     let full = oxabl_lexer::tokenize(&new);
                     let tokens = of_request(&new, cursor as u32, Some(prior));
                     assert!(
-                        tokens.len() <= full.len() && tokens[..] == full[..tokens.len()],
+                        tokens.len() <= full.len()
+                            && tokens.iter_from(0).eq(full[..tokens.len()].iter()),
                         "{put:?} at {at} (cut {cut}) of {old:?}: not a prefix of the tokens"
                     );
                     assert!(
@@ -200,6 +311,8 @@ mod tests {
             text,
             tokens: &tokens,
         };
-        assert!(matches!(of_request(text, 3, Some(prior)), Cow::Borrowed(_)));
+        let stream = of_request(text, 3, Some(prior));
+        assert!(stream.tail.is_empty());
+        assert_eq!(stream.prefix.len(), tokens.len());
     }
 }

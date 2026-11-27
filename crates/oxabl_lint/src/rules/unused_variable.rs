@@ -196,11 +196,11 @@ fn backing_read_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::test_ast;
     use oxabl_ast::{
         AccessModifier, DataType, Identifier, ParameterDirection, ParameterType, Span, Statement,
         StatementKind, TypeSource,
     };
-    use oxabl_common::FileId;
     use oxabl_schema::Schema;
     use oxabl_semantic::analyze_file;
 
@@ -210,7 +210,7 @@ mod tests {
                 start: 0,
                 end: n.len() as u32,
             },
-            name: n.into(),
+            name: test_ast::name(n),
         }
     }
     fn stmt(k: StatementKind) -> Statement {
@@ -243,9 +243,10 @@ mod tests {
     }
     fn analyze_and_lint(stmts: Vec<Statement>) -> Vec<Diagnostic> {
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
-        let sem = analyze_file(&stmts, &ctx);
-        run(&stmts, &sem, &ctx)
+        test_ast::with_ctx("", &schema, |ctx| {
+            let sem = analyze_file(&stmts, ctx);
+            run(&stmts, &sem, ctx)
+        })
     }
 
     #[test]
@@ -285,7 +286,7 @@ mod tests {
         let u = oxabl_ast::Expression::new(oxabl_ast::ExpressionKind::Identifier(id("x")));
         let diags = analyze_and_lint(vec![
             var_decl("x", DataType::Integer),
-            stmt(StatementKind::ExpressionStatement(u)),
+            stmt(StatementKind::ExpressionStatement(test_ast::expr(u))),
         ]);
         assert!(diags.is_empty());
     }
@@ -422,7 +423,9 @@ mod tests {
                 return_type: None,
                 name: id("m"),
                 parameters: vec![param("p", ParameterDirection::Input)],
-                body: vec![stmt(StatementKind::ExpressionStatement(use_p))],
+                body: vec![stmt(StatementKind::ExpressionStatement(test_ast::expr(
+                    use_p,
+                )))],
             })],
         })];
         assert!(analyze_and_lint(stmts).is_empty());
@@ -442,11 +445,13 @@ mod tests {
         let stmts = vec![
             var_decl("x", DataType::Integer),
             stmt(StatementKind::Assignment {
-                target: Expression::new(ExpressionKind::Identifier(id("x"))),
-                value: Expression::new(ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 0, end: 1 },
-                    value: 1,
-                }))),
+                target: test_ast::expr(Expression::new(ExpressionKind::Identifier(id("x")))),
+                value: test_ast::expr(Expression::new(ExpressionKind::Literal(Literal::Integer(
+                    IntegerLiteral {
+                        span: Span { start: 0, end: 1 },
+                        value: 1,
+                    },
+                )))),
             }),
         ];
         let diags = analyze_and_lint(stmts);
@@ -472,12 +477,12 @@ mod tests {
             var_decl("i", DataType::Integer),
             stmt(StatementKind::Do {
                 loop_var: Some(id("i")),
-                from: Some(int_lit(1, 1)),
-                to: Some(int_lit(10, 2)),
+                from: Some(test_ast::expr(int_lit(1, 1))),
+                to: Some(test_ast::expr(int_lit(10, 2))),
                 by: None,
                 while_condition: None,
                 transaction: false,
-                on_actions: Vec::new(),
+                on_actions: oxabl_ast::ExprList::EMPTY,
                 body: vec![],
             }),
         ];
@@ -505,11 +510,11 @@ mod tests {
                 target: RunTarget::literal("proc"),
                 arguments: vec![RunArgument {
                     direction: dir,
-                    expression: Expression::with_id(
+                    expression: test_ast::expr(Expression::with_id(
                         nid,
                         Span { start: 0, end: 1 },
                         ExpressionKind::Identifier(id("x")),
-                    ),
+                    )),
                 }],
                 in_handle: None,
                 persistent: false,
@@ -555,8 +560,8 @@ mod tests {
         // rather than a double-emit.
         use oxabl_ast::{Expression, ExpressionKind};
         let mut stmts = var_plus_run_arg(ParameterDirection::Output);
-        stmts.push(stmt(StatementKind::ExpressionStatement(Expression::new(
-            ExpressionKind::Identifier(id("x")),
+        stmts.push(stmt(StatementKind::ExpressionStatement(test_ast::expr(
+            Expression::new(ExpressionKind::Identifier(id("x"))),
         ))));
         let diags = analyze_and_lint(stmts);
         assert!(diags.is_empty(), "unexpected diags: {diags:?}");
@@ -640,13 +645,13 @@ mod tests {
         // this rule starts false-positiving again and this test is the alarm.
         use oxabl_ast::{Expression, ExpressionKind};
         let fa = Expression::new(ExpressionKind::FieldAccess {
-            qualifier: Box::new(Expression::new(ExpressionKind::Identifier(id("tt")))),
+            qualifier: test_ast::expr(Expression::new(ExpressionKind::Identifier(id("tt")))),
             field: id("f"),
         });
         let diags = analyze_and_lint(vec![
             temp_table("tt"),
             handle_param("tt", oxabl_ast::HandleParamKind::Table),
-            stmt(StatementKind::ExpressionStatement(fa)),
+            stmt(StatementKind::ExpressionStatement(test_ast::expr(fa))),
         ]);
         assert!(
             diags.is_empty(),
@@ -795,14 +800,15 @@ mod tests {
         use oxabl_schema::test_support::customer_schema;
 
         let fa = Expression::new(ExpressionKind::FieldAccess {
-            qualifier: Box::new(Expression::new(ExpressionKind::Identifier(id("Customer")))),
+            qualifier: test_ast::expr(Expression::new(ExpressionKind::Identifier(id("Customer")))),
             field: id("Name"),
         });
-        let stmts = vec![stmt(StatementKind::ExpressionStatement(fa))];
+        let stmts = vec![stmt(StatementKind::ExpressionStatement(test_ast::expr(fa)))];
         let schema = customer_schema();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
-        let sem = analyze_file(&stmts, &ctx);
-        let diags = run(&stmts, &sem, &ctx);
+        let diags = test_ast::with_ctx("", &schema, |ctx| {
+            let sem = analyze_file(&stmts, ctx);
+            run(&stmts, &sem, ctx)
+        });
         assert!(diags.is_empty(), "unexpected diags: {diags:?}");
     }
 }

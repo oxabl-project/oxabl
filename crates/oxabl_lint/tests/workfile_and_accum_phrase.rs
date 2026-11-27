@@ -20,7 +20,7 @@ fn lint(source: &str) -> Vec<Diagnostic> {
     let program = Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let schema = schema_from_df(DF);
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     ctx.schema_loaded = true;
     let sem = analyze_file(&program.statements, &ctx);
     lint_file(&program.statements, &sem, &ctx)

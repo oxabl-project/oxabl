@@ -63,7 +63,7 @@ pub fn run_with(rule: RuleFn, source: &str, setup: &Setup) -> Vec<Diagnostic> {
         program.errors
     );
     let schema = Schema::empty();
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema)
+    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
         .with_tokens(&tokens)
         .with_elided_includes(setup.elided_includes)
         .with_include_regions(setup.include_regions)

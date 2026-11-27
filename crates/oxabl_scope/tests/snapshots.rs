@@ -14,7 +14,7 @@ fn dump(source: &str, schema: Option<&oxabl_schema::Schema>) -> String {
         "fixture does not parse cleanly: {:?}",
         program.errors
     );
-    oxabl_scope::analyze_file(&program.statements, source, schema).dump(source)
+    oxabl_scope::analyze_file(&program.statements, &program.pools, source, schema).dump(source)
 }
 
 #[test]

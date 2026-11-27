@@ -53,18 +53,18 @@ fn model() -> Vec<ModelSearch> {
     let program = oxabl_parser::Parser::new(&tokens, &source).parse_program();
     assert!(program.errors.is_empty());
     let options = ScopeOptions::default();
-    let flow = oxabl_flow::build_file_with(&program.statements, &source, &options.flow);
+    let flow =
+        oxabl_flow::build_file_with(&program.statements, &program.pools, &source, &options.flow);
     let scopes = oxabl_scope::analyze_flow(
-        &program.statements,
-        &source,
-        &tokens,
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, &source, &tokens),
         &flow,
         Some(&schema),
         &options,
     );
-    let calls = FileCalls::extract(&program.statements, &source, &tokens);
+    let calls = FileCalls::extract(&program.statements, &program.pools, &source, &tokens);
     let effects = oxabl_effects::analyze_file(
         &program.statements,
+        &program.pools,
         &source,
         &tokens,
         &flow,

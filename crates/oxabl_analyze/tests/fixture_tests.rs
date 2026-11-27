@@ -23,14 +23,15 @@ fn dump_fixture(name: &str) -> Value {
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let tokens = tokenize(&source);
     let mut parser = Parser::new(&tokens, &source);
-    let program = parser
+    let parsed = parser
         .parse_statements()
         .unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e.message));
+    let program = &parsed.statements;
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::new(1), &source, &schema);
-    let sem = analyze_file(&program, &ctx);
+    let ctx = AnalysisContext::new(FileId::new(1), &source, &schema, &parsed.pools);
+    let sem = analyze_file(program, &ctx);
     dump_json(
-        &program,
+        program,
         &sem,
         &ctx,
         true,

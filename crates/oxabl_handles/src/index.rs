@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
 
 use oxabl_ast::{
-    AccessModifier, DataType, Identifier, NodeId, OnAction, OnKind, ParameterDirection,
+    AccessModifier, AstPools, DataType, Identifier, NodeId, OnAction, OnKind, ParameterDirection,
     ParameterType, Statement, StatementKind as SK, TypeSource,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -173,6 +173,7 @@ struct UnitFacts<'a> {
 }
 
 pub(crate) struct FileIndex<'a> {
+    pub(crate) pools: &'a AstPools,
     /// The statement facts of each unit that creates something, by the
     /// unit's defining statement.
     units: FxHashMap<NodeId, FxHashMap<NodeId, StmtFacts<'a>>>,
@@ -212,8 +213,9 @@ pub(crate) struct FileIndex<'a> {
 }
 
 impl<'a> FileIndex<'a> {
-    pub(crate) fn build(program: &'a [Statement], src: &str) -> Self {
+    pub(crate) fn build(program: &'a [Statement], pools: &'a AstPools, src: &str) -> Self {
         let mut ix = FileIndex {
+            pools,
             units: FxHashMap::default(),
             cur: UnitFacts::default(),
             scopes: FxHashMap::default(),
@@ -491,7 +493,9 @@ impl<'a> FileIndex<'a> {
                     }
                 }
                 Use::Opaque(v) if holds(&holders, v) => Passed::Unknown,
-                Use::Skipped(names) if names.iter().any(|n| holds(&holders, &n.name)) => {
+                Use::Skipped(names)
+                    if names.iter().any(|n| holds(&holders, self.pools.ident(*n))) =>
+                {
                     Passed::Unknown
                 }
                 Use::Pass { var, callee, pos } if holds(&holders, var) => {
@@ -536,7 +540,7 @@ impl<'a> FileIndex<'a> {
 
     fn callable(&mut self, name: &'a Identifier, kind: CallableKind, unit: NodeId, runs: Runs) {
         self.callables
-            .entry(Name(&name.name))
+            .entry(Name(self.pools.ident(*name)))
             .or_default()
             .push(Callable { kind, unit, runs });
     }
@@ -554,7 +558,7 @@ impl<'a> FileIndex<'a> {
             .entry(unit)
             .or_default()
             .statics
-            .insert(Name(&name.name));
+            .insert(Name(self.pools.ident(*name)));
     }
 
     /// Keep what a unit that a call can run does with variables.
@@ -605,7 +609,7 @@ impl<'a> FileIndex<'a> {
     }
 
     fn visit(&mut self, s: &'a Statement, unit: NodeId, member: bool, src: &str) {
-        let mut effects = events::effects(s, src);
+        let mut effects = events::effects(s, self.pools, src);
         self.resolve_copy_lob(unit, &mut effects);
         if !effects.is_empty() {
             self.note(s.id, unit, &effects);
@@ -613,9 +617,9 @@ impl<'a> FileIndex<'a> {
                 self.record_uses(unit, &effects);
             }
         }
-        let safe = events::cannot_raise(s);
+        let safe = events::cannot_raise(s, self.pools);
         let guards = match &s.kind {
-            SK::If { condition, .. } => events::guards(condition),
+            SK::If { condition, .. } => events::guards(*condition, self.pools),
             _ => Guards::new(),
         };
         if !effects.is_empty() || safe || !guards.is_empty() {
@@ -647,7 +651,7 @@ impl<'a> FileIndex<'a> {
                 } else {
                     VarClass::Local
                 };
-                self.define(unit, &name.name, class, var_type(type_source));
+                self.define(unit, self.pools.ident(*name), class, var_type(type_source));
             }
             SK::DefineParameter {
                 direction,
@@ -662,15 +666,13 @@ impl<'a> FileIndex<'a> {
                         (name, VarType::Handle, true)
                     }
                 };
-                self.params
-                    .entry(unit)
-                    .or_default()
-                    .push((&name.name, takes));
+                let name_str = self.pools.ident(*name);
+                self.params.entry(unit).or_default().push((name_str, takes));
                 let class = match direction {
                     ParameterDirection::Input => VarClass::Local,
                     _ => VarClass::OutputParameter,
                 };
-                self.define(unit, &name.name, class, ty);
+                self.define(unit, name_str, class, ty);
             }
             SK::DefineBuffer { name, .. }
             | SK::DefineTempTable { name, .. }
@@ -749,7 +751,12 @@ impl<'a> FileIndex<'a> {
                 ..
             } => {
                 if member {
-                    self.define(unit, &name.name, VarClass::Member, data_var_type(data_type));
+                    self.define(
+                        unit,
+                        self.pools.ident(*name),
+                        VarClass::Member,
+                        data_var_type(data_type),
+                    );
                 }
                 self.unit(s.id, unit, |ix| {
                     ix.walk(set_parameters, s.id, false, src);
@@ -765,7 +772,7 @@ impl<'a> FileIndex<'a> {
                 is_final,
                 ..
             } => {
-                self.class_name = Some(&name.name);
+                self.class_name = Some(self.pools.ident(*name));
                 self.class_final = *is_final;
                 self.class_pool |= *use_widget_pool;
                 self.walk(body, unit, true, src)

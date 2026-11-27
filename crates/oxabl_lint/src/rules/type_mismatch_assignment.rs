@@ -29,7 +29,8 @@
 //!   `Unknown`. One it knows is judged like any other value or target.
 
 use oxabl_ast::{
-    AssignPair, Expression, ExpressionKind, Literal, Statement, StatementKind, TypeSource,
+    AssignPair, AstPools, ExprId, Expression, ExpressionKind, Literal, Statement, StatementKind,
+    TypeSource,
 };
 use oxabl_common::{Diagnostic, FileSpan, Severity};
 use oxabl_semantic::{
@@ -74,22 +75,23 @@ impl<'a> Visitor<'a> {
             } if !self.holds_elided(stmt.span) => {
                 // Target type = the symbol's data_type (on the declaration
                 // stmt.id slot of the types side table).
+                let init = self.ctx.pools.expr(*init);
                 let target_ty = self.sem.types.get(stmt.id).cloned();
                 let value_ty = self.sem.types.get(init.id).cloned();
                 if let (Some(to), Some(from)) = (target_ty, value_ty)
-                    && !converted_from_text(init, &to)
+                    && !converted_from_text(self.ctx.pools, init, &to)
                 {
                     self.check_pair(&from, &to, init.id, &anchor(init, stmt.span));
                 }
             }
             StatementKind::Assignment { target, value } if !self.holds_elided(stmt.span) => {
-                self.check_assignment(target, value, stmt.span);
+                self.check_assignment(*target, *value, stmt.span);
             }
             StatementKind::Assign { assignments } => {
-                for AssignPair { target, value } in assignments {
+                for &AssignPair { target, value } in assignments {
                     let pair = oxabl_ast::Span {
-                        start: target.span.start,
-                        end: value.span.end,
+                        start: self.ctx.pools.expr(target).span.start,
+                        end: self.ctx.pools.expr(value).span.end,
                     };
                     if !self.holds_elided(pair) {
                         self.check_assignment(target, value, stmt.span);
@@ -174,12 +176,9 @@ impl<'a> Visitor<'a> {
         self.ctx.elided.get(from).is_some_and(|&o| o < span.end)
     }
 
-    fn check_assignment(
-        &mut self,
-        target: &Expression,
-        value: &Expression,
-        statement: oxabl_ast::Span,
-    ) {
+    fn check_assignment(&mut self, target: ExprId, value: ExprId, statement: oxabl_ast::Span) {
+        let target = self.ctx.pools.expr(target);
+        let value = self.ctx.pools.expr(value);
         // Target type: look up the resolved symbol's declared type. For a
         // bare identifier target, that's the symbol's data_type.
         let target_ty = self.target_type(target);
@@ -297,12 +296,12 @@ impl<'a> Visitor<'a> {
 /// for an INTEGER), and every constant converts to CHARACTER and LONGCHAR.
 /// Whether the text converts depends on it, on `FORMAT` and on the `-d` and
 /// `-numsep` startup parameters, so no verdict is given.
-fn converted_from_text(init: &Expression, to: &ResolvedType) -> bool {
+fn converted_from_text(pools: &AstPools, init: &Expression, to: &ResolvedType) -> bool {
     use PrimitiveTy::*;
     let literal = match &init.kind {
         ExpressionKind::Literal(literal) => literal,
         // A signed numeric constant (`INITIAL -5`); a unary plus leaves the literal.
-        ExpressionKind::Negate(inner) => match &inner.kind {
+        ExpressionKind::Negate(inner) => match &pools.expr(*inner).kind {
             ExpressionKind::Literal(l @ (Literal::Integer(_) | Literal::Decimal(_))) => l,
             _ => return false,
         },
@@ -351,11 +350,11 @@ fn _keep_severity_in_scope(s: Severity) -> Severity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::test_ast;
     use oxabl_ast::{
         DataType, Expression, ExpressionKind, Identifier, IntegerLiteral, Literal, NodeId, Span,
         Statement, StatementKind, StringLiteral, TypeSource,
     };
-    use oxabl_common::FileId;
     use oxabl_schema::Schema;
     use oxabl_semantic::analyze_file;
     use smallvec::SmallVec;
@@ -371,7 +370,7 @@ mod tests {
                 start: 0,
                 end: n.len() as u32,
             },
-            name: n.into(),
+            name: test_ast::name(n),
         }
     }
     fn stmt_n(k: StatementKind) -> Statement {
@@ -389,7 +388,7 @@ mod tests {
     fn str_lit(s: &str) -> Expression {
         expr_n(ExpressionKind::Literal(Literal::String(StringLiteral {
             span: Span { start: 0, end: 1 },
-            value: s.into(),
+            value: test_ast::name(s),
         })))
     }
     fn bool_lit(b: bool) -> Expression {
@@ -413,9 +412,10 @@ mod tests {
 
     fn analyze_and_lint(stmts: Vec<Statement>) -> Vec<Diagnostic> {
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
-        let sem = analyze_file(&stmts, &ctx);
-        run(&stmts, &sem, &ctx)
+        test_ast::with_ctx("", &schema, |ctx| {
+            let sem = analyze_file(&stmts, ctx);
+            run(&stmts, &sem, ctx)
+        })
     }
 
     fn var_with_init(n: &str, ty: DataType, init: Expression) -> Statement {
@@ -424,7 +424,7 @@ mod tests {
             is_static: false,
             name: id(n),
             type_source: TypeSource::Explicit(ty),
-            initial_value: Some(init),
+            initial_value: Some(test_ast::expr(init)),
             no_undo: false,
             extent: None,
             is_new_shared: false,
@@ -504,8 +504,8 @@ mod tests {
         let diags = analyze_and_lint(vec![
             var_decl("lc", DataType::Longchar),
             stmt_n(StatementKind::Assignment {
-                target: id_expr("c"),
-                value: id_expr("lc"),
+                target: test_ast::expr(id_expr("c")),
+                value: test_ast::expr(id_expr("lc")),
             }),
             var_decl("c", DataType::Character),
         ]);
@@ -541,8 +541,8 @@ mod tests {
         let diags = analyze_and_lint(vec![
             var_decl("b", DataType::Logical),
             stmt_n(StatementKind::Assignment {
-                target: id_expr("b"),
-                value: int_lit(42),
+                target: test_ast::expr(id_expr("b")),
+                value: test_ast::expr(int_lit(42)),
             }),
         ]);
         assert_eq!(diags.len(), 1);
@@ -553,12 +553,12 @@ mod tests {
     fn multi_assign_flags_each_bad_pair() {
         let mut v: SmallVec<[oxabl_ast::AssignPair; 4]> = SmallVec::new();
         v.push(oxabl_ast::AssignPair {
-            target: id_expr("b"),
-            value: int_lit(1),
+            target: test_ast::expr(id_expr("b")),
+            value: test_ast::expr(int_lit(1)),
         });
         v.push(oxabl_ast::AssignPair {
-            target: id_expr("n"),
-            value: str_lit("hi"),
+            target: test_ast::expr(id_expr("n")),
+            value: test_ast::expr(str_lit("hi")),
         });
         let diags = analyze_and_lint(vec![
             var_decl("b", DataType::Logical),
@@ -584,8 +584,8 @@ mod tests {
             var_decl("a", DataType::Class("Foo".into())),
             var_decl("b", DataType::Class("Foo".into())),
             stmt_n(StatementKind::Assignment {
-                target: id_expr("a"),
-                value: id_expr("b"),
+                target: test_ast::expr(id_expr("a")),
+                value: test_ast::expr(id_expr("b")),
             }),
         ];
         let diags = analyze_and_lint(stmts);
@@ -626,15 +626,16 @@ mod tests {
     use oxabl_schema::test_support::customer_schema as test_schema;
 
     fn analyze_and_lint_with_schema(stmts: Vec<Statement>, schema: &Schema) -> Vec<Diagnostic> {
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", schema);
-        let sem = analyze_file(&stmts, &ctx);
-        run(&stmts, &sem, &ctx)
+        test_ast::with_ctx("", schema, |ctx| {
+            let sem = analyze_file(&stmts, ctx);
+            run(&stmts, &sem, ctx)
+        })
     }
 
     /// `DEFINE BUFFER bCust FOR Customer.` + `target = bCust.CustNum`.
     fn assign_from_custnum(target: &str, target_ty: DataType) -> Vec<Statement> {
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("bCust")),
+            qualifier: test_ast::expr(id_expr("bCust")),
             field: id("CustNum"),
         });
         vec![
@@ -652,8 +653,8 @@ mod tests {
             }),
             var_decl(target, target_ty),
             stmt_n(StatementKind::Assignment {
-                target: id_expr(target),
-                value: fa,
+                target: test_ast::expr(id_expr(target)),
+                value: test_ast::expr(fa),
             }),
         ]
     }
@@ -709,8 +710,8 @@ mod tests {
             }),
             var_decl("c", DataType::Character),
             stmt_n(StatementKind::Assignment {
-                target: id_expr("c"),
-                value: id_expr("bCust"),
+                target: test_ast::expr(id_expr("c")),
+                value: test_ast::expr(id_expr("bCust")),
             }),
         ];
         let diags = analyze_and_lint_with_schema(stmts, &schema);
@@ -739,8 +740,8 @@ mod tests {
             var_decl("a", DataType::Class("Foo".into())),
             var_decl("n", DataType::Integer),
             stmt_n(StatementKind::Assignment {
-                target: id_expr("n"),
-                value: id_expr("a"),
+                target: test_ast::expr(id_expr("n")),
+                value: test_ast::expr(id_expr("a")),
             }),
         ];
         let diags = analyze_and_lint(stmts);
@@ -770,8 +771,8 @@ mod tests {
                 is_new_global_shared: false,
             }),
             stmt_n(StatementKind::Assignment {
-                target: id_expr("arr"),
-                value: str_lit("hi"),
+                target: test_ast::expr(id_expr("arr")),
+                value: test_ast::expr(str_lit("hi")),
             }),
         ];
         let diags = analyze_and_lint(stmts);
@@ -794,8 +795,8 @@ mod tests {
             var_decl("lc", DataType::Longchar),
             var_decl("c", DataType::Character),
             stmt_n(StatementKind::Assignment {
-                target: id_expr("c"),
-                value: id_expr("lc"),
+                target: test_ast::expr(id_expr("c")),
+                value: test_ast::expr(id_expr("lc")),
             }),
         ]);
         let warn = diags

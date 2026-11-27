@@ -27,7 +27,7 @@ fn codes(severities: LintSeverityMap) -> Vec<&'static str> {
     let tokens = tokenize(SOURCE);
     let program = Parser::new(&tokens, SOURCE).parse_program();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, SOURCE, &schema)
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, SOURCE, &schema, &program.pools)
         .with_tokens(&tokens)
         .with_index(&index)
         .with_lint_severities(severities);

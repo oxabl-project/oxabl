@@ -85,8 +85,8 @@
 //!   exactly — is scheduled rather than hoped for.
 
 use oxabl_ast::{
-    AssignPair, CreateTarget, Expression, ExpressionKind, Identifier, NodeId, OnAction, OnKind,
-    Statement, StatementKind,
+    AssignPair, AstPools, CreateTarget, ExprId, ExpressionKind, Identifier, NodeId, OnAction,
+    OnKind, Statement, StatementKind,
 };
 use oxabl_common::{Diagnostic, FileSpan};
 use oxabl_semantic::{
@@ -122,6 +122,7 @@ pub fn run(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<
     // lands on the assignment. One diagnostic per symbol, not per write.
     let mut v = Visitor {
         sem,
+        pools: ctx.pools,
         file_id: ctx.file_id,
         wanted: candidates.iter().copied().collect(),
         first_write: FxHashMap::default(),
@@ -160,6 +161,7 @@ pub fn run(program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<
 
 struct Visitor<'a> {
     sem: &'a Semantic,
+    pools: &'a AstPools,
     /// Spans stay in virtual space, exactly like every other rule's —
     /// `PreprocessedFile::resolve` maps them back to real files at the CLI and
     /// analyze boundary. So a dead store whose write lives in an expanded
@@ -211,9 +213,9 @@ impl Visitor<'_> {
     fn walk_statement(&mut self, stmt: &Statement) {
         let owner = stmt.id;
         match &stmt.kind {
-            StatementKind::Assignment { target, .. } => self.record_target(target),
+            StatementKind::Assignment { target, .. } => self.record_target(*target),
             StatementKind::Assign { assignments } => {
-                for AssignPair { target, .. } in assignments {
+                for &AssignPair { target, .. } in assignments {
                     self.record_target(target);
                 }
             }
@@ -223,21 +225,21 @@ impl Visitor<'_> {
                 }
             }
             StatementKind::Import { targets, .. } | StatementKind::Set { targets, .. } => {
-                for target in targets {
+                for &target in self.pools.exprs(*targets) {
                     self.record_target(target);
                 }
             }
             StatementKind::Close {
                 status: Some(status),
                 ..
-            } => self.record_target(status),
+            } => self.record_target(*status),
             StatementKind::Run {
                 persistent_handle,
                 async_handle,
                 ..
             } => {
                 for handle in [persistent_handle, async_handle].into_iter().flatten() {
-                    self.record_target(handle);
+                    self.record_target(*handle);
                 }
             }
             StatementKind::BufferCompare {
@@ -251,7 +253,7 @@ impl Visitor<'_> {
                     },
                 ..
             } => {
-                self.record_target(handle);
+                self.record_target(*handle);
                 self.within(owner, ScopeKind::Trigger, |v| {
                     for t in triggers {
                         if let OnAction::Block(body) = &t.action {
@@ -365,11 +367,11 @@ impl Visitor<'_> {
     /// Record a statement-position name as a write site. Such a name has no
     /// `NodeId`, so it resolves by spelling in the walk's current scope.
     fn record_ident(&mut self, ident: &Identifier) {
-        let Some(sid) =
-            self.sem
-                .scope_tree
-                .resolve_name(self.scope, NamespaceId::Values, &ident.name)
-        else {
+        let Some(sid) = self.sem.scope_tree.resolve_name(
+            self.scope,
+            NamespaceId::Values,
+            self.pools.ident(*ident),
+        ) else {
             return;
         };
         self.note(sid, ident);
@@ -385,38 +387,39 @@ impl Visitor<'_> {
     }
 
     /// Record `target` as a candidate's first write site, if it resolves to one.
-    fn record_target(&mut self, target: &Expression) {
+    fn record_target(&mut self, target: ExprId) {
+        let target = self.pools.expr(target);
         // `arr[i] = 1` writes `arr`; the resolve pass credits the array symbol,
         // so follow the same descent to reach it.
-        let ident = match &target.kind {
-            ExpressionKind::Identifier(ident) => ident,
-            ExpressionKind::ArrayAccess { array, .. } => match &array.kind {
-                ExpressionKind::Identifier(ident) => ident,
-                _ => return,
-            },
+        let (ident, node) = match &target.kind {
+            ExpressionKind::Identifier(ident) => (*ident, target.id),
+            ExpressionKind::ArrayAccess { array, .. } => {
+                let array = self.pools.expr(*array);
+                match &array.kind {
+                    ExpressionKind::Identifier(ident) => (*ident, array.id),
+                    _ => return,
+                }
+            }
             // A field write credits the `Field` symbol, which is never a
             // candidate; nothing to record.
             _ => return,
         };
-        let node = match &target.kind {
-            ExpressionKind::ArrayAccess { array, .. } => array.id,
-            _ => target.id,
-        };
         let Some(Resolution::Resolved(sid)) = self.sem.references.get(node) else {
             return;
         };
-        self.note(*sid, ident);
+        self.note(*sid, &ident);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::test_ast;
+    use oxabl_ast::Expression;
     use oxabl_ast::{
         CreateTarget, CreateTargetKind, DataType, Identifier, IntegerLiteral, Literal,
         ParameterDirection, ParameterType, RunArgument, RunTarget, Span, TypeSource,
     };
-    use oxabl_common::FileId;
     use oxabl_schema::Schema;
     use oxabl_semantic::analyze_file;
 
@@ -426,7 +429,7 @@ mod tests {
                 start: 0,
                 end: n.len() as u32,
             },
-            name: n.into(),
+            name: test_ast::name(n),
         }
     }
     fn id_at(n: &str, start: u32) -> Identifier {
@@ -435,7 +438,7 @@ mod tests {
                 start,
                 end: start + n.len() as u32,
             },
-            name: n.into(),
+            name: test_ast::name(n),
         }
     }
     fn stmt(k: StatementKind) -> Statement {
@@ -498,21 +501,23 @@ mod tests {
     /// write site is distinguishable from one reported at the declaration.
     fn assign(n: &str, target_start: u32) -> Statement {
         stmt(StatementKind::Assignment {
-            target: ident_expr(n, target_start),
-            value: one(1),
+            target: test_ast::expr(ident_expr(n, target_start)),
+            value: test_ast::expr(one(1)),
         })
     }
     fn lint(stmts: &[Statement]) -> Vec<Diagnostic> {
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
-        let sem = analyze_file(stmts, &ctx);
-        run(stmts, &sem, &ctx)
+        test_ast::with_ctx("", &schema, |ctx| {
+            let sem = analyze_file(stmts, ctx);
+            run(stmts, &sem, ctx)
+        })
     }
     fn lint0002(stmts: &[Statement]) -> Vec<Diagnostic> {
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
-        let sem = analyze_file(stmts, &ctx);
-        super::super::unused_variable::run(stmts, &sem, &ctx)
+        test_ast::with_ctx("", &schema, |ctx| {
+            let sem = analyze_file(stmts, ctx);
+            super::super::unused_variable::run(stmts, &sem, ctx)
+        })
     }
 
     #[test]
@@ -550,9 +555,9 @@ mod tests {
         let stmts = vec![
             var_decl("x"),
             assign("x", 40),
-            stmt(StatementKind::ExpressionStatement(E::new(
+            stmt(StatementKind::ExpressionStatement(test_ast::expr(E::new(
                 ExpressionKind::Identifier(id("x")),
-            ))),
+            )))),
         ];
         assert!(lint(&stmts).is_empty(), "{:?}", lint(&stmts));
         assert!(lint0002(&stmts).is_empty(), "{:?}", lint0002(&stmts));
@@ -572,8 +577,8 @@ mod tests {
             var_decl("x"),
             stmt(StatementKind::Assign {
                 assignments: vec![AssignPair {
-                    target: ident_expr("x", 55),
-                    value: one(7),
+                    target: test_ast::expr(ident_expr("x", 55)),
+                    value: test_ast::expr(one(7)),
                 }]
                 .into(),
             }),
@@ -601,11 +606,11 @@ mod tests {
         let stmts = vec![
             arr,
             stmt(StatementKind::Assignment {
-                target: Expression::new(ExpressionKind::ArrayAccess {
-                    array: Box::new(ident_expr("arr", 70)),
-                    index: Box::new(one(1)),
-                }),
-                value: one(1),
+                target: test_ast::expr(Expression::new(ExpressionKind::ArrayAccess {
+                    array: test_ast::expr(ident_expr("arr", 70)),
+                    index: test_ast::expr(one(1)),
+                })),
+                value: test_ast::expr(one(1)),
             }),
         ];
         let diags = lint(&stmts);
@@ -662,11 +667,11 @@ mod tests {
                 target: RunTarget::literal("proc"),
                 arguments: vec![RunArgument {
                     direction: ParameterDirection::Output,
-                    expression: Expression::with_id(
+                    expression: test_ast::expr(Expression::with_id(
                         nid,
                         Span { start: 0, end: 1 },
                         ExpressionKind::Identifier(id("x")),
-                    ),
+                    )),
                 }],
                 in_handle: None,
                 persistent: false,
@@ -722,12 +727,12 @@ mod tests {
             var_decl("i"),
             stmt(StatementKind::Do {
                 loop_var: Some(id("i")),
-                from: Some(one(1)),
-                to: Some(one(10)),
+                from: Some(test_ast::expr(one(1))),
+                to: Some(test_ast::expr(one(10))),
                 by: None,
                 while_condition: None,
                 transaction: false,
-                on_actions: Vec::new(),
+                on_actions: oxabl_ast::ExprList::EMPTY,
                 body: vec![],
             }),
         ];
@@ -742,7 +747,7 @@ mod tests {
         let stmts = vec![
             var_decl("answer"),
             stmt(StatementKind::Message {
-                items: vec![],
+                items: oxabl_ast::ExprList::EMPTY,
                 set_targets: vec![id_at("answer", 90)],
                 fields: vec![],
             }),
@@ -757,7 +762,7 @@ mod tests {
     fn fires_at_the_persistent_or_async_run_handle() {
         // A procedure started and its handle dropped on the floor.
         for (persistent, asynchronous) in [(true, false), (false, true)] {
-            let handle = Some(ident_expr("h", 90));
+            let handle = Some(test_ast::expr(ident_expr("h", 90)));
             let stmts = vec![
                 var_decl("h"),
                 stmt(StatementKind::Run {
@@ -765,7 +770,7 @@ mod tests {
                     arguments: vec![],
                     in_handle: None,
                     persistent,
-                    persistent_handle: if persistent { handle.clone() } else { None },
+                    persistent_handle: if persistent { handle } else { None },
                     asynchronous,
                     async_handle: if asynchronous { handle } else { None },
                     event_procedure: None,
@@ -801,7 +806,7 @@ mod tests {
             stmt(StatementKind::Create {
                 target: CreateTarget::Handle {
                     kind: CreateTargetKind::Widget,
-                    handle: ident_expr("hWidget", 90),
+                    handle: test_ast::expr(ident_expr("hWidget", 90)),
                     widget_pool: None,
                     class: None,
                     assignments: Vec::new(),
@@ -844,7 +849,7 @@ mod tests {
             stmt(StatementKind::Create {
                 target: CreateTarget::Handle {
                     kind: CreateTargetKind::Widget,
-                    handle: ident_expr("hWidget", 90),
+                    handle: test_ast::expr(ident_expr("hWidget", 90)),
                     widget_pool: None,
                     class: None,
                     assignments: Vec::new(),
@@ -872,8 +877,8 @@ mod tests {
         let stmts = vec![
             var_decl("x"),
             stmt(StatementKind::Assignment {
-                target: Expression::new(ExpressionKind::Identifier(id_at("x", 90))),
-                value: one(1),
+                target: test_ast::expr(Expression::new(ExpressionKind::Identifier(id_at("x", 90)))),
+                value: test_ast::expr(one(1)),
             }),
         ];
         let diags = lint(&stmts);

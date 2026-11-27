@@ -1,7 +1,7 @@
 //! What the call rules (CL003 and CL004) share: the static `RUN` statements of
 //! a file with the call each one makes.
 
-use oxabl_ast::{Span, Statement, StatementKind};
+use oxabl_ast::{AstPools, Span, Statement, StatementKind};
 use oxabl_index::calls::{CallSite, FileCalls};
 use oxabl_semantic::AnalysisContext;
 
@@ -11,6 +11,7 @@ use super::syntactic::{Visitor, walk_block};
 /// with its call.
 pub(super) fn for_each_run(
     program: &[Statement],
+    pools: &AstPools,
     calls: &FileCalls,
     f: impl FnMut(&Statement, &CallSite),
 ) {
@@ -33,7 +34,7 @@ pub(super) fn for_each_run(
             true
         }
     }
-    walk_block(&mut Runs { calls, f }, program);
+    walk_block(&mut Runs { calls, f }, pools, program);
 }
 
 /// Whether the preprocessor left a gap inside `span`: the compiler may see

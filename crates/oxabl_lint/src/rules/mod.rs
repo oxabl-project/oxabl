@@ -45,6 +45,8 @@ pub(crate) mod lock_support;
 mod null_support;
 // Walk and source helpers for the syntactic strict rules.
 mod syntactic;
+#[cfg(test)]
+mod test_ast;
 
 /// Diagnostic code for `undefined-symbol` (LINT0001).
 pub const LINT0001: &str = "LINT0001";

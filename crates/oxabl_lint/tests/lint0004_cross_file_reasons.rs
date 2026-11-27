@@ -11,7 +11,7 @@
 //! "not statically knowable", and "we did not look" cannot quietly collapse into
 //! each other.
 
-use oxabl_ast::{NodeId, Statement, StatementKind};
+use oxabl_ast::{AstPools, NodeId, Statement, StatementKind};
 use oxabl_common::{Diagnostic, FileId};
 use oxabl_lexer::tokenize;
 use oxabl_lint::{
@@ -33,7 +33,7 @@ const NEW_REASONS: [UnresolvedReason; 2] = [
     UnresolvedReason::Unknowable,
 ];
 
-fn parse(source: &str) -> Vec<Statement> {
+fn parse(source: &str) -> oxabl_parser::Program {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let program = parser.parse_program();
@@ -42,7 +42,7 @@ fn parse(source: &str) -> Vec<Statement> {
         "parse errors for {source:?}: {:?}",
         program.errors
     );
-    program.statements
+    program
 }
 
 /// Rewrite every `NotInScope` resolution to `reason`, returning how many
@@ -73,13 +73,13 @@ fn retag_not_in_scope(sem: &mut Semantic, reason: UnresolvedReason) -> usize {
 }
 
 /// NodeId of the value expression of the first `target = value` statement.
-fn first_assignment_value_id(stmts: &[Statement]) -> NodeId {
-    fn find(stmts: &[Statement]) -> Option<NodeId> {
+fn first_assignment_value_id(stmts: &[Statement], pools: &AstPools) -> NodeId {
+    fn find(stmts: &[Statement], pools: &AstPools) -> Option<NodeId> {
         for s in stmts {
             match &s.kind {
-                StatementKind::Assignment { value, .. } => return Some(value.id),
+                StatementKind::Assignment { value, .. } => return Some(pools.expr(*value).id),
                 StatementKind::Procedure { body, .. } | StatementKind::Block(body) => {
-                    if let Some(id) = find(body) {
+                    if let Some(id) = find(body, pools) {
                         return Some(id);
                     }
                 }
@@ -88,7 +88,7 @@ fn first_assignment_value_id(stmts: &[Statement]) -> NodeId {
         }
         None
     }
-    find(stmts).expect("fixture should contain an assignment statement")
+    find(stmts, pools).expect("fixture should contain an assignment statement")
 }
 
 // ---------------------------------------------------------------------------
@@ -106,11 +106,12 @@ PROCEDURE p:
   v-n = x-missing.
 END PROCEDURE.
 ";
-    let stmts = parse(src);
+    let program = parse(src);
+    let stmts = &program.statements;
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema, &program.pools);
 
-    let baseline = undefined_symbol::run(&stmts, &analyze_file(&stmts, &ctx), &ctx);
+    let baseline = undefined_symbol::run(stmts, &analyze_file(stmts, &ctx), &ctx);
     assert_eq!(
         baseline.iter().filter(|d| d.code.0 == LINT0001).count(),
         1,
@@ -118,9 +119,9 @@ END PROCEDURE.
     );
 
     for reason in NEW_REASONS {
-        let mut sem = analyze_file(&stmts, &ctx);
+        let mut sem = analyze_file(stmts, &ctx);
         assert!(retag_not_in_scope(&mut sem, reason) > 0);
-        let diags = undefined_symbol::run(&stmts, &sem, &ctx);
+        let diags = undefined_symbol::run(stmts, &sem, &ctx);
         assert!(diags.is_empty(), "LINT0001 fired for {reason:?}: {diags:?}");
     }
 }
@@ -140,12 +141,13 @@ PROCEDURE p:
   v-n = v-c.
 END PROCEDURE.
 ";
-    let stmts = parse(src);
+    let program = parse(src);
+    let stmts = &program.statements;
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema);
-    let mut sem = analyze_file(&stmts, &ctx);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema, &program.pools);
+    let mut sem = analyze_file(stmts, &ctx);
     if let Some(reason) = reason {
-        let value_id = first_assignment_value_id(&stmts);
+        let value_id = first_assignment_value_id(stmts, &program.pools);
         sem.references.insert(
             value_id,
             Resolution::Unresolved {
@@ -154,7 +156,7 @@ END PROCEDURE.
             },
         );
     }
-    type_mismatch_assignment::run(&stmts, &sem, &ctx)
+    type_mismatch_assignment::run(stmts, &sem, &ctx)
 }
 
 #[test]
@@ -188,11 +190,12 @@ PROCEDURE p:
   DISPLAY Customer.NoSuchField.
 END PROCEDURE.
 ";
-    let stmts = parse(src);
+    let program = parse(src);
+    let stmts = &program.statements;
     let schema = customer_schema();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema, &program.pools);
 
-    let baseline = unknown_table_or_field::run(&stmts, &analyze_file(&stmts, &ctx), &ctx);
+    let baseline = unknown_table_or_field::run(stmts, &analyze_file(stmts, &ctx), &ctx);
     assert_eq!(
         baseline.iter().filter(|d| d.code.0 == LINT0003).count(),
         1,
@@ -200,9 +203,9 @@ END PROCEDURE.
     );
 
     for reason in NEW_REASONS {
-        let mut sem = analyze_file(&stmts, &ctx);
+        let mut sem = analyze_file(stmts, &ctx);
         assert!(retag_not_in_scope(&mut sem, reason) > 0);
-        let diags = unknown_table_or_field::run(&stmts, &sem, &ctx);
+        let diags = unknown_table_or_field::run(stmts, &sem, &ctx);
         assert!(diags.is_empty(), "LINT0003 fired for {reason:?}: {diags:?}");
     }
 }
@@ -225,11 +228,12 @@ v-n = x-missing.
 DISPLAY Customer.CustNum.
 RUN some-external.p.
 ";
-    let stmts = parse(src);
+    let program = parse(src);
+    let stmts = &program.statements;
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema);
-    let (scope_tree, mut symbols, _diags, rev) = oxabl_semantic::declare_pass(&stmts, &ctx);
-    let (references, _types, _rd) = resolve_pass(&stmts, &ctx, &scope_tree, &mut symbols, rev);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema, &program.pools);
+    let (scope_tree, mut symbols, _diags, rev) = oxabl_semantic::declare_pass(stmts, &ctx);
+    let (references, _types, _rd) = resolve_pass(stmts, &ctx, &scope_tree, &mut symbols, rev);
     for (_, res) in references.iter() {
         if let Resolution::Unresolved { reason, .. } = res {
             assert!(
@@ -245,7 +249,7 @@ RUN some-external.p.
 // ---------------------------------------------------------------------------
 
 /// Analyze `source` against a batch index over `workspace`, searching `/src`.
-fn with_index(source: &str, workspace: &[(&str, &str)]) -> (Vec<Statement>, Semantic) {
+fn with_index(source: &str, workspace: &[(&str, &str)]) -> (oxabl_parser::Program, Semantic) {
     use std::path::PathBuf;
     let mut fs = oxabl_workspace::InMemoryFileSystem::new();
     for (path, contents) in workspace {
@@ -254,10 +258,12 @@ fn with_index(source: &str, workspace: &[(&str, &str)]) -> (Vec<Statement>, Sema
     let dirs = vec![PathBuf::from("/src")];
     let index = oxabl_index::BatchIndex::new(&fs, &dirs);
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    (stmts, sem)
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx =
+        AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools).with_index(&index);
+    let sem = analyze_file(stmts, &ctx);
+    (program, sem)
 }
 
 /// Every reason recorded under `name`, in reference order.
@@ -276,7 +282,8 @@ fn reasons_for(sem: &Semantic, name: &str) -> Vec<UnresolvedReason> {
 fn a_name_no_configured_path_provides_is_absent_from_the_workspace() {
     // The genuine path-search miss: an index is attached, every configured path
     // was searched, and no file spells the name.
-    let (_stmts, sem) = with_index("RUN never-shipped.p.\n", &[]);
+    let (program, sem) = with_index("RUN never-shipped.p.\n", &[]);
+    let _stmts = &program.statements;
     assert_eq!(
         reasons_for(&sem, "never-shipped.p"),
         vec![UnresolvedReason::AbsentFromWorkspace]
@@ -288,7 +295,8 @@ fn a_runtime_computed_target_is_unknowable() {
     // Not statically knowable, so no amount of indexing helps — which is the whole
     // distinction this reason carries.
     let source = "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\nRUN VALUE(c-name).\n";
-    let (_stmts, sem) = with_index(source, &[]);
+    let (program, sem) = with_index(source, &[]);
+    let _stmts = &program.statements;
     let unknowable = sem.references.iter().any(|(_, res)| {
         matches!(
             res,
@@ -309,10 +317,11 @@ fn the_same_name_records_no_reason_at_all_when_no_index_is_attached() {
     // entry at all — which is a stronger silence than `External`, and is why the
     // rule cannot see it either way.
     let source = "RUN never-shipped.p.\n";
-    let stmts = parse(source);
+    let program = parse(source);
+    let stmts = &program.statements;
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
+    let sem = analyze_file(stmts, &ctx);
     assert_eq!(
         reasons_for(&sem, "never-shipped.p"),
         Vec::new(),
@@ -327,10 +336,11 @@ fn a_class_name_only_the_workspace_could_provide_is_external_without_an_index() 
     // skip-lists, and the one the other reasons have to stay distinguishable from.
     let source = "DEFINE VARIABLE v-cache AS CLASS myapp.cache NO-UNDO.\n\
                   v-cache = NEW myapp.cache().\n";
-    let stmts = parse(source);
+    let program = parse(source);
+    let stmts = &program.statements;
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
+    let sem = analyze_file(stmts, &ctx);
     assert_eq!(
         reasons_for(&sem, "myapp.cache"),
         vec![UnresolvedReason::External],
@@ -348,9 +358,11 @@ fn with_index_searching_nothing(source: &str, workspace: &[(&str, &str)]) -> Sem
     }
     let index = oxabl_index::BatchIndex::new(&fs, &[]);
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    analyze_file(&stmts, &ctx)
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx =
+        AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools).with_index(&index);
+    analyze_file(stmts, &ctx)
 }
 
 #[test]
@@ -369,7 +381,8 @@ fn an_inaccessible_inherited_member_is_present_but_unusable() {
                          v-n = calc-secret().\n\
                      END METHOD.\n\
                  END CLASS.\n";
-    let (_stmts, sem) = with_index(child, &[("/src/orders/calc-base.cls", base)]);
+    let (program, sem) = with_index(child, &[("/src/orders/calc-base.cls", base)]);
+    let _stmts = &program.statements;
     assert_eq!(
         reasons_for(&sem, "calc-secret"),
         vec![UnresolvedReason::PresentButUnusable]
@@ -389,7 +402,8 @@ fn a_protected_member_reached_from_an_unrelated_class_is_present_but_unusable() 
                   DEFINE VARIABLE v-calc AS CLASS orders.calc-base NO-UNDO.\n\
                   DEFINE VARIABLE v-n AS INTEGER NO-UNDO.\n\
                   v-n = v-calc:calc-rate().\n";
-    let (_stmts, sem) = with_index(caller, &[("/src/orders/calc-base.cls", base)]);
+    let (program, sem) = with_index(caller, &[("/src/orders/calc-base.cls", base)]);
+    let _stmts = &program.statements;
     assert_eq!(
         reasons_for(&sem, "calc-rate"),
         vec![UnresolvedReason::PresentButUnusable]
@@ -403,7 +417,8 @@ fn a_located_but_unparseable_dependency_is_present_but_unusable() {
     // the one reason `undefined-symbol` reports.
     let broken = "DEFINE VARIABLE .\n";
     let source = "RUN post-order.p.\n";
-    let (_stmts, sem) = with_index(source, &[("/src/post-order.p", broken)]);
+    let (program, sem) = with_index(source, &[("/src/post-order.p", broken)]);
+    let _stmts = &program.statements;
     assert_eq!(
         reasons_for(&sem, "post-order.p"),
         vec![UnresolvedReason::PresentButUnusable],
@@ -431,7 +446,8 @@ fn an_index_with_no_search_path_reports_external_not_absent() {
 
     // The contrast, on the same source: give the index a path to search and the
     // same miss becomes a claim about the workspace.
-    let (_stmts, searched) = with_index(using, &[]);
+    let (program, searched) = with_index(using, &[]);
+    let _stmts = &program.statements;
     assert_eq!(
         reasons_for(&searched, "myapp.cache"),
         vec![UnresolvedReason::AbsentFromWorkspace]
@@ -468,20 +484,22 @@ fn every_rule_is_silent_for_both_new_reasons() {
         ),
     ];
     for (source, path, sibling) in sources {
-        let stmts = parse(source);
+        let program = parse(source);
+        let stmts = &program.statements;
         let schema = customer_schema();
         let mut fs = oxabl_workspace::InMemoryFileSystem::new();
         fs.insert(std::path::PathBuf::from(path), sibling);
         let dirs = vec![std::path::PathBuf::from("/src")];
         let index = oxabl_index::BatchIndex::new(&fs, &dirs);
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-        let sem = analyze_file(&stmts, &ctx);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
+            .with_index(&index);
+        let sem = analyze_file(stmts, &ctx);
         for (rule, code) in [
             (undefined_symbol::run as fn(_, _, _) -> _, LINT0001),
             (unknown_table_or_field::run, LINT0003),
             (type_mismatch_assignment::run, LINT0004),
         ] {
-            let diags: Vec<Diagnostic> = rule(&stmts, &sem, &ctx)
+            let diags: Vec<Diagnostic> = rule(stmts, &sem, &ctx)
                 .into_iter()
                 .filter(|d| d.code.0 == code)
                 .collect();
@@ -506,10 +524,12 @@ fn lint0001_for(source: &str, workspace: &[(&str, &str)]) -> Vec<Diagnostic> {
     let dirs = vec![PathBuf::from("/src")];
     let index = oxabl_index::BatchIndex::new(&fs, &dirs);
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    undefined_symbol::run(&stmts, &sem, &ctx)
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx =
+        AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools).with_index(&index);
+    let sem = analyze_file(stmts, &ctx);
+    undefined_symbol::run(stmts, &sem, &ctx)
         .into_iter()
         .filter(|d| d.code.0 == LINT0001)
         .collect()
@@ -517,10 +537,11 @@ fn lint0001_for(source: &str, workspace: &[(&str, &str)]) -> Vec<Diagnostic> {
 
 fn lint0001_without_any_index(source: &str) -> Vec<Diagnostic> {
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
-    undefined_symbol::run(&stmts, &sem, &ctx)
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
+    let sem = analyze_file(stmts, &ctx);
+    undefined_symbol::run(stmts, &sem, &ctx)
         .into_iter()
         .filter(|d| d.code.0 == LINT0001)
         .collect()
@@ -599,7 +620,8 @@ fn a_shipped_system_namespace_is_never_reported() {
     ];
     for source in shipped {
         let with_schema = {
-            let stmts = parse(source);
+            let program = parse(source);
+            let stmts = &program.statements;
             let schema = customer_schema();
             let mut fs = oxabl_workspace::InMemoryFileSystem::new();
             fs.insert(
@@ -608,9 +630,10 @@ fn a_shipped_system_namespace_is_never_reported() {
             );
             let dirs = vec![std::path::PathBuf::from("/src")];
             let index = oxabl_index::BatchIndex::new(&fs, &dirs);
-            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-            let sem = analyze_file(&stmts, &ctx);
-            undefined_symbol::run(&stmts, &sem, &ctx)
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
+                .with_index(&index);
+            let sem = analyze_file(stmts, &ctx);
+            undefined_symbol::run(stmts, &sem, &ctx)
                 .into_iter()
                 .filter(|d| d.code.0 == LINT0001 && !d.message.contains("v-x"))
                 .collect::<Vec<_>>()
@@ -717,7 +740,8 @@ fn the_other_two_rules_stay_silent_for_every_cross_file_reason() {
     // R5's other half: widening `undefined-symbol` is the whole behavior change,
     // and the two rules with their own skip-lists are untouched.
     for source in ABSENT_SPELLINGS {
-        let stmts = parse(source);
+        let program = parse(source);
+        let stmts = &program.statements;
         let schema = customer_schema();
         let mut fs = oxabl_workspace::InMemoryFileSystem::new();
         fs.insert(
@@ -726,13 +750,14 @@ fn the_other_two_rules_stay_silent_for_every_cross_file_reason() {
         );
         let dirs = vec![std::path::PathBuf::from("/src")];
         let index = oxabl_index::BatchIndex::new(&fs, &dirs);
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-        let sem = analyze_file(&stmts, &ctx);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
+            .with_index(&index);
+        let sem = analyze_file(stmts, &ctx);
         for (rule, code) in [
             (unknown_table_or_field::run as fn(_, _, _) -> _, LINT0003),
             (type_mismatch_assignment::run, LINT0004),
         ] {
-            let diags: Vec<Diagnostic> = rule(&stmts, &sem, &ctx)
+            let diags: Vec<Diagnostic> = rule(stmts, &sem, &ctx)
                 .into_iter()
                 .filter(|d| d.code.0 == code)
                 .collect();
@@ -748,17 +773,18 @@ fn shipped_dotted_static_receivers_are_external_with_or_without_an_index() {
                   MESSAGE Progress.Reflect.DataType:CHARACTER.\n\
                   MESSAGE System.Text.Encoding:UTF8.\n\
                   MESSAGE Ccs.Common.Application:Instance.\n";
-    let stmts = parse(source);
+    let program = parse(source);
+    let stmts = &program.statements;
     let schema = customer_schema();
     let fs = oxabl_workspace::InMemoryFileSystem::new();
     let dirs = vec![std::path::PathBuf::from("/src")];
     let index = oxabl_index::BatchIndex::new(&fs, &dirs);
     for indexed in [false, true] {
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
         let ctx = if indexed { ctx.with_index(&index) } else { ctx };
-        let sem = analyze_file(&stmts, &ctx);
+        let sem = analyze_file(stmts, &ctx);
         for rule in [undefined_symbol::run, unknown_table_or_field::run] {
-            let found = rule(&stmts, &sem, &ctx);
+            let found = rule(stmts, &sem, &ctx);
             assert!(found.is_empty(), "indexed={indexed}: {found:?}");
         }
         assert!(sem.symbols.class_sites().is_empty());
@@ -771,17 +797,18 @@ fn shipped_prefix_does_not_hide_a_local_buffer_field_error() {
     let source = "DEFINE BUFFER Progress FOR Progress.\n\
                   MESSAGE Progress.Lang:SCREEN-VALUE.\n\
                   MESSAGE Progress.Missing.\n";
-    let stmts = parse(source);
+    let program = parse(source);
+    let stmts = &program.statements;
     let schema = oxabl_schema::test_support::schema_from_df(
         "ADD TABLE \"Progress\"\nADD FIELD \"Lang\" OF \"Progress\" AS character\n",
     );
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
+    let sem = analyze_file(stmts, &ctx);
     assert!(sem.references.iter().any(|(_, resolution)| {
         matches!(resolution, Resolution::Resolved(symbol)
             if sem.symbols.get(*symbol).name.as_ref() == "lang")
     }));
-    let found = unknown_table_or_field::run(&stmts, &sem, &ctx);
+    let found = unknown_table_or_field::run(stmts, &sem, &ctx);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].message.contains("Missing"), "{found:?}");
 }

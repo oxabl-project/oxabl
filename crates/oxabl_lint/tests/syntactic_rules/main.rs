@@ -39,16 +39,13 @@ pub fn check(rule: RuleFn, source: &str) -> Vec<Diagnostic> {
         "fixture must parse cleanly: {:?}\n{source}",
         program.errors
     );
-    run_parsed(rule, source, &program.statements)
+    run_parsed(rule, source, &program)
 }
 
-pub fn run_parsed(
-    rule: RuleFn,
-    source: &str,
-    statements: &[oxabl_ast::Statement],
-) -> Vec<Diagnostic> {
+pub fn run_parsed(rule: RuleFn, source: &str, program: &oxabl_parser::Program) -> Vec<Diagnostic> {
+    let statements = &program.statements;
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     let sem = analyze_file(statements, &ctx);
     rule(statements, &sem, &ctx)
 }

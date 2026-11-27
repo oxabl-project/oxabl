@@ -11,12 +11,15 @@ MESSAGE n.\n";
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty());
-    let flow =
-        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
-    let nulls = FileNulls::default().with_values(
+    let flow = oxabl_flow::build_file_tokens(
+        &program.statements,
+        &program.pools,
         source,
         &tokens,
-        &program.statements,
+        &Default::default(),
+    );
+    let nulls = FileNulls::default().with_values(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         &flow,
         &NullOptions::default(),
     );
@@ -61,12 +64,15 @@ MESSAGE 0.";
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty());
-    let flow =
-        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
-    let nulls = FileNulls::default().with_values(
+    let flow = oxabl_flow::build_file_tokens(
+        &program.statements,
+        &program.pools,
         source,
         &tokens,
-        &program.statements,
+        &Default::default(),
+    );
+    let nulls = FileNulls::default().with_values(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         &flow,
         &NullOptions::default(),
     );
@@ -108,12 +114,15 @@ END.";
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty());
-    let flow =
-        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
-    let nulls = FileNulls::default().with_values(
+    let flow = oxabl_flow::build_file_tokens(
+        &program.statements,
+        &program.pools,
         source,
         &tokens,
-        &program.statements,
+        &Default::default(),
+    );
+    let nulls = FileNulls::default().with_values(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         &flow,
         &NullOptions::default(),
     );
@@ -148,12 +157,15 @@ END.
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty());
-    let flow =
-        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
-    let nulls = FileNulls::default().with_values(
+    let flow = oxabl_flow::build_file_tokens(
+        &program.statements,
+        &program.pools,
         source,
         &tokens,
-        &program.statements,
+        &Default::default(),
+    );
+    let nulls = FileNulls::default().with_values(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         &flow,
         &NullOptions::default(),
     );
@@ -177,13 +189,16 @@ fn uses(source: &str) -> Vec<String> {
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
-    let flow =
-        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
+    let flow = oxabl_flow::build_file_tokens(
+        &program.statements,
+        &program.pools,
+        source,
+        &tokens,
+        &Default::default(),
+    );
     FileNulls::default()
         .with_values(
-            source,
-            &tokens,
-            &program.statements,
+            oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
             &flow,
             &NullOptions::default(),
         )
@@ -293,12 +308,15 @@ fn first_sources(source: &str) -> Vec<(String, Sources)> {
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
-    let flow =
-        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
-    let nulls = FileNulls::default().with_values(
+    let flow = oxabl_flow::build_file_tokens(
+        &program.statements,
+        &program.pools,
         source,
         &tokens,
-        &program.statements,
+        &Default::default(),
+    );
+    let nulls = FileNulls::default().with_values(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         &flow,
         &NullOptions::default(),
     );

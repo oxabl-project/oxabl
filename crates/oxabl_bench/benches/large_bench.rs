@@ -88,7 +88,7 @@ fn bench_passes(c: &mut Criterion, name: &str, source: &str) {
     assert!(parsed.errors.is_empty(), "{name}: {:?}", parsed.errors);
     let program = parsed.statements.as_slice();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::new(1), source, &schema);
+    let ctx = AnalysisContext::new(FileId::new(1), source, &schema, &parsed.pools);
     // The memory of the resolve and check passes alone, on the output of the
     // passes before them, after one warm-up run of all three.
     {

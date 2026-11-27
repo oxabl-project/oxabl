@@ -143,10 +143,11 @@ fn run_value_records_unknowable_and_produces_no_undefined_symbol_finding() {
     let source = "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\n\
                   c-name = \"post-order.p\".\n\
                   RUN VALUE(c-name).\n";
-    let (stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let stmts = &program.statements;
 
     assert_eq!(
-        run_resolution(&stmts, &sem),
+        run_resolution(stmts, &sem),
         Some(Resolution::Unresolved {
             name: OxablAtom::from(""),
             reason: UnresolvedReason::Unknowable,
@@ -177,8 +178,9 @@ fn the_dynamic_arm_records_nothing_without_an_index() {
     // question must not grow its `references` table, which is what keeps a
     // single-file analysis byte-for-byte what it is today.
     let source = "DEFINE VARIABLE c-name AS CHARACTER NO-UNDO.\nRUN VALUE(c-name).\n";
-    let (stmts, sem) = without_index(source);
-    assert_eq!(run_resolution(&stmts, &sem), None);
+    let (program, sem) = without_index(source);
+    let stmts = &program.statements;
+    assert_eq!(run_resolution(stmts, &sem), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -188,9 +190,10 @@ fn the_dynamic_arm_records_nothing_without_an_index() {
 #[test]
 fn a_literal_target_with_exactly_one_matching_file_resolves() {
     let source = "RUN post-order.p (INPUT 1).\n";
-    let (stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let stmts = &program.statements;
 
-    let Some(Resolution::Resolved(sym)) = run_resolution(&stmts, &sem) else {
+    let Some(Resolution::Resolved(sym)) = run_resolution(stmts, &sem) else {
         panic!("exactly one file on the paths matches");
     };
     let symbol = sem.symbols.get(sym);
@@ -228,9 +231,10 @@ fn a_quoted_relative_literal_target_resolves() {
     // `RUN "sub/thing.p"` — the quoted form, whose name the lexer hands over
     // without the quotes, and whose path is relative to a search-path entry.
     let source = "RUN \"orders/recalc-total.p\" (INPUT 1).\n";
-    let (stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let stmts = &program.statements;
 
-    let Some(Resolution::Resolved(sym)) = run_resolution(&stmts, &sem) else {
+    let Some(Resolution::Resolved(sym)) = run_resolution(stmts, &sem) else {
         panic!("the quoted relative literal has exactly one match");
     };
     assert_eq!(
@@ -251,10 +255,11 @@ fn one_name_on_two_path_entries_is_unknowable_not_the_first_match() {
         ("/second/post-order.p", POST_ORDER),
     ];
     let source = "RUN post-order.p (INPUT 1).\n";
-    let (stmts, sem) = with_paths(source, &workspace, &["/first", "/second"]);
+    let (program, sem) = with_paths(source, &workspace, &["/first", "/second"]);
+    let stmts = &program.statements;
 
     assert_eq!(
-        run_resolution(&stmts, &sem),
+        run_resolution(stmts, &sem),
         Some(Resolution::Unresolved {
             name: OxablAtom::from("post-order.p"),
             reason: UnresolvedReason::Unknowable,
@@ -262,9 +267,10 @@ fn one_name_on_two_path_entries_is_unknowable_not_the_first_match() {
     );
     // And the one-entry search over the same tree does resolve, so the decline
     // above is the ambiguity's doing and not a broken search.
-    let (stmts, sem) = with_paths(source, &workspace, &["/first"]);
+    let (program, sem) = with_paths(source, &workspace, &["/first"]);
+    let stmts = &program.statements;
     assert!(matches!(
-        run_resolution(&stmts, &sem),
+        run_resolution(stmts, &sem),
         Some(Resolution::Resolved(_))
     ));
 }
@@ -272,10 +278,11 @@ fn one_name_on_two_path_entries_is_unknowable_not_the_first_match() {
 #[test]
 fn a_name_no_file_on_the_paths_matches_is_absent_from_the_workspace() {
     let source = "RUN never-shipped.p.\n";
-    let (stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let stmts = &program.statements;
 
     assert_eq!(
-        run_resolution(&stmts, &sem),
+        run_resolution(stmts, &sem),
         Some(Resolution::Unresolved {
             name: OxablAtom::from("never-shipped.p"),
             reason: UnresolvedReason::AbsentFromWorkspace,
@@ -308,9 +315,10 @@ fn a_name_no_file_on_the_paths_matches_is_absent_from_the_workspace() {
 fn a_target_that_climbs_out_with_dot_dot_is_inconclusive_not_absent() {
     for target in ["../sub/thing.p", "./../sub/thing.p", "..\\sub\\thing.p"] {
         let source = format!("RUN {target}.\n");
-        let (stmts, sem) = with_index(&source, &WORKSPACE);
+        let (program, sem) = with_index(&source, &WORKSPACE);
+        let stmts = &program.statements;
         assert_eq!(
-            run_resolution(&stmts, &sem),
+            run_resolution(stmts, &sem),
             Some(Resolution::Unresolved {
                 name: OxablAtom::from(target),
                 reason: UnresolvedReason::External,
@@ -335,11 +343,13 @@ fn an_internal_procedure_resolves_locally_and_the_index_is_not_consulted() {
                   RUN post-order.\n";
     let schema = Schema::empty();
     let index = RunHostileIndex;
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx =
+        AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools).with_index(&index);
+    let sem = analyze_file(stmts, &ctx);
 
-    let Some(Resolution::Resolved(sym)) = run_resolution(&stmts, &sem) else {
+    let Some(Resolution::Resolved(sym)) = run_resolution(stmts, &sem) else {
         panic!("an internal procedure declared in this file resolves locally");
     };
     let symbol = sem.symbols.get(sym);
@@ -363,9 +373,10 @@ fn a_literal_target_records_nothing_without_an_index() {
         "RUN never-shipped.p.\n",
         "PROCEDURE post-order:\nMESSAGE \"local\".\nEND PROCEDURE.\nRUN post-order.\n",
     ] {
-        let (stmts, sem) = without_index(source);
+        let (program, sem) = without_index(source);
+        let stmts = &program.statements;
         assert_eq!(
-            run_resolution(&stmts, &sem),
+            run_resolution(stmts, &sem),
             None,
             "no index means no cross-file question was asked: {source}"
         );
@@ -384,7 +395,8 @@ const SHARED_CONSUMER: &str = "DEFINE SHARED VARIABLE v-site-code AS CHARACTER N
 
 #[test]
 fn a_shared_consumer_links_to_the_new_shared_producer_the_run_pulled_in() {
-    let (_, sem) = with_index(SHARED_CONSUMER, &WORKSPACE);
+    let (program, sem) = with_index(SHARED_CONSUMER, &WORKSPACE);
+    let _ = &program.statements;
     let consumer = sole_symbol(&sem, "v-site-code");
     assert!(
         sem.symbols
@@ -400,7 +412,7 @@ fn a_shared_consumer_links_to_the_new_shared_producer_the_run_pulled_in() {
 
     // The link names the same indexed file the `RUN` resolved to — one file, one
     // id, which is what makes the two facts composable downstream.
-    let run_sym = match run_resolution(&parse(SHARED_CONSUMER), &sem) {
+    let run_sym = match run_resolution(&parse(SHARED_CONSUMER).statements, &sem) {
         Some(Resolution::Resolved(sym)) => sym,
         other => panic!("the RUN target resolves: {other:?}"),
     };
@@ -416,7 +428,8 @@ fn a_new_global_shared_producer_links_the_same_way() {
     let source = "DEFINE SHARED VARIABLE v-region-code AS CHARACTER NO-UNDO.\n\
                   RUN init-region.p.\n\
                   MESSAGE v-region-code.\n";
-    let (_, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let _ = &program.statements;
     let consumer = sole_symbol(&sem, "v-region-code");
     assert!(
         sem.symbols.shared_producer(consumer).is_some(),
@@ -434,7 +447,8 @@ fn a_consumer_whose_type_differs_from_the_producer_keeps_its_own_type() {
     let source = "DEFINE SHARED VARIABLE v-site-code AS INTEGER NO-UNDO.\n\
                   RUN init-globals.p.\n\
                   v-site-code = 5.\n";
-    let (_, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let _ = &program.statements;
     let consumer = sole_symbol(&sem, "v-site-code");
     assert!(
         sem.symbols.shared_producer(consumer).is_some(),
@@ -465,7 +479,8 @@ fn a_consumer_whose_type_differs_from_the_producer_keeps_its_own_type() {
 fn a_shared_consumer_with_no_producer_anywhere_links_to_nothing() {
     let source = "DEFINE SHARED VARIABLE v-orphan-code AS CHARACTER NO-UNDO.\n\
                   MESSAGE v-orphan-code.\n";
-    let (_, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let _ = &program.statements;
     let consumer = sole_symbol(&sem, "v-orphan-code");
     assert!(sem.symbols.shared_producer(consumer).is_none());
     assert!(
@@ -485,7 +500,8 @@ fn a_producer_is_never_linked_as_its_own_consumer() {
     // itself would invent a cross-file relationship out of one declaration.
     let source = "DEFINE NEW SHARED VARIABLE v-site-code AS CHARACTER NO-UNDO.\n\
                   RUN init-globals.p.\n";
-    let (_, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let _ = &program.statements;
     let producer = sole_symbol(&sem, "v-site-code");
     assert!(sem.symbols.shared_producer(producer).is_none());
 }
@@ -496,7 +512,8 @@ fn the_shared_link_is_absent_without_an_index() {
         SHARED_CONSUMER,
         "DEFINE SHARED VARIABLE v-x AS INTEGER NO-UNDO.\n",
     ] {
-        let (_, sem) = without_index(source);
+        let (program, sem) = without_index(source);
+        let _ = &program.statements;
         for (sid, _) in sem.symbols.iter() {
             assert!(
                 sem.symbols.shared_producer(sid).is_none(),
@@ -517,9 +534,10 @@ fn a_resolved_target_called_with_the_wrong_argument_count_produces_no_finding() 
     // would break R11, so this must stay silent — asserted here so adding the
     // check later is a failing test rather than a surprise in a dogfood run.
     let source = "RUN post-order.p (INPUT 1, INPUT 2, INPUT 3).\n";
-    let (stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let stmts = &program.statements;
     assert!(
-        matches!(run_resolution(&stmts, &sem), Some(Resolution::Resolved(_))),
+        matches!(run_resolution(stmts, &sem), Some(Resolution::Resolved(_))),
         "the target resolves, which is what makes the silence meaningful"
     );
     assert!(lint0001_with_index(source, &WORKSPACE).is_empty());
@@ -566,8 +584,10 @@ fn attaching_an_index_adds_exactly_the_enumerated_diagnostics() {
             expected,
             "the findings an index adds for: {source}"
         );
-        let (_, with) = with_index(source, &WORKSPACE);
-        let (_, without) = without_index(source);
+        let (program, with) = with_index(source, &WORKSPACE);
+        let _ = &program.statements;
+        let (program, without) = without_index(source);
+        let _ = &program.statements;
         assert_eq!(
             with.diagnostics, without.diagnostics,
             "semantic diagnostics differ for: {source}"

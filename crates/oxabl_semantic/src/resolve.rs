@@ -27,10 +27,10 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use oxabl_ast::{
-    AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind, FrameField,
-    HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterExtent,
-    ParameterType, RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget,
-    TypeArguments, TypeSource, UsingSource,
+    AccessModifier, AstPools, BufferTarget, CreateTarget, DataType, ExprId, ExprList, Expression,
+    ExpressionKind, FrameField, HandleParamKind, Identifier, NodeId, OnAction, OnKind,
+    ParameterDirection, ParameterExtent, ParameterType, RunTarget, Span, Statement, StatementKind,
+    StreamOperation, SubscribeTarget, TypeArguments, TypeSource, UsingSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::is_builtin_function;
@@ -51,7 +51,7 @@ use crate::{
     WorkspaceIndex, builtins, diagnostics, resolve_span,
 };
 
-fn method_signature(parameters: &[Statement]) -> Vec<String> {
+fn method_signature(parameters: &[Statement], pools: &AstPools) -> Vec<String> {
     parameters
         .iter()
         .filter_map(|parameter| {
@@ -80,7 +80,7 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
                     TypeSource::Like { source } => {
                         format!(
                             "like:{}{}",
-                            source.name.to_ascii_lowercase(),
+                            pools.ident(*source).to_ascii_lowercase(),
                             extent_key(*extent)
                         )
                     }
@@ -90,7 +90,7 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
                     passing.append, passing.bind, passing.by_value
                 ),
                 ParameterType::Buffer { target, .. } => {
-                    format!("buffer:{}", target.name.to_ascii_lowercase())
+                    format!("buffer:{}", pools.ident(*target).to_ascii_lowercase())
                 }
             };
             Some(format!("{direction}:{shape}"))
@@ -213,16 +213,6 @@ enum BareField {
 enum FieldHit {
     Declared(SymbolId),
     Schema(TableId, ResolvedType),
-}
-
-/// How a name matched the fields of one record.
-enum RecordField {
-    Exact(FieldHit),
-    /// A unique abbreviation.
-    Prefix(FieldHit),
-    /// An abbreviation of two or more fields.
-    Ambiguous,
-    NotFound,
 }
 
 /// Whether the last segment of a `RUN` target carries an extension. The last
@@ -402,14 +392,14 @@ impl<'a> Walker<'a> {
             StatementKind::DefineParameter {
                 direction,
                 param_type,
-            } => self.declare_parameter(stmt, scope, direction.clone(), param_type),
+            } => self.declare_parameter(stmt, scope, *direction, param_type),
 
             // ---- Streams / Frames / Events --------------------------------
             StatementKind::DefineStream { name } => {
                 let routine = self.tree.var_binding_scope(scope);
                 // The compiler accepts a stream defined twice in one scope, as
                 // when the file and an include both define it.
-                let atom = fold_atom(&name.name);
+                let atom = fold_atom(self.ctx.pools.ident(*name));
                 if self
                     .tree
                     .get(routine)
@@ -485,6 +475,9 @@ impl<'a> Walker<'a> {
                 let flags = access_flag(*access)
                     | flag_if(*is_static, SymbolFlags::STATIC)
                     | flag_if(*no_undo, SymbolFlags::NO_UNDO);
+                if extent.is_none() && data_type.class_name().is_some() {
+                    self.symbols.mark_has_class_typed_decl();
+                }
                 self.declare(
                     stmt,
                     scope,
@@ -638,6 +631,9 @@ impl<'a> Walker<'a> {
                 } else {
                     SymbolFlags::empty()
                 };
+                if return_type.class_name().is_some() {
+                    self.symbols.mark_has_class_typed_decl();
+                }
                 // Bound like a `PROCEDURE`: to the routine, not the block.
                 self.declare(
                     stmt,
@@ -681,10 +677,14 @@ impl<'a> Walker<'a> {
                 // resolve pass needs them to walk the chain, and their spans are
                 // the only thing a later diagnostic about an unresolvable parent
                 // could point at.
+                let pools = self.ctx.pools;
                 self.record_supertypes(
                     sym,
-                    inherits.as_ref().map(supertype_ref),
-                    implements.iter().map(supertype_ref).collect(),
+                    inherits.as_ref().map(|id| supertype_ref(id, pools)),
+                    implements
+                        .iter()
+                        .map(|id| supertype_ref(id, pools))
+                        .collect(),
                 );
                 let class_scope =
                     self.tree
@@ -709,7 +709,12 @@ impl<'a> Walker<'a> {
                 // An interface extends a *list* of interfaces, so its supertypes
                 // go to `implements` — see [`Supertypes`] for why that loses
                 // nothing.
-                self.record_supertypes(sym, None, inherits.iter().map(supertype_ref).collect());
+                let pools = self.ctx.pools;
+                self.record_supertypes(
+                    sym,
+                    None,
+                    inherits.iter().map(|id| supertype_ref(id, pools)).collect(),
+                );
                 let iface_scope =
                     self.tree
                         .push(ScopeKind::Interface, scope, stmt.id, self.scope_span(stmt));
@@ -730,9 +735,12 @@ impl<'a> Walker<'a> {
                     | flag_if(*is_static, SymbolFlags::STATIC)
                     | flag_if(*is_abstract, SymbolFlags::ABSTRACT)
                     | flag_if(*is_override, SymbolFlags::OVERRIDE);
-                let ret = return_type
-                    .as_ref()
-                    .map(|dt| ResolvedType::from_declared(dt, *extent));
+                let ret = return_type.as_ref().map(|dt| {
+                    if extent.is_none() && dt.class_name().is_some() {
+                        self.symbols.mark_has_class_typed_decl();
+                    }
+                    ResolvedType::from_declared(dt, *extent)
+                });
                 self.declare_method(stmt, scope, name, parameters, ret, flags);
                 let method_scope =
                     self.tree
@@ -810,7 +818,7 @@ impl<'a> Walker<'a> {
                     // counter to that outer symbol (bumping its use), so
                     // declaring a shadow here would leave the real variable
                     // looking unused (false LINT0002).
-                    let atom = fold_atom(&id.name);
+                    let atom = fold_atom(self.ctx.pools.ident(*id));
                     if self
                         .tree
                         .resolve(scope, NamespaceId::Values, &atom)
@@ -847,7 +855,7 @@ impl<'a> Walker<'a> {
                 // to this block, so bind that same symbol here. Only a name no
                 // buffer answers to is a schema table's default buffer, which is
                 // minted at block scope.
-                let atom = fold_atom(&buffer.name);
+                let atom = fold_atom(self.ctx.pools.ident(*buffer));
                 if let Some(existing) = self.tree.resolve(scope, NamespaceId::Buffers, &atom) {
                     self.tree
                         .get_mut(bs)
@@ -1007,7 +1015,12 @@ impl<'a> Walker<'a> {
         }
 
         let data_type = match type_source {
-            TypeSource::Explicit(dt) => Some(wrap_extent(ResolvedType::from_data_type(dt), extent)),
+            TypeSource::Explicit(dt) => {
+                if dt.class_name().is_some() {
+                    self.symbols.mark_has_class_typed_decl();
+                }
+                Some(wrap_extent(ResolvedType::from_data_type(dt), extent))
+            }
             TypeSource::Like { .. } => None,
         };
         // ABL scopes a `DEFINE VARIABLE` to its enclosing routine, not to the
@@ -1045,7 +1058,7 @@ impl<'a> Walker<'a> {
     /// as the same field in a second frame does.
     fn declare_frame_fields(&mut self, stmt: &Statement, scope: ScopeId, fields: &[FrameField]) {
         for field in fields {
-            let atom = fold_atom(&field.name.name);
+            let atom = fold_atom(self.ctx.pools.ident(field.name));
             if self
                 .tree
                 .resolve(scope, NamespaceId::Values, &atom)
@@ -1081,7 +1094,12 @@ impl<'a> Walker<'a> {
                 ..
             } => {
                 let data_type = match type_source {
-                    TypeSource::Explicit(dt) => Some(ResolvedType::from_data_type(dt)),
+                    TypeSource::Explicit(dt) => {
+                        if dt.class_name().is_some() {
+                            self.symbols.mark_has_class_typed_decl();
+                        }
+                        Some(ResolvedType::from_data_type(dt))
+                    }
                     TypeSource::Like { .. } => None,
                 };
                 let flags = dir_flag | flag_if(*no_undo, SymbolFlags::NO_UNDO);
@@ -1146,7 +1164,7 @@ impl<'a> Walker<'a> {
         kind: &HandleParamKind,
         dir_flag: SymbolFlags,
     ) -> bool {
-        let atom = fold_atom(&name.name);
+        let atom = fold_atom(self.ctx.pools.ident(*name));
         let Some(prior) = self.tree.get(scope).get_in(NamespaceId::Values, &atom) else {
             return false;
         };
@@ -1282,7 +1300,7 @@ impl<'a> Walker<'a> {
     /// visible from `scope` wins over a schema table of the same name, as in
     /// ABL.
     fn record_source_of(&self, table: &Identifier, scope: ScopeId) -> Option<RecordSource> {
-        let atom = fold_atom(&table.name);
+        let atom = fold_atom(self.ctx.pools.ident(*table));
         if let Some(sym) = self.tree.resolve(scope, NamespaceId::Buffers, &atom)
             && self.symbols.get(sym).kind == SymbolKind::TempTable
         {
@@ -1299,7 +1317,7 @@ impl<'a> Walker<'a> {
     /// as one dotted identifier. The database part is stripped and the bare
     /// table name is what resolves; see [`strip_db_qualifier`].
     fn schema_table_id(&self, table: &Identifier) -> Option<TableId> {
-        schema_table_named(self.ctx.schema, &fold_atom(&table.name))
+        schema_table_named(self.ctx.schema, &fold_atom(self.ctx.pools.ident(*table)))
     }
 
     /// Core insertion routine. Returns the new `SymbolId` on success;
@@ -1318,7 +1336,8 @@ impl<'a> Walker<'a> {
         flags: SymbolFlags,
         table_id: Option<TableId>,
     ) -> Option<crate::SymbolId> {
-        let atom = fold_atom(&name.name);
+        let raw_name = self.ctx.pools.ident(*name);
+        let atom = fold_atom(raw_name);
         let name_span = VirtualSpan::new(name.span.start, name.span.end);
 
         // Duplicate check — same scope + same namespace only. Shadowing
@@ -1349,7 +1368,7 @@ impl<'a> Walker<'a> {
                 self.diagnostics.push(
                     Diagnostic::error(
                         diagnostics::SEM0001,
-                        format!("`{}` is already declared in this scope", name.name),
+                        format!("`{raw_name}` is already declared in this scope"),
                         resolve_span(self.ctx, name_span),
                     )
                     .with_label(
@@ -1393,10 +1412,11 @@ impl<'a> Walker<'a> {
         data_type: Option<ResolvedType>,
         flags: SymbolFlags,
     ) -> Option<SymbolId> {
-        let atom = fold_atom(&name.name);
-        let signature = method_signature(parameters);
+        let raw_name = self.ctx.pools.ident(*name);
+        let atom = fold_atom(raw_name);
+        let signature = method_signature(parameters, self.ctx.pools);
         let param_decls: Option<Arc<[MemberParam]>> =
-            crate::signature::member_params(parameters).map(Into::into);
+            crate::signature::member_params(parameters, self.ctx.pools).map(Into::into);
         let name_span = VirtualSpan::new(name.span.start, name.span.end);
 
         let Some(anchor) = self.tree.get(scope).get_in(NamespaceId::Functions, &atom) else {
@@ -1436,7 +1456,7 @@ impl<'a> Walker<'a> {
             self.diagnostics.push(
                 Diagnostic::error(
                     diagnostics::SEM0001,
-                    format!("`{}` is already declared in this scope", name.name),
+                    format!("`{raw_name}` is already declared in this scope"),
                     resolve_span(self.ctx, name_span),
                 )
                 .with_label(
@@ -1703,9 +1723,10 @@ struct ResolveWalker<'a> {
     /// Dedup cache for synthesized default-buffer symbols: one symbol per
     /// schema table referenced by bare name.
     synth_buffers: FxHashMap<TableId, SymbolId>,
-    /// Dedup cache for synthesized sequence symbols.
-    /// Boxed and lazy: most files never reference a sequence.
-    synth_sequences: Option<Box<FxHashMap<OxablAtom, SymbolId>>>,
+    /// Lazily allocated side caches (synthesized sequences and per-scope bare
+    /// field lookup tables). Boxed as one word so files that touch neither pay
+    /// no stack space or heap allocation.
+    lazy: Option<Box<LazyWalkerState>>,
     /// The class whose body the walk is currently inside, if any. An inherited
     /// member is only reachable from within its subclass, so this is the gate on
     /// consulting [`CrossFileState::inherited`] at all.
@@ -1732,6 +1753,46 @@ struct ResolveWalker<'a> {
     /// `None` is indistinguishable from empty at every read site (see
     /// [`Self::cross_file`]), so the resolution answers are identical either way.
     cross_file: Option<Box<CrossFileState>>,
+}
+
+/// Lazily allocated side caches for [`ResolveWalker`]. Kept behind one
+/// `Option<Box<…>>` so files that never reference a sequence or fall back to
+/// bare field lookup pay neither stack size nor heap allocation.
+#[derive(Default)]
+struct LazyWalkerState {
+    synth_sequences: FxHashMap<OxablAtom, SymbolId>,
+    /// Per-scope cached buffer sources and temp-table field index for bare
+    /// field resolution. Buffer record sources are fixed after `declare_pass`.
+    bare_fields: FxHashMap<ScopeId, ScopeBareFields>,
+}
+
+/// Cached entry for a temp-table field name visible in one scope.
+#[derive(Debug, Clone, Copy)]
+enum TempFieldEntry {
+    /// Exactly one temp-table in the scope declares this field name.
+    Unique(SymbolId, SymbolId),
+    /// Two or more distinct temp-tables in the scope declare this field name.
+    Ambiguous,
+}
+
+/// Precomputed bare-field lookup data for a single scope that binds buffers.
+struct ScopeBareFields {
+    /// Whether any buffer bound in this scope has no known [`RecordSource`].
+    opaque: bool,
+    /// Deduplicated schema tables bound by buffers in this scope.
+    schema_tables: SmallVec<[TableId; 4]>,
+    /// Exact field names declared by temp-tables in this scope (and their
+    /// `LIKE` temp-table chains).
+    tt_fields: FxHashMap<OxablAtom, TempFieldEntry>,
+    /// Temp-tables in this scope whose `LIKE` chain ends at a schema table.
+    tt_like_schema: SmallVec<[(SymbolId, TableId); 2]>,
+}
+
+/// Result of looking up a bare field name within a single scope.
+enum ScopeBareMatch {
+    None,
+    Unique(RecordSource, FieldHit),
+    Ambiguous,
 }
 
 /// The resolve pass's cross-file state: memos, synthesized-symbol caches, and the
@@ -2027,7 +2088,7 @@ impl<'a> ResolveWalker<'a> {
             track_block_vars: false,
             synth_fields: FxHashMap::default(),
             synth_buffers: FxHashMap::default(),
-            synth_sequences: None,
+            lazy: None,
             current_class: None,
             in_static: false,
             // Deliberately not created here, not even when an index *is*
@@ -2522,7 +2583,7 @@ impl<'a> ResolveWalker<'a> {
     fn note_type_arguments(&mut self, arguments: &TypeArguments, scope: ScopeId) {
         for argument in &arguments.0 {
             let name = &argument.name;
-            self.note_declared_class(&name.name, scope, identifier_span(name));
+            self.note_declared_class(self.ctx.pools.ident(*name), scope, identifier_span(name));
             self.note_type_arguments(&argument.arguments, scope);
         }
     }
@@ -2697,6 +2758,9 @@ impl<'a> ResolveWalker<'a> {
     }
 
     fn upgrade_class_decls(&mut self, program: &[Statement]) {
+        if !self.symbols.has_class_typed_decl() {
+            return;
+        }
         let mut decls: Vec<ClassTypedDecl> = Vec::new();
         self.collect_class_upgrades(program, ScopeId::ROOT, &mut decls);
         for decl in decls {
@@ -2770,10 +2834,10 @@ impl<'a> ResolveWalker<'a> {
                     extent: None,
                     ..
                 } => return_type.class_name().and_then(|class_name| {
-                    let anchor = self
-                        .tree
-                        .get(scope)
-                        .get_in(NamespaceId::Functions, &fold_atom(&name.name))?;
+                    let anchor = self.tree.get(scope).get_in(
+                        NamespaceId::Functions,
+                        &fold_atom(self.ctx.pools.ident(*name)),
+                    )?;
                     let decl_sym = self
                         .symbols
                         .method_overloads(anchor)
@@ -2910,7 +2974,7 @@ impl<'a> ResolveWalker<'a> {
         decl_ns: NamespaceId,
         decl_name: &Identifier,
     ) -> Option<ClassTypedDecl> {
-        let decl_atom = fold_atom(&decl_name.name);
+        let decl_atom = fold_atom(self.ctx.pools.ident(*decl_name));
         let decl_sym = self.tree.get(scope).get_in(decl_ns, &decl_atom)?;
         self.class_upgrade_of(class_name, scope, decl_sym, decl_name)
     }
@@ -2991,7 +3055,7 @@ impl<'a> ResolveWalker<'a> {
                     }
                     TypeSource::Like { source } => self.note_like_source(source, scope, false),
                 }
-                if let Some(e) = initial_value {
+                if let Some(e) = *initial_value {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3037,8 +3101,8 @@ impl<'a> ResolveWalker<'a> {
                         }
                         TypeSource::Like { source } => self.note_like_source(source, scope, false),
                     }
-                    if let Some(init) = &f.initial_value {
-                        for e in init {
+                    if let Some(init) = f.initial_value {
+                        for &e in self.ctx.pools.exprs(init) {
                             self.walk_expression(e, scope, AccessMode::Read);
                         }
                     }
@@ -3163,9 +3227,11 @@ impl<'a> ResolveWalker<'a> {
                     let outer = self.current_class;
                     // Not gated on the index: a single-file run reads it too, to
                     // tell whether the class inherits a parent it never reads.
-                    self.current_class =
-                        self.tree
-                            .resolve(scope, NamespaceId::Types, &fold_atom(&name.name));
+                    self.current_class = self.tree.resolve(
+                        scope,
+                        NamespaceId::Types,
+                        &fold_atom(self.ctx.pools.ident(*name)),
+                    );
                     // An include that did not arrive in the body may declare
                     // more members.
                     if let Some(class) = self.current_class
@@ -3266,19 +3332,19 @@ impl<'a> ResolveWalker<'a> {
                         AccessMode::ReadWrite,
                     );
                 }
-                if let Some(e) = from {
+                if let Some(e) = *from {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
-                if let Some(e) = to {
+                if let Some(e) = *to {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
-                if let Some(e) = by {
+                if let Some(e) = *by {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
-                if let Some(e) = while_condition {
+                if let Some(e) = *while_condition {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
-                for e in on_actions {
+                for &e in self.ctx.pools.exprs(*on_actions) {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
                 self.walk_block(body, bs);
@@ -3292,10 +3358,10 @@ impl<'a> ResolveWalker<'a> {
                     .find_child_scope(scope, stmt.id, ScopeKind::Block)
                     .unwrap_or(scope);
                 self.note_block_records(stmt.span, bs);
-                if let Some(e) = while_condition {
+                if let Some(e) = *while_condition {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
-                for e in on_actions {
+                for &e in self.ctx.pools.exprs(*on_actions) {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
                 self.walk_block(body, bs);
@@ -3328,10 +3394,10 @@ impl<'a> ResolveWalker<'a> {
                         AccessMode::Read,
                     );
                 }
-                if let Some(w) = where_clause {
+                if let Some(w) = *where_clause {
                     self.walk_expression(w, bs, AccessMode::Read);
                 }
-                for e in on_actions {
+                for &e in self.ctx.pools.exprs(*on_actions) {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
                 // The joined records after the first are not in the AST.
@@ -3339,7 +3405,7 @@ impl<'a> ResolveWalker<'a> {
                     .into_iter()
                     .flatten()
                     .map(|span| span.end)
-                    .chain(where_clause.as_ref().map(|w| w.span.end))
+                    .chain(where_clause.map(|w| self.ctx.pools.expr(w).span.end))
                     .max()
                     .unwrap_or(stmt.span.start);
                 self.note_unmodelled_text(after(stmt.span, first_end), bs);
@@ -3357,18 +3423,17 @@ impl<'a> ResolveWalker<'a> {
                     &[NamespaceId::Buffers, NamespaceId::Tables],
                     AccessMode::Read,
                 );
-                if let Some(k) = key_value {
+                if let Some(k) = *key_value {
                     self.walk_expression(k, scope, AccessMode::Read);
                 }
-                if let Some(w) = where_clause {
+                if let Some(w) = *where_clause {
                     self.walk_expression(w, scope, AccessMode::Read);
                 }
                 // The `OF` table, between the record and its key or `WHERE`, is
                 // not in the AST.
-                let end = key_value
-                    .as_ref()
-                    .or(where_clause.as_ref())
-                    .map_or(stmt.span.end, |e| e.span.start);
+                let end = (*key_value)
+                    .or(*where_clause)
+                    .map_or(stmt.span.end, |e| self.ctx.pools.expr(e).span.start);
                 self.note_unmodelled_text(
                     Span {
                         start: buffer.span.end,
@@ -3382,7 +3447,7 @@ impl<'a> ResolveWalker<'a> {
                 then_branch,
                 else_branch,
             } => {
-                self.walk_expression(condition, scope, AccessMode::Read);
+                self.walk_expression(*condition, scope, AccessMode::Read);
                 self.walk_statement(then_branch, scope);
                 if let Some(eb) = else_branch {
                     self.walk_statement(eb, scope);
@@ -3393,9 +3458,9 @@ impl<'a> ResolveWalker<'a> {
                 when_branches,
                 otherwise,
             } => {
-                self.walk_expression(expression, scope, AccessMode::Read);
+                self.walk_expression(*expression, scope, AccessMode::Read);
                 for wb in when_branches {
-                    for v in &wb.values {
+                    for &v in self.ctx.pools.exprs(wb.values) {
                         self.walk_expression(v, scope, AccessMode::Read);
                     }
                     self.walk_block(&wb.body, scope);
@@ -3447,8 +3512,8 @@ impl<'a> ResolveWalker<'a> {
                             for arg in procedure
                                 .expression()
                                 .into_iter()
-                                .chain(in_handle.iter())
-                                .chain(arguments)
+                                .chain(*in_handle)
+                                .chain(self.ctx.pools.exprs(*arguments).iter().copied())
                             {
                                 self.walk_expression(arg, scope, AccessMode::Read);
                             }
@@ -3462,10 +3527,10 @@ impl<'a> ResolveWalker<'a> {
                 self.note_trigger_table(target, scope)
             }
             StatementKind::PreprocIf(pif) => {
-                self.walk_expression(&pif.condition, scope, AccessMode::Read);
+                self.walk_expression(pif.condition, scope, AccessMode::Read);
                 self.walk_block(&pif.then_branch, scope);
                 for (c, br) in &pif.elseif_branches {
-                    self.walk_expression(c, scope, AccessMode::Read);
+                    self.walk_expression(*c, scope, AccessMode::Read);
                     self.walk_block(br, scope);
                 }
                 if let Some(eb) = &pif.else_branch {
@@ -3474,30 +3539,30 @@ impl<'a> ResolveWalker<'a> {
             }
             StatementKind::PreprocDefine { .. } | StatementKind::PreprocUndefine { .. } => {}
             StatementKind::PreprocMessage { expression } => {
-                self.walk_expression(expression, scope, AccessMode::Read);
+                self.walk_expression(*expression, scope, AccessMode::Read);
             }
 
             // ---- Assignment forms ----------------------------------------
             StatementKind::Assignment { target, value } => {
-                self.walk_expression(target, scope, AccessMode::Write);
-                self.walk_expression(value, scope, AccessMode::Read);
+                self.walk_expression(*target, scope, AccessMode::Write);
+                self.walk_expression(*value, scope, AccessMode::Read);
             }
             StatementKind::Assign { assignments } => {
                 for pair in assignments {
-                    self.walk_expression(&pair.target, scope, AccessMode::Write);
-                    self.walk_expression(&pair.value, scope, AccessMode::Read);
+                    self.walk_expression(pair.target, scope, AccessMode::Write);
+                    self.walk_expression(pair.value, scope, AccessMode::Read);
                 }
             }
             StatementKind::ExpressionStatement(expr) => {
-                self.walk_expression(expr, scope, AccessMode::Read);
+                self.walk_expression(*expr, scope, AccessMode::Read);
             }
             StatementKind::Return(opt) => {
-                if let Some(e) = opt {
+                if let Some(e) = *opt {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
             StatementKind::Throw(expr) => {
-                self.walk_expression(expr, scope, AccessMode::Read);
+                self.walk_expression(*expr, scope, AccessMode::Read);
             }
 
             // ---- Output / display ----------------------------------------
@@ -3516,8 +3581,8 @@ impl<'a> ResolveWalker<'a> {
                     );
                 }
                 for item in items {
-                    self.walk_expression(&item.expression, scope, AccessMode::Read);
-                    if let Some(w) = &item.when_condition {
+                    self.walk_expression(item.expression, scope, AccessMode::Read);
+                    if let Some(w) = item.when_condition {
                         self.walk_expression(w, scope, AccessMode::Read);
                     }
                 }
@@ -3539,7 +3604,7 @@ impl<'a> ResolveWalker<'a> {
                         AccessMode::Read,
                     );
                 }
-                for e in items {
+                for &e in self.ctx.pools.exprs(*items) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3561,7 +3626,7 @@ impl<'a> ResolveWalker<'a> {
                         AccessMode::Read,
                     );
                 }
-                if let Some(d) = delimiter {
+                if let Some(d) = *delimiter {
                     self.walk_expression(d, scope, AccessMode::Read);
                 }
                 let mode = if matches!(stmt.kind, StatementKind::Import { .. }) {
@@ -3569,12 +3634,12 @@ impl<'a> ResolveWalker<'a> {
                 } else {
                     AccessMode::Read
                 };
-                for e in items {
+                for &e in self.ctx.pools.exprs(*items) {
                     self.walk_expression(e, scope, mode);
                 }
             }
             StatementKind::Form { items, fields } => {
-                for e in items {
+                for &e in self.ctx.pools.exprs(*items) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
                 self.note_frame_field_sources(fields, scope);
@@ -3582,7 +3647,7 @@ impl<'a> ResolveWalker<'a> {
             StatementKind::Enable { items }
             | StatementKind::WaitFor { widgets: items }
             | StatementKind::Disable { items } => {
-                for e in items {
+                for &e in self.ctx.pools.exprs(*items) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3596,7 +3661,7 @@ impl<'a> ResolveWalker<'a> {
                         AccessMode::Read,
                     );
                 }
-                for e in items {
+                for &e in self.ctx.pools.exprs(*items) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3605,10 +3670,10 @@ impl<'a> ResolveWalker<'a> {
                 options,
                 fields,
             } => {
-                for e in targets {
+                for &e in self.ctx.pools.exprs(*targets) {
                     self.walk_expression(e, scope, AccessMode::ReadWrite);
                 }
-                for e in options {
+                for &e in self.ctx.pools.exprs(*options) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
                 self.note_frame_field_sources(fields, scope);
@@ -3618,10 +3683,10 @@ impl<'a> ResolveWalker<'a> {
                 options,
                 fields,
             } => {
-                for e in targets {
+                for &e in self.ctx.pools.exprs(*targets) {
                     self.walk_expression(e, scope, AccessMode::Write);
                 }
-                for e in options {
+                for &e in self.ctx.pools.exprs(*options) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
                 self.note_frame_field_sources(fields, scope);
@@ -3640,7 +3705,13 @@ impl<'a> ResolveWalker<'a> {
                         AccessMode::Read,
                     );
                 }
-                for e in targets.iter().chain(options) {
+                for &e in self
+                    .ctx
+                    .pools
+                    .exprs(*targets)
+                    .iter()
+                    .chain(self.ctx.pools.exprs(*options))
+                {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
                 self.note_frame_field_sources(fields, scope);
@@ -3649,7 +3720,7 @@ impl<'a> ResolveWalker<'a> {
                 duration: a,
                 message: b,
             } => {
-                for e in a.iter().chain(b) {
+                for e in (*a).into_iter().chain(*b) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3663,7 +3734,7 @@ impl<'a> ResolveWalker<'a> {
                         AccessMode::Read,
                     );
                 }
-                if let Some(e) = lines {
+                if let Some(e) = *lines {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3672,7 +3743,7 @@ impl<'a> ResolveWalker<'a> {
                 set_targets,
                 fields,
             } => {
-                for e in items {
+                for &e in self.ctx.pools.exprs(*items) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
                 for t in set_targets {
@@ -3708,7 +3779,7 @@ impl<'a> ResolveWalker<'a> {
                         // `c-name` exactly as it always has, and the unknowable
                         // fact is about the *target*, which is a different thing
                         // recorded at a different node.
-                        self.walk_expression(e, scope, AccessMode::Read);
+                        self.walk_expression(*e, scope, AccessMode::Read);
                         self.record_computed_run_target(stmt.id, stmt.span, in_handle.is_some());
                     }
                 }
@@ -3720,32 +3791,32 @@ impl<'a> ResolveWalker<'a> {
                             AccessMode::ReadWrite
                         }
                     };
-                    self.walk_expression(&arg.expression, scope, mode);
+                    self.walk_expression(arg.expression, scope, mode);
                     // A write-back argument means the callee assigns into the
                     // caller's variable — a genuine use of the binding even
                     // when the call site never reads it back. Reuse the
                     // resolution `walk_expression` just recorded rather than
                     // resolving again; non-identifier and unresolved arguments
                     // simply miss and are a no-op.
+                    let arg_expr = self.ctx.pools.expr(arg.expression);
                     if mode != AccessMode::Read
-                        && matches!(arg.expression.kind, ExpressionKind::Identifier(_))
-                        && let Some(Resolution::Resolved(sym)) =
-                            self.references.get(arg.expression.id)
+                        && matches!(arg_expr.kind, ExpressionKind::Identifier(_))
+                        && let Some(Resolution::Resolved(sym)) = self.references.get(arg_expr.id)
                     {
                         let sym = *sym;
                         self.output_args.insert(sym);
                     }
                 }
-                if let Some(h) = in_handle {
+                if let Some(h) = *in_handle {
                     self.walk_expression(h, scope, AccessMode::Read);
                 }
-                if let Some(h) = persistent_handle {
+                if let Some(h) = *persistent_handle {
                     self.walk_expression(h, scope, AccessMode::Write);
                 }
-                if let Some(h) = async_handle {
+                if let Some(h) = *async_handle {
                     self.walk_expression(h, scope, AccessMode::Write);
                 }
-                if let Some(e) = event_procedure {
+                if let Some(e) = *event_procedure {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3759,22 +3830,22 @@ impl<'a> ResolveWalker<'a> {
                 extra_targets,
                 ..
             } => {
-                self.walk_expression(target, scope, AccessMode::Read);
-                for t in extra_targets {
+                self.walk_expression(*target, scope, AccessMode::Read);
+                for &t in self.ctx.pools.exprs(*extra_targets) {
                     self.walk_expression(t, scope, AccessMode::Read);
                 }
             }
             StatementKind::CreateWidgetPool { name, .. }
             | StatementKind::DeleteWidgetPool { name, .. } => {
-                if let Some(n) = name {
+                if let Some(n) = *name {
                     self.walk_expression(n, scope, AccessMode::Read);
                 }
             }
             StatementKind::ReleaseObject { target, .. } => {
-                self.walk_expression(target, scope, AccessMode::Read);
+                self.walk_expression(*target, scope, AccessMode::Read);
             }
             StatementKind::Apply { event, target } => {
-                for e in event.iter().chain(target) {
+                for e in (*event).into_iter().chain(*target) {
                     self.walk_lenient_operand(e, scope);
                 }
             }
@@ -3789,7 +3860,9 @@ impl<'a> ResolveWalker<'a> {
                 }
             }
             StatementKind::Accumulate { expression, breaks } => {
-                for e in std::iter::once(expression).chain(breaks) {
+                for e in std::iter::once(*expression)
+                    .chain(self.ctx.pools.exprs(*breaks).iter().copied())
+                {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3802,7 +3875,7 @@ impl<'a> ResolveWalker<'a> {
                         AccessMode::Read,
                     );
                 }
-                for e in items {
+                for &e in self.ctx.pools.exprs(*items) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3813,25 +3886,25 @@ impl<'a> ResolveWalker<'a> {
                 options,
                 ..
             } => {
-                self.walk_expression(source, scope, AccessMode::Read);
+                self.walk_expression(*source, scope, AccessMode::Read);
                 // An `APPEND` or `OVERLAY` target is read too.
                 let mode = if *target_file {
                     AccessMode::Read
                 } else {
                     AccessMode::ReadWrite
                 };
-                self.walk_expression(target, scope, mode);
-                for e in options {
+                self.walk_expression(*target, scope, mode);
+                for &e in self.ctx.pools.exprs(*options) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
             // A bare query name is not a declared symbol.
-            StatementKind::Get { query, .. } => self.walk_lenient_operand(query, scope),
+            StatementKind::Get { query, .. } => self.walk_lenient_operand(*query, scope),
             StatementKind::Reposition {
                 query, operands, ..
             } => {
-                self.walk_lenient_operand(query, scope);
-                for e in operands {
+                self.walk_lenient_operand(*query, scope);
+                for &e in self.ctx.pools.exprs(*operands) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3841,11 +3914,11 @@ impl<'a> ResolveWalker<'a> {
                 handle,
                 ..
             } => {
-                self.walk_lenient_operand(target, scope);
-                if let Some(e) = status {
+                self.walk_lenient_operand(*target, scope);
+                if let Some(e) = *status {
                     self.walk_expression(e, scope, AccessMode::Write);
                 }
-                if let Some(e) = handle {
+                if let Some(e) = *handle {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
@@ -3880,8 +3953,8 @@ impl<'a> ResolveWalker<'a> {
                     AccessMode::Write,
                 );
                 for pair in assignments {
-                    self.walk_expression(&pair.target, scope, AccessMode::Write);
-                    self.walk_expression(&pair.value, scope, AccessMode::Read);
+                    self.walk_expression(pair.target, scope, AccessMode::Write);
+                    self.walk_expression(pair.value, scope, AccessMode::Read);
                 }
             }
             StatementKind::BufferCompare {
@@ -3923,26 +3996,26 @@ impl<'a> ResolveWalker<'a> {
                     // Under a FRAME or PARENT the widget tree owns the widget, so
                     // the handle needs no later read.
                     let owned = assignments.iter().any(|a| {
-                        a.attribute.name.eq_ignore_ascii_case("FRAME")
-                            || a.attribute.name.eq_ignore_ascii_case("PARENT")
+                        let attr = self.ctx.pools.ident(a.attribute);
+                        attr.eq_ignore_ascii_case("FRAME") || attr.eq_ignore_ascii_case("PARENT")
                     });
                     let mode = if owned {
                         AccessMode::ReadWrite
                     } else {
                         AccessMode::Write
                     };
-                    self.walk_expression(handle, scope, mode);
-                    if let Some(t) = for_table {
+                    self.walk_expression(*handle, scope, mode);
+                    if let Some(t) = *for_table {
                         self.walk_lenient_operand(t, scope);
                     }
-                    for e in [widget_pool.as_ref(), class.as_ref()].into_iter().flatten() {
+                    for e in [*widget_pool, *class].into_iter().flatten() {
                         self.walk_expression(e, scope, AccessMode::Read);
                     }
-                    if let Some(file) = connect.as_ref().and_then(|c| c.file.as_ref()) {
+                    if let Some(file) = connect.as_ref().and_then(|c| c.file) {
                         self.walk_expression(file, scope, AccessMode::Read);
                     }
                     for a in assignments {
-                        self.walk_expression(&a.value, scope, AccessMode::Read);
+                        self.walk_expression(a.value, scope, AccessMode::Read);
                     }
                     if !triggers.is_empty() {
                         let ts = self
@@ -3959,8 +4032,8 @@ impl<'a> ResolveWalker<'a> {
                                     for arg in procedure
                                         .expression()
                                         .into_iter()
-                                        .chain(in_handle.iter())
-                                        .chain(arguments)
+                                        .chain(*in_handle)
+                                        .chain(self.ctx.pools.exprs(*arguments).iter().copied())
                                     {
                                         self.walk_expression(arg, scope, AccessMode::Read);
                                     }
@@ -3978,12 +4051,12 @@ impl<'a> ResolveWalker<'a> {
                 from_handle,
                 arguments,
             } => {
-                self.walk_expression(event_name, scope, AccessMode::Read);
-                if let Some(fh) = from_handle {
+                self.walk_expression(*event_name, scope, AccessMode::Read);
+                if let Some(fh) = *from_handle {
                     self.walk_expression(fh, scope, AccessMode::Read);
                 }
                 for arg in arguments {
-                    self.walk_expression(&arg.expression, scope, AccessMode::Read);
+                    self.walk_expression(arg.expression, scope, AccessMode::Read);
                 }
             }
             StatementKind::Subscribe {
@@ -3992,12 +4065,12 @@ impl<'a> ResolveWalker<'a> {
                 target,
                 ..
             } => {
-                if let Some(s) = subscriber {
+                if let Some(s) = *subscriber {
                     self.walk_expression(s, scope, AccessMode::Read);
                 }
-                self.walk_expression(event_name, scope, AccessMode::Read);
+                self.walk_expression(*event_name, scope, AccessMode::Read);
                 if let SubscribeTarget::InHandle(h) = target {
-                    self.walk_expression(h, scope, AccessMode::Read);
+                    self.walk_expression(*h, scope, AccessMode::Read);
                 }
             }
             StatementKind::Unsubscribe {
@@ -4005,13 +4078,13 @@ impl<'a> ResolveWalker<'a> {
                 event_name,
                 in_handle,
             } => {
-                if let Some(s) = subscriber {
+                if let Some(s) = *subscriber {
                     self.walk_expression(s, scope, AccessMode::Read);
                 }
-                if let Some(e) = event_name {
+                if let Some(e) = *event_name {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
-                if let Some(h) = in_handle {
+                if let Some(h) = *in_handle {
                     self.walk_expression(h, scope, AccessMode::Read);
                 }
             }
@@ -4037,7 +4110,7 @@ impl<'a> ResolveWalker<'a> {
                         }
                     }
                     StreamOperation::Through(e) => {
-                        self.walk_expression(e, scope, AccessMode::Read);
+                        self.walk_expression(*e, scope, AccessMode::Read);
                     }
                     StreamOperation::Close => {}
                 }
@@ -4073,7 +4146,8 @@ impl<'a> ResolveWalker<'a> {
     // Expression walking
     // ------------------------------------------------------------------
 
-    fn walk_expression(&mut self, expr: &Expression, scope: ScopeId, mode: AccessMode) {
+    fn walk_expression(&mut self, expr_id: ExprId, scope: ScopeId, mode: AccessMode) {
+        let expr = self.ctx.pools.expr(expr_id);
         self.note_site_as(expr.span, SiteTarget::Reference(expr.id), mode);
         match &expr.kind {
             ExpressionKind::Literal(_) => {}
@@ -4089,7 +4163,11 @@ impl<'a> ResolveWalker<'a> {
                     mode,
                 );
                 // `THIS-OBJECT` in a class body is a value of that class.
-                if id.name.eq_ignore_ascii_case("this-object")
+                if self
+                    .ctx
+                    .pools
+                    .ident(*id)
+                    .eq_ignore_ascii_case("this-object")
                     && let Some(class) = self.current_class
                     && let Some(Resolution::Resolved(sym)) = self.references.get(expr.id)
                     && self.symbols.get(*sym).kind == SymbolKind::BuiltIn
@@ -4114,20 +4192,22 @@ impl<'a> ResolveWalker<'a> {
             | ExpressionKind::Begins(l, r)
             | ExpressionKind::Matches(l, r)
             | ExpressionKind::Contains(l, r) => {
-                self.walk_expression(l, scope, AccessMode::Read);
-                self.walk_expression(r, scope, AccessMode::Read);
+                self.walk_expression(*l, scope, AccessMode::Read);
+                self.walk_expression(*r, scope, AccessMode::Read);
             }
             ExpressionKind::Negate(e) | ExpressionKind::Not(e) => {
-                self.walk_expression(e, scope, AccessMode::Read);
+                self.walk_expression(*e, scope, AccessMode::Read);
             }
             ExpressionKind::IfThenElse(c, t, e) => {
-                self.walk_expression(c, scope, AccessMode::Read);
-                self.walk_expression(t, scope, AccessMode::Read);
-                self.walk_expression(e, scope, AccessMode::Read);
+                self.walk_expression(*c, scope, AccessMode::Read);
+                self.walk_expression(*t, scope, AccessMode::Read);
+                self.walk_expression(*e, scope, AccessMode::Read);
             }
 
             ExpressionKind::FunctionCall { name, arguments } => {
                 self.note_site(name.span, SiteTarget::Reference(expr.id));
+                let callee = self.ctx.pools.ident(*name);
+                let args = self.ctx.pools.exprs(*arguments);
                 // Functions and Procedures share a call surface in expression
                 // position (internal procedure calls surface as function
                 // calls syntactically).
@@ -4136,7 +4216,7 @@ impl<'a> ResolveWalker<'a> {
                 // followed by a parenthesised expression parses as a call. When
                 // the name is no function but a value in scope, it is that value
                 // and the parenthesised expression is the next item.
-                let namespaces: &[NamespaceId] = if !is_builtin_function(&name.name)
+                let namespaces: &[NamespaceId] = if !is_builtin_function(callee)
                     && self
                         .lookup_statement_ident(
                             name,
@@ -4156,8 +4236,9 @@ impl<'a> ResolveWalker<'a> {
                 // The operand of `PAGE-NUMBER(s)` and its siblings is a stream
                 // name, not a value. It resolves in the stream namespace, and an
                 // unknown stream (declared in an unseen include) stays unjudged.
-                if is_stream_operand_function(&name.name)
-                    && let [arg] = arguments.as_slice()
+                if is_stream_operand_function(callee)
+                    && let [arg_id] = args
+                    && let arg = self.ctx.pools.expr(*arg_id)
                     && let ExpressionKind::Identifier(stream) = &arg.kind
                 {
                     if self
@@ -4174,7 +4255,7 @@ impl<'a> ResolveWalker<'a> {
                     }
                     return;
                 }
-                let sequence = crate::sequence_operand(name, arguments);
+                let sequence = crate::sequence_operand(name, *arguments, self.ctx.pools);
                 if let Some(op) = &sequence {
                     self.resolve_sequence_operand(op);
                 }
@@ -4184,8 +4265,9 @@ impl<'a> ResolveWalker<'a> {
                     if matches!(self.references.get(expr.id), Some(Resolution::Resolved(_))) {
                         None
                     } else {
-                        type_operand(name, arguments)
-                            .and_then(|operand| Some((operand.id, dotted_name(operand)?)))
+                        type_operand(name, *arguments, self.ctx.pools).and_then(|operand| {
+                            Some((operand.id, dotted_name(operand, self.ctx.pools)?))
+                        })
                     };
                 // The arguments of `NEXT-VALUE` / `CURRENT-VALUE` are a sequence
                 // name and a logical database name, neither a symbol.
@@ -4194,9 +4276,10 @@ impl<'a> ResolveWalker<'a> {
                     // function call: the target operand takes the access the
                     // assignment makes, not a read.
                     let target = (mode != AccessMode::Read)
-                        .then(|| pseudo_function_target(&name.name))
+                        .then(|| pseudo_function_target(callee))
                         .flatten();
-                    for (i, a) in arguments.iter().enumerate() {
+                    for (i, &a_id) in args.iter().enumerate() {
+                        let a = self.ctx.pools.expr(a_id);
                         match &type_name {
                             Some((id, raw)) if *id == a.id => {
                                 self.resolve_type_operand(a, raw, scope);
@@ -4206,13 +4289,13 @@ impl<'a> ResolveWalker<'a> {
                                     Some((index, access)) if index == i => access,
                                     _ => AccessMode::Read,
                                 };
-                                self.walk_expression(a, scope, arg_mode);
+                                self.walk_expression(a_id, scope, arg_mode);
                             }
                         }
                     }
                 }
                 // `CAST(x, Cls)` is a value of `Cls`.
-                if name.name.eq_ignore_ascii_case("cast")
+                if callee.eq_ignore_ascii_case("cast")
                     && let Some((operand, _)) = &type_name
                     && let Some(Resolution::Resolved(class)) = self.references.get(*operand)
                     && matches!(
@@ -4224,9 +4307,10 @@ impl<'a> ResolveWalker<'a> {
                 }
                 self.note_method_call(expr.id, name);
                 // The operand of `AVAILABLE` and its siblings is a record.
-                if is_record_operand_function(&name.name)
+                if is_record_operand_function(callee)
                     && !matches!(self.references.get(expr.id), Some(Resolution::Resolved(_)))
-                    && let [arg] = arguments.as_slice()
+                    && let [arg_id] = args
+                    && let arg = self.ctx.pools.expr(*arg_id)
                     && matches!(arg.kind, ExpressionKind::Identifier(_))
                 {
                     self.soften_record_miss_without_schema(arg.id);
@@ -4242,32 +4326,32 @@ impl<'a> ResolveWalker<'a> {
                 // (`AppState:CurrentUser`). Unresolved receivers are
                 // softened to External so LINT0001 does not fire on type
                 // references the single-file model cannot see (#58 D/C).
-                self.walk_receiver(object, scope);
+                self.walk_receiver(*object, scope);
                 self.note_site(method.span, SiteTarget::Reference(expr.id));
                 // A method is a cross-class member: with no index it stays
                 // unrecorded, as it always has been; with one, it resolves
                 // against the receiver's class. `Functions` only, so `obj:foo()`
                 // cannot land on a property named `foo`.
                 self.resolve_member_reference(
-                    object,
+                    *object,
                     method,
                     expr.id,
                     &[NamespaceId::Functions],
                     AccessMode::Read,
                 );
-                for a in arguments {
+                for &a in self.ctx.pools.exprs(*arguments) {
                     self.walk_expression(a, scope, AccessMode::Read);
                 }
             }
             ExpressionKind::MemberAccess { object, member } => {
-                self.walk_receiver(object, scope);
+                self.walk_receiver(*object, scope);
                 self.note_site_as(member.span, SiteTarget::Reference(expr.id), mode);
                 // `Values` only, mirroring where the declare pass binds a
                 // locally declared property: `obj:foo` cannot land on a method.
                 // The access mode is the enclosing one, so `obj:prop = 1` credits
                 // a write.
                 self.resolve_member_reference(
-                    object,
+                    *object,
                     member,
                     expr.id,
                     &[NamespaceId::Values],
@@ -4275,12 +4359,12 @@ impl<'a> ResolveWalker<'a> {
                 );
             }
             ExpressionKind::ArrayAccess { array, index } => {
-                self.walk_expression(array, scope, mode);
-                self.walk_expression(index, scope, AccessMode::Read);
+                self.walk_expression(*array, scope, mode);
+                self.walk_expression(*index, scope, AccessMode::Read);
             }
 
             ExpressionKind::FieldAccess { qualifier, field } => {
-                self.resolve_field_access(qualifier, field, expr.id, scope, mode);
+                self.resolve_field_access(*qualifier, field, expr.id, scope, mode);
             }
 
             ExpressionKind::New {
@@ -4288,6 +4372,7 @@ impl<'a> ResolveWalker<'a> {
                 type_arguments,
                 arguments,
             } => {
+                let class_name = self.ctx.pools.name(*class_name);
                 let atom = fold_atom(class_name);
                 let span = VirtualSpan::new(expr.span.start, expr.span.end);
                 if let Some(type_arguments) = type_arguments {
@@ -4358,7 +4443,7 @@ impl<'a> ResolveWalker<'a> {
                         );
                     }
                 }
-                for a in arguments {
+                for &a in self.ctx.pools.exprs(*arguments) {
                     self.walk_expression(a, scope, AccessMode::Read);
                 }
             }
@@ -4376,12 +4461,10 @@ impl<'a> ResolveWalker<'a> {
                     AccessMode::Read,
                 );
                 self.soften_record_miss_without_schema(expr.id);
-                if let Some(w) = where_clause {
+                if let Some(w) = *where_clause {
                     self.walk_expression(w, scope, AccessMode::Read);
                 }
-                let end = where_clause
-                    .as_ref()
-                    .map_or(expr.span.end, |w| w.span.start);
+                let end = where_clause.map_or(expr.span.end, |w| self.ctx.pools.expr(w).span.start);
                 self.note_unmodelled_text(
                     Span {
                         start: buffer.span.end,
@@ -4395,13 +4478,13 @@ impl<'a> ResolveWalker<'a> {
             | ExpressionKind::IncludeArgReference { .. }
             | ExpressionKind::PreprocReference(_) => {}
             ExpressionKind::PreprocIf(pif) => {
-                self.walk_expression(&pif.condition, scope, AccessMode::Read);
-                self.walk_expression(&pif.then_branch, scope, mode);
+                self.walk_expression(pif.condition, scope, AccessMode::Read);
+                self.walk_expression(pif.then_branch, scope, mode);
                 for (c, br) in &pif.elseif_branches {
-                    self.walk_expression(c, scope, AccessMode::Read);
-                    self.walk_expression(br, scope, mode);
+                    self.walk_expression(*c, scope, AccessMode::Read);
+                    self.walk_expression(*br, scope, mode);
                 }
-                if let Some(eb) = &pif.else_branch {
+                if let Some(eb) = pif.else_branch {
                     self.walk_expression(eb, scope, mode);
                 }
             }
@@ -4422,7 +4505,7 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
         mode: AccessMode,
     ) {
-        let atom = fold_atom(&id.name);
+        let atom = fold_atom(self.ctx.pools.ident(*id));
         for &ns in namespaces {
             if let Some(sym) = self.tree.resolve(scope, ns, &atom) {
                 self.references.insert(expr_id, Resolution::Resolved(sym));
@@ -4997,7 +5080,7 @@ impl<'a> ResolveWalker<'a> {
     /// type-check pass gives `Unknown`.
     fn resolve_member_reference(
         &mut self,
-        object: &Expression,
+        object: ExprId,
         member: &Identifier,
         expr_id: NodeId,
         namespaces: &[NamespaceId],
@@ -5006,7 +5089,7 @@ impl<'a> ResolveWalker<'a> {
         let Some((class, role)) = self.receiver_class(object) else {
             return;
         };
-        let atom = fold_atom(&member.name);
+        let atom = fold_atom(self.ctx.pools.ident(*member));
         let Some(sym) = self.lookup_member(class, role, &atom, namespaces, member) else {
             self.references.insert(
                 expr_id,
@@ -5164,7 +5247,7 @@ impl<'a> ResolveWalker<'a> {
         if !self.symbols.is_method(sym) {
             return;
         }
-        let atom = fold_atom(&name.name);
+        let atom = fold_atom(self.ctx.pools.ident(*name));
         if !self.symbols.get(sym).flags.contains(SymbolFlags::INHERITED) {
             self.gather_inherited(class, sym, &atom, name, false);
         }
@@ -5182,7 +5265,8 @@ impl<'a> ResolveWalker<'a> {
     /// Reads only what the walk already recorded for the receiver node, so the
     /// receiver is always walked first. `None` when oxabl does not know the
     /// class: a handle, an unresolved name, a built-in class, a dynamic form.
-    fn receiver_class(&mut self, object: &Expression) -> Option<(SymbolId, ReceiverRole)> {
+    fn receiver_class(&mut self, object_id: ExprId) -> Option<(SymbolId, ReceiverRole)> {
+        let object = self.ctx.pools.expr(object_id);
         let resolved = match self.references.get(object.id) {
             Some(Resolution::Resolved(sym)) => Some(*sym),
             _ => None,
@@ -5229,13 +5313,14 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(class) = self.symbols.expr_class(object.id) {
                     return Some((class, ReceiverRole::ThisObject));
                 }
-                if id.name.eq_ignore_ascii_case("super") {
+                let id_name = self.ctx.pools.ident(*id);
+                if id_name.eq_ignore_ascii_case("super") {
                     return self.super_receiver(resolved);
                 }
                 match resolved {
                     Some(sym) if is_class(self.symbols, sym) => Some((sym, ReceiverRole::TypeName)),
                     Some(sym) => class_type(self.symbols, sym).map(|c| (c, ReceiverRole::Instance)),
-                    None => self.local_type_receiver(&id.name),
+                    None => self.local_type_receiver(id_name),
                 }
             }
             ExpressionKind::FieldAccess { .. } => match resolved {
@@ -5428,7 +5513,7 @@ impl<'a> ResolveWalker<'a> {
         if matches!(self.references.get(expr.id), Some(Resolution::Resolved(_))) {
             return;
         }
-        let Some(raw) = dotted_name(expr) else {
+        let Some(raw) = dotted_name(expr, self.ctx.pools) else {
             return;
         };
         let first = fold_atom(raw.split('.').next().unwrap_or_default());
@@ -5571,39 +5656,27 @@ impl<'a> ResolveWalker<'a> {
     ) -> BareField {
         let mut opaque = false;
         for sid in self.tree.ancestors(scope) {
-            let mut records: SmallVec<[RecordSource; 4]> = SmallVec::new();
-            let buffers = self.tree.get(sid).bindings.get(NamespaceId::Buffers);
-            for (_name, bsym) in buffers.into_iter().flat_map(BindingMap::iter) {
-                match self.symbols.record_source(bsym) {
-                    Some(r) if !records.contains(&r) => records.push(r),
-                    Some(_) => {}
-                    None => opaque = true,
-                }
-            }
-            let mut exact: SmallVec<[(RecordSource, FieldHit); 1]> = SmallVec::new();
-            let mut prefix: SmallVec<[(RecordSource, FieldHit); 1]> = SmallVec::new();
-            let mut ambiguous = false;
-            for r in records {
-                match self.record_field(r, atom) {
-                    RecordField::Exact(hit) => exact.push((r, hit)),
-                    RecordField::Prefix(hit) => prefix.push((r, hit)),
-                    RecordField::Ambiguous => ambiguous = true,
-                    RecordField::NotFound => {}
-                }
-            }
-            let (hits, ambiguous) = if exact.is_empty() {
-                (prefix, ambiguous)
-            } else {
-                (exact, false)
-            };
-            if hits.is_empty() && !ambiguous {
+            if self
+                .tree
+                .get(sid)
+                .bindings
+                .get(NamespaceId::Buffers)
+                .is_none()
+            {
                 continue;
             }
-            if opaque {
-                return BareField::Unknown;
-            }
-            return match (hits.as_slice(), ambiguous) {
-                ([(record, hit)], false) => {
+            let bare_fields = &mut self.lazy.get_or_insert_with(Default::default).bare_fields;
+            let entry = bare_fields
+                .entry(sid)
+                .or_insert_with(|| build_scope_bare_fields(self.tree, self.symbols, sid));
+            opaque |= entry.opaque;
+            let found = lookup_bare_in_scope(entry, atom, self.ctx.schema, self.tree, self.symbols);
+            match found {
+                ScopeBareMatch::None => continue,
+                ScopeBareMatch::Unique(record, hit) => {
+                    if opaque {
+                        return BareField::Unknown;
+                    }
                     let sym = self.field_hit_symbol(hit.clone(), atom, id);
                     // A temp-table's copy of a database field is not the
                     // database field: navigation needs the temp-table.
@@ -5611,42 +5684,19 @@ impl<'a> ResolveWalker<'a> {
                         && self.ctx.record_sites
                     {
                         self.symbols
-                            .record_like_field_owner(identifier_span(id), *tt);
+                            .record_like_field_owner(identifier_span(id), tt);
                     }
-                    BareField::Field(sym)
+                    return BareField::Field(sym);
                 }
-                _ => BareField::Ambiguous,
-            };
-        }
-        BareField::Absent
-    }
-
-    /// Look `atom` up among the fields of `record`. A schema table takes an
-    /// exact name, then a unique leading abbreviation. A temp-table takes its
-    /// own `FIELD`s and the fields its `LIKE` copies, by exact name only.
-    fn record_field(&self, record: RecordSource, atom: &OxablAtom) -> RecordField {
-        match record {
-            RecordSource::Schema(tid) => {
-                let Some(table) = self.ctx.schema.get_by_id(tid) else {
-                    return RecordField::NotFound;
-                };
-                match table.resolve_field(atom) {
-                    FieldResolution::Unique(f) => {
-                        let hit = FieldHit::Schema(tid, ResolvedType::from_schema_field(f));
-                        if f.name == *atom {
-                            RecordField::Exact(hit)
-                        } else {
-                            RecordField::Prefix(hit)
-                        }
+                ScopeBareMatch::Ambiguous => {
+                    if opaque {
+                        return BareField::Unknown;
                     }
-                    FieldResolution::Ambiguous => RecordField::Ambiguous,
-                    FieldResolution::NotFound => RecordField::NotFound,
+                    return BareField::Ambiguous;
                 }
             }
-            RecordSource::TempTable(tt) => self
-                .temp_table_field(tt, atom, 0)
-                .map_or(RecordField::NotFound, RecordField::Exact),
         }
+        BareField::Absent
     }
 
     fn temp_table_field(&self, tt: SymbolId, atom: &OxablAtom, depth: u8) -> Option<FieldHit> {
@@ -5681,36 +5731,38 @@ impl<'a> ResolveWalker<'a> {
     /// identifiers and field-access chains become `External` rather than
     /// `NotInScope` — package-qualified static types and dynamic handles are
     /// not local symbols (#58 items C/D).
-    fn walk_receiver(&mut self, expr: &Expression, scope: ScopeId) {
-        self.walk_receiver_link(expr, scope, true);
+    fn walk_receiver(&mut self, expr_id: ExprId, scope: ScopeId) {
+        self.walk_receiver_link(expr_id, scope, true);
     }
 
     /// [`Self::walk_receiver`] for one link of a receiver chain. `whole` is
     /// whether this link is the entire receiver, and so could be a type name;
     /// the `pkg` in `pkg.Util:Two()` is only a package segment, and recording
     /// it as a class site would report a class nobody named.
-    fn walk_receiver_link(&mut self, expr: &Expression, scope: ScopeId, whole: bool) {
+    fn walk_receiver_link(&mut self, expr_id: ExprId, scope: ScopeId, whole: bool) {
+        let expr = self.ctx.pools.expr(expr_id);
         match &expr.kind {
             ExpressionKind::Identifier(id) => {
                 // The scope tree first, always: a locally declared name must not
                 // be shadowed by a workspace class that happens to share it.
-                self.walk_expression(expr, scope, AccessMode::Read);
+                self.walk_expression(expr_id, scope, AccessMode::Read);
                 // `:name` reads an attribute of the widget in focus; it is never
                 // a type name.
-                if !id.name.starts_with(':') {
-                    self.try_receiver_type(expr.id, &id.name, scope, identifier_span(id), whole);
+                let name = self.ctx.pools.ident(*id);
+                if !name.starts_with(':') {
+                    self.try_receiver_type(expr.id, name, scope, identifier_span(id), whole);
                 }
                 self.soften_unresolved_to_external(expr.id);
             }
             ExpressionKind::FieldAccess { qualifier, field } => {
                 // Soften each link of a package path; still attempt real
                 // buffer/table field resolution first.
-                self.walk_receiver_link(qualifier, scope, false);
-                self.resolve_field_access(qualifier, field, expr.id, scope, AccessMode::Read);
+                self.walk_receiver_link(*qualifier, scope, false);
+                self.resolve_field_access(*qualifier, field, expr.id, scope, AccessMode::Read);
                 self.soften_unresolved_to_external(expr.id);
                 // resolve_field_access also records the bare-identifier
                 // qualifier; soften that too when it was NotInScope.
-                self.soften_unresolved_to_external(qualifier.id);
+                self.soften_unresolved_to_external(self.ctx.pools.expr(*qualifier).id);
                 if whole {
                     self.try_dotted_receiver_type(expr, scope);
                 }
@@ -5718,14 +5770,14 @@ impl<'a> ResolveWalker<'a> {
             // A link of a chain resolves as a member of its own receiver, so
             // the next link knows its class.
             ExpressionKind::MemberAccess { .. } | ExpressionKind::MethodCall { .. } => {
-                self.walk_expression(expr, scope, AccessMode::Read);
+                self.walk_expression(expr_id, scope, AccessMode::Read);
             }
             ExpressionKind::ArrayAccess { array, index } => {
-                self.walk_receiver_link(array, scope, false);
-                self.walk_expression(index, scope, AccessMode::Read);
+                self.walk_receiver_link(*array, scope, false);
+                self.walk_expression(*index, scope, AccessMode::Read);
             }
             _ => {
-                self.walk_expression(expr, scope, AccessMode::Read);
+                self.walk_expression(expr_id, scope, AccessMode::Read);
                 self.soften_unresolved_to_external(expr.id);
             }
         }
@@ -5735,7 +5787,7 @@ impl<'a> ResolveWalker<'a> {
     /// path only after the receiver's final lookup has identified it.
     fn soften_package_receiver(&mut self, expr: &Expression) {
         if let ExpressionKind::FieldAccess { qualifier, .. } = &expr.kind {
-            self.soften_package_receiver(qualifier);
+            self.soften_package_receiver(self.ctx.pools.expr(*qualifier));
         }
         if let Some(Resolution::Unresolved {
             name,
@@ -5781,7 +5833,7 @@ impl<'a> ResolveWalker<'a> {
     /// the field name, and each qualifier of a `db.table.field` chain.
     fn note_field_sites(
         &mut self,
-        qualifier: &Expression,
+        qualifier: ExprId,
         field: &Identifier,
         expr_id: NodeId,
         mode: AccessMode,
@@ -5790,13 +5842,13 @@ impl<'a> ResolveWalker<'a> {
             return;
         }
         self.note_site_as(field.span, SiteTarget::Reference(expr_id), mode);
-        let mut next = Some(qualifier);
+        let mut next = Some(self.ctx.pools.expr(qualifier));
         while let Some(expr) = next {
             self.note_site(expr.span, SiteTarget::Reference(expr.id));
             next = match &expr.kind {
                 ExpressionKind::FieldAccess { qualifier, field } => {
                     self.note_site(field.span, SiteTarget::Reference(expr.id));
-                    Some(qualifier)
+                    Some(self.ctx.pools.expr(*qualifier))
                 }
                 _ => None,
             };
@@ -5912,12 +5964,13 @@ impl<'a> ResolveWalker<'a> {
     /// frame or browse (`APPLY "CHOOSE" TO btnOk`) or a table (`CREATE BUFFER h
     /// FOR TABLE Customer`). A bare name that does not resolve is not an error;
     /// anything compound resolves as an expression.
-    fn walk_lenient_operand(&mut self, e: &Expression, scope: ScopeId) {
+    fn walk_lenient_operand(&mut self, e_id: ExprId, scope: ScopeId) {
+        let e = self.ctx.pools.expr(e_id);
         match &e.kind {
             ExpressionKind::Identifier(id) => {
                 self.resolve_statement_ident(id, scope, &[NamespaceId::Values], AccessMode::Read);
             }
-            _ => self.walk_expression(e, scope, AccessMode::Read),
+            _ => self.walk_expression(e_id, scope, AccessMode::Read),
         }
     }
 
@@ -5968,7 +6021,7 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
     ) -> Option<SymbolId> {
         let class = self.current_class?;
-        match self.lookup_inherited(class, &fold_atom(&id.name), namespaces, id) {
+        match self.lookup_inherited(class, &fold_atom(self.ctx.pools.ident(*id)), namespaces, id) {
             InheritedLookup::Member(sym) => Some(sym),
             InheritedLookup::Inaccessible | InheritedLookup::Absent => None,
         }
@@ -5980,7 +6033,7 @@ impl<'a> ResolveWalker<'a> {
     /// The declare pass cannot see a superclass, so it linked the buffer to a
     /// schema table of that name, or to none.
     fn link_inherited_record(&mut self, owner: NodeId, id: &Identifier, block: ScopeId) {
-        let atom = fold_atom(&id.name);
+        let atom = fold_atom(self.ctx.pools.ident(*id));
         let Some(class) = self.current_class else {
             return;
         };
@@ -6044,17 +6097,27 @@ impl<'a> ResolveWalker<'a> {
 
     /// [`Self::schema_default_buffer`] with the access of the statement that names it.
     fn schema_default_buffer_as(&mut self, id: &Identifier, mode: AccessMode) -> Option<SymbolId> {
+        self.schema_default_buffer_named(self.ctx.pools.ident(*id), id.span, mode)
+    }
+
+    fn schema_default_buffer_named(
+        &mut self,
+        raw: &str,
+        span: Span,
+        mode: AccessMode,
+    ) -> Option<SymbolId> {
         if !self.ctx.schema_loaded {
             return None;
         }
         let schema = self.ctx.schema;
-        let (tid, atom) = [Some(id.name.as_str()), strip_db_qualifier(&id.name)]
+        let (tid, atom) = [Some(raw), strip_db_qualifier(raw)]
             .into_iter()
             .flatten()
             .map(fold_atom)
             .find_map(|atom| Some((schema.resolve_table(&atom)?, atom)))?;
-        let sym = self.synth_table_buffer_symbol(tid, &atom, id);
-        self.note_site_as(id.span, SiteTarget::Symbol(sym), mode);
+        let sym =
+            self.synth_table_buffer_symbol_at(tid, &atom, VirtualSpan::new(span.start, span.end));
+        self.note_site_as(span, SiteTarget::Symbol(sym), mode);
         Some(sym)
     }
 
@@ -6080,7 +6143,7 @@ impl<'a> ResolveWalker<'a> {
         if !self.ctx.record_sites {
             return;
         }
-        let atom = fold_atom(&id.name);
+        let atom = fold_atom(self.ctx.pools.ident(*id));
         let dataset = self.tree.ancestors(scope).find_map(|at| {
             let sym = self.tree.get(at).get_in(NamespaceId::Values, &atom)?;
             (self.symbols.get(sym).kind == SymbolKind::Dataset).then_some(sym)
@@ -6098,48 +6161,56 @@ impl<'a> ResolveWalker<'a> {
     /// not touch a record. A bare `LIKE field` names no table, and a qualifier
     /// that is a local buffer or temp-table is that symbol's own dependency.
     fn note_like_source(&mut self, source: &Identifier, scope: ScopeId, whole_table: bool) {
-        let table = if whole_table {
-            source.clone()
+        let source_name = self.ctx.pools.ident(*source);
+        let (table_name, table_span) = if whole_table {
+            (source_name, source.span)
         } else {
-            let Some((qualifier, _field)) = source.name.rsplit_once('.') else {
+            let Some((qualifier, _field)) = source_name.rsplit_once('.') else {
                 return;
             };
-            Identifier {
-                span: Span {
+            (
+                qualifier,
+                Span {
                     start: source.span.start,
                     end: source.span.start + qualifier.len() as u32,
                 },
-                name: qualifier.to_string(),
-            }
+            )
         };
-        let local = self.lookup_statement_ident(
-            &table,
+        let local = self.lookup_name(
+            table_name,
             scope,
             &[NamespaceId::Buffers, NamespaceId::Tables],
         );
         let record = match local {
             Some(sym) => {
-                self.note_site(table.span, SiteTarget::Symbol(sym));
+                self.note_site(table_span, SiteTarget::Symbol(sym));
                 Some(sym)
             }
-            None => self.schema_default_buffer(&table),
+            None => self.schema_default_buffer_named(table_name, table_span, AccessMode::Read),
         };
         if !whole_table
             && self.ctx.record_sites
             && let Some(record) = record
         {
-            self.note_like_field_site(record, source, &table);
+            self.note_like_field_site(record, *source, table_name, table_span);
         }
     }
 
     /// Record the field of `LIKE record.field`, for navigation: the declaration
     /// copies it, so no reference names it.
-    fn note_like_field_site(&mut self, record: SymbolId, source: &Identifier, table: &Identifier) {
-        let Some(name) = source.name.get(table.name.len() + 1..) else {
+    fn note_like_field_site(
+        &mut self,
+        record: SymbolId,
+        source: Identifier,
+        table_name: &str,
+        table_span: Span,
+    ) {
+        let pools = self.ctx.pools;
+        let Some(name) = pools.ident(source).get(table_name.len() + 1..) else {
             return;
         };
         let span = Span {
-            start: table.span.end + 1,
+            start: table_span.end + 1,
             end: source.span.end,
         };
         let target = match self.symbols.record_source(record) {
@@ -6185,8 +6256,9 @@ impl<'a> ResolveWalker<'a> {
         if !self.ctx.schema_loaded {
             return;
         }
-        let names = unmodelled_names(self.ctx.source, span);
-        self.note_unmodelled_schema_tables(&names, scope);
+        for (name, name_span) in unmodelled_names(self.ctx.source, span) {
+            self.note_unmodelled_schema_table(name, name_span, scope);
+        }
     }
 
     /// The records of `DO FOR`, `DO PRESELECT`, `REPEAT FOR` and
@@ -6209,8 +6281,9 @@ impl<'a> ResolveWalker<'a> {
         {
             return;
         }
-        let names = header_names(tokens, text, span.start);
-        self.note_unmodelled_schema_tables(&names, scope);
+        for (name, name_span) in header_names(tokens, text, span.start) {
+            self.note_unmodelled_schema_table(name, name_span, scope);
+        }
     }
 
     /// Bind every harvested name of an unmodelled statement that is a schema
@@ -6224,20 +6297,24 @@ impl<'a> ResolveWalker<'a> {
             return;
         }
         for id in names {
-            let local = self
-                .lookup_statement_ident(
-                    id,
-                    scope,
-                    &[
-                        NamespaceId::Values,
-                        NamespaceId::Buffers,
-                        NamespaceId::Tables,
-                    ],
-                )
-                .is_some();
-            if !local {
-                self.schema_default_buffer(id);
-            }
+            self.note_unmodelled_schema_table(self.ctx.pools.ident(*id), id.span, scope);
+        }
+    }
+
+    fn note_unmodelled_schema_table(&mut self, name: &str, span: Span, scope: ScopeId) {
+        let local = self
+            .lookup_name(
+                name,
+                scope,
+                &[
+                    NamespaceId::Values,
+                    NamespaceId::Buffers,
+                    NamespaceId::Tables,
+                ],
+            )
+            .is_some();
+        if !local {
+            self.schema_default_buffer_named(name, span, AccessMode::Read);
         }
     }
 
@@ -6255,7 +6332,16 @@ impl<'a> ResolveWalker<'a> {
         scope: ScopeId,
         namespaces: &[NamespaceId],
     ) -> Option<SymbolId> {
-        let atom = fold_atom(&id.name);
+        self.lookup_name(self.ctx.pools.ident(*id), scope, namespaces)
+    }
+
+    fn lookup_name(
+        &self,
+        name: &str,
+        scope: ScopeId,
+        namespaces: &[NamespaceId],
+    ) -> Option<SymbolId> {
+        let atom = fold_atom(name);
         namespaces
             .iter()
             .find_map(|&ns| self.tree.resolve(scope, ns, &atom))
@@ -6372,7 +6458,7 @@ impl<'a> ResolveWalker<'a> {
     /// target resolves to the buffer being declared and credits it a read for
     /// existing — which would silence every count-gated rule for that symbol.
     fn credit_buffer_target(&mut self, buffer: &Identifier, target: &Identifier, scope: ScopeId) {
-        if fold_atom(&buffer.name) == fold_atom(&target.name) {
+        if fold_atom(self.ctx.pools.ident(*buffer)) == fold_atom(self.ctx.pools.ident(*target)) {
             return;
         }
         let resolved = self.resolve_statement_ident(
@@ -6383,7 +6469,8 @@ impl<'a> ResolveWalker<'a> {
         );
         if resolved.is_none() && self.ctx.record_sites && self.ctx.schema_loaded {
             let schema = self.ctx.schema;
-            let table = [Some(target.name.as_str()), strip_db_qualifier(&target.name)]
+            let target_name = self.ctx.pools.ident(*target);
+            let table = [Some(target_name), strip_db_qualifier(target_name)]
                 .into_iter()
                 .flatten()
                 .find_map(|name| schema.resolve_table(&fold_atom(name)));
@@ -6404,13 +6491,14 @@ impl<'a> ResolveWalker<'a> {
     /// composite expression is `Unresolved { NoSchema }`.
     fn resolve_field_access(
         &mut self,
-        qualifier: &Expression,
+        qualifier_id: ExprId,
         field: &Identifier,
         expr_id: NodeId,
         scope: ScopeId,
         mode: AccessMode,
     ) {
-        self.note_field_sites(qualifier, field, expr_id, mode);
+        self.note_field_sites(qualifier_id, field, expr_id, mode);
+        let qualifier = self.ctx.pools.expr(qualifier_id);
         // The qualifier is typically an Identifier (table/buffer name).
         // Non-identifier qualifiers (e.g. `foo():bar.baz`) are walked
         // normally; field is External and not recorded. A three-part
@@ -6420,11 +6508,11 @@ impl<'a> ResolveWalker<'a> {
             if self.resolve_db_qualified_field_access(qualifier, field, expr_id, scope, mode) {
                 return;
             }
-            self.walk_expression(qualifier, scope, AccessMode::Read);
+            self.walk_expression(qualifier_id, scope, AccessMode::Read);
             return;
         };
 
-        let qatom = fold_atom(&qid.name);
+        let qatom = fold_atom(self.ctx.pools.ident(*qid));
         // 1. Try Buffers (DEFINE BUFFER, FOR EACH implicit, schema default
         //    buffer), then Tables.
         let qresolved = self
@@ -6464,9 +6552,10 @@ impl<'a> ResolveWalker<'a> {
                             return;
                         }
                         InheritedLookup::Inaccessible => {
-                            for (id, name) in
-                                [(qualifier.id, qatom), (expr_id, fold_atom(&field.name))]
-                            {
+                            for (id, name) in [
+                                (qualifier.id, qatom),
+                                (expr_id, fold_atom(self.ctx.pools.ident(*field))),
+                            ] {
                                 self.references.insert(
                                     id,
                                     Resolution::Unresolved {
@@ -6513,7 +6602,7 @@ impl<'a> ResolveWalker<'a> {
                         reason,
                     },
                 );
-                let field_atom = fold_atom(&field.name);
+                let field_atom = fold_atom(self.ctx.pools.ident(*field));
                 self.references.insert(
                     expr_id,
                     Resolution::Unresolved {
@@ -6558,12 +6647,13 @@ impl<'a> ResolveWalker<'a> {
             return false;
         }
         let ExpressionKind::FieldAccess {
-            qualifier: db_expr,
+            qualifier: db_expr_id,
             field: table,
         } = &qualifier.kind
         else {
             return false;
         };
+        let db_expr = self.ctx.pools.expr(*db_expr_id);
         let ExpressionKind::Identifier(db) = &db_expr.kind else {
             return false;
         };
@@ -6584,7 +6674,7 @@ impl<'a> ResolveWalker<'a> {
 
         // A name that is bound in this scope is a real symbol, not a
         // database: `b.field.attribute` must keep its current meaning.
-        let db_atom = fold_atom(&db.name);
+        let db_atom = fold_atom(self.ctx.pools.ident(*db));
         let bound = [
             NamespaceId::Buffers,
             NamespaceId::Tables,
@@ -6596,7 +6686,7 @@ impl<'a> ResolveWalker<'a> {
             return false;
         }
 
-        let table_atom = fold_atom(&table.name);
+        let table_atom = fold_atom(self.ctx.pools.ident(*table));
         let Some(tid) = self.ctx.schema.resolve_table(&table_atom) else {
             return false;
         };
@@ -6625,7 +6715,7 @@ impl<'a> ResolveWalker<'a> {
             .get_by_id(tid)
             .map(|t| {
                 matches!(
-                    t.resolve_field(&fold_atom(&field.name)),
+                    t.resolve_field(&fold_atom(self.ctx.pools.ident(*field))),
                     FieldResolution::Unique(_)
                 )
             })
@@ -6679,7 +6769,7 @@ impl<'a> ResolveWalker<'a> {
         let Some(RecordSource::TempTable(tt)) = self.symbols.record_source(qsym) else {
             return;
         };
-        let target = match self.temp_table_field(tt, &fold_atom(&field.name), 0) {
+        let target = match self.temp_table_field(tt, &fold_atom(self.ctx.pools.ident(*field)), 0) {
             Some(FieldHit::Declared(sym)) => SiteTarget::Symbol(sym),
             Some(FieldHit::Schema(tid, _)) => SiteTarget::SchemaField(tid),
             None => return,
@@ -6693,7 +6783,7 @@ impl<'a> ResolveWalker<'a> {
         field: &Identifier,
         mode: AccessMode,
     ) -> Resolution {
-        let field_atom = fold_atom(&field.name);
+        let field_atom = fold_atom(self.ctx.pools.ident(*field));
         match self.symbols.get(qsym).table_id {
             Some(tid) if self.ctx.schema_loaded => {
                 // `ctx.schema` is a shared reference copied out of `self`,
@@ -6746,7 +6836,10 @@ impl<'a> ResolveWalker<'a> {
                 reason: UnresolvedReason::NoSchema,
             }
         } else if self.ctx.schema.get_sequence(&atom).is_some() {
-            let cache = self.synth_sequences.get_or_insert_with(Default::default);
+            let cache = &mut self
+                .lazy
+                .get_or_insert_with(Default::default)
+                .synth_sequences;
             let sym = match cache.get(&atom) {
                 Some(&sym) => sym,
                 None => {
@@ -7347,6 +7440,15 @@ impl<'a> ResolveWalker<'a> {
         table_atom: &OxablAtom,
         use_site: &Identifier,
     ) -> SymbolId {
+        self.synth_table_buffer_symbol_at(tid, table_atom, identifier_span(use_site))
+    }
+
+    fn synth_table_buffer_symbol_at(
+        &mut self,
+        tid: TableId,
+        table_atom: &OxablAtom,
+        span: VirtualSpan,
+    ) -> SymbolId {
         if let Some(sym) = self.synth_buffers.get(&tid) {
             return *sym;
         }
@@ -7365,7 +7467,7 @@ impl<'a> ResolveWalker<'a> {
                 table_atom.clone(),
                 NamespaceId::Buffers,
                 SymbolKind::Buffer,
-                identifier_span(use_site),
+                span,
             )
         });
         self.synth_buffers.insert(tid, sym);
@@ -7461,7 +7563,7 @@ fn strip_db_qualifier(name: &str) -> Option<&str> {
 /// phrases of a `FOR EACH` join, a `FIND ... OF` or a `CAN-FIND ... OF` that
 /// the AST does not keep. Callers pass the narrowest span they can, since
 /// lexing here costs as much per token as the file's own lexing.
-fn unmodelled_names(source: &str, span: Span) -> Vec<Identifier> {
+fn unmodelled_names(source: &str, span: Span) -> Vec<(&str, Span)> {
     let Some(text) = source.get(span.start as usize..span.end as usize) else {
         return Vec::new();
     };
@@ -7482,11 +7584,11 @@ fn opens_with_end(text: &str) -> bool {
 
 /// [`unmodelled_names`] over the rest of `tokens`, lexed from `text`, which
 /// starts at `base` in the buffer.
-fn header_names(
+fn header_names<'s>(
     mut tokens: std::iter::Peekable<oxabl_lexer::Lexer<'_>>,
-    text: &str,
+    text: &'s str,
     base: u32,
-) -> Vec<Identifier> {
+) -> Vec<(&'s str, Span)> {
     use oxabl_lexer::Kind;
     let mut names = Vec::new();
     let mut previous: Option<(Kind, usize)> = None;
@@ -7505,13 +7607,13 @@ fn header_names(
             end == token.start && matches!(kind, Kind::Colon | Kind::DoubleColon | Kind::Period)
         });
         if token.kind == Kind::Identifier && !after_qualifier {
-            names.push(Identifier {
-                span: Span {
+            names.push((
+                &text[token.start..token.end],
+                Span {
                     start: base + token.start as u32,
                     end: base + token.end as u32,
                 },
-                name: text[token.start..token.end].to_string(),
-            });
+            ));
         }
         previous = Some((token.kind, token.end));
     }
@@ -7667,13 +7769,13 @@ fn class_shaped_runs(text: &str) -> Vec<ClassShapedRun> {
 /// The name an identifier or a `pkg.sub.Name` field-access chain spells, which
 /// is how the parser shapes a type name in expression position. `None` for any
 /// other expression.
-fn dotted_name(expr: &Expression) -> Option<String> {
+fn dotted_name(expr: &Expression, pools: &AstPools) -> Option<String> {
     match &expr.kind {
-        ExpressionKind::Identifier(id) => Some(id.name.clone()),
+        ExpressionKind::Identifier(id) => Some(pools.ident(*id).to_string()),
         ExpressionKind::FieldAccess { qualifier, field } => {
-            let mut name = dotted_name(qualifier)?;
+            let mut name = dotted_name(pools.expr(*qualifier), pools)?;
             name.push('.');
-            name.push_str(&field.name);
+            name.push_str(pools.ident(*field));
             Some(name)
         }
         _ => None,
@@ -7860,12 +7962,17 @@ fn is_stream_operand_function(name: &str) -> bool {
 /// The argument of a `CAST`, `TYPE-OF` or `GET-CLASS` call that names a type.
 /// The parser models all three as ordinary calls, so the operand arrives as a
 /// value expression.
-fn type_operand<'e>(name: &Identifier, arguments: &'e [Expression]) -> Option<&'e Expression> {
-    let callee = name.name.as_str();
+fn type_operand<'e>(
+    name: &Identifier,
+    arguments: ExprList,
+    pools: &'e AstPools,
+) -> Option<&'e Expression> {
+    let callee = pools.ident(*name);
+    let args = pools.exprs(arguments);
     if callee.eq_ignore_ascii_case("cast") || callee.eq_ignore_ascii_case("type-of") {
-        arguments.get(1)
+        args.get(1).map(|&id| pools.expr(id))
     } else if callee.eq_ignore_ascii_case("get-class") {
-        arguments.first()
+        args.first().map(|&id| pools.expr(id))
     } else {
         None
     }
@@ -7877,9 +7984,9 @@ fn type_operand<'e>(name: &Identifier, arguments: &'e [Expression]) -> Option<&'
 /// is what the index needs to derive a candidate file path on a case-sensitive
 /// filesystem. Called once per name in a class header, so the two intern lookups
 /// it costs are not on any hot path.
-fn supertype_ref(id: &Identifier) -> crate::SupertypeRef {
+fn supertype_ref(id: &Identifier, pools: &AstPools) -> crate::SupertypeRef {
     crate::SupertypeRef {
-        name: crate::IndexName::new(&id.name),
+        name: crate::IndexName::new(pools.ident(*id)),
         name_span: identifier_span(id),
     }
 }
@@ -8100,6 +8207,221 @@ thread_local! {
         std::cell::RefCell::new(vec![None; 1024]);
 }
 
+/// Build the cached bare-field lookup data for one scope that binds buffers.
+fn build_scope_bare_fields(
+    tree: &ScopeTree,
+    symbols: &SymbolTable,
+    sid: ScopeId,
+) -> ScopeBareFields {
+    let mut opaque = false;
+    let mut seen: FxHashSet<RecordSource> = FxHashSet::default();
+    let mut schema_tables: SmallVec<[TableId; 4]> = SmallVec::new();
+    let mut tt_fields: FxHashMap<OxablAtom, TempFieldEntry> = FxHashMap::default();
+    let mut tt_like_schema: SmallVec<[(SymbolId, TableId); 2]> = SmallVec::new();
+
+    let buffers = tree.get(sid).bindings.get(NamespaceId::Buffers);
+    for (_name, bsym) in buffers.into_iter().flat_map(BindingMap::iter) {
+        let Some(record) = symbols.record_source(bsym) else {
+            opaque = true;
+            continue;
+        };
+        if !seen.insert(record) {
+            continue;
+        }
+        match record {
+            RecordSource::Schema(tid) => schema_tables.push(tid),
+            RecordSource::TempTable(tt) => {
+                index_temp_table_fields(tree, symbols, tt, &mut tt_fields, &mut tt_like_schema);
+            }
+        }
+    }
+
+    ScopeBareFields {
+        opaque,
+        schema_tables,
+        tt_fields,
+        tt_like_schema,
+    }
+}
+
+/// Record every field declared by `tt` (and its `LIKE` temp-table chain) into
+/// `tt_fields`, and record its terminal `LIKE` schema table if any.
+fn index_temp_table_fields(
+    tree: &ScopeTree,
+    symbols: &SymbolTable,
+    tt: SymbolId,
+    tt_fields: &mut FxHashMap<OxablAtom, TempFieldEntry>,
+    tt_like_schema: &mut SmallVec<[(SymbolId, TableId); 2]>,
+) {
+    // Fast path: most temp-tables have no `LIKE` clause, so fields are unique
+    // within `tt` and need no shadowing set.
+    if symbols.temp_table_like(tt).is_none() {
+        if let Some(fields_scope) = symbols.temp_table_fields(tt)
+            && let Some(values) = tree.get(fields_scope).bindings.get(NamespaceId::Values)
+        {
+            for (atom, sym) in values.iter() {
+                record_tt_field(tt_fields, atom, tt, sym);
+            }
+        }
+        return;
+    }
+
+    let mut shadowed: FxHashSet<OxablAtom> = FxHashSet::default();
+    let mut curr = tt;
+    for depth in 0u8..=9 {
+        if let Some(fields_scope) = symbols.temp_table_fields(curr)
+            && let Some(values) = tree.get(fields_scope).bindings.get(NamespaceId::Values)
+        {
+            for (atom, sym) in values.iter() {
+                if shadowed.insert(atom.clone()) {
+                    record_tt_field(tt_fields, atom, tt, sym);
+                }
+            }
+        }
+        if depth > 8 {
+            break;
+        }
+        match symbols.temp_table_like(curr) {
+            Some(RecordSource::TempTable(like)) => curr = like,
+            Some(RecordSource::Schema(tid)) => {
+                tt_like_schema.push((tt, tid));
+                break;
+            }
+            None => break,
+        }
+    }
+}
+
+fn record_tt_field(
+    tt_fields: &mut FxHashMap<OxablAtom, TempFieldEntry>,
+    atom: &OxablAtom,
+    tt: SymbolId,
+    sym: SymbolId,
+) {
+    match tt_fields.get_mut(atom) {
+        Some(entry) => *entry = TempFieldEntry::Ambiguous,
+        None => {
+            tt_fields.insert(atom.clone(), TempFieldEntry::Unique(tt, sym));
+        }
+    }
+}
+
+/// Whether `tt` or any `LIKE` temp-table ancestor declares `atom` directly.
+fn temp_table_declares_field(
+    tree: &ScopeTree,
+    symbols: &SymbolTable,
+    tt: SymbolId,
+    atom: &OxablAtom,
+) -> bool {
+    let mut curr = tt;
+    for depth in 0u8..=9 {
+        if let Some(fields_scope) = symbols.temp_table_fields(curr)
+            && tree
+                .get(fields_scope)
+                .get_in(NamespaceId::Values, atom)
+                .is_some()
+        {
+            return true;
+        }
+        if depth > 8 {
+            return false;
+        }
+        match symbols.temp_table_like(curr) {
+            Some(RecordSource::TempTable(like)) => curr = like,
+            Some(RecordSource::Schema(_)) | None => return false,
+        }
+    }
+    false
+}
+
+/// Look up bare field `atom` against a scope's precomputed buffer index.
+fn lookup_bare_in_scope(
+    entry: &ScopeBareFields,
+    atom: &OxablAtom,
+    schema: &oxabl_schema::Schema,
+    tree: &ScopeTree,
+    symbols: &SymbolTable,
+) -> ScopeBareMatch {
+    let mut exact_count: u8 = 0;
+    let mut exact_hit: Option<(RecordSource, FieldHit)> = None;
+    let mut prefix_count: u8 = 0;
+    let mut prefix_hit: Option<(RecordSource, FieldHit)> = None;
+    let mut prefix_ambiguous = false;
+
+    if let Some(tt_hit) = entry.tt_fields.get(atom) {
+        match *tt_hit {
+            TempFieldEntry::Unique(tt, sym) => {
+                exact_count = 1;
+                exact_hit = Some((RecordSource::TempTable(tt), FieldHit::Declared(sym)));
+            }
+            TempFieldEntry::Ambiguous => {
+                exact_count = 2;
+            }
+        }
+    }
+
+    if exact_count < 2 {
+        for &(tt, tid) in &entry.tt_like_schema {
+            if let Some(field) = schema.get_by_id(tid).and_then(|t| t.get_field(atom))
+                && !temp_table_declares_field(tree, symbols, tt, atom)
+            {
+                exact_count = exact_count.saturating_add(1);
+                if exact_count == 1 {
+                    exact_hit = Some((
+                        RecordSource::TempTable(tt),
+                        FieldHit::Schema(tid, ResolvedType::from_schema_field(field)),
+                    ));
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    for &tid in &entry.schema_tables {
+        let Some(table) = schema.get_by_id(tid) else {
+            continue;
+        };
+        match table.resolve_field(atom) {
+            FieldResolution::Unique(field) => {
+                let hit = FieldHit::Schema(tid, ResolvedType::from_schema_field(field));
+                if field.name == *atom {
+                    exact_count = exact_count.saturating_add(1);
+                    if exact_count == 1 {
+                        exact_hit = Some((RecordSource::Schema(tid), hit));
+                    } else {
+                        break;
+                    }
+                } else if exact_count == 0 {
+                    prefix_count = prefix_count.saturating_add(1);
+                    if prefix_count == 1 {
+                        prefix_hit = Some((RecordSource::Schema(tid), hit));
+                    }
+                }
+            }
+            FieldResolution::Ambiguous => prefix_ambiguous = true,
+            FieldResolution::NotFound => {}
+        }
+    }
+
+    if exact_count == 1
+        && let Some((record, hit)) = exact_hit
+    {
+        ScopeBareMatch::Unique(record, hit)
+    } else if exact_count >= 2 {
+        ScopeBareMatch::Ambiguous
+    } else if prefix_count == 1
+        && !prefix_ambiguous
+        && let Some((record, hit)) = prefix_hit
+    {
+        ScopeBareMatch::Unique(record, hit)
+    } else if prefix_count >= 2 || prefix_ambiguous {
+        ScopeBareMatch::Ambiguous
+    } else {
+        ScopeBareMatch::None
+    }
+}
+
 /// Case-fold and intern an identifier. Shared with [`crate::index`], whose
 /// keys must fold identically to the symbol table's names.
 #[inline]
@@ -8167,13 +8489,43 @@ mod tests {
 
     // ---- Helpers ---------------------------------------------------------
 
+    thread_local! {
+        static TEST_POOLS: std::cell::RefCell<AstPools> = const {
+            std::cell::RefCell::new(AstPools::new())
+        };
+    }
+
+    fn push_name(s: &str) -> oxabl_ast::NameId {
+        TEST_POOLS.with(|p| p.borrow_mut().names.push(s))
+    }
+
+    fn push_expr(e: Expression) -> ExprId {
+        TEST_POOLS.with(|p| p.borrow_mut().exprs.push(e))
+    }
+
+    fn push_list(items: &[ExprId]) -> ExprList {
+        TEST_POOLS.with(|p| p.borrow_mut().exprs.push_list(items))
+    }
+
+    fn expr_nid(id: ExprId) -> NodeId {
+        TEST_POOLS.with(|p| p.borrow().expr(id).id)
+    }
+
+    fn with_ctx<R>(src: &str, schema: &Schema, f: impl FnOnce(&AnalysisContext<'_>) -> R) -> R {
+        TEST_POOLS.with(|p| {
+            let pools = p.borrow();
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, src, schema, &pools);
+            f(&ctx)
+        })
+    }
+
     fn id(name: &str) -> Identifier {
         Identifier {
             span: Span {
                 start: 0,
                 end: name.len() as u32,
             },
-            name: name.into(),
+            name: push_name(name),
         }
     }
 
@@ -8181,15 +8533,12 @@ mod tests {
         Statement::new(kind)
     }
 
-    fn ctx<'a>(src: &'a str, schema: &'a Schema) -> AnalysisContext<'a> {
-        AnalysisContext::new(FileId::UNKNOWN, src, schema)
-    }
-
     fn run(stmts: Vec<Statement>) -> (ScopeTree, SymbolTable, Vec<Diagnostic>) {
         let schema = Schema::empty();
-        let ctx = ctx("", &schema);
-        let (tree, symbols, diags, _rev) = declare_pass(&stmts, &ctx);
-        (tree, symbols, diags)
+        with_ctx("", &schema, |ctx| {
+            let (tree, symbols, diags, _rev) = declare_pass(&stmts, ctx);
+            (tree, symbols, diags)
+        })
     }
 
     fn find_symbol<'t>(
@@ -8760,22 +9109,22 @@ mod tests {
     fn do_loop_counter_lives_in_block_scope() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::Do {
             loop_var: Some(id("i")),
-            from: Some(Expression::new(ExpressionKind::Literal(Literal::Integer(
-                IntegerLiteral {
+            from: Some(push_expr(Expression::new(ExpressionKind::Literal(
+                Literal::Integer(IntegerLiteral {
                     span: Span { start: 0, end: 1 },
                     value: 1,
-                },
+                }),
             )))),
-            to: Some(Expression::new(ExpressionKind::Literal(Literal::Integer(
-                IntegerLiteral {
+            to: Some(push_expr(Expression::new(ExpressionKind::Literal(
+                Literal::Integer(IntegerLiteral {
                     span: Span { start: 0, end: 2 },
                     value: 10,
-                },
+                }),
             )))),
             by: None,
             while_condition: None,
             transaction: false,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![],
         })]);
         // Counter must not leak into file scope.
@@ -8799,22 +9148,22 @@ mod tests {
             var_stmt_n("i", DataType::Integer),
             stmt_n(StatementKind::Do {
                 loop_var: Some(id("i")),
-                from: Some(Expression::new(ExpressionKind::Literal(Literal::Integer(
-                    IntegerLiteral {
+                from: Some(push_expr(Expression::new(ExpressionKind::Literal(
+                    Literal::Integer(IntegerLiteral {
                         span: Span { start: 0, end: 1 },
                         value: 1,
-                    },
+                    }),
                 )))),
-                to: Some(Expression::new(ExpressionKind::Literal(Literal::Integer(
-                    IntegerLiteral {
+                to: Some(push_expr(Expression::new(ExpressionKind::Literal(
+                    Literal::Integer(IntegerLiteral {
                         span: Span { start: 0, end: 2 },
                         value: 10,
-                    },
+                    }),
                 )))),
                 by: None,
                 while_condition: None,
                 transaction: false,
-                on_actions: Vec::new(),
+                on_actions: ExprList::EMPTY,
                 body: vec![],
             }),
         ];
@@ -8848,7 +9197,7 @@ mod tests {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![],
         })]);
         assert!(find_symbol(&tree, &symbols, NamespaceId::Buffers, "Customer").is_none());
@@ -8875,7 +9224,7 @@ mod tests {
                 by: None,
                 while_condition: None,
                 transaction: false,
-                on_actions: Vec::new(),
+                on_actions: ExprList::EMPTY,
                 body: vec![var_stmt("x", DataType::Character)],
             }),
         ]);
@@ -8917,7 +9266,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![var_stmt("x", DataType::Integer)],
         });
         let b_block = stmt(StatementKind::Do {
@@ -8927,7 +9276,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![var_stmt("x", DataType::Integer)],
         });
         let (_tree, _symbols, diags) = run(vec![
@@ -9496,10 +9845,12 @@ mod tests {
     fn preproc_if_walks_both_branches() {
         use oxabl_ast::PreprocIf;
         let stmts = vec![stmt(StatementKind::PreprocIf(PreprocIf {
-            condition: Expression::new(ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
-                span: Span { start: 0, end: 4 },
-                value: true,
-            }))),
+            condition: push_expr(Expression::new(ExpressionKind::Literal(Literal::Boolean(
+                BooleanLiteral {
+                    span: Span { start: 0, end: 4 },
+                    value: true,
+                },
+            )))),
             then_branch: vec![var_stmt("x", DataType::Integer)],
             elseif_branches: vec![],
             else_branch: Some(vec![var_stmt("y", DataType::Character)]),
@@ -9547,10 +9898,12 @@ mod tests {
         // scopes. Declarations inside an IF/THEN body land in the
         // enclosing scope.
         let (tree, symbols, _) = run(vec![stmt(StatementKind::If {
-            condition: Expression::new(ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
-                span: Span { start: 0, end: 4 },
-                value: true,
-            }))),
+            condition: push_expr(Expression::new(ExpressionKind::Literal(Literal::Boolean(
+                BooleanLiteral {
+                    span: Span { start: 0, end: 4 },
+                    value: true,
+                },
+            )))),
             then_branch: Box::new(var_stmt("in_then", DataType::Integer)),
             else_branch: Some(Box::new(var_stmt("in_else", DataType::Integer))),
         })]);
@@ -9904,15 +10257,19 @@ mod tests {
         Statement::with_id(next_nid(), oxabl_ast::Span::DUMMY, kind)
     }
 
-    fn expr_n(kind: ExpressionKind) -> Expression {
-        Expression::with_id(next_nid(), oxabl_ast::Span::DUMMY, kind)
+    fn expr_n(kind: ExpressionKind) -> ExprId {
+        push_expr(Expression::with_id(
+            next_nid(),
+            oxabl_ast::Span::DUMMY,
+            kind,
+        ))
     }
 
-    fn id_expr(name: &str) -> Expression {
+    fn id_expr(name: &str) -> ExprId {
         expr_n(ExpressionKind::Identifier(id(name)))
     }
 
-    fn int_lit(v: i64) -> Expression {
+    fn int_lit(v: i64) -> ExprId {
         expr_n(ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
             span: Span { start: 0, end: 0 },
             value: v,
@@ -9934,7 +10291,7 @@ mod tests {
         })
     }
 
-    fn var_stmt_with_init(name: &str, ty: DataType, init: Expression) -> Statement {
+    fn var_stmt_with_init(name: &str, ty: DataType, init: ExprId) -> Statement {
         stmt_n(StatementKind::VariableDeclaration {
             access: None,
             is_static: false,
@@ -9958,10 +10315,11 @@ mod tests {
         NodeIndexVec<ResolvedType>,
     ) {
         let schema = Schema::empty();
-        let ctx = ctx("", &schema);
-        let (tree, mut symbols, _diags, rev) = declare_pass(stmts, &ctx);
-        let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols, rev);
-        (tree, symbols, refs, types)
+        with_ctx("", &schema, |ctx| {
+            let (tree, mut symbols, _diags, rev) = declare_pass(stmts, ctx);
+            let (refs, types, _rd) = resolve_pass(stmts, ctx, &tree, &mut symbols, rev);
+            (tree, symbols, refs, types)
+        })
     }
 
     fn run_full_with_schema_loaded(
@@ -9974,11 +10332,14 @@ mod tests {
         NodeIndexVec<ResolvedType>,
     ) {
         let schema = Schema::empty();
-        let mut ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
-        ctx.schema_loaded = schema_loaded;
-        let (tree, mut symbols, _diags, rev) = declare_pass(stmts, &ctx);
-        let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols, rev);
-        (tree, symbols, refs, types)
+        TEST_POOLS.with(|p| {
+            let pools = p.borrow();
+            let mut ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema, &pools);
+            ctx.schema_loaded = schema_loaded;
+            let (tree, mut symbols, _diags, rev) = declare_pass(stmts, &ctx);
+            let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols, rev);
+            (tree, symbols, refs, types)
+        })
     }
 
     // ---- Schema-backed resolution harness --------------------------------
@@ -9996,17 +10357,17 @@ mod tests {
         NodeIndexVec<Resolution>,
         NodeIndexVec<ResolvedType>,
     ) {
-        let ctx = ctx("", schema);
-        let (tree, mut symbols, _diags, rev) = declare_pass(stmts, &ctx);
-        let (refs, types, _rd) = resolve_pass(stmts, &ctx, &tree, &mut symbols, rev);
-        (tree, symbols, refs, types)
+        with_ctx("", schema, |ctx| {
+            let (tree, mut symbols, _diags, rev) = declare_pass(stmts, ctx);
+            let (refs, types, _rd) = resolve_pass(stmts, ctx, &tree, &mut symbols, rev);
+            (tree, symbols, refs, types)
+        })
     }
 
     /// Full `analyze_file` (declare + resolve + check) against a loaded
     /// schema — used when a test asserts on check-pass expression types.
     fn run_analyze_with_schema(stmts: &[Statement], schema: &Schema) -> crate::Semantic {
-        let ctx = ctx("", schema);
-        crate::analyze_file(stmts, &ctx)
+        with_ctx("", schema, |ctx| crate::analyze_file(stmts, ctx))
     }
 
     fn resolution_of(refs: &NodeIndexVec<Resolution>, id: NodeId) -> &Resolution {
@@ -10019,7 +10380,7 @@ mod tests {
     #[test]
     fn resolve_bare_identifier_resolves_to_local_variable() {
         let use_x = id_expr("x");
-        let use_id = use_x.id;
+        let use_id = expr_nid(use_x);
         let stmts = vec![
             var_stmt_n("x", DataType::Integer),
             stmt_n(StatementKind::ExpressionStatement(use_x)),
@@ -10038,7 +10399,7 @@ mod tests {
     #[test]
     fn resolve_undefined_identifier_is_not_in_scope() {
         let ghost = id_expr("ghost");
-        let gid = ghost.id;
+        let gid = expr_nid(ghost);
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(ghost))];
         let (_t, _s, refs, _) = run_full(&stmts);
         assert_eq!(
@@ -10053,7 +10414,7 @@ mod tests {
     #[test]
     fn resolve_bare_identifier_is_case_insensitive() {
         let use_x = id_expr("MyVar");
-        let use_id = use_x.id;
+        let use_id = expr_nid(use_x);
         let stmts = vec![
             var_stmt_n("myvar", DataType::Character),
             stmt_n(StatementKind::ExpressionStatement(use_x)),
@@ -10070,7 +10431,7 @@ mod tests {
     #[test]
     fn resolve_sees_outer_variable_from_inner_block() {
         let inner_use = id_expr("outer");
-        let use_id = inner_use.id;
+        let use_id = expr_nid(inner_use);
         let do_block = stmt_n(StatementKind::Do {
             loop_var: None,
             from: None,
@@ -10078,7 +10439,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![stmt_n(StatementKind::ExpressionStatement(inner_use))],
         });
         let stmts = vec![var_stmt_n("outer", DataType::Integer), do_block];
@@ -10101,7 +10462,7 @@ mod tests {
         // real `x` looking unused. (This test previously asserted the shadow
         // behavior; corrected to ABL semantics.)
         let block_use = id_expr("x");
-        let use_id = block_use.id;
+        let use_id = expr_nid(block_use);
         let do_block = stmt_n(StatementKind::Do {
             loop_var: Some(id("x")),
             from: Some(int_lit(1)),
@@ -10109,7 +10470,7 @@ mod tests {
             by: None,
             while_condition: None,
             transaction: false,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![stmt_n(StatementKind::ExpressionStatement(block_use))],
         });
         let stmts = vec![var_stmt_n("x", DataType::Character), do_block];
@@ -10143,7 +10504,7 @@ mod tests {
     #[test]
     fn resolve_variable_shadows_builtin() {
         let use_session = id_expr("session");
-        let use_id = use_session.id;
+        let use_id = expr_nid(use_session);
         let stmts = vec![
             var_stmt_n("session", DataType::Integer),
             stmt_n(StatementKind::ExpressionStatement(use_session)),
@@ -10159,7 +10520,7 @@ mod tests {
     #[test]
     fn resolve_builtin_session_when_not_shadowed() {
         let use_session = id_expr("session");
-        let use_id = use_session.id;
+        let use_id = expr_nid(use_session);
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(use_session))];
         let (_tree, symbols, refs, _) = run_full(&stmts);
         let Resolution::Resolved(sym) = resolution_of(&refs, use_id) else {
@@ -10174,9 +10535,9 @@ mod tests {
     fn resolve_function_call_to_user_function() {
         let call = expr_n(ExpressionKind::FunctionCall {
             name: id("calc"),
-            arguments: vec![],
+            arguments: ExprList::EMPTY,
         });
-        let call_id = call.id;
+        let call_id = expr_nid(call);
         let stmts = vec![
             stmt_n(StatementKind::Function {
                 prototype_parameters: Vec::new(),
@@ -10197,9 +10558,9 @@ mod tests {
     fn resolve_function_call_unknown_is_not_in_scope() {
         let call = expr_n(ExpressionKind::FunctionCall {
             name: id("nope"),
-            arguments: vec![],
+            arguments: ExprList::EMPTY,
         });
-        let call_id = call.id;
+        let call_id = expr_nid(call);
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(call))];
         let (_t, _s, refs, _) = run_full(&stmts);
         assert_eq!(
@@ -10214,10 +10575,10 @@ mod tests {
     #[test]
     fn resolve_function_call_arguments_recurse() {
         let arg = id_expr("a");
-        let arg_id = arg.id;
+        let arg_id = expr_nid(arg);
         let call = expr_n(ExpressionKind::FunctionCall {
             name: id("calc"),
-            arguments: vec![arg],
+            arguments: push_list(&[arg]),
         });
         let stmts = vec![
             stmt_n(StatementKind::Function {
@@ -10248,10 +10609,10 @@ mod tests {
     fn resolve_new_class_local_resolves_to_type() {
         let new_expr = expr_n(ExpressionKind::New {
             type_arguments: None,
-            class_name: "Foo".into(),
-            arguments: vec![],
+            class_name: push_name("Foo"),
+            arguments: ExprList::EMPTY,
         });
-        let new_id = new_expr.id;
+        let new_id = expr_nid(new_expr);
         let stmts = vec![
             stmt_n(StatementKind::Class {
                 name: id("Foo"),
@@ -10275,10 +10636,10 @@ mod tests {
     fn resolve_new_class_unknown_is_external() {
         let new_expr = expr_n(ExpressionKind::New {
             type_arguments: None,
-            class_name: "Nope".into(),
-            arguments: vec![],
+            class_name: push_name("Nope"),
+            arguments: ExprList::EMPTY,
         });
-        let new_id = new_expr.id;
+        let new_id = expr_nid(new_expr);
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(new_expr))];
         let (_t, _s, refs, _) = run_full(&stmts);
         assert_eq!(
@@ -10301,7 +10662,7 @@ mod tests {
             lock_type: LockType::NoLock,
             no_error: false,
         });
-        let cf_id = cf.id;
+        let cf_id = expr_nid(cf);
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
                 access: None,
@@ -10332,7 +10693,7 @@ mod tests {
             lock_type: LockType::NoLock,
             no_error: false,
         });
-        let cf_id = cf.id;
+        let cf_id = expr_nid(cf);
         (vec![stmt_n(StatementKind::ExpressionStatement(cf))], cf_id)
     }
 
@@ -10368,12 +10729,12 @@ mod tests {
     #[test]
     fn resolve_field_access_no_schema_loaded_is_no_schema() {
         let qualifier = id_expr("Customer");
-        let qual_id = qualifier.id;
+        let qual_id = expr_nid(qualifier);
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(qualifier),
+            qualifier,
             field: id("CustNum"),
         });
-        let fa_id = fa.id;
+        let fa_id = expr_nid(fa);
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(fa))];
         let (_t, _s, refs, _) = run_full_with_schema_loaded(&stmts, false);
         // Both qualifier and composite are Unresolved NoSchema.
@@ -10396,9 +10757,9 @@ mod tests {
     #[test]
     fn resolve_field_access_schema_loaded_unknown_qualifier_is_not_in_scope() {
         let qualifier = id_expr("Customer");
-        let qual_id = qualifier.id;
+        let qual_id = expr_nid(qualifier);
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(qualifier),
+            qualifier,
             field: id("CustNum"),
         });
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(fa))];
@@ -10415,12 +10776,12 @@ mod tests {
     #[test]
     fn resolve_field_access_resolves_local_buffer_qualifier() {
         let qualifier = id_expr("bCust");
-        let qual_id = qualifier.id;
+        let qual_id = expr_nid(qualifier);
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(qualifier),
+            qualifier,
             field: id("CustNum"),
         });
-        let fa_id = fa.id;
+        let fa_id = expr_nid(fa);
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
                 access: None,
@@ -10459,12 +10820,12 @@ mod tests {
     /// `DEFINE BUFFER bCust FOR Customer.` under a loaded schema.
     fn buffer_customer_stmts(field_name: &str) -> (Vec<Statement>, NodeId, NodeId) {
         let qualifier = id_expr("bCust");
-        let qual_id = qualifier.id;
+        let qual_id = expr_nid(qualifier);
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(qualifier),
+            qualifier,
             field: id(field_name),
         });
-        let fa_id = fa.id;
+        let fa_id = expr_nid(fa);
         (
             vec![
                 stmt_n(StatementKind::DefineBuffer {
@@ -10490,8 +10851,7 @@ mod tests {
     fn declare_buffer_links_schema_table_id() {
         let schema = test_schema();
         let (stmts, _, _) = buffer_customer_stmts("CustNum");
-        let ctx = ctx("", &schema);
-        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
+        let (tree, symbols, _d, _rev) = with_ctx("", &schema, |ctx| declare_pass(&stmts, ctx));
         let bsym = tree
             .resolve(ScopeId::ROOT, NamespaceId::Buffers, &fold_atom("bcust"))
             .expect("buffer declared");
@@ -10516,8 +10876,7 @@ mod tests {
             is_shared: false,
             is_new_global_shared: false,
         })];
-        let ctx = ctx("", &schema);
-        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
+        let (tree, symbols, _d, _rev) = with_ctx("", &schema, |ctx| declare_pass(&stmts, ctx));
         let bsym = tree
             .resolve(ScopeId::ROOT, NamespaceId::Buffers, &fold_atom("b"))
             .expect("buffer declared");
@@ -10539,8 +10898,7 @@ mod tests {
             is_shared: false,
             is_new_global_shared: false,
         })];
-        let ctx = ctx("", &schema);
-        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
+        let (tree, symbols, _d, _rev) = with_ctx("", &schema, |ctx| declare_pass(&stmts, ctx));
         let bsym = tree
             .resolve(ScopeId::ROOT, NamespaceId::Buffers, &fold_atom("b"))
             .expect("buffer declared");
@@ -10555,11 +10913,10 @@ mod tests {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![],
         })];
-        let ctx = ctx("", &schema);
-        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
+        let (tree, symbols, _d, _rev) = with_ctx("", &schema, |ctx| declare_pass(&stmts, ctx));
         let block = tree
             .iter()
             .find(|(_, s)| s.kind() == ScopeKind::Block)
@@ -10581,7 +10938,7 @@ mod tests {
         // to a synthesized default-buffer symbol carrying the table link.
         let schema = test_schema();
         let use_c = id_expr("Customer");
-        let use_id = use_c.id;
+        let use_id = expr_nid(use_c);
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(use_c))];
         let (_t, symbols, refs, _) = run_full_with_schema(&stmts, &schema);
         let Resolution::Resolved(sym) = resolution_of(&refs, use_id) else {
@@ -10601,12 +10958,12 @@ mod tests {
         // field must resolve with its schema type (no LINT0003).
         let schema = test_schema();
         let qualifier = id_expr("Customer");
-        let qual_id = qualifier.id;
+        let qual_id = expr_nid(qualifier);
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(qualifier),
+            qualifier,
             field: id("Name"),
         });
-        let fa_id = fa.id;
+        let fa_id = expr_nid(fa);
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(fa))];
         let sem = run_analyze_with_schema(&stmts, &schema);
 
@@ -10672,11 +11029,11 @@ mod tests {
         // expression is a read. Both fold onto the same (tid, field) synthetic.
         let schema = test_schema();
         let write_target = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("bCust")),
+            qualifier: id_expr("bCust"),
             field: id("CustNum"),
         });
         let read_use = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("bCust")),
+            qualifier: id_expr("bCust"),
             field: id("CustNum"),
         });
         let stmts = vec![
@@ -10755,10 +11112,10 @@ mod tests {
         let schema = test_schema();
         let qualifier = id_expr("b");
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(qualifier),
+            qualifier,
             field: id("Anything"),
         });
-        let fa_id = fa.id;
+        let fa_id = expr_nid(fa);
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
                 access: None,
@@ -10788,15 +11145,15 @@ mod tests {
     fn duplicate_field_access_reuses_one_synthetic_symbol() {
         let schema = test_schema();
         let fa1 = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("bCust")),
+            qualifier: id_expr("bCust"),
             field: id("CustNum"),
         });
         let fa2 = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("bCust")),
+            qualifier: id_expr("bCust"),
             field: id("CustNum"),
         });
-        let fa1_id = fa1.id;
-        let fa2_id = fa2.id;
+        let fa1_id = expr_nid(fa1);
+        let fa2_id = expr_nid(fa2);
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
                 access: None,
@@ -10842,13 +11199,14 @@ mod tests {
         // between a revision mismatch and a silently-wrong resolution.
         let schema_a = test_schema();
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(id_expr("x")))];
-        let ctx_a = ctx("", &schema_a);
-        let (tree, mut symbols, _d, declare_revision) = declare_pass(&stmts, &ctx_a);
+        let (tree, mut symbols, _d, declare_revision) =
+            with_ctx("", &schema_a, |ctx_a| declare_pass(&stmts, ctx_a));
 
         let schema_b = Schema::empty();
-        let ctx_b = ctx("", &schema_b);
         assert_ne!(declare_revision, schema_b.revision());
-        let _ = resolve_pass(&stmts, &ctx_b, &tree, &mut symbols, declare_revision);
+        with_ctx("", &schema_b, |ctx_b| {
+            let _ = resolve_pass(&stmts, ctx_b, &tree, &mut symbols, declare_revision);
+        });
     }
 
     // ---- Read / write counts --------------------------------------------
@@ -10859,7 +11217,7 @@ mod tests {
         let lhs = id_expr("x");
         let rhs_x = id_expr("x");
         let one = int_lit(1);
-        let sum = expr_n(ExpressionKind::Add(Box::new(rhs_x), Box::new(one)));
+        let sum = expr_n(ExpressionKind::Add(rhs_x, one));
         let assign = stmt_n(StatementKind::Assign {
             assignments: {
                 let mut v: SmallVec<[AssignPair; 4]> = SmallVec::new();
@@ -10925,7 +11283,7 @@ mod tests {
             var_stmt_n("greeting", DataType::Character),
             var_stmt_n("answer", DataType::Integer),
             stmt_n(StatementKind::Message {
-                items: vec![item],
+                items: push_list(&[item]),
                 set_targets: vec![id("answer")],
                 fields: vec![],
             }),
@@ -11010,7 +11368,7 @@ mod tests {
     // ---- PASSED_AS_OUTPUT_ARG (LINT0002 write-back exemption) -----------
 
     /// `RUN proc (<direction> <arg>).` preceded by `DEFINE VARIABLE x`.
-    fn run_with_arg(direction: ParameterDirection, arg: Expression) -> Vec<Statement> {
+    fn run_with_arg(direction: ParameterDirection, arg: ExprId) -> Vec<Statement> {
         vec![
             var_stmt_n("x", DataType::Integer),
             stmt_n(StatementKind::Run {
@@ -11101,7 +11459,7 @@ mod tests {
         // unresolved name both miss the reference lookup: no panic, and no
         // flag lands on an unrelated symbol.
         let field = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("no-such-table")),
+            qualifier: id_expr("no-such-table"),
             field: id("fld"),
         });
         for arg in [field, id_expr("no-such-var")] {
@@ -11171,16 +11529,17 @@ mod tests {
         ];
 
         let schema = Schema::empty();
-        let ctx = ctx("", &schema);
-        let (tree_a, mut sym_a, _d, rev_a) = declare_pass(&baseline, &ctx);
-        let (refs_a, _t, diags_a) = resolve_pass(&baseline, &ctx, &tree_a, &mut sym_a, rev_a);
-        let (tree_b, mut sym_b, _d, rev_b) = declare_pass(&with_skip, &ctx);
-        let (refs_b, _t, diags_b) = resolve_pass(&with_skip, &ctx, &tree_b, &mut sym_b, rev_b);
+        with_ctx("", &schema, |ctx| {
+            let (tree_a, mut sym_a, _d, rev_a) = declare_pass(&baseline, ctx);
+            let (refs_a, _t, diags_a) = resolve_pass(&baseline, ctx, &tree_a, &mut sym_a, rev_a);
+            let (tree_b, mut sym_b, _d, rev_b) = declare_pass(&with_skip, ctx);
+            let (refs_b, _t, diags_b) = resolve_pass(&with_skip, ctx, &tree_b, &mut sym_b, rev_b);
 
-        assert_eq!(refs_a.iter().count(), refs_b.iter().count());
-        assert_eq!(refs_b.iter().count(), 0);
-        assert!(diags_a.is_empty());
-        assert!(diags_b.is_empty(), "unexpected diagnostics: {diags_b:?}");
+            assert_eq!(refs_a.iter().count(), refs_b.iter().count());
+            assert_eq!(refs_b.iter().count(), 0);
+            assert!(diags_a.is_empty());
+            assert!(diags_b.is_empty(), "unexpected diagnostics: {diags_b:?}");
+        });
     }
 
     /// KTD8: only `NamespaceId::Values` is credited. A flag on a buffer or table
@@ -11233,19 +11592,20 @@ mod tests {
     fn unmodelled_touch_flush_is_idempotent() {
         let stmts = vec![var_stmt_n("x", DataType::Integer), skipped_stmt_n(&["x"])];
         let schema = Schema::empty();
-        let ctx = ctx("", &schema);
-        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
-        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
-        let first: Vec<_> = symbols
-            .iter()
-            .map(|(_, s)| (s.flags, s.read_count, s.write_count))
-            .collect();
-        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
-        let second: Vec<_> = symbols
-            .iter()
-            .map(|(_, s)| (s.flags, s.read_count, s.write_count))
-            .collect();
-        assert_eq!(first, second);
+        with_ctx("", &schema, |ctx| {
+            let (tree, mut symbols, _d, rev) = declare_pass(&stmts, ctx);
+            let _ = resolve_pass(&stmts, ctx, &tree, &mut symbols, rev);
+            let first: Vec<_> = symbols
+                .iter()
+                .map(|(_, s)| (s.flags, s.read_count, s.write_count))
+                .collect();
+            let _ = resolve_pass(&stmts, ctx, &tree, &mut symbols, rev);
+            let second: Vec<_> = symbols
+                .iter()
+                .map(|(_, s)| (s.flags, s.read_count, s.write_count))
+                .collect();
+            assert_eq!(first, second);
+        });
     }
 
     // ---- Idempotence ----------------------------------------------------
@@ -11258,17 +11618,18 @@ mod tests {
             stmt_n(StatementKind::ExpressionStatement(use_x)),
         ];
         let schema = Schema::empty();
-        let ctx = ctx("", &schema);
-        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
-        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
-        let _ = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
-        let x = symbols
-            .iter()
-            .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
-            .unwrap()
-            .0;
-        // Running twice yields 1, not 2 — Salsa-ready precondition.
-        assert_eq!(symbols.get(x).read_count, 1);
+        with_ctx("", &schema, |ctx| {
+            let (tree, mut symbols, _d, rev) = declare_pass(&stmts, ctx);
+            let _ = resolve_pass(&stmts, ctx, &tree, &mut symbols, rev);
+            let _ = resolve_pass(&stmts, ctx, &tree, &mut symbols, rev);
+            let x = symbols
+                .iter()
+                .find(|(_, s)| s.name == fold_atom("x") && s.kind == SymbolKind::Variable)
+                .unwrap()
+                .0;
+            // Running twice yields 1, not 2 — Salsa-ready precondition.
+            assert_eq!(symbols.get(x).read_count, 1);
+        });
     }
 
     // ---- Statement-level buffer references ------------------------------
@@ -11309,7 +11670,7 @@ mod tests {
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![],
         })];
         let (_t, symbols, _r, _) = run_full(&stmts);
@@ -11328,7 +11689,7 @@ mod tests {
     fn resolve_arithmetic_expression_walks_both_sides() {
         let lhs = id_expr("a");
         let rhs = id_expr("b");
-        let sum = expr_n(ExpressionKind::Add(Box::new(lhs), Box::new(rhs)));
+        let sum = expr_n(ExpressionKind::Add(lhs, rhs));
         let stmts = vec![
             var_stmt_n("a", DataType::Integer),
             var_stmt_n("b", DataType::Integer),
@@ -11349,7 +11710,7 @@ mod tests {
     fn resolve_logical_and_walks_both_sides() {
         let lhs = id_expr("p");
         let rhs = id_expr("q");
-        let and_expr = expr_n(ExpressionKind::And(Box::new(lhs), Box::new(rhs)));
+        let and_expr = expr_n(ExpressionKind::And(lhs, rhs));
         let stmts = vec![
             var_stmt_n("p", DataType::Logical),
             var_stmt_n("q", DataType::Logical),
@@ -11369,8 +11730,8 @@ mod tests {
     #[test]
     fn resolve_negate_walks_operand() {
         let x = id_expr("x");
-        let x_id = x.id;
-        let neg = expr_n(ExpressionKind::Negate(Box::new(x)));
+        let x_id = expr_nid(x);
+        let neg = expr_n(ExpressionKind::Negate(x));
         let stmts = vec![
             var_stmt_n("x", DataType::Integer),
             stmt_n(StatementKind::ExpressionStatement(neg)),
@@ -11385,12 +11746,12 @@ mod tests {
     #[test]
     fn resolve_array_access_walks_array_and_index() {
         let arr = id_expr("arr");
-        let arr_id = arr.id;
+        let arr_id = expr_nid(arr);
         let idx = id_expr("i");
-        let idx_id = idx.id;
+        let idx_id = expr_nid(idx);
         let ax = expr_n(ExpressionKind::ArrayAccess {
-            array: Box::new(arr),
-            index: Box::new(idx),
+            array: arr,
+            index: idx,
         });
         let stmts = vec![
             var_stmt_extent("arr", DataType::Integer, 5),
@@ -11416,7 +11777,7 @@ mod tests {
         // A bare identifier `customer` in a value position resolves to the
         // variable (Values NS wins over Buffers for bare idents).
         let use_customer = id_expr("customer");
-        let use_id = use_customer.id;
+        let use_id = expr_nid(use_customer);
         let stmts = vec![
             var_stmt_n("customer", DataType::Integer),
             stmt_n(StatementKind::DefineBuffer {
@@ -11445,9 +11806,9 @@ mod tests {
         // Same name variable + buffer — `customer.field` must resolve the
         // qualifier via Buffers namespace.
         let qualifier = id_expr("customer");
-        let qual_id = qualifier.id;
+        let qual_id = expr_nid(qualifier);
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(qualifier),
+            qualifier,
             field: id("CustNum"),
         });
         let stmts = vec![
@@ -11478,11 +11839,11 @@ mod tests {
     #[test]
     fn resolve_method_call_recurses_into_object() {
         let obj = id_expr("svc");
-        let obj_id = obj.id;
+        let obj_id = expr_nid(obj);
         let mc = expr_n(ExpressionKind::MethodCall {
-            object: Box::new(obj),
+            object: obj,
             method: id("doIt"),
-            arguments: vec![],
+            arguments: push_list(&[]),
         });
         let stmts = vec![
             var_stmt_n("svc", DataType::Class("Foo".into())),
@@ -11498,9 +11859,9 @@ mod tests {
     #[test]
     fn resolve_member_access_recurses_into_object() {
         let obj = id_expr("thing");
-        let obj_id = obj.id;
+        let obj_id = expr_nid(obj);
         let ma = expr_n(ExpressionKind::MemberAccess {
-            object: Box::new(obj),
+            object: obj,
             member: id("X"),
         });
         let stmts = vec![
@@ -11645,9 +12006,9 @@ mod tests {
     #[test]
     fn resolve_if_condition_and_branches_walked() {
         let cond = id_expr("flag");
-        let cond_id = cond.id;
+        let cond_id = expr_nid(cond);
         let then_use = id_expr("a");
-        let then_id = then_use.id;
+        let then_id = expr_nid(then_use);
         let if_stmt = stmt_n(StatementKind::If {
             condition: cond,
             then_branch: Box::new(stmt_n(StatementKind::ExpressionStatement(then_use))),
@@ -11672,14 +12033,14 @@ mod tests {
     #[test]
     fn resolve_case_expression_and_when_values_walked() {
         let discr = id_expr("x");
-        let discr_id = discr.id;
+        let discr_id = expr_nid(discr);
         let matcher = int_lit(1);
         let body_use = id_expr("y");
-        let body_id = body_use.id;
+        let body_id = expr_nid(body_use);
         let case = stmt_n(StatementKind::Case {
             expression: discr,
             when_branches: vec![oxabl_ast::WhenBranch {
-                values: vec![matcher],
+                values: push_list(&[matcher]),
                 body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
             }],
             otherwise: None,
@@ -11703,9 +12064,9 @@ mod tests {
     #[test]
     fn resolve_preproc_if_walks_both_branches() {
         let then_use = id_expr("x");
-        let then_id = then_use.id;
+        let then_id = expr_nid(then_use);
         let else_use = id_expr("y");
-        let else_id = else_use.id;
+        let else_id = expr_nid(else_use);
         let cond = expr_n(ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
             span: Span { start: 0, end: 4 },
             value: true,
@@ -11737,7 +12098,7 @@ mod tests {
     #[test]
     fn resolve_inside_procedure_sees_file_scope_variable() {
         let body_use = id_expr("outer");
-        let use_id = body_use.id;
+        let use_id = expr_nid(body_use);
         let proc = stmt_n(StatementKind::Procedure {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
@@ -11755,7 +12116,7 @@ mod tests {
     #[test]
     fn resolve_inside_method_sees_method_parameter() {
         let body_use = id_expr("arg");
-        let use_id = body_use.id;
+        let use_id = expr_nid(body_use);
         let method = stmt_n(StatementKind::Method {
             extent: None,
             access: AccessModifier::Public,
@@ -11792,7 +12153,7 @@ mod tests {
     #[test]
     fn resolve_literal_has_no_reference_entry() {
         let lit = int_lit(42);
-        let lit_id = lit.id;
+        let lit_id = expr_nid(lit);
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(lit))];
         let (_t, _s, refs, _) = run_full(&stmts);
         assert!(refs.get(lit_id).is_none());
@@ -11800,8 +12161,8 @@ mod tests {
 
     #[test]
     fn resolve_preproc_reference_has_no_entry() {
-        let pref = expr_n(ExpressionKind::PreprocReference("foo".into()));
-        let pref_id = pref.id;
+        let pref = expr_n(ExpressionKind::PreprocReference(push_name("foo")));
+        let pref_id = expr_nid(pref);
         let stmts = vec![stmt_n(StatementKind::ExpressionStatement(pref))];
         let (_t, _s, refs, _) = run_full(&stmts);
         assert!(refs.get(pref_id).is_none());
@@ -11843,7 +12204,7 @@ mod tests {
     #[test]
     fn resolve_on_trigger_block_walks_body() {
         let body_use = id_expr("x");
-        let use_id = body_use.id;
+        let use_id = expr_nid(body_use);
         let on = stmt_n(StatementKind::On {
             kind: OnKind::UiEvent {
                 clauses: vec![oxabl_ast::OnEventClause {
@@ -11869,7 +12230,7 @@ mod tests {
     #[test]
     fn resolve_builtin_visible_inside_procedure() {
         let use_s = id_expr("SESSION");
-        let use_id = use_s.id;
+        let use_id = expr_nid(use_s);
         let proc = stmt_n(StatementKind::Procedure {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(use_s))],
@@ -12014,15 +12375,16 @@ mod tests {
                 target: id("Customer"),
             },
         })];
-        let ctx = ctx("", &schema);
-        let (tree, symbols, _d, _rev) = declare_pass(&stmts, &ctx);
-        let bsym = tree
-            .resolve(ScopeId::ROOT, NamespaceId::Buffers, &fold_atom("bcust"))
-            .expect("buffer declared");
-        assert_eq!(
-            symbols.get(bsym).table_id,
-            schema.table_id(&fold_atom("customer"))
-        );
+        with_ctx("", &schema, |ctx| {
+            let (tree, symbols, _d, _rev) = declare_pass(&stmts, ctx);
+            let bsym = tree
+                .resolve(ScopeId::ROOT, NamespaceId::Buffers, &fold_atom("bcust"))
+                .expect("buffer declared");
+            assert_eq!(
+                symbols.get(bsym).table_id,
+                schema.table_id(&fold_atom("customer"))
+            );
+        });
     }
 
     /// Other parameter shapes are untouched: a scalar parameter names no table,
@@ -12070,11 +12432,12 @@ mod tests {
             buffer_stmt_n("bMacro", BufferTarget::TempTable(id("{&tt-name}"))),
         ];
         let schema = Schema::empty();
-        let ctx = ctx("", &schema);
-        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
-        let (refs, _t, diags) = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
-        assert_eq!(refs.iter().count(), 0);
-        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        with_ctx("", &schema, |ctx| {
+            let (tree, mut symbols, _d, rev) = declare_pass(&stmts, ctx);
+            let (refs, _t, diags) = resolve_pass(&stmts, ctx, &tree, &mut symbols, rev);
+            assert_eq!(refs.iter().count(), 0);
+            assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        });
     }
 
     /// R5: the marker is what earns the harvest a table-namespace lookup.
@@ -12127,11 +12490,12 @@ mod tests {
             skipped_table_stmt_n(&["no-such-name", "another-ghost"]),
         ];
         let schema = Schema::empty();
-        let ctx = ctx("", &schema);
-        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
-        let (refs, _t, diags) = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
-        assert_eq!(refs.iter().count(), 0);
-        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        with_ctx("", &schema, |ctx| {
+            let (tree, mut symbols, _d, rev) = declare_pass(&stmts, ctx);
+            let (refs, _t, diags) = resolve_pass(&stmts, ctx, &tree, &mut symbols, rev);
+            assert_eq!(refs.iter().count(), 0);
+            assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        });
     }
 
     /// KTD5's shadowing case, stated as a test because it looks like a bug
@@ -12235,7 +12599,6 @@ mod tests {
     fn new_targets_resolved(source: &str, written: &'static str) -> Vec<bool> {
         let index = OneSpellingIndex { written };
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
         assert!(
@@ -12243,22 +12606,27 @@ mod tests {
             "fixture must parse cleanly: {:?}",
             program.errors
         );
-        let stmts = program.statements;
-        let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
-        let (refs, _t, _diags) = resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
+            .with_index(&index);
+        let stmts = &program.statements;
+        let (tree, mut symbols, _d, rev) = declare_pass(stmts, &ctx);
+        let (refs, _t, _diags) = resolve_pass(stmts, &ctx, &tree, &mut symbols, rev);
 
         // Collected by walking the statements rather than by iterating `refs`, so
         // the answers come back in the order the file wrote the two `NEW`s — which
         // is the whole variable under test.
         let mut out = Vec::new();
-        for stmt in &stmts {
+        for stmt in stmts {
             let StatementKind::Assignment { value, .. } = &stmt.kind else {
                 continue;
             };
-            if !matches!(value.kind, ExpressionKind::New { .. }) {
+            if !matches!(program.pools.expr(*value).kind, ExpressionKind::New { .. }) {
                 continue;
             }
-            out.push(matches!(refs.get(value.id), Some(Resolution::Resolved(_))));
+            out.push(matches!(
+                refs.get(program.pools.expr(*value).id),
+                Some(Resolution::Resolved(_))
+            ));
         }
         out
     }
@@ -12336,7 +12704,8 @@ mod class_site_guard_tests {
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
         assert!(program.errors.is_empty(), "{:?}", program.errors);
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema).with_index(&EmptyIndex);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema, &program.pools)
+            .with_index(&EmptyIndex);
         let stmts = program.statements;
         let (tree, mut symbols, _d, rev) = declare_pass(&stmts, &ctx);
         resolve_pass(&stmts, &ctx, &tree, &mut symbols, rev);
@@ -12356,7 +12725,7 @@ mod class_site_guard_tests {
         assert!(program.errors.is_empty(), "{:?}", program.errors);
         let schema = Schema::empty();
         for indexed in [false, true] {
-            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
             let ctx = if indexed {
                 ctx.with_index(&EmptyIndex)
             } else {
@@ -12401,7 +12770,7 @@ mod class_site_guard_tests {
             let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
             assert!(program.errors.is_empty(), "{:?}", program.errors);
             let schema = Schema::empty();
-            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
             let ctx = if indexed {
                 ctx.with_index(&EmptyIndex)
             } else {
@@ -12499,9 +12868,9 @@ mod preproc_arm_tests {
     /// `SEM0001` messages from the declare pass over `source`, preprocessing off.
     fn sem0001_messages(source: &str) -> Vec<String> {
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
         assert!(
             program.errors.is_empty(),
             "fixture must parse cleanly: {:?}",
@@ -12697,9 +13066,9 @@ mod block_definition_tests {
     /// The scope kind each symbol of `kinds` is declared in, by name.
     fn declared_in(source: &str, kinds: &[SymbolKind]) -> Vec<(String, ScopeKind)> {
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
         assert!(program.errors.is_empty(), "{:?}", program.errors);
         let (tree, symbols, _, _) = declare_pass(&program.statements, &ctx);
         let mut found: Vec<(String, ScopeKind)> = symbols

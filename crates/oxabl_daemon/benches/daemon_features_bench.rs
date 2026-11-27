@@ -14,7 +14,6 @@
 //!
 //! Each bench reports the allocations of one iteration (see `oxabl_bench::bench`).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -22,8 +21,8 @@ use oxabl_bench::alloc::Counting;
 use oxabl_bench::generate::{Preset, generate};
 use oxabl_bench::{bench, fixtures};
 use oxabl_daemon::db::{
-    AnalysisConfig, AnalysisDatabase, Buffer, HintSource, NavigationQuery, SchemaHandle,
-    compute_diagnostics, compute_navigation, compute_semantic_tokens,
+    AnalysisConfig, AnalysisDatabase, Buffer, HintSource, SchemaHandle, compute_diagnostics,
+    compute_links, compute_semantic_tokens,
 };
 use oxabl_daemon::{ClientContext, SessionHost, default_dispatch};
 use oxabl_daemon_protocol::{
@@ -72,8 +71,7 @@ fn bench_features(c: &mut Criterion) {
         .0
         .len();
         let symbols = outline(text).expect("the outline does not panic").len();
-        let overlay = HashMap::from([(path.clone(), Arc::<str>::from(text.as_str()))]);
-        let links = compute_navigation(&db, schema, &path, overlay, &NavigationQuery::Links)
+        let links = compute_links(&db, buffer, schema)
             .expect("not cancelled")
             .expect("the buffer preprocesses")
             .links

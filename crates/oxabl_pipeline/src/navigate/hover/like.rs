@@ -5,7 +5,7 @@
 //! clause, so the hover and the diagnostics read the same table. A source that
 //! the analysis cannot reach is a gap, never an empty table.
 
-use oxabl_ast::{Statement, StatementKind};
+use oxabl_ast::{AstPools, Statement, StatementKind};
 use oxabl_schema::{EffectiveIndex, EffectiveTable};
 use oxabl_semantic::{RecordSource, SymbolId};
 
@@ -24,12 +24,13 @@ struct Gap {
 
 impl Navigation<'_, '_> {
     /// The text under the declaration of a temp-table: how many fields it has
-    /// and its indexes. `symbol` is the temp-table's symbol; `None` for a
-    /// declaration read from another file, whose `LIKE` source is not resolved
-    /// here.
+    /// and its indexes. `pools` are those of the parse that holds `statement`.
+    /// `symbol` is the temp-table's symbol; `None` for a declaration read from
+    /// another file, whose `LIKE` source is not resolved here.
     pub(super) fn temp_table_shape(
         &self,
         statement: &Statement,
+        pools: &AstPools,
         symbol: Option<SymbolId>,
     ) -> Option<String> {
         let StatementKind::DefineTempTable {
@@ -41,7 +42,7 @@ impl Navigation<'_, '_> {
         else {
             return None;
         };
-        let gap = match self.shape(statement, symbol, 0) {
+        let gap = match self.shape(statement, pools, symbol, 0) {
             Ok(shape) => {
                 let mut out = format!(
                     "Fields: {} · Indexes: {}",
@@ -57,7 +58,7 @@ impl Navigation<'_, '_> {
             Err(gap) => gap,
         };
         // The part that is written in this statement is still known.
-        let source = like_table.as_ref()?.name.as_str();
+        let source = pools.ident(*like_table.as_ref()?);
         let why = if gap.name.eq_ignore_ascii_case(source) {
             gap.reason.to_string()
         } else {
@@ -66,7 +67,7 @@ impl Navigation<'_, '_> {
         let inherited = format!("those of {} ({why})", inline(source));
         let own: Vec<EffectiveIndex> = indexes
             .iter()
-            .map(EffectiveIndex::from_temp_table)
+            .map(|index| EffectiveIndex::from_temp_table(index, &pools.names))
             .collect();
         let mut out = format!(
             "Fields: {} own + {inherited} · Indexes: {} own + {inherited}",
@@ -85,6 +86,7 @@ impl Navigation<'_, '_> {
     fn shape(
         &self,
         statement: &Statement,
+        pools: &AstPools,
         symbol: Option<SymbolId>,
         depth: usize,
     ) -> Result<EffectiveTable, Gap> {
@@ -101,12 +103,18 @@ impl Navigation<'_, '_> {
                 reason: "its declaration is not found",
             });
         };
-        let fields = fields.iter().map(|field| field.name.name.as_str());
+        let fields = fields.iter().map(|field| pools.ident(field.name));
         let Some(like) = like_table else {
-            return Ok(EffectiveTable::declare(None, &[], fields, indexes));
+            return Ok(EffectiveTable::declare(
+                None,
+                &[],
+                fields,
+                indexes,
+                &pools.names,
+            ));
         };
         let gap = |reason| Gap {
-            name: like.name.clone(),
+            name: pools.ident(*like).to_string(),
             reason,
         };
         let Some(symbol) = symbol else {
@@ -128,9 +136,10 @@ impl Navigation<'_, '_> {
             }
             Some(RecordSource::TempTable(source)) => {
                 let name_span = symbols.get(source).name_span;
-                let found = find_declaration(&self.parsed().program.statements, name_span)
+                let program = &self.parsed().program;
+                let found = find_declaration(&program.statements, name_span)
                     .ok_or_else(|| gap("its declaration is not found"))?;
-                self.shape(found.statement, Some(source), depth + 1)?
+                self.shape(found.statement, &program.pools, Some(source), depth + 1)?
             }
             None if self.run.config().schema.is_empty() => return Err(gap("no schema is loaded")),
             None => return Err(gap("not in the loaded schema")),
@@ -140,6 +149,7 @@ impl Navigation<'_, '_> {
             use_indexes,
             fields,
             indexes,
+            &pools.names,
         ))
     }
 }

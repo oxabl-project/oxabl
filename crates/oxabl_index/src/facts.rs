@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 
+use oxabl_ast::Span;
 use oxabl_semantic::{ClassDescriptor, IndexName, IndexedFileId, MemberDescriptor};
 
 /// One class or interface a file declares, together with the members it
@@ -42,6 +43,11 @@ pub struct ClassFacts {
     /// [`WorkspaceIndex::class_members`](oxabl_semantic::WorkspaceIndex::class_members),
     /// in declaration order.
     pub members: Arc<[MemberDescriptor]>,
+    /// Byte span of the class, interface, or enum name in the unexpanded source
+    /// file, when the facts were extracted directly from the written text.
+    /// `None` when extracted from an expanded text (whose offsets are not raw
+    /// file coordinates).
+    pub name_span: Option<Span>,
 }
 
 /// Everything one indexed file contributes to the index's four answers.

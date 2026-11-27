@@ -85,7 +85,7 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
         diags: Vec::new(),
         reported: std::collections::HashSet::new(),
     };
-    walk_block(&mut v, program);
+    walk_block(&mut v, ctx.pools, program);
     v.diags
 }
 
@@ -170,11 +170,12 @@ impl Visitor for DynamicCalls<'_> {
                     },
                 ..
             } => {
-                let start = stmt.span.start.min(handle.span.start);
+                let handle_span = self.ctx.pools.expr(*handle).span;
+                let start = stmt.span.start.min(handle_span.start);
                 self.report(
                     Span {
                         start,
-                        end: handle.span.end,
+                        end: handle_span.end,
                     },
                     "CREATE CALL",
                 );
@@ -190,7 +191,7 @@ impl Visitor for DynamicCalls<'_> {
 
     fn expression(&mut self, expr: &Expression) {
         if let ExpressionKind::FunctionCall { name, .. } = &expr.kind
-            && let Some(canonical) = dynamic_name(&name.name)
+            && let Some(canonical) = dynamic_name(self.ctx.pools.ident(*name))
         {
             self.report(name.span, canonical);
         }

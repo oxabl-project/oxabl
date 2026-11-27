@@ -5,12 +5,9 @@ use oxabl_ast::{
     ExpressionKind, FindType, FrameField, HandleParamKind, Identifier, IntegerLiteral, Literal,
     LockType, NodeId, OnAction, OnKind, ParameterDirection, ParameterType, PersistentRunTarget,
     RunTarget, SortDirection, Span, StatementKind, StreamDirection, StreamOperation, StreamTarget,
-    StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral, UsingSource, WhenBranch,
-    WidgetQualifier,
+    SubscribeTarget, TypeSource, UnknownLiteral, UsingSource, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
-use rust_decimal::Decimal;
-use std::str::FromStr;
 
 /// The harvested names on a [`StatementKind::Skipped`] node, as plain strings.
 ///
@@ -18,9 +15,9 @@ use std::str::FromStr;
 /// statements would mean hand-building exact byte offsets for every name. Tests
 /// assert on the contents instead.
 #[track_caller]
-fn skipped_names(stmt: &Statement) -> Vec<&str> {
+fn skipped_names<'a>(parser: &'a Parser<'_>, stmt: &Statement) -> Vec<&'a str> {
     match &stmt.kind {
-        StatementKind::Skipped { names, .. } => names.iter().map(|n| n.name.as_str()).collect(),
+        StatementKind::Skipped { names, .. } => names.iter().map(|n| parser.ident(*n)).collect(),
         other => panic!("expected StatementKind::Skipped, got {other:?}"),
     }
 }
@@ -31,10 +28,294 @@ fn harvest(source: &str) -> Vec<String> {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("statement should parse");
-    skipped_names(&stmt)
+    skipped_names(&parser, &stmt)
         .into_iter()
         .map(str::to_string)
         .collect()
+}
+
+/// Test-only wrapper around [`Program`] that derefs to `&[Statement]` while
+/// keeping `pools` accessible for name and expression lookups.
+struct Parsed(Program);
+
+impl std::ops::Deref for Parsed {
+    type Target = [Statement];
+
+    fn deref(&self) -> &[Statement] {
+        &self.0.statements
+    }
+}
+
+impl std::fmt::Debug for Parsed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.statements.fmt(f)
+    }
+}
+
+impl<'a> IntoIterator for &'a Parsed {
+    type Item = &'a Statement;
+    type IntoIter = std::slice::Iter<'a, Statement>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.statements.iter()
+    }
+}
+
+impl Parsed {
+    fn ident(&self, ident: Identifier) -> &str {
+        self.0.ident(ident)
+    }
+
+    fn name(&self, id: NameId) -> &str {
+        self.0.name(id)
+    }
+
+    fn expr(&self, id: ExprId) -> &Expression {
+        self.0.expr(id)
+    }
+}
+
+trait HasPools {
+    fn pools_ident(&self, ident: Identifier) -> &str;
+    fn pools_expr(&self, id: ExprId) -> &Expression;
+}
+
+impl HasPools for Parser<'_> {
+    fn pools_ident(&self, ident: Identifier) -> &str {
+        self.ident(ident)
+    }
+
+    fn pools_expr(&self, id: ExprId) -> &Expression {
+        self.expr_node(id)
+    }
+}
+
+impl HasPools for Program {
+    fn pools_ident(&self, ident: Identifier) -> &str {
+        self.ident(ident)
+    }
+
+    fn pools_expr(&self, id: ExprId) -> &Expression {
+        self.expr(id)
+    }
+}
+
+impl HasPools for Parsed {
+    fn pools_ident(&self, ident: Identifier) -> &str {
+        self.ident(ident)
+    }
+
+    fn pools_expr(&self, id: ExprId) -> &Expression {
+        self.expr(id)
+    }
+}
+
+/// Materialized recursive expression mirror for structural `assert_eq!` tests.
+mod tree {
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct Identifier {
+        pub span: Span,
+        pub name: String,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct StringLiteral {
+        pub span: Span,
+        pub value: String,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct DateLiteral {
+        pub span: Span,
+        pub text: String,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Literal {
+        Integer(IntegerLiteral),
+        Decimal(DecimalLiteral),
+        String(StringLiteral),
+        Boolean(BooleanLiteral),
+        Date(DateLiteral),
+        Unknown(UnknownLiteral),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct Expression {
+        pub kind: ExpressionKind,
+    }
+
+    impl From<ExpressionKind> for Expression {
+        fn from(kind: ExpressionKind) -> Self {
+            Self { kind }
+        }
+    }
+
+    impl PartialEq<ExpressionKind> for Expression {
+        fn eq(&self, other: &ExpressionKind) -> bool {
+            &self.kind == other
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum ExpressionKind {
+        Literal(Literal),
+        Identifier(Identifier),
+        Add(Box<Expression>, Box<Expression>),
+        Minus(Box<Expression>, Box<Expression>),
+        Multiply(Box<Expression>, Box<Expression>),
+        Divide(Box<Expression>, Box<Expression>),
+        Modulo(Box<Expression>, Box<Expression>),
+        Equal(Box<Expression>, Box<Expression>),
+        NotEqual(Box<Expression>, Box<Expression>),
+        LessThan(Box<Expression>, Box<Expression>),
+        LessThanOrEqual(Box<Expression>, Box<Expression>),
+        GreaterThan(Box<Expression>, Box<Expression>),
+        GreaterThanOrEqual(Box<Expression>, Box<Expression>),
+        Begins(Box<Expression>, Box<Expression>),
+        Matches(Box<Expression>, Box<Expression>),
+        Contains(Box<Expression>, Box<Expression>),
+        And(Box<Expression>, Box<Expression>),
+        Or(Box<Expression>, Box<Expression>),
+        Negate(Box<Expression>),
+        Not(Box<Expression>),
+        IfThenElse(Box<Expression>, Box<Expression>, Box<Expression>),
+        FunctionCall {
+            name: Identifier,
+            arguments: Vec<Expression>,
+        },
+        MemberAccess {
+            object: Box<Expression>,
+            member: Identifier,
+        },
+        MethodCall {
+            object: Box<Expression>,
+            method: Identifier,
+            arguments: Vec<Expression>,
+        },
+        ArrayAccess {
+            array: Box<Expression>,
+            index: Box<Expression>,
+        },
+        FieldAccess {
+            qualifier: Box<Expression>,
+            field: Identifier,
+        },
+        Other(String),
+    }
+
+    fn ident(parser: &Parser<'_>, id: oxabl_ast::Identifier) -> Identifier {
+        Identifier {
+            span: id.span,
+            name: parser.ident(id).to_string(),
+        }
+    }
+
+    fn lit(parser: &Parser<'_>, value: oxabl_ast::Literal) -> Literal {
+        match value {
+            oxabl_ast::Literal::Integer(v) => Literal::Integer(v),
+            oxabl_ast::Literal::Decimal(v) => Literal::Decimal(v),
+            oxabl_ast::Literal::String(v) => Literal::String(StringLiteral {
+                span: v.span,
+                value: parser.name(v.value).to_string(),
+            }),
+            oxabl_ast::Literal::Boolean(v) => Literal::Boolean(v),
+            oxabl_ast::Literal::Date(v) => Literal::Date(DateLiteral {
+                span: v.span,
+                text: parser.name(v.text).to_string(),
+            }),
+            oxabl_ast::Literal::Unknown(v) => Literal::Unknown(v),
+        }
+    }
+
+    fn boxed(parser: &Parser<'_>, id: ExprId) -> Box<Expression> {
+        Box::new(materialize(parser, id))
+    }
+
+    fn list(parser: &Parser<'_>, ids: ExprList) -> Vec<Expression> {
+        parser
+            .expr_list(ids)
+            .iter()
+            .map(|&id| materialize(parser, id))
+            .collect()
+    }
+
+    fn materialize_binary(
+        parser: &Parser<'_>,
+        kind: &oxabl_ast::ExpressionKind,
+    ) -> Option<ExpressionKind> {
+        use oxabl_ast::ExpressionKind as K;
+        let out = match *kind {
+            K::Add(a, b) => ExpressionKind::Add(boxed(parser, a), boxed(parser, b)),
+            K::Minus(a, b) => ExpressionKind::Minus(boxed(parser, a), boxed(parser, b)),
+            K::Multiply(a, b) => ExpressionKind::Multiply(boxed(parser, a), boxed(parser, b)),
+            K::Divide(a, b) => ExpressionKind::Divide(boxed(parser, a), boxed(parser, b)),
+            K::Modulo(a, b) => ExpressionKind::Modulo(boxed(parser, a), boxed(parser, b)),
+            K::Equal(a, b) => ExpressionKind::Equal(boxed(parser, a), boxed(parser, b)),
+            K::NotEqual(a, b) => ExpressionKind::NotEqual(boxed(parser, a), boxed(parser, b)),
+            K::LessThan(a, b) => ExpressionKind::LessThan(boxed(parser, a), boxed(parser, b)),
+            K::LessThanOrEqual(a, b) => {
+                ExpressionKind::LessThanOrEqual(boxed(parser, a), boxed(parser, b))
+            }
+            K::GreaterThan(a, b) => ExpressionKind::GreaterThan(boxed(parser, a), boxed(parser, b)),
+            K::GreaterThanOrEqual(a, b) => {
+                ExpressionKind::GreaterThanOrEqual(boxed(parser, a), boxed(parser, b))
+            }
+            K::Begins(a, b) => ExpressionKind::Begins(boxed(parser, a), boxed(parser, b)),
+            K::Matches(a, b) => ExpressionKind::Matches(boxed(parser, a), boxed(parser, b)),
+            K::Contains(a, b) => ExpressionKind::Contains(boxed(parser, a), boxed(parser, b)),
+            K::And(a, b) => ExpressionKind::And(boxed(parser, a), boxed(parser, b)),
+            K::Or(a, b) => ExpressionKind::Or(boxed(parser, a), boxed(parser, b)),
+            _ => return None,
+        };
+        Some(out)
+    }
+
+    pub fn materialize(parser: &Parser<'_>, id: ExprId) -> Expression {
+        use oxabl_ast::ExpressionKind as K;
+        let kind = &parser.expr_node(id).kind;
+        if let Some(binary) = materialize_binary(parser, kind) {
+            return Expression { kind: binary };
+        }
+        let kind = match kind {
+            K::Literal(v) => ExpressionKind::Literal(lit(parser, *v)),
+            K::Identifier(v) => ExpressionKind::Identifier(ident(parser, *v)),
+            K::Negate(a) => ExpressionKind::Negate(boxed(parser, *a)),
+            K::Not(a) => ExpressionKind::Not(boxed(parser, *a)),
+            K::IfThenElse(c, t, e) => {
+                ExpressionKind::IfThenElse(boxed(parser, *c), boxed(parser, *t), boxed(parser, *e))
+            }
+            K::FunctionCall { name, arguments } => ExpressionKind::FunctionCall {
+                name: ident(parser, *name),
+                arguments: list(parser, *arguments),
+            },
+            K::MemberAccess { object, member } => ExpressionKind::MemberAccess {
+                object: boxed(parser, *object),
+                member: ident(parser, *member),
+            },
+            K::MethodCall {
+                object,
+                method,
+                arguments,
+            } => ExpressionKind::MethodCall {
+                object: boxed(parser, *object),
+                method: ident(parser, *method),
+                arguments: list(parser, *arguments),
+            },
+            K::ArrayAccess { array, index } => ExpressionKind::ArrayAccess {
+                array: boxed(parser, *array),
+                index: boxed(parser, *index),
+            },
+            K::FieldAccess { qualifier, field } => ExpressionKind::FieldAccess {
+                qualifier: boxed(parser, *qualifier),
+                field: ident(parser, *field),
+            },
+            other => ExpressionKind::Other(format!("{other:?}")),
+        };
+        Expression { kind }
+    }
 }
 
 /// Parse `source` as one statement and return its table-candidate marker (#130).
@@ -65,2220 +346,1609 @@ fn assert_span_covers(source: &str, span: Span, needle: &str) {
     assert_eq!(span.end as usize, start + needle.len(), "span end");
 }
 
-#[test]
-fn parse_simple_add_expression() {
-    let source = "1 + 2";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    println!("{:?}", expression);
-    assert_eq!(
-        expression,
-        ExpressionKind::Add(
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 0, end: 1 },
-                    value: 1
-                }))
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 2
-                }))
-                .into()
-            )
-        )
-    );
-}
+mod expr_tree_tests {
+    use super::tree::{ExpressionKind, Identifier, Literal, StringLiteral, materialize};
+    use super::{
+        BooleanLiteral, DecimalLiteral, IntegerLiteral, Parser, Span, UnknownLiteral, tokenize,
+    };
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
 
-#[test]
-fn parse_double_add_expression() {
-    let source = "1 + 2 + 3";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    println!("{:?}", expression);
-    assert_eq!(
-        expression,
-        ExpressionKind::Add(
-            Box::new(
-                ExpressionKind::Add(
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 0, end: 1 },
-                            value: 1
-                        }))
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 4, end: 5 },
-                            value: 2
-                        }))
-                        .into()
-                    )
+    #[test]
+    fn parse_simple_add_expression() {
+        let source = "1 + 2";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            ExpressionKind::Add(
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 0, end: 1 },
+                        value: 1
+                    }))
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 4, end: 5 },
+                        value: 2
+                    }))
+                    .into()
                 )
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 8, end: 9 },
-                    value: 3
-                }))
-                .into()
             )
-        )
-    );
-}
+        );
+    }
 
-#[test]
-fn parse_simple_minus_expression() {
-    let source = "1 - 2";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    println!("{:?}", expression);
-    assert_eq!(
-        expression,
-        ExpressionKind::Minus(
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 0, end: 1 },
-                    value: 1
-                }))
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 2
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_double_minus_expression() {
-    let source = "1 - 2 - 3";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    println!("{:?}", expression);
-    assert_eq!(
-        expression,
-        ExpressionKind::Minus(
-            Box::new(
-                ExpressionKind::Minus(
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 0, end: 1 },
-                            value: 1
-                        }))
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 4, end: 5 },
-                            value: 2
-                        }))
-                        .into()
+    #[test]
+    fn parse_double_add_expression() {
+        let source = "1 + 2 + 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            ExpressionKind::Add(
+                Box::new(
+                    ExpressionKind::Add(
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 0, end: 1 },
+                                value: 1
+                            }))
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 4, end: 5 },
+                                value: 2
+                            }))
+                            .into()
+                        )
                     )
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 8, end: 9 },
+                        value: 3
+                    }))
+                    .into()
                 )
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 8, end: 9 },
-                    value: 3
-                }))
-                .into()
             )
-        )
-    );
-}
+        );
+    }
 
-#[test]
-fn parse_add_minus_expression() {
-    let source = "1 + 2 - 3";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    println!("{:?}", expression);
-    assert_eq!(
-        expression,
-        ExpressionKind::Minus(
-            Box::new(
-                ExpressionKind::Add(
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 0, end: 1 },
-                            value: 1
-                        }))
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 4, end: 5 },
-                            value: 2
-                        }))
-                        .into()
+    #[test]
+    fn parse_simple_minus_expression() {
+        let source = "1 - 2";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            ExpressionKind::Minus(
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 0, end: 1 },
+                        value: 1
+                    }))
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 4, end: 5 },
+                        value: 2
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_double_minus_expression() {
+        let source = "1 - 2 - 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            ExpressionKind::Minus(
+                Box::new(
+                    ExpressionKind::Minus(
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 0, end: 1 },
+                                value: 1
+                            }))
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 4, end: 5 },
+                                value: 2
+                            }))
+                            .into()
+                        )
                     )
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 8, end: 9 },
+                        value: 3
+                    }))
+                    .into()
                 )
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 8, end: 9 },
-                    value: 3
-                }))
-                .into()
             )
-        )
-    );
-}
+        );
+    }
 
-#[test]
-fn parse_simple_multiplication_expression() {
-    let source = "1 * 2";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    println!("{:?}", expression);
-    assert_eq!(
-        expression,
-        ExpressionKind::Multiply(
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 0, end: 1 },
-                    value: 1
-                }))
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 2
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_add_multiplication_expression() {
-    let source = "1 + 2 * 3";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    println!("{:?}", expression);
-    assert_eq!(
-        expression,
-        ExpressionKind::Add(
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 0, end: 1 },
-                    value: 1
-                }))
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Multiply(
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 4, end: 5 },
-                            value: 2
-                        }))
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 8, end: 9 },
-                            value: 3
-                        }))
-                        .into()
+    #[test]
+    fn parse_add_minus_expression() {
+        let source = "1 + 2 - 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            ExpressionKind::Minus(
+                Box::new(
+                    ExpressionKind::Add(
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 0, end: 1 },
+                                value: 1
+                            }))
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 4, end: 5 },
+                                value: 2
+                            }))
+                            .into()
+                        )
                     )
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 8, end: 9 },
+                        value: 3
+                    }))
+                    .into()
                 )
-                .into()
-            ),
-        )
-    );
-}
-
-#[test]
-fn parse_simple_division_expression() {
-    let source = "6 / 2";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Divide(
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 0, end: 1 },
-                    value: 6
-                }))
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 2
-                }))
-                .into()
             )
-        )
-    );
-}
+        );
+    }
 
-#[test]
-fn parse_parenthesized_expression() {
-    let source = "(1 + 2)";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Add(
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 1, end: 2 },
-                    value: 1
-                }))
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 5, end: 6 },
-                    value: 2
-                }))
-                .into()
+    #[test]
+    fn parse_simple_multiplication_expression() {
+        let source = "1 * 2";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            ExpressionKind::Multiply(
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 0, end: 1 },
+                        value: 1
+                    }))
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 4, end: 5 },
+                        value: 2
+                    }))
+                    .into()
+                )
             )
-        )
-    );
-}
+        );
+    }
 
-#[test]
-fn parse_parentheses_override_precedence() {
-    let source = "(1 + 2) * 3";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Multiply(
-            Box::new(
-                ExpressionKind::Add(
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 1, end: 2 },
-                            value: 1
-                        }))
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 5, end: 6 },
-                            value: 2
-                        }))
-                        .into()
+    #[test]
+    fn parse_add_multiplication_expression() {
+        let source = "1 + 2 * 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        println!("{:?}", expression);
+        assert_eq!(
+            expression,
+            ExpressionKind::Add(
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 0, end: 1 },
+                        value: 1
+                    }))
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Multiply(
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 4, end: 5 },
+                                value: 2
+                            }))
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 8, end: 9 },
+                                value: 3
+                            }))
+                            .into()
+                        )
                     )
-                )
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 10, end: 11 },
-                    value: 3
-                }))
-                .into()
+                    .into()
+                ),
             )
-        )
-    );
-}
+        );
+    }
 
-#[test]
-fn parse_unary_negate() {
-    let source = "-5";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Negate(Box::new(
-            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 1, end: 2 },
-                value: 5
-            }))
-            .into()
-        ))
-    );
-}
+    #[test]
+    fn parse_simple_division_expression() {
+        let source = "6 / 2";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Divide(
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 0, end: 1 },
+                        value: 6
+                    }))
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 4, end: 5 },
+                        value: 2
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
 
-#[test]
-fn parse_double_negate() {
-    let source = "--5";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Negate(Box::new(
+    #[test]
+    fn parse_parenthesized_expression() {
+        let source = "(1 + 2)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Add(
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 1, end: 2 },
+                        value: 1
+                    }))
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 5, end: 6 },
+                        value: 2
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_parentheses_override_precedence() {
+        let source = "(1 + 2) * 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Multiply(
+                Box::new(
+                    ExpressionKind::Add(
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 1, end: 2 },
+                                value: 1
+                            }))
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 5, end: 6 },
+                                value: 2
+                            }))
+                            .into()
+                        )
+                    )
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 10, end: 11 },
+                        value: 3
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_unary_negate() {
+        let source = "-5";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
             ExpressionKind::Negate(Box::new(
                 ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 2, end: 3 },
+                    span: Span { start: 1, end: 2 },
                     value: 5
                 }))
                 .into()
             ))
-            .into()
-        ))
-    );
-}
+        );
+    }
 
-#[test]
-fn parse_unary_not() {
-    let source = "not true";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Not(Box::new(
-            ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
-                span: Span { start: 4, end: 8 },
-                value: true
-            }))
-            .into()
-        ))
-    );
-}
-
-#[test]
-fn parse_decimal_literal() {
-    let source = "3.14";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Literal(Literal::Decimal(DecimalLiteral {
-            span: Span { start: 0, end: 4 },
-            value: Decimal::from_str("3.14").unwrap()
-        }))
-    );
-}
-
-#[test]
-fn parse_string_literal() {
-    let source = "\"hello\"";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Literal(Literal::String(StringLiteral {
-            span: Span { start: 0, end: 7 },
-            value: "hello".to_string()
-        }))
-    );
-}
-
-#[test]
-fn parse_boolean_literals() {
-    let source = "true";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
-            span: Span { start: 0, end: 4 },
-            value: true
-        }))
-    );
-}
-
-#[test]
-fn parse_unknown_literal() {
-    let source = "?";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Literal(Literal::Unknown(UnknownLiteral {
-            span: Span { start: 0, end: 1 }
-        }))
-    );
-}
-
-#[test]
-fn parse_modulo_expression() {
-    // ABL uses mod/modulo keyword for modulo
-    let source = "10 mod 3";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Modulo(
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 0, end: 2 },
-                    value: 10
-                }))
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 7, end: 8 },
-                    value: 3
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_identifier() {
-    let source = "myVar";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Identifier(Identifier {
-            span: Span { start: 0, end: 5 },
-            name: "myVar".to_string()
-        })
-    );
-}
-
-#[test]
-fn parse_hyphenated_identifier() {
-    let source = "my-hyphenated-var";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Identifier(Identifier {
-            span: Span { start: 0, end: 17 },
-            name: "my-hyphenated-var".to_string()
-        })
-    );
-}
-
-#[test]
-fn parse_equal_expression() {
-    let source = "a = b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Equal(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 4, end: 5 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_not_equal_expression() {
-    let source = "a <> b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::NotEqual(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_less_than_keyword() {
-    let source = "a lt b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::LessThan(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_begins_expression() {
-    let source = "userName begins \"Jo\"";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Begins(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 8 },
-                    name: "userName".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::String(StringLiteral {
-                    span: Span { start: 16, end: 20 },
-                    value: "Jo".to_string()
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_contains_expression() {
-    let source = "content contains \"abc\"";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Contains(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 7 },
-                    name: "content".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::String(StringLiteral {
-                    span: Span { start: 17, end: 22 },
-                    value: "abc".to_string()
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_and_expression() {
-    let source = "a and b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::And(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 6, end: 7 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_or_expression() {
-    let source = "a or b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Or(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_or_and_precedence() {
-    // a or b and c should parse as a or (b and c)
-    let source = "a or b and c";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Or(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::And(
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 5, end: 6 },
-                            name: "b".to_string()
-                        })
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 11, end: 12 },
-                            name: "c".to_string()
-                        })
-                        .into()
-                    )
-                )
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_less_than_symbol() {
-    let source = "a < b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::LessThan(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 4, end: 5 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_less_than_or_equal_symbol() {
-    let source = "a <= b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::LessThanOrEqual(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_less_than_or_equal_keyword() {
-    let source = "a le b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::LessThanOrEqual(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_greater_than_symbol() {
-    let source = "a > b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::GreaterThan(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 4, end: 5 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_greater_than_keyword() {
-    let source = "a gt b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::GreaterThan(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_greater_than_or_equal_symbol() {
-    let source = "a >= b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::GreaterThanOrEqual(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_greater_than_or_equal_keyword() {
-    let source = "a ge b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::GreaterThanOrEqual(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_not_equal_keyword() {
-    let source = "a ne b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::NotEqual(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_equal_keyword() {
-    let source = "a eq b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Equal(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 1 },
-                    name: "a".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 6 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_not_expression() {
-    let source = "not a";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Not(Box::new(
-            ExpressionKind::Identifier(Identifier {
-                span: Span { start: 4, end: 5 },
-                name: "a".to_string()
-            })
-            .into()
-        ))
-    );
-}
-
-#[test]
-fn parse_not_with_comparison() {
-    // In ABL, NOT has higher precedence than comparison operators
-    // so "not a = b" is parsed as "(not a) = b"
-    let source = "not a = b";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Equal(
-            Box::new(
-                ExpressionKind::Not(Box::new(
-                    ExpressionKind::Identifier(Identifier {
-                        span: Span { start: 4, end: 5 },
-                        name: "a".to_string()
-                    })
+    #[test]
+    fn parse_double_negate() {
+        let source = "--5";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Negate(Box::new(
+                ExpressionKind::Negate(Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 2, end: 3 },
+                        value: 5
+                    }))
                     .into()
                 ))
                 .into()
-            ),
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 8, end: 9 },
-                    name: "b".to_string()
-                })
-                .into()
-            )
-        )
-    );
-}
+            ))
+        );
+    }
 
-#[test]
-fn parse_not_with_parenthesized_comparison() {
-    // To negate an entire comparison, use parentheses
-    let source = "not (a = b)";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Not(Box::new(
+    #[test]
+    fn parse_unary_not() {
+        let source = "not true";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Not(Box::new(
+                ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
+                    span: Span { start: 4, end: 8 },
+                    value: true
+                }))
+                .into()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_decimal_literal() {
+        let source = "3.14";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Literal(Literal::Decimal(DecimalLiteral {
+                span: Span { start: 0, end: 4 },
+                value: Decimal::from_str("3.14").unwrap()
+            }))
+        );
+    }
+
+    #[test]
+    fn parse_string_literal() {
+        let source = "\"hello\"";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Literal(Literal::String(StringLiteral {
+                span: Span { start: 0, end: 7 },
+                value: "hello".to_string()
+            }))
+        );
+    }
+
+    #[test]
+    fn parse_boolean_literals() {
+        let source = "true";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
+                span: Span { start: 0, end: 4 },
+                value: true
+            }))
+        );
+    }
+
+    #[test]
+    fn parse_unknown_literal() {
+        let source = "?";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Literal(Literal::Unknown(UnknownLiteral {
+                span: Span { start: 0, end: 1 }
+            }))
+        );
+    }
+
+    #[test]
+    fn parse_modulo_expression() {
+        // ABL uses mod/modulo keyword for modulo
+        let source = "10 mod 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Modulo(
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 0, end: 2 },
+                        value: 10
+                    }))
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 7, end: 8 },
+                        value: 3
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_identifier() {
+        let source = "myVar";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Identifier(Identifier {
+                span: Span { start: 0, end: 5 },
+                name: "myVar".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn parse_hyphenated_identifier() {
+        let source = "my-hyphenated-var";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Identifier(Identifier {
+                span: Span { start: 0, end: 17 },
+                name: "my-hyphenated-var".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn parse_equal_expression() {
+        let source = "a = b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
             ExpressionKind::Equal(
                 Box::new(
                     ExpressionKind::Identifier(Identifier {
-                        span: Span { start: 5, end: 6 },
+                        span: Span { start: 0, end: 1 },
                         name: "a".to_string()
                     })
                     .into()
                 ),
                 Box::new(
                     ExpressionKind::Identifier(Identifier {
-                        span: Span { start: 9, end: 10 },
+                        span: Span { start: 4, end: 5 },
                         name: "b".to_string()
                     })
                     .into()
                 )
             )
-            .into()
-        ))
-    );
-}
-
-#[test]
-fn parse_matches_expression() {
-    let source = "name matches \"*son\"";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Matches(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 4 },
-                    name: "name".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::String(StringLiteral {
-                    span: Span { start: 13, end: 19 },
-                    value: "*son".to_string()
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_simple_ternary() {
-    // IF xx > 5 THEN 10 ELSE 20
-    let source = "if xx > 5 then 10 else 20";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::IfThenElse(
-            Box::new(
-                ExpressionKind::GreaterThan(
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 3, end: 5 },
-                            name: "xx".to_string()
-                        })
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 8, end: 9 },
-                            value: 5
-                        }))
-                        .into()
-                    )
-                )
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 15, end: 17 },
-                    value: 10
-                }))
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 23, end: 25 },
-                    value: 20
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_nested_ternary_in_else() {
-    // IF xx > 10 THEN 1 ELSE IF xx > 5 THEN 2 ELSE 3
-    let source = "if xx > 10 then 1 else if xx > 5 then 2 else 3";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::IfThenElse(
-            Box::new(
-                ExpressionKind::GreaterThan(
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 3, end: 5 },
-                            name: "xx".to_string()
-                        })
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 8, end: 10 },
-                            value: 10
-                        }))
-                        .into()
-                    )
-                )
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 16, end: 17 },
-                    value: 1
-                }))
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::IfThenElse(
-                    Box::new(
-                        ExpressionKind::GreaterThan(
-                            Box::new(
-                                ExpressionKind::Identifier(Identifier {
-                                    span: Span { start: 26, end: 28 },
-                                    name: "xx".to_string()
-                                })
-                                .into()
-                            ),
-                            Box::new(
-                                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                                    span: Span { start: 31, end: 32 },
-                                    value: 5
-                                }))
-                                .into()
-                            )
-                        )
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 38, end: 39 },
-                            value: 2
-                        }))
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 45, end: 46 },
-                            value: 3
-                        }))
-                        .into()
-                    )
-                )
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_ternary_with_complex_condition() {
-    // IF a = b AND c > d THEN 1 ELSE 0
-    let source = "if a = b and c > d then 1 else 0";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::IfThenElse(
-            Box::new(
-                ExpressionKind::And(
-                    Box::new(
-                        ExpressionKind::Equal(
-                            Box::new(
-                                ExpressionKind::Identifier(Identifier {
-                                    span: Span { start: 3, end: 4 },
-                                    name: "a".to_string()
-                                })
-                                .into()
-                            ),
-                            Box::new(
-                                ExpressionKind::Identifier(Identifier {
-                                    span: Span { start: 7, end: 8 },
-                                    name: "b".to_string()
-                                })
-                                .into()
-                            )
-                        )
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::GreaterThan(
-                            Box::new(
-                                ExpressionKind::Identifier(Identifier {
-                                    span: Span { start: 13, end: 14 },
-                                    name: "c".to_string()
-                                })
-                                .into()
-                            ),
-                            Box::new(
-                                ExpressionKind::Identifier(Identifier {
-                                    span: Span { start: 17, end: 18 },
-                                    name: "d".to_string()
-                                })
-                                .into()
-                            )
-                        )
-                        .into()
-                    )
-                )
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 24, end: 25 },
-                    value: 1
-                }))
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 31, end: 32 },
-                    value: 0
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_ternary_with_expressions_in_branches() {
-    // IF cond THEN xx + yy ELSE xx - yy
-    let source = "if cond then xx + yy else xx - yy";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::IfThenElse(
-            Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 3, end: 7 },
-                    name: "cond".to_string()
-                })
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Add(
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 13, end: 15 },
-                            name: "xx".to_string()
-                        })
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 18, end: 20 },
-                            name: "yy".to_string()
-                        })
-                        .into()
-                    )
-                )
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Minus(
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 26, end: 28 },
-                            name: "xx".to_string()
-                        })
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 31, end: 33 },
-                            name: "yy".to_string()
-                        })
-                        .into()
-                    )
-                )
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_function_call_no_args() {
-    let source = "NOW()";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::FunctionCall {
-            name: Identifier {
-                span: Span { start: 0, end: 3 },
-                name: "NOW".to_string()
-            },
-            arguments: vec![]
-        }
-    );
-}
-
-#[test]
-fn parse_function_call_1_arg() {
-    let source = "TRIM(name)";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::FunctionCall {
-            name: Identifier {
-                span: Span { start: 0, end: 4 },
-                name: "TRIM".to_string()
-            },
-            arguments: vec![
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 5, end: 9 },
-                    name: "name".to_string()
-                })
-                .into()
-            ]
-        }
-    );
-}
-
-#[test]
-fn parse_function_call_multiple_args() {
-    let source = "SUBSTRING(str, 1, 5)";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::FunctionCall {
-            name: Identifier {
-                span: Span { start: 0, end: 9 },
-                name: "SUBSTRING".to_string()
-            },
-            arguments: vec![
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 10, end: 13 },
-                    name: "str".to_string()
-                })
-                .into(),
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 15, end: 16 },
-                    value: 1
-                }))
-                .into(),
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 18, end: 19 },
-                    value: 5
-                }))
-                .into()
-            ]
-        }
-    );
-}
-
-#[test]
-fn parse_function_call_with_expression_arg() {
-    let source = "ABS(x - 5)";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::FunctionCall {
-            name: Identifier {
-                span: Span { start: 0, end: 3 },
-                name: "ABS".to_string()
-            },
-            arguments: vec![
-                ExpressionKind::Minus(
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 4, end: 5 },
-                            name: "x".to_string()
-                        })
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 8, end: 9 },
-                            value: 5
-                        }))
-                        .into()
-                    )
-                )
-                .into()
-            ]
-        }
-    );
-}
-
-#[test]
-fn parse_dynamic_func_abbreviation_with_in_handle() {
-    // ADE tty/set emits DYNAMIC-FUNC (abbrev of DYNAMIC-FUNCTION). #65 round 4.
-    let source = r#"DYNAMIC-FUNC("setDataSourceEvents":U IN TARGET-PROCEDURE, evtList)"#;
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser
-        .parse_expression()
-        .expect("DYNAMIC-FUNC … IN handle must parse");
-    match expression.kind {
-        ExpressionKind::FunctionCall { name, arguments } => {
-            assert!(
-                name.name.eq_ignore_ascii_case("dynamic-func")
-                    || name.name.eq_ignore_ascii_case("dynamic-function"),
-                "name={}",
-                name.name
-            );
-            assert!(
-                arguments.len() >= 2,
-                "name + handle (+ args), got {}",
-                arguments.len()
-            );
-        }
-        other => panic!("Expected FunctionCall, got {other:?}"),
+        );
     }
-}
 
-#[test]
-fn parse_nested_function_calls() {
-    let source = "TRIM(SUBSTRING(name, 1, 5))";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::FunctionCall {
-            name: Identifier {
-                span: Span { start: 0, end: 4 },
-                name: "TRIM".to_string()
-            },
-            arguments: vec![
-                ExpressionKind::FunctionCall {
-                    name: Identifier {
-                        span: Span { start: 5, end: 14 },
-                        name: "SUBSTRING".to_string()
-                    },
-                    arguments: vec![
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 15, end: 19 },
-                            name: "name".to_string()
-                        })
-                        .into(),
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 21, end: 22 },
-                            value: 1
-                        }))
-                        .into(),
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 24, end: 25 },
-                            value: 5
-                        }))
-                        .into()
-                    ]
-                }
-                .into()
-            ]
-        }
-    );
-}
-
-#[test]
-fn parse_function_in_expression() {
-    let source = "LENGTH(str) + 1";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Add(
-            Box::new(
-                ExpressionKind::FunctionCall {
-                    name: Identifier {
-                        span: Span { start: 0, end: 6 },
-                        name: "LENGTH".to_string()
-                    },
-                    arguments: vec![
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 7, end: 10 },
-                            name: "str".to_string()
-                        })
-                        .into()
-                    ]
-                }
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 14, end: 15 },
-                    value: 1
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_simple_array_access() {
-    let source = "arr[1]";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::ArrayAccess {
-            array: Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 3 },
-                    name: "arr".to_string()
-                })
-                .into()
-            ),
-            index: Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 4, end: 5 },
-                    value: 1
-                }))
-                .into()
-            )
-        }
-    )
-}
-
-#[test]
-fn parse_array_access_with_expression_index() {
-    let source = "arr[i + 1]";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::ArrayAccess {
-            array: Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 3 },
-                    name: "arr".to_string()
-                })
-                .into()
-            ),
-            index: Box::new(
-                ExpressionKind::Add(
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 4, end: 5 },
-                            name: "i".to_string()
-                        })
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 8, end: 9 },
-                            value: 1
-                        }))
-                        .into()
-                    )
-                )
-                .into()
-            )
-        }
-    );
-}
-
-#[test]
-fn parse_hyphenated_array_access() {
-    let source = "month-quota[3]";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::ArrayAccess {
-            array: Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 11 },
-                    name: "month-quota".to_string()
-                })
-                .into()
-            ),
-            index: Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 12, end: 13 },
-                    value: 3
-                }))
-                .into()
-            )
-        }
-    );
-}
-
-#[test]
-fn parse_multidimensional_array() {
-    let source = "matrix[row][col]";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::ArrayAccess {
-            array: Box::new(
-                ExpressionKind::ArrayAccess {
-                    array: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 0, end: 6 },
-                            name: "matrix".to_string()
-                        })
-                        .into()
-                    ),
-                    index: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 7, end: 10 },
-                            name: "row".to_string()
-                        })
-                        .into()
-                    )
-                }
-                .into()
-            ),
-            index: Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 12, end: 15 },
-                    name: "col".to_string()
-                })
-                .into()
-            )
-        }
-    );
-}
-
-#[test]
-fn parse_array_in_arithmetic() {
-    let source = "arr[1] + arr[2]";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Add(
-            Box::new(
-                ExpressionKind::ArrayAccess {
-                    array: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 0, end: 3 },
-                            name: "arr".to_string()
-                        })
-                        .into()
-                    ),
-                    index: Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 4, end: 5 },
-                            value: 1
-                        }))
-                        .into()
-                    )
-                }
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::ArrayAccess {
-                    array: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 9, end: 12 },
-                            name: "arr".to_string()
-                        })
-                        .into()
-                    ),
-                    index: Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 13, end: 14 },
-                            value: 2
-                        }))
-                        .into()
-                    )
-                }
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_simple_member_access() {
-    let source = "handle:PRIVATE-DATA";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::MemberAccess {
-            object: Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 6 },
-                    name: "handle".to_string()
-                })
-                .into()
-            ),
-            member: Identifier {
-                span: Span { start: 7, end: 19 },
-                name: "PRIVATE-DATA".to_string()
-            }
-        }
-    );
-}
-
-#[test]
-fn parse_simple_method_call() {
-    let source = "buffer:FIND-FIRST()";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::MethodCall {
-            object: Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 6 },
-                    name: "buffer".to_string()
-                })
-                .into()
-            ),
-            method: Identifier {
-                span: Span { start: 7, end: 17 },
-                name: "FIND-FIRST".to_string()
-            },
-            arguments: vec![]
-        }
-    );
-}
-
-#[test]
-fn parse_method_call_with_args() {
-    let source = "widget:MOVE(10, 20)";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::MethodCall {
-            object: Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 6 },
-                    name: "widget".to_string()
-                })
-                .into()
-            ),
-            method: Identifier {
-                span: Span { start: 7, end: 11 },
-                name: "MOVE".to_string()
-            },
-            arguments: vec![
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 12, end: 14 },
-                    value: 10
-                }))
-                .into(),
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 16, end: 18 },
-                    value: 20
-                }))
-                .into()
-            ]
-        }
-    );
-}
-
-#[test]
-fn parse_chained_member_access() {
-    let source = "obj:property:nested";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::MemberAccess {
-            object: Box::new(
-                ExpressionKind::MemberAccess {
-                    object: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 0, end: 3 },
-                            name: "obj".to_string()
-                        })
-                        .into()
-                    ),
-                    member: Identifier {
-                        span: Span { start: 4, end: 12 },
-                        name: "property".to_string()
-                    }
-                }
-                .into()
-            ),
-            member: Identifier {
-                span: Span { start: 13, end: 19 },
-                name: "nested".to_string()
-            }
-        }
-    );
-}
-
-#[test]
-fn parse_member_then_method() {
-    let source = "obj:prop:method()";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::MethodCall {
-            object: Box::new(
-                ExpressionKind::MemberAccess {
-                    object: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 0, end: 3 },
-                            name: "obj".to_string()
-                        })
-                        .into()
-                    ),
-                    member: Identifier {
-                        span: Span { start: 4, end: 8 },
-                        name: "prop".to_string()
-                    }
-                }
-                .into()
-            ),
-            method: Identifier {
-                span: Span { start: 9, end: 15 },
-                name: "method".to_string()
-            },
-            arguments: vec![]
-        }
-    );
-}
-
-#[test]
-fn parse_member_access_with_array() {
-    let source = "myBuf:myField[1]";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::ArrayAccess {
-            array: Box::new(
-                ExpressionKind::MemberAccess {
-                    object: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 0, end: 5 },
-                            name: "myBuf".to_string()
-                        })
-                        .into()
-                    ),
-                    member: Identifier {
-                        span: Span { start: 6, end: 13 },
-                        name: "myField".to_string()
-                    }
-                }
-                .into()
-            ),
-            index: Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 14, end: 15 },
-                    value: 1
-                }))
-                .into()
-            )
-        }
-    );
-}
-
-#[test]
-fn parse_member_in_expression() {
-    let source = "myObj:myVal + 5";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::Add(
-            Box::new(
-                ExpressionKind::MemberAccess {
-                    object: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 0, end: 5 },
-                            name: "myObj".to_string()
-                        })
-                        .into()
-                    ),
-                    member: Identifier {
-                        span: Span { start: 6, end: 11 },
-                        name: "myVal".to_string()
-                    }
-                }
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 14, end: 15 },
-                    value: 5
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_simple_field_access() {
-    let source = "Customer.CustNum";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::FieldAccess {
-            qualifier: Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 0, end: 8 },
-                    name: "Customer".to_string()
-                })
-                .into()
-            ),
-            field: Identifier {
-                span: Span { start: 9, end: 16 },
-                name: "CustNum".to_string()
-            }
-        }
-    );
-}
-
-#[test]
-fn parse_qualified_field_access() {
-    let source = "Sports2020.Customer.Name";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::FieldAccess {
-            qualifier: Box::new(
-                ExpressionKind::FieldAccess {
-                    qualifier: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 0, end: 10 },
-                            name: "Sports2020".to_string()
-                        })
-                        .into()
-                    ),
-                    field: Identifier {
-                        span: Span { start: 11, end: 19 },
-                        name: "Customer".to_string()
-                    }
-                }
-                .into()
-            ),
-            field: Identifier {
-                span: Span { start: 20, end: 24 },
-                name: "Name".to_string()
-            }
-        }
-    );
-}
-
-#[test]
-fn parse_field_access_with_array() {
-    let source = "myTable.myField[extent]";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::ArrayAccess {
-            array: Box::new(
-                ExpressionKind::FieldAccess {
-                    qualifier: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 0, end: 7 },
-                            name: "myTable".to_string()
-                        })
-                        .into()
-                    ),
-                    field: Identifier {
-                        span: Span { start: 8, end: 15 },
-                        name: "myField".to_string()
-                    }
-                }
-                .into()
-            ),
-            index: Box::new(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 16, end: 22 },
-                    name: "extent".to_string()
-                })
-                .into()
-            )
-        }
-    );
-}
-
-#[test]
-fn parse_field_in_comparison() {
-    let source = "Customer.Balance > 1000";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::GreaterThan(
-            Box::new(
-                ExpressionKind::FieldAccess {
-                    qualifier: Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 0, end: 8 },
-                            name: "Customer".to_string()
-                        })
-                        .into()
-                    ),
-                    field: Identifier {
-                        span: Span { start: 9, end: 16 },
-                        name: "Balance".to_string()
-                    }
-                }
-                .into()
-            ),
-            Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 19, end: 23 },
-                    value: 1000
-                }))
-                .into()
-            )
-        )
-    );
-}
-
-#[test]
-fn parse_mixed_access_operators() {
-    // Combines field access, member access, and array indexing
-    let source = "myDb.myTable:buffer[1]";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let expression = parser.parse_expression().expect("Expected an expression");
-    assert_eq!(
-        expression,
-        ExpressionKind::ArrayAccess {
-            array: Box::new(
-                ExpressionKind::MemberAccess {
-                    object: Box::new(
-                        ExpressionKind::FieldAccess {
-                            qualifier: Box::new(
-                                ExpressionKind::Identifier(Identifier {
-                                    span: Span { start: 0, end: 4 },
-                                    name: "myDb".to_string()
-                                })
-                                .into()
-                            ),
-                            field: Identifier {
-                                span: Span { start: 5, end: 12 },
-                                name: "myTable".to_string()
-                            }
-                        }
-                        .into()
-                    ),
-                    member: Identifier {
-                        span: Span { start: 13, end: 19 },
-                        name: "buffer".to_string()
-                    }
-                }
-                .into()
-            ),
-            index: Box::new(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 20, end: 21 },
-                    value: 1
-                }))
-                .into()
-            )
-        }
-    );
-}
-
-#[test]
-fn parse_simple_assignment() {
-    let source = "x = 5.";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(
-        stmt,
-        StatementKind::Assignment {
-            target: ExpressionKind::Identifier(Identifier {
-                span: Span { start: 0, end: 1 },
-                name: "x".to_string()
-            })
-            .into(),
-            value: ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 4, end: 5 },
-                value: 5
-            }))
-            .into()
-        }
-    );
-}
-
-#[test]
-fn parse_assignment_with_expression() {
-    let source = "total = price * quantity.";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(
-        stmt,
-        StatementKind::Assignment {
-            target: ExpressionKind::Identifier(Identifier {
-                span: Span { start: 0, end: 5 },
-                name: "total".to_string()
-            })
-            .into(),
-            value: ExpressionKind::Multiply(
+    #[test]
+    fn parse_not_equal_expression() {
+        let source = "a <> b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::NotEqual(
                 Box::new(
                     ExpressionKind::Identifier(Identifier {
-                        span: Span { start: 8, end: 13 },
-                        name: "price".to_string()
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
                     })
                     .into()
                 ),
                 Box::new(
                     ExpressionKind::Identifier(Identifier {
-                        span: Span { start: 16, end: 24 },
-                        name: "quantity".to_string()
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
                     })
                     .into()
                 )
             )
-            .into()
-        }
-    );
-}
+        );
+    }
 
-#[test]
-fn parse_array_assignment() {
-    let source = "arr[1] = 10.";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(
-        stmt,
-        StatementKind::Assignment {
-            target: ExpressionKind::ArrayAccess {
+    #[test]
+    fn parse_less_than_keyword() {
+        let source = "a lt b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::LessThan(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_begins_expression() {
+        let source = "userName begins \"Jo\"";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Begins(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 8 },
+                        name: "userName".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::String(StringLiteral {
+                        span: Span { start: 16, end: 20 },
+                        value: "Jo".to_string()
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_contains_expression() {
+        let source = "content contains \"abc\"";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Contains(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 7 },
+                        name: "content".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::String(StringLiteral {
+                        span: Span { start: 17, end: 22 },
+                        value: "abc".to_string()
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_and_expression() {
+        let source = "a and b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::And(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 6, end: 7 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_or_expression() {
+        let source = "a or b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Or(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_or_and_precedence() {
+        // a or b and c should parse as a or (b and c)
+        let source = "a or b and c";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Or(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::And(
+                        Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 5, end: 6 },
+                                name: "b".to_string()
+                            })
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 11, end: 12 },
+                                name: "c".to_string()
+                            })
+                            .into()
+                        )
+                    )
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_less_than_symbol() {
+        let source = "a < b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::LessThan(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 4, end: 5 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_less_than_or_equal_symbol() {
+        let source = "a <= b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::LessThanOrEqual(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_less_than_or_equal_keyword() {
+        let source = "a le b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::LessThanOrEqual(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_greater_than_symbol() {
+        let source = "a > b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::GreaterThan(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 4, end: 5 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_greater_than_keyword() {
+        let source = "a gt b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::GreaterThan(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_greater_than_or_equal_symbol() {
+        let source = "a >= b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::GreaterThanOrEqual(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_greater_than_or_equal_keyword() {
+        let source = "a ge b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::GreaterThanOrEqual(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_not_equal_keyword() {
+        let source = "a ne b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::NotEqual(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_equal_keyword() {
+        let source = "a eq b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Equal(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 1 },
+                        name: "a".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 6 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_not_expression() {
+        let source = "not a";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Not(Box::new(
+                ExpressionKind::Identifier(Identifier {
+                    span: Span { start: 4, end: 5 },
+                    name: "a".to_string()
+                })
+                .into()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_not_with_comparison() {
+        // In ABL, NOT has higher precedence than comparison operators
+        // so "not a = b" is parsed as "(not a) = b"
+        let source = "not a = b";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Equal(
+                Box::new(
+                    ExpressionKind::Not(Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 4, end: 5 },
+                            name: "a".to_string()
+                        })
+                        .into()
+                    ))
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 8, end: 9 },
+                        name: "b".to_string()
+                    })
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_not_with_parenthesized_comparison() {
+        // To negate an entire comparison, use parentheses
+        let source = "not (a = b)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Not(Box::new(
+                ExpressionKind::Equal(
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 5, end: 6 },
+                            name: "a".to_string()
+                        })
+                        .into()
+                    ),
+                    Box::new(
+                        ExpressionKind::Identifier(Identifier {
+                            span: Span { start: 9, end: 10 },
+                            name: "b".to_string()
+                        })
+                        .into()
+                    )
+                )
+                .into()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_matches_expression() {
+        let source = "name matches \"*son\"";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Matches(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 4 },
+                        name: "name".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::String(StringLiteral {
+                        span: Span { start: 13, end: 19 },
+                        value: "*son".to_string()
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_simple_ternary() {
+        // IF xx > 5 THEN 10 ELSE 20
+        let source = "if xx > 5 then 10 else 20";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::IfThenElse(
+                Box::new(
+                    ExpressionKind::GreaterThan(
+                        Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 3, end: 5 },
+                                name: "xx".to_string()
+                            })
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 8, end: 9 },
+                                value: 5
+                            }))
+                            .into()
+                        )
+                    )
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 15, end: 17 },
+                        value: 10
+                    }))
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 23, end: 25 },
+                        value: 20
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_nested_ternary_in_else() {
+        let source = "if xx > 10 then 1 else if xx > 5 then 2 else 3";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        let ident_xx = |start, end| {
+            ExpressionKind::Identifier(Identifier {
+                span: Span { start, end },
+                name: "xx".to_string(),
+            })
+            .into()
+        };
+        let int_lit = |start, end, value| {
+            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                span: Span { start, end },
+                value,
+            }))
+            .into()
+        };
+        let inner_if = ExpressionKind::IfThenElse(
+            Box::new(
+                ExpressionKind::GreaterThan(
+                    Box::new(ident_xx(26, 28)),
+                    Box::new(int_lit(31, 32, 5)),
+                )
+                .into(),
+            ),
+            Box::new(int_lit(38, 39, 2)),
+            Box::new(int_lit(45, 46, 3)),
+        );
+        assert_eq!(
+            expression,
+            ExpressionKind::IfThenElse(
+                Box::new(
+                    ExpressionKind::GreaterThan(
+                        Box::new(ident_xx(3, 5)),
+                        Box::new(int_lit(8, 10, 10))
+                    )
+                    .into()
+                ),
+                Box::new(int_lit(16, 17, 1)),
+                Box::new(inner_if.into()),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_ternary_with_complex_condition() {
+        // IF a = b AND c > d THEN 1 ELSE 0
+        let source = "if a = b and c > d then 1 else 0";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::IfThenElse(
+                Box::new(
+                    ExpressionKind::And(
+                        Box::new(
+                            ExpressionKind::Equal(
+                                Box::new(
+                                    ExpressionKind::Identifier(Identifier {
+                                        span: Span { start: 3, end: 4 },
+                                        name: "a".to_string()
+                                    })
+                                    .into()
+                                ),
+                                Box::new(
+                                    ExpressionKind::Identifier(Identifier {
+                                        span: Span { start: 7, end: 8 },
+                                        name: "b".to_string()
+                                    })
+                                    .into()
+                                )
+                            )
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::GreaterThan(
+                                Box::new(
+                                    ExpressionKind::Identifier(Identifier {
+                                        span: Span { start: 13, end: 14 },
+                                        name: "c".to_string()
+                                    })
+                                    .into()
+                                ),
+                                Box::new(
+                                    ExpressionKind::Identifier(Identifier {
+                                        span: Span { start: 17, end: 18 },
+                                        name: "d".to_string()
+                                    })
+                                    .into()
+                                )
+                            )
+                            .into()
+                        )
+                    )
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 24, end: 25 },
+                        value: 1
+                    }))
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 31, end: 32 },
+                        value: 0
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_ternary_with_expressions_in_branches() {
+        // IF cond THEN xx + yy ELSE xx - yy
+        let source = "if cond then xx + yy else xx - yy";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::IfThenElse(
+                Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 3, end: 7 },
+                        name: "cond".to_string()
+                    })
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Add(
+                        Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 13, end: 15 },
+                                name: "xx".to_string()
+                            })
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 18, end: 20 },
+                                name: "yy".to_string()
+                            })
+                            .into()
+                        )
+                    )
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Minus(
+                        Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 26, end: 28 },
+                                name: "xx".to_string()
+                            })
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 31, end: 33 },
+                                name: "yy".to_string()
+                            })
+                            .into()
+                        )
+                    )
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_function_call_no_args() {
+        let source = "NOW()";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 3 },
+                    name: "NOW".to_string()
+                },
+                arguments: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_function_call_1_arg() {
+        let source = "TRIM(name)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 4 },
+                    name: "TRIM".to_string()
+                },
+                arguments: vec![
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 5, end: 9 },
+                        name: "name".to_string()
+                    })
+                    .into()
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_function_call_multiple_args() {
+        let source = "SUBSTRING(str, 1, 5)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 9 },
+                    name: "SUBSTRING".to_string()
+                },
+                arguments: vec![
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 10, end: 13 },
+                        name: "str".to_string()
+                    })
+                    .into(),
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 15, end: 16 },
+                        value: 1
+                    }))
+                    .into(),
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 18, end: 19 },
+                        value: 5
+                    }))
+                    .into()
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_function_call_with_expression_arg() {
+        let source = "ABS(x - 5)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 3 },
+                    name: "ABS".to_string()
+                },
+                arguments: vec![
+                    ExpressionKind::Minus(
+                        Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 4, end: 5 },
+                                name: "x".to_string()
+                            })
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 8, end: 9 },
+                                value: 5
+                            }))
+                            .into()
+                        )
+                    )
+                    .into()
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_dynamic_func_abbreviation_with_in_handle() {
+        // ADE tty/set emits DYNAMIC-FUNC (abbrev of DYNAMIC-FUNCTION). #65 round 4.
+        let source = r#"DYNAMIC-FUNC("setDataSourceEvents":U IN TARGET-PROCEDURE, evtList)"#;
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser
+            .parse_expression()
+            .expect("DYNAMIC-FUNC … IN handle must parse");
+        let expression = materialize(&parser, expr_id);
+        match expression.kind {
+            ExpressionKind::FunctionCall { name, arguments } => {
+                assert!(
+                    name.name.eq_ignore_ascii_case("dynamic-func")
+                        || name.name.eq_ignore_ascii_case("dynamic-function"),
+                    "name={}",
+                    name.name
+                );
+                assert!(
+                    arguments.len() >= 2,
+                    "name + handle (+ args), got {}",
+                    arguments.len()
+                );
+            }
+            other => panic!("Expected FunctionCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_nested_function_calls() {
+        let source = "TRIM(SUBSTRING(name, 1, 5))";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::FunctionCall {
+                name: Identifier {
+                    span: Span { start: 0, end: 4 },
+                    name: "TRIM".to_string()
+                },
+                arguments: vec![
+                    ExpressionKind::FunctionCall {
+                        name: Identifier {
+                            span: Span { start: 5, end: 14 },
+                            name: "SUBSTRING".to_string()
+                        },
+                        arguments: vec![
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 15, end: 19 },
+                                name: "name".to_string()
+                            })
+                            .into(),
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 21, end: 22 },
+                                value: 1
+                            }))
+                            .into(),
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 24, end: 25 },
+                                value: 5
+                            }))
+                            .into()
+                        ]
+                    }
+                    .into()
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_function_in_expression() {
+        let source = "LENGTH(str) + 1";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Add(
+                Box::new(
+                    ExpressionKind::FunctionCall {
+                        name: Identifier {
+                            span: Span { start: 0, end: 6 },
+                            name: "LENGTH".to_string()
+                        },
+                        arguments: vec![
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 7, end: 10 },
+                                name: "str".to_string()
+                            })
+                            .into()
+                        ]
+                    }
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 14, end: 15 },
+                        value: 1
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_simple_array_access() {
+        let source = "arr[1]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::ArrayAccess {
                 array: Box::new(
                     ExpressionKind::Identifier(Identifier {
                         span: Span { start: 0, end: 3 },
@@ -2294,78 +1964,203 @@ fn parse_array_assignment() {
                     .into()
                 )
             }
-            .into(),
-            value: ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                span: Span { start: 9, end: 11 },
-                value: 10
-            }))
-            .into()
-        }
-    );
-}
+        )
+    }
 
-#[test]
-fn parse_field_assignment() {
-    let source = "Customer.Name = \"John\".";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(
-        stmt,
-        StatementKind::Assignment {
-            target: ExpressionKind::FieldAccess {
-                qualifier: Box::new(
+    #[test]
+    fn parse_array_access_with_expression_index() {
+        let source = "arr[i + 1]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::ArrayAccess {
+                array: Box::new(
                     ExpressionKind::Identifier(Identifier {
-                        span: Span { start: 0, end: 8 },
-                        name: "Customer".to_string()
+                        span: Span { start: 0, end: 3 },
+                        name: "arr".to_string()
                     })
                     .into()
                 ),
-                field: Identifier {
-                    span: Span { start: 9, end: 13 },
-                    name: "Name".to_string()
+                index: Box::new(
+                    ExpressionKind::Add(
+                        Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 4, end: 5 },
+                                name: "i".to_string()
+                            })
+                            .into()
+                        ),
+                        Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 8, end: 9 },
+                                value: 1
+                            }))
+                            .into()
+                        )
+                    )
+                    .into()
+                )
+            }
+        );
+    }
+
+    #[test]
+    fn parse_hyphenated_array_access() {
+        let source = "month-quota[3]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::ArrayAccess {
+                array: Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 11 },
+                        name: "month-quota".to_string()
+                    })
+                    .into()
+                ),
+                index: Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 12, end: 13 },
+                        value: 3
+                    }))
+                    .into()
+                )
+            }
+        );
+    }
+
+    #[test]
+    fn parse_multidimensional_array() {
+        let source = "matrix[row][col]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::ArrayAccess {
+                array: Box::new(
+                    ExpressionKind::ArrayAccess {
+                        array: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 0, end: 6 },
+                                name: "matrix".to_string()
+                            })
+                            .into()
+                        ),
+                        index: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 7, end: 10 },
+                                name: "row".to_string()
+                            })
+                            .into()
+                        )
+                    }
+                    .into()
+                ),
+                index: Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 12, end: 15 },
+                        name: "col".to_string()
+                    })
+                    .into()
+                )
+            }
+        );
+    }
+
+    #[test]
+    fn parse_array_in_arithmetic() {
+        let source = "arr[1] + arr[2]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Add(
+                Box::new(
+                    ExpressionKind::ArrayAccess {
+                        array: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 0, end: 3 },
+                                name: "arr".to_string()
+                            })
+                            .into()
+                        ),
+                        index: Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 4, end: 5 },
+                                value: 1
+                            }))
+                            .into()
+                        )
+                    }
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::ArrayAccess {
+                        array: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 9, end: 12 },
+                                name: "arr".to_string()
+                            })
+                            .into()
+                        ),
+                        index: Box::new(
+                            ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                                span: Span { start: 13, end: 14 },
+                                value: 2
+                            }))
+                            .into()
+                        )
+                    }
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_simple_member_access() {
+        let source = "handle:PRIVATE-DATA";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::MemberAccess {
+                object: Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 6 },
+                        name: "handle".to_string()
+                    })
+                    .into()
+                ),
+                member: Identifier {
+                    span: Span { start: 7, end: 19 },
+                    name: "PRIVATE-DATA".to_string()
                 }
             }
-            .into(),
-            value: ExpressionKind::Literal(Literal::String(StringLiteral {
-                span: Span { start: 16, end: 22 },
-                value: "John".to_string()
-            }))
-            .into()
-        }
-    );
-}
+        );
+    }
 
-#[test]
-fn parse_expression_statement() {
-    let source = "calculateTotals().";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(
-        stmt,
-        StatementKind::ExpressionStatement(
-            ExpressionKind::FunctionCall {
-                name: Identifier {
-                    span: Span { start: 0, end: 15 },
-                    name: "calculateTotals".to_string()
-                },
-                arguments: vec![]
-            }
-            .into()
-        )
-    );
-}
-
-#[test]
-fn parse_method_call_statement() {
-    let source = "buffer:save-row-changes().";
-    let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(
-        stmt,
-        StatementKind::ExpressionStatement(
+    #[test]
+    fn parse_simple_method_call() {
+        let source = "buffer:FIND-FIRST()";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
             ExpressionKind::MethodCall {
                 object: Box::new(
                     ExpressionKind::Identifier(Identifier {
@@ -2375,13 +2170,554 @@ fn parse_method_call_statement() {
                     .into()
                 ),
                 method: Identifier {
-                    span: Span { start: 7, end: 23 },
-                    name: "save-row-changes".to_string()
+                    span: Span { start: 7, end: 17 },
+                    name: "FIND-FIRST".to_string()
                 },
                 arguments: vec![]
             }
-            .into()
+        );
+    }
+
+    #[test]
+    fn parse_method_call_with_args() {
+        let source = "widget:MOVE(10, 20)";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::MethodCall {
+                object: Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 6 },
+                        name: "widget".to_string()
+                    })
+                    .into()
+                ),
+                method: Identifier {
+                    span: Span { start: 7, end: 11 },
+                    name: "MOVE".to_string()
+                },
+                arguments: vec![
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 12, end: 14 },
+                        value: 10
+                    }))
+                    .into(),
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 16, end: 18 },
+                        value: 20
+                    }))
+                    .into()
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_chained_member_access() {
+        let source = "obj:property:nested";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::MemberAccess {
+                object: Box::new(
+                    ExpressionKind::MemberAccess {
+                        object: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 0, end: 3 },
+                                name: "obj".to_string()
+                            })
+                            .into()
+                        ),
+                        member: Identifier {
+                            span: Span { start: 4, end: 12 },
+                            name: "property".to_string()
+                        }
+                    }
+                    .into()
+                ),
+                member: Identifier {
+                    span: Span { start: 13, end: 19 },
+                    name: "nested".to_string()
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn parse_member_then_method() {
+        let source = "obj:prop:method()";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::MethodCall {
+                object: Box::new(
+                    ExpressionKind::MemberAccess {
+                        object: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 0, end: 3 },
+                                name: "obj".to_string()
+                            })
+                            .into()
+                        ),
+                        member: Identifier {
+                            span: Span { start: 4, end: 8 },
+                            name: "prop".to_string()
+                        }
+                    }
+                    .into()
+                ),
+                method: Identifier {
+                    span: Span { start: 9, end: 15 },
+                    name: "method".to_string()
+                },
+                arguments: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_member_access_with_array() {
+        let source = "myBuf:myField[1]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::ArrayAccess {
+                array: Box::new(
+                    ExpressionKind::MemberAccess {
+                        object: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 0, end: 5 },
+                                name: "myBuf".to_string()
+                            })
+                            .into()
+                        ),
+                        member: Identifier {
+                            span: Span { start: 6, end: 13 },
+                            name: "myField".to_string()
+                        }
+                    }
+                    .into()
+                ),
+                index: Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 14, end: 15 },
+                        value: 1
+                    }))
+                    .into()
+                )
+            }
+        );
+    }
+
+    #[test]
+    fn parse_member_in_expression() {
+        let source = "myObj:myVal + 5";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::Add(
+                Box::new(
+                    ExpressionKind::MemberAccess {
+                        object: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 0, end: 5 },
+                                name: "myObj".to_string()
+                            })
+                            .into()
+                        ),
+                        member: Identifier {
+                            span: Span { start: 6, end: 11 },
+                            name: "myVal".to_string()
+                        }
+                    }
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 14, end: 15 },
+                        value: 5
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_simple_field_access() {
+        let source = "Customer.CustNum";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::FieldAccess {
+                qualifier: Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 0, end: 8 },
+                        name: "Customer".to_string()
+                    })
+                    .into()
+                ),
+                field: Identifier {
+                    span: Span { start: 9, end: 16 },
+                    name: "CustNum".to_string()
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn parse_qualified_field_access() {
+        let source = "Sports2020.Customer.Name";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::FieldAccess {
+                qualifier: Box::new(
+                    ExpressionKind::FieldAccess {
+                        qualifier: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 0, end: 10 },
+                                name: "Sports2020".to_string()
+                            })
+                            .into()
+                        ),
+                        field: Identifier {
+                            span: Span { start: 11, end: 19 },
+                            name: "Customer".to_string()
+                        }
+                    }
+                    .into()
+                ),
+                field: Identifier {
+                    span: Span { start: 20, end: 24 },
+                    name: "Name".to_string()
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn parse_field_access_with_array() {
+        let source = "myTable.myField[extent]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::ArrayAccess {
+                array: Box::new(
+                    ExpressionKind::FieldAccess {
+                        qualifier: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 0, end: 7 },
+                                name: "myTable".to_string()
+                            })
+                            .into()
+                        ),
+                        field: Identifier {
+                            span: Span { start: 8, end: 15 },
+                            name: "myField".to_string()
+                        }
+                    }
+                    .into()
+                ),
+                index: Box::new(
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span { start: 16, end: 22 },
+                        name: "extent".to_string()
+                    })
+                    .into()
+                )
+            }
+        );
+    }
+
+    #[test]
+    fn parse_field_in_comparison() {
+        let source = "Customer.Balance > 1000";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::GreaterThan(
+                Box::new(
+                    ExpressionKind::FieldAccess {
+                        qualifier: Box::new(
+                            ExpressionKind::Identifier(Identifier {
+                                span: Span { start: 0, end: 8 },
+                                name: "Customer".to_string()
+                            })
+                            .into()
+                        ),
+                        field: Identifier {
+                            span: Span { start: 9, end: 16 },
+                            name: "Balance".to_string()
+                        }
+                    }
+                    .into()
+                ),
+                Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 19, end: 23 },
+                        value: 1000
+                    }))
+                    .into()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn parse_mixed_access_operators() {
+        // Combines field access, member access, and array indexing
+        let source = "myDb.myTable:buffer[1]";
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let expr_id = parser.parse_expression().expect("Expected an expression");
+        let expression = materialize(&parser, expr_id);
+        assert_eq!(
+            expression,
+            ExpressionKind::ArrayAccess {
+                array: Box::new(
+                    ExpressionKind::MemberAccess {
+                        object: Box::new(
+                            ExpressionKind::FieldAccess {
+                                qualifier: Box::new(
+                                    ExpressionKind::Identifier(Identifier {
+                                        span: Span { start: 0, end: 4 },
+                                        name: "myDb".to_string()
+                                    })
+                                    .into()
+                                ),
+                                field: Identifier {
+                                    span: Span { start: 5, end: 12 },
+                                    name: "myTable".to_string()
+                                }
+                            }
+                            .into()
+                        ),
+                        member: Identifier {
+                            span: Span { start: 13, end: 19 },
+                            name: "buffer".to_string()
+                        }
+                    }
+                    .into()
+                ),
+                index: Box::new(
+                    ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                        span: Span { start: 20, end: 21 },
+                        value: 1
+                    }))
+                    .into()
+                )
+            }
+        );
+    }
+}
+
+#[test]
+fn parse_simple_assignment() {
+    let source = "x = 5.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Assignment { target, value } = stmt.kind else {
+        panic!("Expected Assignment, got {:?}", stmt.kind);
+    };
+    assert_eq!(
+        tree::materialize(&parser, target),
+        tree::ExpressionKind::Identifier(tree::Identifier {
+            span: Span { start: 0, end: 1 },
+            name: "x".to_string()
+        })
+    );
+    assert_eq!(
+        tree::materialize(&parser, value),
+        tree::ExpressionKind::Literal(tree::Literal::Integer(IntegerLiteral {
+            span: Span { start: 4, end: 5 },
+            value: 5
+        }))
+    );
+}
+
+#[test]
+fn parse_assignment_with_expression() {
+    let source = "total = price * quantity.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Assignment { target, value } = stmt.kind else {
+        panic!("Expected Assignment, got {:?}", stmt.kind);
+    };
+    assert_eq!(
+        tree::materialize(&parser, target),
+        tree::ExpressionKind::Identifier(tree::Identifier {
+            span: Span { start: 0, end: 5 },
+            name: "total".to_string()
+        })
+    );
+    assert_eq!(
+        tree::materialize(&parser, value),
+        tree::ExpressionKind::Multiply(
+            Box::new(
+                tree::ExpressionKind::Identifier(tree::Identifier {
+                    span: Span { start: 8, end: 13 },
+                    name: "price".to_string()
+                })
+                .into()
+            ),
+            Box::new(
+                tree::ExpressionKind::Identifier(tree::Identifier {
+                    span: Span { start: 16, end: 24 },
+                    name: "quantity".to_string()
+                })
+                .into()
+            )
         )
+    );
+}
+
+#[test]
+fn parse_array_assignment() {
+    let source = "arr[1] = 10.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Assignment { target, value } = stmt.kind else {
+        panic!("Expected Assignment, got {:?}", stmt.kind);
+    };
+    assert_eq!(
+        tree::materialize(&parser, target),
+        tree::ExpressionKind::ArrayAccess {
+            array: Box::new(
+                tree::ExpressionKind::Identifier(tree::Identifier {
+                    span: Span { start: 0, end: 3 },
+                    name: "arr".to_string()
+                })
+                .into()
+            ),
+            index: Box::new(
+                tree::ExpressionKind::Literal(tree::Literal::Integer(IntegerLiteral {
+                    span: Span { start: 4, end: 5 },
+                    value: 1
+                }))
+                .into()
+            )
+        }
+    );
+    assert_eq!(
+        tree::materialize(&parser, value),
+        tree::ExpressionKind::Literal(tree::Literal::Integer(IntegerLiteral {
+            span: Span { start: 9, end: 11 },
+            value: 10
+        }))
+    );
+}
+
+#[test]
+fn parse_field_assignment() {
+    let source = "Customer.Name = \"John\".";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Assignment { target, value } = stmt.kind else {
+        panic!("Expected Assignment, got {:?}", stmt.kind);
+    };
+    assert_eq!(
+        tree::materialize(&parser, target),
+        tree::ExpressionKind::FieldAccess {
+            qualifier: Box::new(
+                tree::ExpressionKind::Identifier(tree::Identifier {
+                    span: Span { start: 0, end: 8 },
+                    name: "Customer".to_string()
+                })
+                .into()
+            ),
+            field: tree::Identifier {
+                span: Span { start: 9, end: 13 },
+                name: "Name".to_string()
+            }
+        }
+    );
+    assert_eq!(
+        tree::materialize(&parser, value),
+        tree::ExpressionKind::Literal(tree::Literal::String(tree::StringLiteral {
+            span: Span { start: 16, end: 22 },
+            value: "John".to_string()
+        }))
+    );
+}
+
+#[test]
+fn parse_expression_statement() {
+    let source = "calculateTotals().";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::ExpressionStatement(expr) = stmt.kind else {
+        panic!("Expected ExpressionStatement, got {:?}", stmt.kind);
+    };
+    assert_eq!(
+        tree::materialize(&parser, expr),
+        tree::ExpressionKind::FunctionCall {
+            name: tree::Identifier {
+                span: Span { start: 0, end: 15 },
+                name: "calculateTotals".to_string()
+            },
+            arguments: vec![]
+        }
+    );
+}
+
+#[test]
+fn parse_method_call_statement() {
+    let source = "buffer:save-row-changes().";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::ExpressionStatement(expr) = stmt.kind else {
+        panic!("Expected ExpressionStatement, got {:?}", stmt.kind);
+    };
+    assert_eq!(
+        tree::materialize(&parser, expr),
+        tree::ExpressionKind::MethodCall {
+            object: Box::new(
+                tree::ExpressionKind::Identifier(tree::Identifier {
+                    span: Span { start: 0, end: 6 },
+                    name: "buffer".to_string()
+                })
+                .into()
+            ),
+            method: tree::Identifier {
+                span: Span { start: 7, end: 23 },
+                name: "save-row-changes".to_string()
+            },
+            arguments: vec![]
+        }
     );
 }
 
@@ -2399,8 +2735,8 @@ fn parse_multiple_statements() {
     let source = "x = 1. y = 2. z = x + y.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
-    let stmts = parser.parse_statements().expect("Expected statements");
-    assert_eq!(stmts.len(), 3);
+    let program = parser.parse_statements().expect("Expected statements");
+    assert_eq!(program.statements.len(), 3);
 }
 
 #[test]
@@ -2409,6 +2745,7 @@ fn parse_define_variable_simple() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let expected_name = parser.intern("myVar");
     assert_eq!(
         stmt,
         StatementKind::VariableDeclaration {
@@ -2416,7 +2753,7 @@ fn parse_define_variable_simple() {
             is_static: false,
             name: Identifier {
                 span: Span { start: 16, end: 21 },
-                name: "myVar".to_string()
+                name: expected_name,
             },
             type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,
@@ -2435,30 +2772,38 @@ fn parse_define_variable_with_initial() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::VariableDeclaration {
+        access,
+        is_static,
+        name,
+        type_source,
+        initial_value: Some(init),
+        no_undo,
+        extent,
+        is_new_shared,
+        is_shared,
+        is_new_global_shared,
+    } = stmt.kind
+    else {
+        panic!("Expected VariableDeclaration with initial value");
+    };
+    assert_eq!(access, None);
+    assert!(!is_static);
+    assert_eq!(name.span, Span { start: 16, end: 23 });
+    assert_eq!(parser.ident(name), "counter");
+    assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
     assert_eq!(
-        stmt,
-        StatementKind::VariableDeclaration {
-            access: None,
-            is_static: false,
-            name: Identifier {
-                span: Span { start: 16, end: 23 },
-                name: "counter".to_string()
-            },
-            type_source: TypeSource::Explicit(DataType::Integer),
-            initial_value: Some(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 43, end: 44 },
-                    value: 0
-                }))
-                .into()
-            ),
-            no_undo: false,
-            extent: None,
-            is_new_shared: false,
-            is_shared: false,
-            is_new_global_shared: false,
-        }
+        tree::materialize(&parser, init),
+        tree::ExpressionKind::Literal(tree::Literal::Integer(IntegerLiteral {
+            span: Span { start: 43, end: 44 },
+            value: 0
+        }))
     );
+    assert!(!no_undo);
+    assert_eq!(extent, None);
+    assert!(!is_new_shared);
+    assert!(!is_shared);
+    assert!(!is_new_global_shared);
 }
 
 #[test]
@@ -2488,6 +2833,7 @@ fn parse_var_statement_simple() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let expected_name = parser.intern("myCount");
     assert_eq!(
         stmt,
         StatementKind::VariableDeclaration {
@@ -2495,7 +2841,7 @@ fn parse_var_statement_simple() {
             is_static: false,
             name: Identifier {
                 span: Span { start: 12, end: 19 },
-                name: "myCount".to_string()
+                name: expected_name,
             },
             type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,
@@ -2522,7 +2868,7 @@ fn parse_var_statement_with_initial() {
             no_undo,
             ..
         } => {
-            assert_eq!(name.name, "total");
+            assert_eq!(parser.name(name.name), "total");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Decimal));
             assert!(no_undo);
             assert!(initial_value.is_some());
@@ -2545,7 +2891,7 @@ fn parse_var_logical() {
         } => {
             assert_eq!(type_source, TypeSource::Explicit(DataType::Logical));
             assert!(matches!(
-                initial_value.as_ref().map(|e| &e.kind),
+                initial_value.as_ref().map(|e| &parser.expr_node(*e).kind),
                 Some(ExpressionKind::Literal(Literal::Boolean(_)))
             ));
         }
@@ -2568,12 +2914,13 @@ fn parse_define_variable_like() {
             no_undo,
             ..
         } => {
-            assert_eq!(name.name, "v");
+            assert_eq!(parser.ident(name), "v");
+            let expected_like = parser.intern("Customer.CustName");
             assert_eq!(
                 type_source,
                 TypeSource::Like {
                     source: Identifier {
-                        name: "Customer.CustName".to_string(),
+                        name: expected_like,
                         span: Span { start: 23, end: 40 }
                     }
                 }
@@ -2592,7 +2939,7 @@ fn parse_define_variable_like_simple_name() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::VariableDeclaration { type_source, .. } => match type_source {
-            TypeSource::Like { source } => assert_eq!(source.name, "iVar"),
+            TypeSource::Like { source } => assert_eq!(parser.name(source.name), "iVar"),
             _ => panic!("Expected Like"),
         },
         _ => panic!("Expected VariableDeclaration"),
@@ -2634,7 +2981,7 @@ fn parse_define_variable_decimal_decimals_extent() {
             extent,
             ..
         } => {
-            assert_eq!(name.name, "rate-adj");
+            assert_eq!(parser.name(name.name), "rate-adj");
             assert!(matches!(
                 type_source,
                 TypeSource::Explicit(DataType::Decimal)
@@ -2658,7 +3005,7 @@ fn parse_var_like() {
             no_undo,
             ..
         } => {
-            assert_eq!(name.name, "vCust");
+            assert_eq!(parser.name(name.name), "vCust");
             assert!(matches!(type_source, TypeSource::Like { .. }));
             assert!(no_undo); // VAR implies NO-UNDO
         }
@@ -2684,7 +3031,7 @@ fn parse_define_input_parameter_like() {
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
-            assert_eq!(name.name, "p");
+            assert_eq!(parser.name(name.name), "p");
             assert!(matches!(type_source, TypeSource::Like { .. }));
             assert!(no_undo);
         }
@@ -2782,7 +3129,7 @@ fn parse_do_counting_loop() {
             ..
         } => {
             assert!(loop_var.is_some());
-            assert_eq!(loop_var.unwrap().name, "i");
+            assert_eq!(parser.name(loop_var.unwrap().name), "i");
             assert!(from.is_some());
             assert!(to.is_some());
             assert_eq!(body.len(), 1);
@@ -2848,7 +3195,10 @@ fn parse_if_then_simple() {
             then_branch,
             else_branch,
         } => {
-            assert!(matches!(condition.kind, ExpressionKind::GreaterThan(_, _)));
+            assert!(matches!(
+                parser.expr_node(condition).kind,
+                ExpressionKind::GreaterThan(_, _)
+            ));
             assert!(matches!(then_branch.kind, StatementKind::Assignment { .. }));
             assert!(else_branch.is_none());
         }
@@ -2966,7 +3316,10 @@ fn parse_next_prompt_statement() {
     // Both halves of the adjacency filter are exercised here: the field half of
     // `ord-proc.hold-flag` and the tail of the `shared/order-entry` path drop
     // out, their qualifiers survive.
-    assert_eq!(skipped_names(&stmt), vec!["ord-proc", "FRAME", "shared"]);
+    assert_eq!(
+        skipped_names(&parser, &stmt),
+        vec!["ord-proc", "FRAME", "shared"]
+    );
 }
 
 #[test]
@@ -3122,7 +3475,10 @@ fn parse_return_with_value() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Return(Some(expr)) => {
-            assert!(matches!(expr.kind, ExpressionKind::Add(_, _)));
+            assert!(matches!(
+                parser.expr_node(expr).kind,
+                ExpressionKind::Add(_, _)
+            ));
         }
         _ => panic!("Expected Return with value"),
     }
@@ -3166,7 +3522,7 @@ fn parse_throw_forms_keep_the_thrown_expression() {
         let mut parser = Parser::new(&tokens, source);
         let stmt = parser.parse_statement().expect("Expected a statement");
         assert!(
-            matches!(&stmt.kind, StatementKind::Throw(e) if matches!(e.kind, ExpressionKind::New { .. })),
+            matches!(&stmt.kind, StatementKind::Throw(e) if matches!(parser.expr_node(*e).kind, ExpressionKind::New { .. })),
             "{source}: {:?}",
             stmt.kind
         );
@@ -3214,10 +3570,13 @@ fn a_keyword_segment_is_a_field_access() {
     let StatementKind::Assignment { value, .. } = stmt.kind else {
         panic!("{:?}", stmt.kind);
     };
-    let ExpressionKind::MemberAccess { object, .. } = value.kind else {
-        panic!("{:?}", value.kind);
+    let ExpressionKind::MemberAccess { object, .. } = parser.expr_node(value).kind else {
+        panic!("{:?}", parser.expr_node(value).kind);
     };
-    assert!(matches!(object.kind, ExpressionKind::FieldAccess { .. }));
+    assert!(matches!(
+        parser.expr_node(object).kind,
+        ExpressionKind::FieldAccess { .. }
+    ));
 }
 
 #[test]
@@ -3251,7 +3610,7 @@ fn parse_simple_for_each() {
             body,
             ..
         } => {
-            assert_eq!(buffer.name, "Customer");
+            assert_eq!(parser.name(buffer.name), "Customer");
             assert!(of_relation.is_none());
             assert!(where_clause.is_none());
             assert_eq!(lock_type, LockType::NoLock);
@@ -3274,10 +3633,10 @@ fn parse_for_each_with_where() {
             lock_type,
             ..
         } => {
-            assert_eq!(buffer.name, "Customer");
+            assert_eq!(parser.name(buffer.name), "Customer");
             assert!(where_clause.is_some());
             assert!(matches!(
-                where_clause.unwrap().kind,
+                parser.expr_node(where_clause.unwrap()).kind,
                 ExpressionKind::GreaterThan(_, _)
             ));
             assert_eq!(lock_type, LockType::NoLock);
@@ -3299,9 +3658,9 @@ fn parse_for_each_with_of() {
             lock_type,
             ..
         } => {
-            assert_eq!(buffer.name, "Order");
+            assert_eq!(parser.name(buffer.name), "Order");
             assert!(of_relation.is_some());
-            assert_eq!(of_relation.unwrap().name, "Customer");
+            assert_eq!(parser.name(of_relation.unwrap().name), "Customer");
             assert_eq!(lock_type, LockType::NoLock);
         }
         _ => panic!("Expected ForEach statement"),
@@ -3368,9 +3727,9 @@ fn parse_for_each_with_of_and_where() {
             lock_type,
             ..
         } => {
-            assert_eq!(buffer.name, "OrderLine");
+            assert_eq!(parser.name(buffer.name), "OrderLine");
             assert!(of_relation.is_some());
-            assert_eq!(of_relation.unwrap().name, "Order");
+            assert_eq!(parser.name(of_relation.unwrap().name), "Order");
             assert!(where_clause.is_some());
             assert_eq!(lock_type, LockType::NoLock);
         }
@@ -3389,7 +3748,7 @@ fn parse_for_each_with_complex_where() {
         StatementKind::ForEach { where_clause, .. } => {
             assert!(where_clause.is_some());
             assert!(matches!(
-                where_clause.unwrap().kind,
+                parser.expr_node(where_clause.unwrap()).kind,
                 ExpressionKind::And(_, _)
             ));
         }
@@ -3454,7 +3813,10 @@ fn parse_for_each_with_field_access_in_expression() {
             assert_eq!(body.len(), 1);
             match &body[0].kind {
                 StatementKind::Assignment { value, .. } => {
-                    assert!(matches!(value.kind, ExpressionKind::Add(_, _)));
+                    assert!(matches!(
+                        parser.expr_node(*value).kind,
+                        ExpressionKind::Add(_, _)
+                    ));
                 }
                 _ => panic!("Expected Assignment statement"),
             }
@@ -3470,17 +3832,18 @@ fn parse_simple_for_each_no_lock_space() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let customer = parser.intern("Customer");
     assert_eq!(
         stmt,
         StatementKind::ForEach {
             buffer: Identifier {
                 span: Span { start: 9, end: 17 },
-                name: "Customer".to_string()
+                name: customer,
             },
             of_relation: None,
             where_clause: None,
             lock_type: LockType::NoLock,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![]
         }
     );
@@ -3493,17 +3856,18 @@ fn parse_simple_for_each_share_lock_space() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let customer = parser.intern("Customer");
     assert_eq!(
         stmt,
         StatementKind::ForEach {
             buffer: Identifier {
                 span: Span { start: 9, end: 17 },
-                name: "Customer".to_string()
+                name: customer,
             },
             of_relation: None,
             where_clause: None,
             lock_type: LockType::ShareLock,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![]
         }
     );
@@ -3516,17 +3880,18 @@ fn parse_simple_for_each_exclusive_lock_space() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let customer = parser.intern("Customer");
     assert_eq!(
         stmt,
         StatementKind::ForEach {
             buffer: Identifier {
                 span: Span { start: 9, end: 17 },
-                name: "Customer".to_string()
+                name: customer,
             },
             of_relation: None,
             where_clause: None,
             lock_type: LockType::ExclusiveLock,
-            on_actions: Vec::new(),
+            on_actions: ExprList::EMPTY,
             body: vec![]
         }
     );
@@ -3538,47 +3903,51 @@ fn parse_find_first_with_where() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Find {
+        find_type,
+        buffer,
+        key_value,
+        where_clause: Some(where_id),
+        lock_type,
+        no_error,
+    } = stmt.kind
+    else {
+        panic!("Expected Find with where_clause, got {:?}", stmt.kind);
+    };
+    assert_eq!(find_type, FindType::First);
+    assert_eq!(buffer.span, Span { start: 11, end: 19 });
+    assert_eq!(parser.ident(buffer), "Customer");
+    assert_eq!(key_value, None);
     assert_eq!(
-        stmt,
-        StatementKind::Find {
-            find_type: FindType::First,
-            buffer: Identifier {
-                span: Span { start: 11, end: 19 },
-                name: "Customer".to_string()
-            },
-            key_value: None,
-            where_clause: Some(
-                ExpressionKind::Equal(
-                    Box::new(
-                        ExpressionKind::FieldAccess {
-                            qualifier: Box::new(
-                                ExpressionKind::Identifier(Identifier {
-                                    span: Span { start: 26, end: 34 },
-                                    name: "Customer".to_string()
-                                })
-                                .into()
-                            ),
-                            field: Identifier {
-                                span: Span { start: 35, end: 42 },
-                                name: "CustNum".to_string()
-                            }
-                        }
+        tree::materialize(&parser, where_id),
+        tree::ExpressionKind::Equal(
+            Box::new(
+                tree::ExpressionKind::FieldAccess {
+                    qualifier: Box::new(
+                        tree::ExpressionKind::Identifier(tree::Identifier {
+                            span: Span { start: 26, end: 34 },
+                            name: "Customer".to_string()
+                        })
                         .into()
                     ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 45, end: 46 },
-                            value: 1
-                        }))
-                        .into()
-                    )
-                )
+                    field: tree::Identifier {
+                        span: Span { start: 35, end: 42 },
+                        name: "CustNum".to_string()
+                    }
+                }
                 .into()
             ),
-            lock_type: LockType::NoLock,
-            no_error: false,
-        }
+            Box::new(
+                tree::ExpressionKind::Literal(tree::Literal::Integer(IntegerLiteral {
+                    span: Span { start: 45, end: 46 },
+                    value: 1
+                }))
+                .into()
+            )
+        )
     );
+    assert_eq!(lock_type, LockType::NoLock);
+    assert!(!no_error);
 }
 
 #[test]
@@ -3587,26 +3956,30 @@ fn parse_find_by_integer_key() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Find {
+        find_type,
+        buffer,
+        key_value: Some(key),
+        where_clause,
+        lock_type,
+        no_error,
+    } = stmt.kind
+    else {
+        panic!("Expected Find with key_value, got {:?}", stmt.kind);
+    };
+    assert_eq!(find_type, FindType::Unique);
+    assert_eq!(buffer.span, Span { start: 5, end: 13 });
+    assert_eq!(parser.ident(buffer), "Customer");
     assert_eq!(
-        stmt,
-        StatementKind::Find {
-            find_type: FindType::Unique,
-            buffer: Identifier {
-                span: Span { start: 5, end: 13 },
-                name: "Customer".to_string()
-            },
-            key_value: Some(
-                ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                    span: Span { start: 14, end: 15 },
-                    value: 1
-                }))
-                .into()
-            ),
-            where_clause: None,
-            lock_type: LockType::NoLock,
-            no_error: false,
-        }
+        tree::materialize(&parser, key),
+        tree::ExpressionKind::Literal(tree::Literal::Integer(IntegerLiteral {
+            span: Span { start: 14, end: 15 },
+            value: 1
+        }))
     );
+    assert_eq!(where_clause, None);
+    assert_eq!(lock_type, LockType::NoLock);
+    assert!(!no_error);
 }
 
 #[test]
@@ -3615,26 +3988,30 @@ fn parse_find_by_string_key() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Find {
+        find_type,
+        buffer,
+        key_value: Some(key),
+        where_clause,
+        lock_type,
+        no_error,
+    } = stmt.kind
+    else {
+        panic!("Expected Find with key_value, got {:?}", stmt.kind);
+    };
+    assert_eq!(find_type, FindType::Unique);
+    assert_eq!(buffer.span, Span { start: 5, end: 13 });
+    assert_eq!(parser.ident(buffer), "Customer");
     assert_eq!(
-        stmt,
-        StatementKind::Find {
-            find_type: FindType::Unique,
-            buffer: Identifier {
-                span: Span { start: 5, end: 13 },
-                name: "Customer".to_string()
-            },
-            key_value: Some(
-                ExpressionKind::Literal(Literal::String(StringLiteral {
-                    span: Span { start: 14, end: 20 },
-                    value: "ACME".to_string()
-                }))
-                .into()
-            ),
-            where_clause: None,
-            lock_type: LockType::NoLock,
-            no_error: false,
-        }
+        tree::materialize(&parser, key),
+        tree::ExpressionKind::Literal(tree::Literal::String(tree::StringLiteral {
+            span: Span { start: 14, end: 20 },
+            value: "ACME".to_string()
+        }))
     );
+    assert_eq!(where_clause, None);
+    assert_eq!(lock_type, LockType::NoLock);
+    assert!(!no_error);
 }
 
 #[test]
@@ -3643,26 +4020,30 @@ fn parse_find_by_variable_key() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Find {
+        find_type,
+        buffer,
+        key_value: Some(key),
+        where_clause,
+        lock_type,
+        no_error,
+    } = stmt.kind
+    else {
+        panic!("Expected Find with key_value, got {:?}", stmt.kind);
+    };
+    assert_eq!(find_type, FindType::Unique);
+    assert_eq!(buffer.span, Span { start: 5, end: 13 });
+    assert_eq!(parser.ident(buffer), "Customer");
     assert_eq!(
-        stmt,
-        StatementKind::Find {
-            find_type: FindType::Unique,
-            buffer: Identifier {
-                span: Span { start: 5, end: 13 },
-                name: "Customer".to_string()
-            },
-            key_value: Some(
-                ExpressionKind::Identifier(Identifier {
-                    span: Span { start: 14, end: 20 },
-                    name: "custId".to_string()
-                })
-                .into()
-            ),
-            where_clause: None,
-            lock_type: LockType::NoLock,
-            no_error: false,
-        }
+        tree::materialize(&parser, key),
+        tree::ExpressionKind::Identifier(tree::Identifier {
+            span: Span { start: 14, end: 20 },
+            name: "custId".to_string()
+        })
     );
+    assert_eq!(where_clause, None);
+    assert_eq!(lock_type, LockType::NoLock);
+    assert!(!no_error);
 }
 
 #[test]
@@ -3671,38 +4052,42 @@ fn parse_find_with_no_error() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
+    let StatementKind::Find {
+        find_type,
+        buffer,
+        key_value,
+        where_clause: Some(where_id),
+        lock_type,
+        no_error,
+    } = stmt.kind
+    else {
+        panic!("Expected Find with where_clause, got {:?}", stmt.kind);
+    };
+    assert_eq!(find_type, FindType::First);
+    assert_eq!(buffer.span, Span { start: 11, end: 19 });
+    assert_eq!(parser.ident(buffer), "Customer");
+    assert_eq!(key_value, None);
     assert_eq!(
-        stmt,
-        StatementKind::Find {
-            find_type: FindType::First,
-            buffer: Identifier {
-                span: Span { start: 11, end: 19 },
-                name: "Customer".to_string()
-            },
-            key_value: None,
-            where_clause: Some(
-                ExpressionKind::Equal(
-                    Box::new(
-                        ExpressionKind::Identifier(Identifier {
-                            span: Span { start: 26, end: 32 },
-                            name: "active".to_string()
-                        })
-                        .into()
-                    ),
-                    Box::new(
-                        ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
-                            span: Span { start: 35, end: 39 },
-                            value: true
-                        }))
-                        .into()
-                    )
-                )
+        tree::materialize(&parser, where_id),
+        tree::ExpressionKind::Equal(
+            Box::new(
+                tree::ExpressionKind::Identifier(tree::Identifier {
+                    span: Span { start: 26, end: 32 },
+                    name: "active".to_string()
+                })
                 .into()
             ),
-            lock_type: LockType::NoLock,
-            no_error: true,
-        }
+            Box::new(
+                tree::ExpressionKind::Literal(tree::Literal::Boolean(BooleanLiteral {
+                    span: Span { start: 35, end: 39 },
+                    value: true
+                }))
+                .into()
+            )
+        )
     );
+    assert_eq!(lock_type, LockType::NoLock);
+    assert!(no_error);
 }
 
 #[test]
@@ -3716,7 +4101,7 @@ fn parse_find_last() {
             find_type, buffer, ..
         } => {
             assert_eq!(find_type, FindType::Last);
-            assert_eq!(buffer.name, "Order");
+            assert_eq!(parser.name(buffer.name), "Order");
         }
         _ => panic!("Expected Find statement"),
     }
@@ -3733,7 +4118,7 @@ fn parse_find_next() {
             find_type, buffer, ..
         } => {
             assert_eq!(find_type, FindType::Next);
-            assert_eq!(buffer.name, "Customer");
+            assert_eq!(parser.name(buffer.name), "Customer");
         }
         _ => panic!("Expected Find statement"),
     }
@@ -3750,7 +4135,7 @@ fn parse_find_prev() {
             find_type, buffer, ..
         } => {
             assert_eq!(find_type, FindType::Prev);
-            assert_eq!(buffer.name, "Customer");
+            assert_eq!(parser.name(buffer.name), "Customer");
         }
         _ => panic!("Expected Find statement"),
     }
@@ -3828,7 +4213,10 @@ fn parse_simple_case_statement() {
             when_branches,
             otherwise,
         } => {
-            assert!(matches!(expression.kind, ExpressionKind::Identifier(_)));
+            assert!(matches!(
+                parser.expr_node(expression).kind,
+                ExpressionKind::Identifier(_)
+            ));
             assert_eq!(when_branches.len(), 1);
             assert_eq!(when_branches[0].values.len(), 1);
             assert_eq!(when_branches[0].body.len(), 1);
@@ -3905,7 +4293,9 @@ fn parse_case_with_string_values() {
         StatementKind::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 2);
             assert!(matches!(
-                when_branches[0].values[0].kind,
+                parser
+                    .expr_node(parser.expr_list(when_branches[0].values)[0])
+                    .kind,
                 ExpressionKind::Literal(Literal::String(_))
             ));
         }
@@ -3951,7 +4341,10 @@ fn parse_case_with_expression_condition() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Case { expression, .. } => {
-            assert!(matches!(expression.kind, ExpressionKind::Add(_, _)));
+            assert!(matches!(
+                parser.expr_node(expression).kind,
+                ExpressionKind::Add(_, _)
+            ));
         }
         _ => panic!("Expected Case statement"),
     }
@@ -3963,81 +4356,63 @@ fn parse_case_full_structure() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    assert_eq!(
-        stmt,
-        StatementKind::Case {
-            expression: ExpressionKind::Identifier(Identifier {
-                span: Span { start: 5, end: 10 },
-                name: "myVal".to_string()
+    let StatementKind::Case {
+        expression,
+        when_branches,
+        otherwise: Some(otherwise_stmts),
+    } = stmt.kind
+    else {
+        panic!("Expected Case with otherwise, got {:?}", stmt.kind);
+    };
+    let int_lit = |start, end, value| {
+        tree::ExpressionKind::Literal(tree::Literal::Integer(IntegerLiteral {
+            span: Span { start, end },
+            value,
+        }))
+    };
+    let check_assign_x = |stmt: &Statement, xs, xe, vs, ve, val| {
+        let StatementKind::Assignment { target, value } = stmt.kind else {
+            panic!("Expected Assignment, got {:?}", stmt.kind);
+        };
+        assert_eq!(
+            tree::materialize(&parser, target),
+            tree::ExpressionKind::Identifier(tree::Identifier {
+                span: Span { start: xs, end: xe },
+                name: "x".to_string(),
             })
-            .into(),
-            when_branches: vec![
-                WhenBranch {
-                    values: vec![
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 17, end: 18 },
-                            value: 1
-                        }))
-                        .into()
-                    ],
-                    body: vec![
-                        StatementKind::Assignment {
-                            target: ExpressionKind::Identifier(Identifier {
-                                span: Span { start: 24, end: 25 },
-                                name: "x".to_string()
-                            })
-                            .into(),
-                            value: ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                                span: Span { start: 28, end: 29 },
-                                value: 1
-                            }))
-                            .into()
-                        }
-                        .into()
-                    ]
-                },
-                WhenBranch {
-                    values: vec![
-                        ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                            span: Span { start: 36, end: 37 },
-                            value: 2
-                        }))
-                        .into()
-                    ],
-                    body: vec![
-                        StatementKind::Assignment {
-                            target: ExpressionKind::Identifier(Identifier {
-                                span: Span { start: 43, end: 44 },
-                                name: "x".to_string()
-                            })
-                            .into(),
-                            value: ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                                span: Span { start: 47, end: 48 },
-                                value: 2
-                            }))
-                            .into()
-                        }
-                        .into()
-                    ]
-                }
-            ],
-            otherwise: Some(vec![
-                StatementKind::Assignment {
-                    target: ExpressionKind::Identifier(Identifier {
-                        span: Span { start: 60, end: 61 },
-                        name: "x".to_string()
-                    })
-                    .into(),
-                    value: ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-                        span: Span { start: 64, end: 65 },
-                        value: 0
-                    }))
-                    .into()
-                }
-                .into()
-            ])
-        }
+        );
+        assert_eq!(tree::materialize(&parser, value), int_lit(vs, ve, val));
+    };
+    assert_eq!(
+        tree::materialize(&parser, expression),
+        tree::ExpressionKind::Identifier(tree::Identifier {
+            span: Span { start: 5, end: 10 },
+            name: "myVal".to_string(),
+        })
     );
+    assert_eq!(when_branches.len(), 2);
+    assert_eq!(
+        parser
+            .expr_list(when_branches[0].values)
+            .iter()
+            .map(|&id| tree::materialize(&parser, id))
+            .collect::<Vec<_>>(),
+        vec![tree::Expression::from(int_lit(17, 18, 1))]
+    );
+    assert_eq!(when_branches[0].body.len(), 1);
+    check_assign_x(&when_branches[0].body[0], 24, 25, 28, 29, 1);
+    assert_eq!(
+        parser
+            .expr_list(when_branches[1].values)
+            .iter()
+            .map(|&id| tree::materialize(&parser, id))
+            .collect::<Vec<_>>(),
+        vec![tree::Expression::from(int_lit(36, 37, 2))]
+    );
+    assert_eq!(when_branches[1].body.len(), 1);
+    check_assign_x(&when_branches[1].body[0], 43, 44, 47, 48, 2);
+    assert_eq!(otherwise_stmts.len(), 1);
+    check_assign_x(&otherwise_stmts[0], 60, 61, 64, 65, 0);
 }
 
 #[test]
@@ -4068,11 +4443,15 @@ fn parse_case_boolean_values() {
         StatementKind::Case { when_branches, .. } => {
             assert_eq!(when_branches.len(), 2);
             assert!(matches!(
-                when_branches[0].values[0].kind,
+                parser
+                    .expr_node(parser.expr_list(when_branches[0].values)[0])
+                    .kind,
                 ExpressionKind::Literal(Literal::Boolean(BooleanLiteral { value: true, .. }))
             ));
             assert!(matches!(
-                when_branches[1].values[0].kind,
+                parser
+                    .expr_node(parser.expr_list(when_branches[1].values)[0])
+                    .kind,
                 ExpressionKind::Literal(Literal::Boolean(BooleanLiteral { value: false, .. }))
             ));
         }
@@ -4114,7 +4493,7 @@ fn parse_define_input_parameter() {
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
-            assert_eq!(name.name, "name");
+            assert_eq!(parser.name(name.name), "name");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Character));
             assert!(!no_undo);
         }
@@ -4140,7 +4519,7 @@ fn parse_define_output_parameter() {
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Output);
-            assert_eq!(name.name, "result");
+            assert_eq!(parser.name(name.name), "result");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
             assert!(!no_undo);
         }
@@ -4166,7 +4545,7 @@ fn parse_define_output_parameter_with_format() {
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Output);
-            assert_eq!(name.name, "v-message");
+            assert_eq!(parser.name(name.name), "v-message");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Character));
             assert!(no_undo);
         }
@@ -4192,7 +4571,7 @@ fn parse_define_input_output_parameter() {
                 },
         } => {
             assert_eq!(direction, ParameterDirection::InputOutput);
-            assert_eq!(name.name, "data");
+            assert_eq!(parser.name(name.name), "data");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Logical));
             assert!(!no_undo);
         }
@@ -4218,7 +4597,7 @@ fn parse_define_parameter_with_no_undo() {
                 },
         } => {
             assert_eq!(direction, ParameterDirection::Input);
-            assert_eq!(name.name, "name");
+            assert_eq!(parser.name(name.name), "name");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Character));
             assert!(no_undo);
         }
@@ -4240,7 +4619,7 @@ END PROCEDURE.
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Procedure { name, body, .. } => {
-            assert_eq!(name.name, "my-proc");
+            assert_eq!(parser.name(name.name), "my-proc");
             assert_eq!(body.len(), 3);
             // First statement should be input parameter
             match &body[0].kind {
@@ -4252,7 +4631,7 @@ END PROCEDURE.
                         },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Input);
-                    assert_eq!(name.name, "name");
+                    assert_eq!(parser.name(name.name), "name");
                     assert_eq!(*type_source, TypeSource::Explicit(DataType::Character));
                 }
                 _ => panic!("Expected DefineParameter"),
@@ -4267,7 +4646,7 @@ END PROCEDURE.
                         },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Output);
-                    assert_eq!(name.name, "result");
+                    assert_eq!(parser.name(name.name), "result");
                     assert_eq!(*type_source, TypeSource::Explicit(DataType::Integer));
                 }
                 _ => panic!("Expected DefineParameter"),
@@ -4294,7 +4673,7 @@ END PROCEDURE.
         .expect("PROCEDURE … IN SUPER: must parse");
     match stmt.kind {
         StatementKind::Procedure { name, body, .. } => {
-            assert_eq!(name.name, "assignDBRow");
+            assert_eq!(parser.name(name.name), "assignDBRow");
             assert_eq!(body.len(), 1);
             match &body[0].kind {
                 StatementKind::DefineParameter { direction, .. } => {
@@ -4350,7 +4729,7 @@ fn parse_procedure_in_super_period_only_empty_body() {
         .expect("PROCEDURE … IN SUPER. must parse");
     match stmt.kind {
         StatementKind::Procedure { name, body, .. } => {
-            assert_eq!(name.name, "assignDBRow");
+            assert_eq!(parser.name(name.name), "assignDBRow");
             assert!(body.is_empty(), "period form has empty body");
         }
         _ => panic!("Expected Procedure statement"),
@@ -4370,7 +4749,7 @@ END PROCEDURE.
         .expect("PROCEDURE … IN THIS-PROCEDURE: must parse");
     match stmt.kind {
         StatementKind::Procedure { name, body, .. } => {
-            assert_eq!(name.name, "local-hook");
+            assert_eq!(parser.name(name.name), "local-hook");
             assert!(body.is_empty());
         }
         _ => panic!("Expected Procedure statement"),
@@ -4390,7 +4769,7 @@ END PROCEDURE.
         .expect("PROCEDURE … IN hSuper: must parse");
     match stmt.kind {
         StatementKind::Procedure { name, body, .. } => {
-            assert_eq!(name.name, "doWork");
+            assert_eq!(parser.name(name.name), "doWork");
             assert!(body.is_empty());
         }
         _ => panic!("Expected Procedure statement"),
@@ -4417,14 +4796,14 @@ END PROCEDURE.
     assert_eq!(program.statements.len(), 2);
     match &program.statements[0].kind {
         StatementKind::Procedure { name, body, .. } => {
-            assert_eq!(name.name, "a");
+            assert_eq!(program.name(name.name), "a");
             assert!(body.is_empty());
         }
         _ => panic!("Expected first Procedure"),
     }
     match &program.statements[1].kind {
         StatementKind::Procedure { name, body, .. } => {
-            assert_eq!(name.name, "b");
+            assert_eq!(program.name(name.name), "b");
             assert_eq!(body.len(), 1);
         }
         _ => panic!("Expected second Procedure"),
@@ -4501,7 +4880,7 @@ fn parse_function_in_super_still_works() {
             body,
             ..
         } => {
-            assert_eq!(name.name, "getX");
+            assert_eq!(parser.name(name.name), "getX");
             assert_eq!(return_type, DataType::Character);
             assert!(body.is_empty());
         }
@@ -4544,7 +4923,7 @@ fn parse_display_with_frame() {
         StatementKind::Display { items, frame, .. } => {
             assert_eq!(items.len(), 2);
             assert!(frame.is_some());
-            assert_eq!(frame.unwrap().name, "f1");
+            assert_eq!(parser.name(frame.unwrap().name), "f1");
         }
         _ => panic!("Expected Display statement"),
     }
@@ -4596,7 +4975,7 @@ fn parse_display_with_frame_columns() {
         StatementKind::Display { items, frame, .. } => {
             assert_eq!(items.len(), 3);
             assert!(frame.is_some());
-            assert_eq!(frame.unwrap().name, "results");
+            assert_eq!(parser.name(frame.unwrap().name), "results");
         }
         _ => panic!("Expected Display statement"),
     }
@@ -4617,9 +4996,9 @@ fn parse_display_except_with_frame() {
         } => {
             assert_eq!(items.len(), 1);
             assert_eq!(except.len(), 1);
-            assert_eq!(except[0].name, "CustNum");
+            assert_eq!(parser.name(except[0].name), "CustNum");
             assert!(frame.is_some());
-            assert_eq!(frame.unwrap().name, "cust-frame");
+            assert_eq!(parser.name(frame.unwrap().name), "cust-frame");
         }
         _ => panic!("Expected Display statement"),
     }
@@ -4635,7 +5014,7 @@ fn parse_display_expression() {
         StatementKind::Display { items, .. } => {
             assert_eq!(items.len(), 1);
             assert!(matches!(
-                items[0].expression.kind,
+                parser.expr_node(items[0].expression).kind,
                 ExpressionKind::Add(_, _)
             ));
         }
@@ -4748,7 +5127,7 @@ fn parse_message_with_update() {
         } => {
             assert_eq!(items.len(), 1); // "Confirm?"
             assert_eq!(set_targets.len(), 1);
-            assert_eq!(set_targets[0].name, "lChoice");
+            assert_eq!(parser.name(set_targets[0].name), "lChoice");
         }
         _ => panic!("Expected Message statement"),
     }
@@ -4794,7 +5173,7 @@ fn parse_message_update_without_view_as() {
         } => {
             assert_eq!(items.len(), 1);
             assert_eq!(set_targets.len(), 1);
-            assert_eq!(set_targets[0].name, "cName");
+            assert_eq!(parser.name(set_targets[0].name), "cName");
         }
         _ => panic!("Expected Message statement"),
     }
@@ -4816,7 +5195,7 @@ fn parse_message_update_as_declares_field() {
             assert_eq!(items.len(), 1);
             assert!(set_targets.is_empty());
             assert_eq!(fields.len(), 1);
-            assert_eq!(fields[0].name.name, "v-fix");
+            assert_eq!(parser.name(fields[0].name.name), "v-fix");
         }
         _ => panic!("Expected Message statement"),
     }
@@ -4836,7 +5215,7 @@ fn parse_message_update_like_declares_field() {
         } => {
             assert!(set_targets.is_empty());
             assert_eq!(fields.len(), 1);
-            assert_eq!(fields[0].name.name, "v-copy");
+            assert_eq!(parser.name(fields[0].name.name), "v-copy");
         }
         _ => panic!("Expected Message statement"),
     }
@@ -5099,7 +5478,7 @@ fn parse_run_with_expression_args() {
             assert_eq!(arguments[0].direction, ParameterDirection::Input);
             // First arg should be an Add expression
             assert!(matches!(
-                arguments[0].expression.kind,
+                parser.expr_node(arguments[0].expression).kind,
                 ExpressionKind::Add(_, _)
             ));
             assert_eq!(arguments[1].direction, ParameterDirection::Output);
@@ -5352,20 +5731,20 @@ DEFINE TEMP-TABLE ttCustomer NO-UNDO
             indexes,
             ..
         } => {
-            assert_eq!(name.name, "ttCustomer");
+            assert_eq!(parser.name(name.name), "ttCustomer");
             assert!(no_undo);
             assert_eq!(fields.len(), 3);
-            assert_eq!(fields[0].name.name, "CustNum");
+            assert_eq!(parser.name(fields[0].name.name), "CustNum");
             assert_eq!(
                 fields[0].type_source,
                 TypeSource::Explicit(DataType::Integer)
             );
-            assert_eq!(fields[1].name.name, "Name");
+            assert_eq!(parser.name(fields[1].name.name), "Name");
             assert_eq!(
                 fields[1].type_source,
                 TypeSource::Explicit(DataType::Character)
             );
-            assert_eq!(fields[2].name.name, "Balance");
+            assert_eq!(parser.name(fields[2].name.name), "Balance");
             assert_eq!(
                 fields[2].type_source,
                 TypeSource::Explicit(DataType::Decimal)
@@ -5394,12 +5773,12 @@ DEFINE TEMP-TABLE ttOrder NO-UNDO
         } => {
             assert_eq!(fields.len(), 2);
             assert_eq!(indexes.len(), 2);
-            assert_eq!(indexes[0].name.name, "idx1");
+            assert_eq!(parser.name(indexes[0].name.name), "idx1");
             assert!(indexes[0].is_primary);
             assert!(indexes[0].is_unique);
             assert_eq!(indexes[0].fields.len(), 1);
-            assert_eq!(indexes[0].fields[0].name.name, "OrderNum");
-            assert_eq!(indexes[1].name.name, "idx2");
+            assert_eq!(parser.name(indexes[0].fields[0].name.name), "OrderNum");
+            assert_eq!(parser.name(indexes[1].name.name), "idx2");
             assert!(!indexes[1].is_primary);
             assert!(!indexes[1].is_unique);
         }
@@ -5418,7 +5797,7 @@ DEFINE TEMP-TABLE ttSimple
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::DefineTempTable { name, no_undo, .. } => {
-            assert_eq!(name.name, "ttSimple");
+            assert_eq!(parser.name(name.name), "ttSimple");
             assert!(!no_undo);
         }
         _ => panic!("Expected DefineTempTable statement"),
@@ -5435,9 +5814,9 @@ fn parse_define_buffer() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::DefineBuffer { name, target, .. } => {
-            assert_eq!(name.name, "bCust");
+            assert_eq!(parser.name(name.name), "bCust");
             match &target {
-                BufferTarget::Table(t) => assert_eq!(t.name, "Customer"),
+                BufferTarget::Table(t) => assert_eq!(parser.name(t.name), "Customer"),
                 _ => panic!("Expected Table target"),
             }
         }
@@ -5453,9 +5832,9 @@ fn parse_define_buffer_for_temp_table() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::DefineBuffer { name, target, .. } => {
-            assert_eq!(name.name, "bTT");
+            assert_eq!(parser.name(name.name), "bTT");
             match &target {
-                BufferTarget::TempTable(t) => assert_eq!(t.name, "ttCustomer"),
+                BufferTarget::TempTable(t) => assert_eq!(parser.name(t.name), "ttCustomer"),
                 _ => panic!("Expected TempTable target"),
             }
         }
@@ -5500,7 +5879,7 @@ fn parse_define_buffer_xml_attrs_skipped() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::DefineBuffer { name, .. } => {
-            assert_eq!(name.name, "bCust");
+            assert_eq!(parser.name(name.name), "bCust");
         }
         _ => panic!("Expected DefineBuffer statement"),
     }
@@ -5522,7 +5901,7 @@ fn parse_define_temp_table_empty() {
             indexes,
             ..
         } => {
-            assert_eq!(name.name, "ttEmpty");
+            assert_eq!(parser.name(name.name), "ttEmpty");
             assert!(no_undo);
             assert!(fields.is_empty());
             assert!(indexes.is_empty());
@@ -5544,7 +5923,7 @@ fn parse_define_temp_table_like() {
             ..
         } => {
             assert!(like_table.is_some());
-            assert_eq!(like_table.unwrap().name, "Customer");
+            assert_eq!(parser.name(like_table.unwrap().name), "Customer");
             assert!(!validate);
         }
         _ => panic!("Expected DefineTempTable statement"),
@@ -5580,9 +5959,9 @@ fn parse_define_temp_table_like_use_index() {
     match stmt.kind {
         StatementKind::DefineTempTable { use_indexes, .. } => {
             assert_eq!(use_indexes.len(), 2);
-            assert_eq!(use_indexes[0].name.name, "CustNum");
+            assert_eq!(parser.name(use_indexes[0].name.name), "CustNum");
             assert!(!use_indexes[0].as_primary);
-            assert_eq!(use_indexes[1].name.name, "CountryPost");
+            assert_eq!(parser.name(use_indexes[1].name.name), "CountryPost");
             assert!(use_indexes[1].as_primary);
         }
         _ => panic!("Expected DefineTempTable statement"),
@@ -5604,7 +5983,7 @@ DEFINE TEMP-TABLE tt LIKE Customer
         } => {
             assert!(like_table.is_some());
             assert_eq!(fields.len(), 1);
-            assert_eq!(fields[0].name.name, "extraField");
+            assert_eq!(parser.name(fields[0].name.name), "extraField");
         }
         _ => panic!("Expected DefineTempTable statement"),
     }
@@ -5622,12 +6001,12 @@ DEFINE TEMP-TABLE tt NO-UNDO
     match stmt.kind {
         StatementKind::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 1);
-            assert_eq!(fields[0].name.name, "cust-num");
+            assert_eq!(parser.name(fields[0].name.name), "cust-num");
             match &fields[0].type_source {
                 TypeSource::Like { source } => {
                     // The dot-separated name is parsed as a single identifier by the lexer
                     // (ABL identifiers can contain dots in field references)
-                    assert!(!source.name.is_empty());
+                    assert!(!parser.ident(*source).is_empty());
                     assert!(!fields[0].validate);
                 }
                 _ => panic!("Expected Like type source"),
@@ -5708,7 +6087,7 @@ DEFINE TEMP-TABLE tt NO-UNDO
     match stmt.kind {
         StatementKind::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 1);
-            assert_eq!(fields[0].name.name, "x");
+            assert_eq!(parser.name(fields[0].name.name), "x");
             // FORMAT is skipped, not stored
         }
         _ => panic!("Expected DefineTempTable statement"),
@@ -5895,7 +6274,7 @@ DEFINE TEMP-TABLE tt NO-UNDO
     match stmt.kind {
         StatementKind::DefineTempTable { fields, .. } => {
             assert_eq!(fields.len(), 1);
-            assert_eq!(fields[0].name.name, "x");
+            assert_eq!(parser.name(fields[0].name.name), "x");
         }
         _ => panic!("Expected DefineTempTable statement"),
     }
@@ -6060,7 +6439,7 @@ END.
                     error_type,
                     body,
                 } => {
-                    assert_eq!(error_var.name, "e");
+                    assert_eq!(parser.name(error_var.name), "e");
                     assert_eq!(error_type, "Progress.Lang.Error");
                     assert_eq!(body.len(), 1);
                 }
@@ -6191,7 +6570,7 @@ fn parse_assign_field_access() {
         StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 2);
             assert!(matches!(
-                assignments[0].target.kind,
+                parser.expr_node(assignments[0].target).kind,
                 ExpressionKind::FieldAccess { .. }
             ));
         }
@@ -6209,7 +6588,7 @@ fn parse_assign_with_expression() {
         StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 1);
             assert!(matches!(
-                assignments[0].value.kind,
+                parser.expr_node(assignments[0].value).kind,
                 ExpressionKind::Multiply(_, _)
             ));
         }
@@ -6236,7 +6615,7 @@ END FUNCTION.
             body,
             ..
         } => {
-            assert_eq!(name.name, "get-greeting");
+            assert_eq!(parser.name(name.name), "get-greeting");
             assert_eq!(return_type, DataType::Character);
             assert_eq!(body.len(), 1);
         }
@@ -6261,7 +6640,7 @@ END FUNCTION.
             body,
             ..
         } => {
-            assert_eq!(name.name, "calc-total");
+            assert_eq!(parser.name(name.name), "calc-total");
             assert_eq!(return_type, DataType::Integer);
             // Signature params prepended as DefineParameter, then RETURN.
             assert_eq!(body.len(), 3, "expected 2 params + RETURN, got {body:?}");
@@ -6271,7 +6650,7 @@ END FUNCTION.
                     param_type: ParameterType::Variable { name, .. },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Input);
-                    assert_eq!(name.name, "x");
+                    assert_eq!(parser.name(name.name), "x");
                 }
                 other => panic!("expected first param, got {other:?}"),
             }
@@ -6281,7 +6660,7 @@ END FUNCTION.
                     param_type: ParameterType::Variable { name, .. },
                 } => {
                     assert_eq!(*direction, ParameterDirection::Input);
-                    assert_eq!(name.name, "y");
+                    assert_eq!(parser.name(name.name), "y");
                 }
                 other => panic!("expected second param, got {other:?}"),
             }
@@ -6318,7 +6697,7 @@ fn parse_function_forward_with_params_has_empty_body() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Function { name, body, .. } => {
-            assert_eq!(name.name, "getVal");
+            assert_eq!(parser.name(name.name), "getVal");
             assert!(body.is_empty(), "FORWARD prototype must discard params");
         }
         _ => panic!("Expected Function statement"),
@@ -6333,7 +6712,7 @@ fn parse_function_in_super_with_params_has_empty_body() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Function { name, body, .. } => {
-            assert_eq!(name.name, "getVal");
+            assert_eq!(parser.name(name.name), "getVal");
             assert!(body.is_empty(), "IN SUPER prototype must discard params");
         }
         _ => panic!("Expected Function statement"),
@@ -6359,7 +6738,7 @@ END FUNCTION.
                     ..
                 } => {
                     assert_eq!(*kind, HandleParamKind::TableHandle);
-                    assert_eq!(name.name, "hTt");
+                    assert_eq!(parser.name(name.name), "hTt");
                 }
                 other => panic!("expected TABLE-HANDLE param, got {other:?}"),
             }
@@ -6411,7 +6790,7 @@ END FUNCTION.
             StatementKind::DefineParameter {
                 param_type: ParameterType::Variable { name, .. },
                 ..
-            } => assert_eq!(name.name, "pc"),
+            } => assert_eq!(parser.name(name.name), "pc"),
             other => panic!("expected named param, got {other:?}"),
         },
         _ => panic!("Expected Function statement"),
@@ -6434,7 +6813,7 @@ END FUNCTION.
             StatementKind::DefineParameter {
                 param_type: ParameterType::Variable { name, .. },
                 ..
-            } => assert_eq!(name.name, "character"),
+            } => assert_eq!(parser.name(name.name), "character"),
             other => panic!("expected named param, got {other:?}"),
         },
         _ => panic!("Expected Function statement"),
@@ -6455,7 +6834,7 @@ END.
         StatementKind::Function {
             name, return_type, ..
         } => {
-            assert_eq!(name.name, "get-value");
+            assert_eq!(parser.name(name.name), "get-value");
             assert_eq!(return_type, DataType::Logical);
         }
         _ => panic!("Expected Function statement"),
@@ -6498,7 +6877,7 @@ fn parse_var_keyword_as_variable_name() {
         StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
-            assert_eq!(name.name, "var");
+            assert_eq!(parser.name(name.name), "var");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -6515,7 +6894,7 @@ fn parse_function_keyword_as_variable_name() {
         StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
-            assert_eq!(name.name, "function");
+            assert_eq!(parser.name(name.name), "function");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -6532,7 +6911,7 @@ fn parse_catch_keyword_as_variable_name() {
         StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
-            assert_eq!(name.name, "catch");
+            assert_eq!(parser.name(name.name), "catch");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -6549,7 +6928,7 @@ fn parse_data_type_keyword_as_variable_name() {
         StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
-            assert_eq!(name.name, "integer");
+            assert_eq!(parser.name(name.name), "integer");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Integer));
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -6566,7 +6945,7 @@ fn parse_date_keyword_as_variable_name() {
         StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
-            assert_eq!(name.name, "date");
+            assert_eq!(parser.name(name.name), "date");
             assert_eq!(type_source, TypeSource::Explicit(DataType::Date));
         }
         _ => panic!("Expected VariableDeclaration"),
@@ -6581,8 +6960,8 @@ fn parse_variable_keyword_assignment_disambiguation() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Assignment { target, .. } => match target.kind {
-            ExpressionKind::Identifier(id) => assert_eq!(id.name, "variable"),
+        StatementKind::Assignment { target, .. } => match parser.expr_node(target).kind {
+            ExpressionKind::Identifier(id) => assert_eq!(parser.name(id.name), "variable"),
             _ => panic!("Expected identifier target"),
         },
         _ => panic!("Expected Assignment, got {:?}", stmt),
@@ -6597,8 +6976,8 @@ fn parse_function_keyword_assignment_disambiguation() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Assignment { target, .. } => match target.kind {
-            ExpressionKind::Identifier(id) => assert_eq!(id.name, "function"),
+        StatementKind::Assignment { target, .. } => match parser.expr_node(target).kind {
+            ExpressionKind::Identifier(id) => assert_eq!(parser.name(id.name), "function"),
             _ => panic!("Expected identifier target"),
         },
         _ => panic!("Expected Assignment, got {:?}", stmt),
@@ -6716,7 +7095,7 @@ fn parse_simple_class() {
             use_widget_pool,
             body,
         } => {
-            assert_eq!(name.name, "MyClass");
+            assert_eq!(parser.name(name.name), "MyClass");
             assert!(!use_widget_pool);
             assert!(inherits.is_none());
             assert!(implements.is_empty());
@@ -6740,7 +7119,7 @@ fn parse_class_use_widget_pool() {
             use_widget_pool,
             ..
         } => {
-            assert_eq!(inherits.unwrap().name, "Base");
+            assert_eq!(parser.name(inherits.unwrap().name), "Base");
             assert!(use_widget_pool);
         }
         _ => panic!("Expected Class statement"),
@@ -6755,8 +7134,8 @@ fn parse_class_with_inherits() {
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
         StatementKind::Class { name, inherits, .. } => {
-            assert_eq!(name.name, "MyApp.CustomerService");
-            assert_eq!(inherits.unwrap().name, "BaseService");
+            assert_eq!(parser.name(name.name), "MyApp.CustomerService");
+            assert_eq!(parser.name(inherits.unwrap().name), "BaseService");
         }
         _ => panic!("Expected Class statement"),
     }
@@ -6771,7 +7150,7 @@ fn parse_class_with_implements() {
     match stmt.kind {
         StatementKind::Class { implements, .. } => {
             assert_eq!(implements.len(), 1);
-            assert_eq!(implements[0].name, "IService");
+            assert_eq!(parser.name(implements[0].name), "IService");
         }
         _ => panic!("Expected Class statement"),
     }
@@ -6790,10 +7169,10 @@ fn parse_class_inherits_and_implements_multiple() {
             implements,
             ..
         } => {
-            assert_eq!(inherits.unwrap().name, "BaseService");
+            assert_eq!(parser.name(inherits.unwrap().name), "BaseService");
             assert_eq!(implements.len(), 2);
-            assert_eq!(implements[0].name, "IService");
-            assert_eq!(implements[1].name, "IDisposable");
+            assert_eq!(parser.name(implements[0].name), "IService");
+            assert_eq!(parser.name(implements[1].name), "IDisposable");
         }
         _ => panic!("Expected Class statement"),
     }
@@ -6818,106 +7197,106 @@ fn parse_abstract_class() {
     }
 }
 
+// (source, abstract, final, use_widget_pool, inherits, implements)
+const CLASS_HEADER_MODIFIER_CASES: [(&str, bool, bool, bool, bool, usize); 9] = [
+    (
+        "CLASS a.b.Cls INHERITS Base FINAL: END CLASS.",
+        false,
+        true,
+        false,
+        true,
+        0,
+    ),
+    (
+        "CLASS a.b.Cls INHERITS Base ABSTRACT: END CLASS.",
+        true,
+        false,
+        false,
+        true,
+        0,
+    ),
+    (
+        "CLASS Cls IMPLEMENTS I1 FINAL SERIALIZABLE: END CLASS.",
+        false,
+        true,
+        false,
+        false,
+        1,
+    ),
+    (
+        "CLASS Cls IMPLEMENTS I1, I2 ABSTRACT: END CLASS.",
+        true,
+        false,
+        false,
+        false,
+        2,
+    ),
+    (
+        "CLASS Cls INHERITS B IMPLEMENTS I1 USE-WIDGET-POOL FINAL SERIALIZABLE: END CLASS.",
+        false,
+        true,
+        true,
+        true,
+        1,
+    ),
+    (
+        "CLASS Cls USE-WIDGET-POOL ABSTRACT: END CLASS.",
+        true,
+        false,
+        true,
+        false,
+        0,
+    ),
+    (
+        "CLASS Cls INHERITS B FINAL USE-WIDGET-POOL: END CLASS.",
+        false,
+        true,
+        true,
+        true,
+        0,
+    ),
+    (
+        "CLASS FINAL Cls INHERITS B: END CLASS.",
+        false,
+        true,
+        false,
+        true,
+        0,
+    ),
+    (
+        "CLASS Cls FINAL INHERITS B: END CLASS.",
+        false,
+        true,
+        false,
+        true,
+        0,
+    ),
+];
+
 #[test]
 fn parse_class_header_modifier_orders() {
-    // (source, abstract, final, use_widget_pool, inherits, implements)
-    let cases = [
-        (
-            "CLASS a.b.Cls INHERITS Base FINAL: END CLASS.",
-            false,
-            true,
-            false,
-            true,
-            0,
-        ),
-        (
-            "CLASS a.b.Cls INHERITS Base ABSTRACT: END CLASS.",
-            true,
-            false,
-            false,
-            true,
-            0,
-        ),
-        (
-            "CLASS Cls IMPLEMENTS I1 FINAL SERIALIZABLE: END CLASS.",
-            false,
-            true,
-            false,
-            false,
-            1,
-        ),
-        (
-            "CLASS Cls IMPLEMENTS I1, I2 ABSTRACT: END CLASS.",
-            true,
-            false,
-            false,
-            false,
-            2,
-        ),
-        (
-            "CLASS Cls INHERITS B IMPLEMENTS I1 USE-WIDGET-POOL FINAL SERIALIZABLE: END CLASS.",
-            false,
-            true,
-            true,
-            true,
-            1,
-        ),
-        (
-            "CLASS Cls USE-WIDGET-POOL ABSTRACT: END CLASS.",
-            true,
-            false,
-            true,
-            false,
-            0,
-        ),
-        (
-            "CLASS Cls INHERITS B FINAL USE-WIDGET-POOL: END CLASS.",
-            false,
-            true,
-            true,
-            true,
-            0,
-        ),
-        (
-            "CLASS FINAL Cls INHERITS B: END CLASS.",
-            false,
-            true,
-            false,
-            true,
-            0,
-        ),
-        (
-            "CLASS Cls FINAL INHERITS B: END CLASS.",
-            false,
-            true,
-            false,
-            true,
-            0,
-        ),
-    ];
-    for (source, abs, fin, uwp, inh, imp) in cases {
+    for (source, abs, fin, uwp, inh, imp) in CLASS_HEADER_MODIFIER_CASES {
         let tokens = tokenize(source);
         let mut parser = Parser::new(&tokens, source);
         let stmt = parser
             .parse_statement()
             .unwrap_or_else(|e| panic!("{source}: {e:?}"));
-        match stmt.kind {
-            StatementKind::Class {
-                inherits,
-                implements,
-                is_abstract,
-                is_final,
-                use_widget_pool,
-                ..
-            } => {
-                assert_eq!(is_abstract, abs, "{source}: abstract");
-                assert_eq!(is_final, fin, "{source}: final");
-                assert_eq!(use_widget_pool, uwp, "{source}: use-widget-pool");
-                assert_eq!(inherits.is_some(), inh, "{source}: inherits");
-                assert_eq!(implements.len(), imp, "{source}: implements");
-            }
-            _ => panic!("Expected Class statement"),
-        }
+        let StatementKind::Class {
+            inherits,
+            implements,
+            is_abstract,
+            is_final,
+            use_widget_pool,
+            ..
+        } = stmt.kind
+        else {
+            panic!("Expected Class statement");
+        };
+        assert_eq!(is_abstract, abs, "{source}: abstract");
+        assert_eq!(is_final, fin, "{source}: final");
+        assert_eq!(use_widget_pool, uwp, "{source}: use-widget-pool");
+        assert_eq!(inherits.is_some(), inh, "{source}: inherits");
+        assert_eq!(implements.len(), imp, "{source}: implements");
     }
 }
 
@@ -6958,7 +7337,7 @@ fn parse_method_public_void_no_params() {
             assert!(!is_abstract);
             assert!(!is_override);
             assert!(return_type.is_none()); // VOID
-            assert_eq!(name.name, "DoSomething");
+            assert_eq!(parser.name(name.name), "DoSomething");
             assert!(parameters.is_empty());
             assert!(body.is_empty());
         }
@@ -6989,7 +7368,7 @@ fn parse_method_with_preproc_access_modifier() {
         } => {
             assert_eq!(access, AccessModifier::Public);
             assert_eq!(return_type, Some(DataType::Integer));
-            assert_eq!(name.name, "Foo");
+            assert_eq!(parser.name(name.name), "Foo");
             assert_eq!(parameters.len(), 1);
         }
         _ => panic!("Expected Method statement"),
@@ -7015,15 +7394,16 @@ fn parse_new_with_generic_class() {
 }
 
 /// The type arguments written back out, nested ones in their own brackets.
-fn render_args(arguments: &TypeArguments) -> String {
+fn render_args(ctx: &impl HasPools, arguments: &TypeArguments) -> String {
     arguments
         .0
         .iter()
         .map(|arg| {
+            let name = ctx.pools_ident(arg.name);
             if arg.arguments.0.is_empty() {
-                arg.name.name.clone()
+                name.to_string()
             } else {
-                format!("{}<{}>", arg.name.name, render_args(&arg.arguments))
+                format!("{name}<{}>", render_args(ctx, &arg.arguments))
             }
         })
         .collect::<Vec<_>>()
@@ -7040,7 +7420,10 @@ fn declared_generic(ty: &str) -> (String, String) {
         StatementKind::VariableDeclaration {
             type_source: TypeSource::Explicit(DataType::Generic(generic)),
             ..
-        } => (generic.class.clone(), render_args(&generic.arguments)),
+        } => (
+            generic.class.clone(),
+            render_args(&parser, &generic.arguments),
+        ),
         other => panic!("Expected a generic declaration, got {other:?}"),
     }
 }
@@ -7126,12 +7509,17 @@ fn a_new_expression_keeps_its_type_arguments() {
         let StatementKind::Assignment { value, .. } = stmt.kind else {
             panic!("Expected Assignment");
         };
-        match value.kind {
+        match &parser.expr_node(value).kind {
             ExpressionKind::New {
                 class_name,
                 type_arguments,
                 ..
-            } => (class_name, type_arguments.map(|args| render_args(&args))),
+            } => (
+                parser.name(*class_name).to_string(),
+                type_arguments
+                    .as_ref()
+                    .map(|args| render_args(&parser, args)),
+            ),
             other => panic!("Expected New, got {other:?}"),
         }
     };
@@ -7187,7 +7575,7 @@ fn parse_method_forward_declaration() {
         } => {
             assert_eq!(access, AccessModifier::Private);
             assert_eq!(return_type, Some(DataType::Logical));
-            assert_eq!(name.name, "DoThing");
+            assert_eq!(parser.name(name.name), "DoThing");
             assert_eq!(parameters.len(), 1);
             assert!(body.is_empty());
         }
@@ -7208,7 +7596,7 @@ fn parse_method_forward_with_preproc_access() {
             access, name, body, ..
         } => {
             assert_eq!(access, AccessModifier::Public);
-            assert_eq!(name.name, "GetErrors");
+            assert_eq!(parser.name(name.name), "GetErrors");
             assert!(body.is_empty());
         }
         _ => panic!("Expected Method statement"),
@@ -7232,7 +7620,7 @@ fn parse_method_private_with_return_and_params() {
         } => {
             assert_eq!(access, AccessModifier::Private);
             assert_eq!(return_type, Some(DataType::Integer));
-            assert_eq!(name.name, "Calculate");
+            assert_eq!(parser.name(name.name), "Calculate");
             assert_eq!(parameters.len(), 2);
             assert_eq!(body.len(), 1);
         }
@@ -7251,7 +7639,7 @@ fn parse_static_method() {
             is_static, name, ..
         } => {
             assert!(is_static);
-            assert_eq!(name.name, "Initialize");
+            assert_eq!(parser.name(name.name), "Initialize");
         }
         _ => panic!("Expected Method statement"),
     }
@@ -7271,7 +7659,7 @@ fn parse_abstract_method() {
             ..
         } => {
             assert!(is_abstract);
-            assert_eq!(name.name, "Run");
+            assert_eq!(parser.name(name.name), "Run");
             assert!(body.is_empty());
         }
         _ => panic!("Expected Method statement"),
@@ -7314,7 +7702,7 @@ fn parse_property_auto_get_set() {
         } => {
             assert_eq!(access, AccessModifier::Public);
             assert!(!is_static);
-            assert_eq!(name.name, "Name");
+            assert_eq!(parser.name(name.name), "Name");
             assert_eq!(data_type, DataType::Character);
             assert!(no_undo);
             assert_eq!(get_body, Some(Vec::new())); // auto-getter
@@ -7438,7 +7826,7 @@ fn parse_interface_with_method_signatures() {
             inherits,
             body,
         } => {
-            assert_eq!(name.name, "IService");
+            assert_eq!(parser.name(name.name), "IService");
             assert!(inherits.is_empty());
             assert_eq!(body.len(), 1);
             match &body[0].kind {
@@ -7459,7 +7847,7 @@ fn parse_interface_with_inherits() {
     match stmt.kind {
         StatementKind::Interface { inherits, .. } => {
             assert_eq!(inherits.len(), 1);
-            assert_eq!(inherits[0].name, "IService");
+            assert_eq!(parser.name(inherits[0].name), "IService");
         }
         _ => panic!("Expected Interface statement"),
     }
@@ -7566,7 +7954,9 @@ fn parse_unix_backslash_escapes_before_whitespace_and_inside_names() {
         program.errors
     );
     match &program.statements[1].kind {
-        StatementKind::VariableDeclaration { name, .. } => assert_eq!(name.name, "abcd"),
+        StatementKind::VariableDeclaration { name, .. } => {
+            assert_eq!(program.name(name.name), "abcd")
+        }
         other => panic!("expected variable declaration, got {other:?}"),
     }
 }
@@ -7606,7 +7996,7 @@ fn parse_full_class_with_mixed_members() {
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
         StatementKind::Class { name, body, .. } => {
-            assert_eq!(name.name, "MyApp.CustomerService");
+            assert_eq!(parser.name(name.name), "MyApp.CustomerService");
             // Property + Constructor + 2 Methods = 4 members
             assert_eq!(body.len(), 4);
             assert!(matches!(body[0].kind, StatementKind::Property { .. }));
@@ -7627,7 +8017,7 @@ fn parse_define_public_variable_in_class() {
     let stmt = parser.parse_statement().unwrap();
     match stmt.kind {
         StatementKind::VariableDeclaration { name, .. } => {
-            assert_eq!(name.name, "x");
+            assert_eq!(parser.name(name.name), "x");
         }
         _ => panic!("Expected VariableDeclaration"),
     }
@@ -7655,9 +8045,9 @@ fn parse_method_with_class_return_type() {
 // =============================================================================
 
 /// The name of a plain identifier expression.
-fn expr_name(expr: &Expression) -> &str {
-    match &expr.kind {
-        ExpressionKind::Identifier(id) => &id.name,
+fn expr_name(ctx: &impl HasPools, id: ExprId) -> &str {
+    match &ctx.pools_expr(id).kind {
+        ExpressionKind::Identifier(id) => ctx.pools_ident(*id),
         other => panic!("expected an identifier, got {other:?}"),
     }
 }
@@ -7673,7 +8063,7 @@ fn parse_create_basic() {
             target: CreateTarget::Name(name),
             no_error,
         } => {
-            assert_eq!(name.name, "Customer");
+            assert_eq!(parser.name(name.name), "Customer");
             assert!(!no_error);
         }
         _ => panic!("Expected Create statement"),
@@ -7691,7 +8081,7 @@ fn parse_create_no_error() {
             target: CreateTarget::Name(name),
             no_error,
         } => {
-            assert_eq!(name.name, "Customer");
+            assert_eq!(parser.name(name.name), "Customer");
             assert!(no_error);
         }
         _ => panic!("Expected Create statement"),
@@ -7733,7 +8123,9 @@ fn parse_delete_object_holds_the_operand_as_an_expression() {
             target, no_error, ..
         } => {
             assert!(*no_error);
-            assert!(matches!(&target.kind, ExpressionKind::Identifier(id) if id.name == "h"));
+            assert!(
+                matches!(&parser.expr_node(*target).kind, ExpressionKind::Identifier(id) if parser.name(id.name) == "h")
+            );
         }
         other => panic!("Expected DeleteObject, got {other:?}"),
     }
@@ -7760,7 +8152,10 @@ fn parse_delete_object_accepts_a_complex_operand() {
         match &stmt.kind {
             StatementKind::DeleteObject { target, .. } => {
                 assert!(
-                    !matches!(&target.kind, ExpressionKind::Identifier(_)),
+                    !matches!(
+                        &parser.expr_node(*target).kind,
+                        ExpressionKind::Identifier(_)
+                    ),
                     "{source}: the operand should be a compound expression"
                 );
             }
@@ -7775,7 +8170,7 @@ fn parse_delete_buffer_form_is_unchanged() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     match &parser.parse_statement().expect("statement").kind {
-        StatementKind::Delete { buffer, .. } => assert_eq!(buffer.name, "Customer"),
+        StatementKind::Delete { buffer, .. } => assert_eq!(parser.name(buffer.name), "Customer"),
         other => panic!("expected Delete, got {other:?}"),
     }
 }
@@ -7788,7 +8183,7 @@ fn parse_delete_basic() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Delete { buffer, no_error } => {
-            assert_eq!(buffer.name, "Customer");
+            assert_eq!(parser.name(buffer.name), "Customer");
             assert!(!no_error);
         }
         _ => panic!("Expected Delete statement"),
@@ -7803,7 +8198,7 @@ fn parse_delete_no_error() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Delete { buffer, no_error } => {
-            assert_eq!(buffer.name, "Customer");
+            assert_eq!(parser.name(buffer.name), "Customer");
             assert!(no_error);
         }
         _ => panic!("Expected Delete statement"),
@@ -7818,7 +8213,7 @@ fn parse_release_basic() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Release { buffer, no_error } => {
-            assert_eq!(buffer.name, "Customer");
+            assert_eq!(parser.name(buffer.name), "Customer");
             assert!(!no_error);
         }
         _ => panic!("Expected Release statement"),
@@ -7833,7 +8228,7 @@ fn parse_release_no_error() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Release { buffer, no_error } => {
-            assert_eq!(buffer.name, "Customer");
+            assert_eq!(parser.name(buffer.name), "Customer");
             assert!(no_error);
         }
         _ => panic!("Expected Release statement"),
@@ -7848,7 +8243,7 @@ fn parse_validate_basic() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Validate { buffer, no_error } => {
-            assert_eq!(buffer.name, "Customer");
+            assert_eq!(parser.name(buffer.name), "Customer");
             assert!(!no_error);
         }
         _ => panic!("Expected Validate statement"),
@@ -7863,7 +8258,7 @@ fn parse_validate_no_error() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Validate { buffer, no_error } => {
-            assert_eq!(buffer.name, "Customer");
+            assert_eq!(parser.name(buffer.name), "Customer");
             assert!(no_error);
         }
         _ => panic!("Expected Validate statement"),
@@ -7883,8 +8278,8 @@ fn parse_buffer_copy_basic() {
             assignments,
             no_error,
         } => {
-            assert_eq!(source.name, "bSource");
-            assert_eq!(target.name, "bTarget");
+            assert_eq!(parser.name(source.name), "bSource");
+            assert_eq!(parser.name(target.name), "bTarget");
             assert!(assignments.is_empty());
             assert!(!no_error);
         }
@@ -7905,11 +8300,11 @@ fn parse_buffer_copy_with_assign() {
             assignments,
             no_error,
         } => {
-            assert_eq!(source.name, "bSource");
-            assert_eq!(target.name, "bTarget");
+            assert_eq!(parser.name(source.name), "bSource");
+            assert_eq!(parser.name(target.name), "bTarget");
             assert_eq!(assignments.len(), 1);
-            match &assignments[0].target.kind {
-                ExpressionKind::Identifier(ident) => assert_eq!(ident.name, "field1"),
+            match &parser.expr_node(assignments[0].target).kind {
+                ExpressionKind::Identifier(ident) => assert_eq!(parser.name(ident.name), "field1"),
                 _ => panic!("Expected identifier target"),
             }
             assert!(!no_error);
@@ -7931,12 +8326,12 @@ fn parse_buffer_copy_with_multiple_assigns() {
             ..
         } => {
             assert_eq!(assignments.len(), 2);
-            match &assignments[0].target.kind {
-                ExpressionKind::Identifier(ident) => assert_eq!(ident.name, "field1"),
+            match &parser.expr_node(assignments[0].target).kind {
+                ExpressionKind::Identifier(ident) => assert_eq!(parser.name(ident.name), "field1"),
                 _ => panic!("Expected identifier target"),
             }
-            match &assignments[1].target.kind {
-                ExpressionKind::Identifier(ident) => assert_eq!(ident.name, "field2"),
+            match &parser.expr_node(assignments[1].target).kind {
+                ExpressionKind::Identifier(ident) => assert_eq!(parser.name(ident.name), "field2"),
                 _ => panic!("Expected identifier target"),
             }
             assert!(!no_error);
@@ -7996,8 +8391,8 @@ fn parse_buffer_compare_basic() {
             result_var,
             no_error,
         } => {
-            assert_eq!(source.name, "bSource");
-            assert_eq!(target.name, "bTarget");
+            assert_eq!(parser.name(source.name), "bSource");
+            assert_eq!(parser.name(target.name), "bTarget");
             assert!(result_var.is_none());
             assert!(!no_error);
         }
@@ -8017,7 +8412,7 @@ fn parse_buffer_compare_save_result_in() {
             no_error,
             ..
         } => {
-            assert_eq!(result_var.unwrap().name, "lResult");
+            assert_eq!(parser.name(result_var.unwrap().name), "lResult");
             assert!(!no_error);
         }
         _ => panic!("Expected BufferCompare statement"),
@@ -8073,7 +8468,7 @@ fn parse_create_case_insensitive() {
             target: CreateTarget::Name(name),
             ..
         } => {
-            assert_eq!(name.name, "customer");
+            assert_eq!(parser.name(name.name), "customer");
         }
         _ => panic!("Expected Create statement"),
     }
@@ -8118,7 +8513,10 @@ fn preproc_if_then_endif() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::PreprocIf(preproc) => {
-            assert!(matches!(preproc.condition.kind, ExpressionKind::Literal(_)));
+            assert!(matches!(
+                parser.expr_node(preproc.condition).kind,
+                ExpressionKind::Literal(_)
+            ));
             assert_eq!(preproc.then_branch.len(), 1);
             assert!(preproc.elseif_branches.is_empty());
             assert!(preproc.else_branch.is_none());
@@ -8208,7 +8606,7 @@ fn preproc_scoped_define_with_value() {
             value_span,
             is_global,
         } => {
-            assert_eq!(name.name, "FOO");
+            assert_eq!(program.name(name.name), "FOO");
             assert!(!is_global);
             assert!(value_span.is_some());
             let span = value_span.unwrap();
@@ -8232,7 +8630,7 @@ fn preproc_scoped_define_no_value() {
             value_span,
             is_global,
         } => {
-            assert_eq!(name.name, "EMPTY");
+            assert_eq!(program.name(name.name), "EMPTY");
             assert!(!is_global);
             assert!(value_span.is_none());
         }
@@ -8253,7 +8651,7 @@ fn preproc_global_define() {
             value_span,
             is_global,
         } => {
-            assert_eq!(name.name, "BAR");
+            assert_eq!(program.name(name.name), "BAR");
             assert!(*is_global);
             assert!(value_span.is_some());
         }
@@ -8272,7 +8670,7 @@ fn preproc_define_complex_value() {
         StatementKind::PreprocDefine {
             name, value_span, ..
         } => {
-            assert_eq!(name.name, "EXPR");
+            assert_eq!(program.name(name.name), "EXPR");
             let span = value_span.unwrap();
             assert_eq!(&source[span.start as usize..span.end as usize], "1 + 2");
         }
@@ -8288,7 +8686,7 @@ fn preproc_undefine() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::PreprocUndefine { name } => {
-            assert_eq!(name.name, "FOO");
+            assert_eq!(parser.name(name.name), "FOO");
         }
         _ => panic!("Expected PreprocUndefine"),
     }
@@ -8303,7 +8701,7 @@ fn preproc_message() {
     match stmt.kind {
         StatementKind::PreprocMessage { expression } => {
             assert!(matches!(
-                expression.kind,
+                parser.expr_node(expression).kind,
                 ExpressionKind::Literal(Literal::String(_))
             ));
         }
@@ -8319,9 +8717,9 @@ fn preproc_reference_expression() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
-    match expr.kind {
+    match parser.expr_node(expr).kind {
         ExpressionKind::PreprocReference(name) => {
-            assert_eq!(name, "myvar");
+            assert_eq!(parser.name(name), "myvar");
         }
         _ => panic!("Expected PreprocReference, got {:?}", expr),
     }
@@ -8333,16 +8731,21 @@ fn preproc_if_expression() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
-    match expr.kind {
+    match &parser.expr_node(expr).kind {
         ExpressionKind::PreprocIf(preproc) => {
-            assert!(matches!(preproc.condition.kind, ExpressionKind::Literal(_)));
             assert!(matches!(
-                preproc.then_branch.kind,
+                parser.expr_node(preproc.condition).kind,
+                ExpressionKind::Literal(_)
+            ));
+            assert!(matches!(
+                parser.expr_node(preproc.then_branch).kind,
                 ExpressionKind::Literal(_)
             ));
             assert!(preproc.else_branch.is_some());
             assert!(matches!(
-                preproc.else_branch.as_ref().unwrap().kind,
+                parser
+                    .expr_node(*preproc.else_branch.as_ref().unwrap())
+                    .kind,
                 ExpressionKind::Literal(_)
             ));
         }
@@ -8366,10 +8769,10 @@ fn preproc_if_expression_with_function_call() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
-    match expr.kind {
+    match &parser.expr_node(expr).kind {
         ExpressionKind::PreprocIf(preproc) => {
             assert!(matches!(
-                preproc.condition.kind,
+                parser.expr_node(preproc.condition).kind,
                 ExpressionKind::FunctionCall { .. }
             ));
         }
@@ -8389,7 +8792,7 @@ fn preproc_if_data_type() {
         StatementKind::VariableDeclaration {
             name, type_source, ..
         } => {
-            assert_eq!(name.name, "x");
+            assert_eq!(parser.name(name.name), "x");
             match type_source {
                 TypeSource::Explicit(DataType::PreprocIf(preproc)) => {
                     assert!(matches!(preproc.then_branch, DataType::Integer));
@@ -8440,7 +8843,7 @@ fn preproc_if_with_defined_condition() {
     match stmt.kind {
         StatementKind::PreprocIf(preproc) => {
             assert!(matches!(
-                preproc.condition.kind,
+                parser.expr_node(preproc.condition).kind,
                 ExpressionKind::FunctionCall { .. }
             ));
         }
@@ -8457,7 +8860,10 @@ fn preproc_reference_in_assignment() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Assignment { value, .. } => {
-            assert!(matches!(value.kind, ExpressionKind::PreprocReference(_)));
+            assert!(matches!(
+                parser.expr_node(value).kind,
+                ExpressionKind::PreprocReference(_)
+            ));
         }
         _ => panic!("Expected Assignment"),
     }
@@ -8501,7 +8907,7 @@ fn preproc_if_expression_with_elseif() {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
-    match expr.kind {
+    match &parser.expr_node(expr).kind {
         ExpressionKind::PreprocIf(preproc) => {
             assert_eq!(preproc.elseif_branches.len(), 1);
             assert!(preproc.else_branch.is_some());
@@ -8523,7 +8929,7 @@ fn preproc_define_at_eof() {
         StatementKind::PreprocDefine {
             name, value_span, ..
         } => {
-            assert_eq!(name.name, "NAME");
+            assert_eq!(program.name(name.name), "NAME");
             let span = value_span.unwrap();
             assert_eq!(&source[span.start as usize..span.end as usize], "hello");
         }
@@ -8541,7 +8947,7 @@ fn define_stream_basic() {
     let stmt = parser.parse_statement().expect("should parse");
     match stmt.kind {
         StatementKind::DefineStream { name } => {
-            assert_eq!(name.name, "s1");
+            assert_eq!(parser.name(name.name), "s1");
         }
         _ => panic!("Expected DefineStream"),
     }
@@ -8555,7 +8961,7 @@ fn define_stream_case_insensitive() {
     let stmt = parser.parse_statement().expect("should parse");
     match stmt.kind {
         StatementKind::DefineStream { name } => {
-            assert_eq!(name.name, "MyStream");
+            assert_eq!(parser.name(name.name), "MyStream");
         }
         _ => panic!("Expected DefineStream"),
     }
@@ -8569,7 +8975,7 @@ fn define_frame_basic() {
     let stmt = parser.parse_statement().expect("should parse");
     match stmt.kind {
         StatementKind::DefineFrame { name, .. } => {
-            assert_eq!(name.name, "f1");
+            assert_eq!(parser.name(name.name), "f1");
         }
         _ => panic!("Expected DefineFrame"),
     }
@@ -8583,7 +8989,7 @@ fn define_frame_with_content() {
     let stmt = parser.parse_statement().expect("should parse");
     match stmt.kind {
         StatementKind::DefineFrame { name, raw_span, .. } => {
-            assert_eq!(name.name, "cust-frame");
+            assert_eq!(parser.name(name.name), "cust-frame");
             // raw_span should cover content between name and period
             let raw_text = &source[raw_span.start as usize..raw_span.end as usize];
             assert!(raw_text.contains("COLUMNS"));
@@ -8702,7 +9108,7 @@ fn input_stream_named_from() {
             operation,
         } => {
             assert_eq!(direction, StreamDirection::Input);
-            assert_eq!(stream_name.unwrap().name, "s1");
+            assert_eq!(parser.name(stream_name.unwrap().name), "s1");
             assert!(matches!(operation, StreamOperation::From(_)));
         }
         _ => panic!("Expected StreamIo"),
@@ -8809,7 +9215,7 @@ fn output_stream_to_unquoted_path_with_append() {
             operation,
             ..
         } => {
-            assert_eq!(stream_name.unwrap().name, "s-output");
+            assert_eq!(parser.name(stream_name.unwrap().name), "s-output");
             match operation {
                 StreamOperation::To { target, append } => {
                     assert!(append);
@@ -8864,11 +9270,13 @@ fn output_to_value_is_an_expression() {
     match stmt.kind {
         StatementKind::StreamIo { operation, .. } => match operation {
             StreamOperation::To { target, .. } => match target {
-                StreamTarget::Expression(expr) => match expr.kind {
+                StreamTarget::Expression(expr) => match &parser.expr_node(expr).kind {
                     ExpressionKind::FunctionCall { arguments, .. } => {
                         assert_eq!(arguments.len(), 1);
-                        match &arguments[0].kind {
-                            ExpressionKind::Identifier(id) => assert_eq!(id.name, "v-file"),
+                        match &parser.expr_node(parser.expr_list(*arguments)[0]).kind {
+                            ExpressionKind::Identifier(id) => {
+                                assert_eq!(parser.name(id.name), "v-file")
+                            }
                             other => panic!("expected an identifier, got {other:?}"),
                         }
                     }
@@ -8970,7 +9378,7 @@ fn output_stream_named_to() {
             operation,
         } => {
             assert_eq!(direction, StreamDirection::Output);
-            assert_eq!(stream_name.unwrap().name, "s-report");
+            assert_eq!(parser.name(stream_name.unwrap().name), "s-report");
             match operation {
                 StreamOperation::To { append, .. } => assert!(!append),
                 _ => panic!("Expected To operation"),
@@ -9031,7 +9439,7 @@ fn input_output_stream_named() {
             operation,
         } => {
             assert_eq!(direction, StreamDirection::InputOutput);
-            assert_eq!(stream_name.unwrap().name, "sIO");
+            assert_eq!(parser.name(stream_name.unwrap().name), "sIO");
             assert!(matches!(operation, StreamOperation::Through(_)));
         }
         _ => panic!("Expected StreamIo"),
@@ -9048,7 +9456,7 @@ fn display_with_stream() {
         StatementKind::Display {
             stream_name, items, ..
         } => {
-            assert_eq!(stream_name.unwrap().name, "s1");
+            assert_eq!(parser.name(stream_name.unwrap().name), "s1");
             assert_eq!(items.len(), 2);
         }
         _ => panic!("Expected Display statement"),
@@ -9152,9 +9560,9 @@ fn parse_define_dataset_basic() {
             parent_id_relations,
             ..
         } => {
-            assert_eq!(name.name, "ds");
+            assert_eq!(parser.name(name.name), "ds");
             assert_eq!(buffers.len(), 1);
-            assert_eq!(buffers[0].name, "ttA");
+            assert_eq!(parser.name(buffers[0].name), "ttA");
             assert!(data_relations.is_empty());
             assert!(parent_id_relations.is_empty());
         }
@@ -9171,9 +9579,9 @@ fn parse_define_dataset_multiple_buffers() {
     match stmt.kind {
         StatementKind::DefineDataset { buffers, .. } => {
             assert_eq!(buffers.len(), 3);
-            assert_eq!(buffers[0].name, "ttA");
-            assert_eq!(buffers[1].name, "ttB");
-            assert_eq!(buffers[2].name, "ttC");
+            assert_eq!(parser.name(buffers[0].name), "ttA");
+            assert_eq!(parser.name(buffers[1].name), "ttB");
+            assert_eq!(parser.name(buffers[2].name), "ttC");
         }
         _ => panic!("Expected DefineDataset"),
     }
@@ -9191,12 +9599,12 @@ fn parse_define_dataset_data_relation() {
         StatementKind::DefineDataset { data_relations, .. } => {
             assert_eq!(data_relations.len(), 1);
             let rel = &data_relations[0];
-            assert_eq!(rel.name.as_ref().unwrap().name, "drPersonAddr");
-            assert_eq!(rel.parent_buffer.name, "ttPerson");
-            assert_eq!(rel.child_buffer.name, "ttAddress");
+            assert_eq!(parser.name(rel.name.as_ref().unwrap().name), "drPersonAddr");
+            assert_eq!(parser.name(rel.parent_buffer.name), "ttPerson");
+            assert_eq!(parser.name(rel.child_buffer.name), "ttAddress");
             assert_eq!(rel.relation_fields.len(), 1);
-            assert_eq!(rel.relation_fields[0].0.name, "personId");
-            assert_eq!(rel.relation_fields[0].1.name, "personId");
+            assert_eq!(parser.name(rel.relation_fields[0].0.name), "personId");
+            assert_eq!(parser.name(rel.relation_fields[0].1.name), "personId");
         }
         _ => panic!("Expected DefineDataset"),
     }
@@ -9215,8 +9623,14 @@ fn parse_define_dataset_multiple_relations() {
     match stmt.kind {
         StatementKind::DefineDataset { data_relations, .. } => {
             assert_eq!(data_relations.len(), 2);
-            assert_eq!(data_relations[0].name.as_ref().unwrap().name, "r1");
-            assert_eq!(data_relations[1].name.as_ref().unwrap().name, "r2");
+            assert_eq!(
+                parser.name(data_relations[0].name.as_ref().unwrap().name),
+                "r1"
+            );
+            assert_eq!(
+                parser.name(data_relations[1].name.as_ref().unwrap().name),
+                "r2"
+            );
         }
         _ => panic!("Expected DefineDataset"),
     }
@@ -9262,14 +9676,14 @@ fn parse_define_dataset_parent_id_relation() {
         } => {
             assert_eq!(parent_id_relations.len(), 1);
             let rel = &parent_id_relations[0];
-            assert_eq!(rel.name.as_ref().unwrap().name, "pidRel");
-            assert_eq!(rel.parent_buffer.name, "ttParent");
-            assert_eq!(rel.child_buffer.name, "ttChild");
-            assert_eq!(rel.id_field.name, "idField");
+            assert_eq!(parser.name(rel.name.as_ref().unwrap().name), "pidRel");
+            assert_eq!(parser.name(rel.parent_buffer.name), "ttParent");
+            assert_eq!(parser.name(rel.child_buffer.name), "ttChild");
+            assert_eq!(parser.name(rel.id_field.name), "idField");
             assert_eq!(rel.parent_fields_before.len(), 2);
-            assert_eq!(rel.parent_fields_before[0].name, "field1");
+            assert_eq!(parser.name(rel.parent_fields_before[0].name), "field1");
             assert_eq!(rel.parent_fields_after.len(), 1);
-            assert_eq!(rel.parent_fields_after[0].name, "field3");
+            assert_eq!(parser.name(rel.parent_fields_after[0].name), "field3");
         }
         _ => panic!("Expected DefineDataset"),
     }
@@ -9313,13 +9727,19 @@ fn parse_define_dataset_xml_serialize_options() {
     match stmt.kind {
         StatementKind::DefineDataset { xml_options, .. } => {
             assert_eq!(
-                xml_options.namespace_uri.as_ref().unwrap().name,
+                parser.name(xml_options.namespace_uri.as_ref().unwrap().name),
                 "urn:example"
             );
-            assert_eq!(xml_options.namespace_prefix.as_ref().unwrap().name, "ex");
-            assert_eq!(xml_options.xml_node_name.as_ref().unwrap().name, "myDs");
             assert_eq!(
-                xml_options.serialize_name.as_ref().unwrap().name,
+                parser.name(xml_options.namespace_prefix.as_ref().unwrap().name),
+                "ex"
+            );
+            assert_eq!(
+                parser.name(xml_options.xml_node_name.as_ref().unwrap().name),
+                "myDs"
+            );
+            assert_eq!(
+                parser.name(xml_options.serialize_name.as_ref().unwrap().name),
                 "dataset1"
             );
             assert!(xml_options.serialize_hidden);
@@ -9522,10 +9942,10 @@ fn parse_define_data_source_basic() {
             query,
             ..
         } => {
-            assert_eq!(name.name, "dsSrc");
+            assert_eq!(parser.name(name.name), "dsSrc");
             assert!(query.is_none());
             assert_eq!(source_buffers.len(), 1);
-            assert_eq!(source_buffers[0].name.name, "Customer");
+            assert_eq!(parser.name(source_buffers[0].name.name), "Customer");
             assert!(source_buffers[0].keys.is_none());
         }
         _ => panic!("Expected DefineDataSource"),
@@ -9544,9 +9964,9 @@ fn parse_define_data_source_with_query() {
             source_buffers,
             ..
         } => {
-            assert_eq!(query.as_ref().unwrap().name, "qCust");
+            assert_eq!(parser.name(query.as_ref().unwrap().name), "qCust");
             assert_eq!(source_buffers.len(), 1);
-            assert_eq!(source_buffers[0].name.name, "Customer");
+            assert_eq!(parser.name(source_buffers[0].name.name), "Customer");
         }
         _ => panic!("Expected DefineDataSource"),
     }
@@ -9561,8 +9981,8 @@ fn parse_define_data_source_multiple_buffers() {
     match stmt.kind {
         StatementKind::DefineDataSource { source_buffers, .. } => {
             assert_eq!(source_buffers.len(), 2);
-            assert_eq!(source_buffers[0].name.name, "Customer");
-            assert_eq!(source_buffers[1].name.name, "Order");
+            assert_eq!(parser.name(source_buffers[0].name.name), "Customer");
+            assert_eq!(parser.name(source_buffers[1].name.name), "Order");
         }
         _ => panic!("Expected DefineDataSource"),
     }
@@ -9578,8 +9998,8 @@ fn parse_define_data_source_with_keys() {
         StatementKind::DefineDataSource { source_buffers, .. } => match &source_buffers[0].keys {
             Some(DataSourceKeys::Fields(fields)) => {
                 assert_eq!(fields.len(), 2);
-                assert_eq!(fields[0].name, "CustNum");
-                assert_eq!(fields[1].name, "Region");
+                assert_eq!(parser.name(fields[0].name), "CustNum");
+                assert_eq!(parser.name(fields[1].name), "Region");
             }
             _ => panic!("Expected Fields keys"),
         },
@@ -9641,7 +10061,7 @@ fn parse_create_dataset() {
             ..
         } => {
             assert_eq!(kind, CreateTargetKind::Dataset);
-            assert_eq!(expr_name(&handle), "hDs");
+            assert_eq!(expr_name(&parser, handle), "hDs");
             assert!(widget_pool.is_none());
         }
         _ => panic!("Expected Create Dataset"),
@@ -9678,7 +10098,7 @@ fn parse_create_data_source() {
             ..
         } => {
             assert_eq!(kind, CreateTargetKind::DataSource);
-            assert_eq!(expr_name(&handle), "hDs");
+            assert_eq!(expr_name(&parser, handle), "hDs");
         }
         _ => panic!("Expected Create DataSource"),
     }
@@ -9696,7 +10116,7 @@ fn parse_create_temp_table() {
             ..
         } => {
             assert_eq!(kind, CreateTargetKind::TempTable);
-            assert_eq!(expr_name(&handle), "hTt");
+            assert_eq!(expr_name(&parser, handle), "hTt");
         }
         _ => panic!("Expected Create TempTable"),
     }
@@ -9714,7 +10134,7 @@ fn parse_create_name() {
             target: CreateTarget::Name(name),
             no_error,
         } => {
-            assert_eq!(name.name, "Customer");
+            assert_eq!(parser.name(name.name), "Customer");
             assert!(!no_error);
         }
         _ => panic!("Expected Create Name"),
@@ -9741,7 +10161,7 @@ fn parse_define_parameter_dataset() {
         } => {
             assert_eq!(direction, ParameterDirection::Input);
             assert_eq!(kind, HandleParamKind::Dataset);
-            assert_eq!(name.name, "dsName");
+            assert_eq!(parser.name(name.name), "dsName");
             assert!(!passing.append);
             assert!(!passing.bind);
         }
@@ -9762,7 +10182,7 @@ fn parse_define_parameter_dataset_handle() {
         } => {
             assert_eq!(direction, ParameterDirection::Output);
             assert_eq!(kind, HandleParamKind::DatasetHandle);
-            assert_eq!(name.name, "hDs");
+            assert_eq!(parser.name(name.name), "hDs");
         }
         _ => panic!("Expected DefineParameter Handle DatasetHandle"),
     }
@@ -9780,7 +10200,7 @@ fn parse_define_parameter_table_for() {
             ..
         } => {
             assert_eq!(kind, HandleParamKind::Table);
-            assert_eq!(name.name, "ttName");
+            assert_eq!(parser.name(name.name), "ttName");
         }
         _ => panic!("Expected DefineParameter Handle Table"),
     }
@@ -9798,7 +10218,7 @@ fn parse_define_parameter_table_handle() {
             ..
         } => {
             assert_eq!(kind, HandleParamKind::TableHandle);
-            assert_eq!(name.name, "hTt");
+            assert_eq!(parser.name(name.name), "hTt");
         }
         _ => panic!("Expected DefineParameter Handle TableHandle"),
     }
@@ -9815,8 +10235,8 @@ fn parse_define_parameter_buffer() {
             param_type: ParameterType::Buffer { name, target },
             ..
         } => {
-            assert_eq!(name.name, "bCust");
-            assert_eq!(target.name, "Customer");
+            assert_eq!(parser.name(name.name), "bCust");
+            assert_eq!(parser.name(target.name), "Customer");
         }
         _ => panic!("Expected DefineParameter Buffer"),
     }
@@ -9842,7 +10262,7 @@ fn parse_define_parameter_buffer_without_direction() {
             StatementKind::DefineParameter {
                 param_type: ParameterType::Buffer { target, .. },
                 ..
-            } => assert_eq!(target.name, expected_target),
+            } => assert_eq!(parser.name(target.name), expected_target),
             other => panic!("Expected DefineParameter Buffer, got {other:?}"),
         }
     }
@@ -9884,8 +10304,14 @@ fn parse_define_temp_table_xml_options() {
             fields,
             ..
         } => {
-            assert_eq!(xml_options.namespace_uri.as_ref().unwrap().name, "urn:test");
-            assert_eq!(xml_options.serialize_name.as_ref().unwrap().name, "myTable");
+            assert_eq!(
+                parser.name(xml_options.namespace_uri.as_ref().unwrap().name),
+                "urn:test"
+            );
+            assert_eq!(
+                parser.name(xml_options.serialize_name.as_ref().unwrap().name),
+                "myTable"
+            );
             assert_eq!(fields.len(), 1);
         }
         _ => panic!("Expected DefineTempTable"),
@@ -9901,8 +10327,14 @@ fn parse_define_buffer_xml_options() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::DefineBuffer { xml_options, .. } => {
-            assert_eq!(xml_options.namespace_uri.as_ref().unwrap().name, "urn:foo");
-            assert_eq!(xml_options.serialize_name.as_ref().unwrap().name, "cust");
+            assert_eq!(
+                parser.name(xml_options.namespace_uri.as_ref().unwrap().name),
+                "urn:foo"
+            );
+            assert_eq!(
+                parser.name(xml_options.serialize_name.as_ref().unwrap().name),
+                "cust"
+            );
         }
         _ => panic!("Expected DefineBuffer"),
     }
@@ -9923,7 +10355,7 @@ fn parse_publish_string_literal() {
             arguments,
         } => {
             assert!(matches!(
-                event_name.kind,
+                parser.expr_node(event_name).kind,
                 ExpressionKind::Literal(Literal::String(_))
             ));
             assert!(from_handle.is_none());
@@ -9984,8 +10416,8 @@ fn parse_publish_expression_event() {
             arguments,
             ..
         } => {
-            match event_name.kind {
-                ExpressionKind::Identifier(id) => assert_eq!(id.name, "cEventName"),
+            match parser.expr_node(event_name).kind {
+                ExpressionKind::Identifier(id) => assert_eq!(parser.name(id.name), "cEventName"),
                 _ => panic!("Expected identifier event name"),
             }
             assert!(arguments.is_empty());
@@ -10058,7 +10490,10 @@ fn parse_subscribe_with_run_procedure() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Subscribe { run_procedure, .. } => {
-            assert_eq!(run_procedure.as_ref().unwrap().name, "MyHandler");
+            assert_eq!(
+                parser.name(run_procedure.as_ref().unwrap().name),
+                "MyHandler"
+            );
         }
         _ => panic!("Expected Subscribe statement"),
     }
@@ -10166,7 +10601,7 @@ fn parse_define_event_minimal() {
             assert_eq!(access, AccessModifier::Public);
             assert!(!is_static);
             assert!(!is_abstract);
-            assert_eq!(name.name, "MyEvent");
+            assert_eq!(parser.name(name.name), "MyEvent");
             assert!(parameters.is_empty());
         }
         _ => panic!("Expected DefineEvent statement"),
@@ -10188,7 +10623,7 @@ fn parse_define_event_abstract() {
         } => {
             assert_eq!(access, AccessModifier::Protected);
             assert!(is_abstract);
-            assert_eq!(name.name, "MyEvent");
+            assert_eq!(parser.name(name.name), "MyEvent");
         }
         _ => panic!("Expected DefineEvent statement"),
     }
@@ -10204,7 +10639,7 @@ fn parse_define_event_multiple_params() {
         StatementKind::DefineEvent {
             parameters, name, ..
         } => {
-            assert_eq!(name.name, "MyEvent");
+            assert_eq!(parser.name(name.name), "MyEvent");
             assert_eq!(parameters.len(), 3);
             // Verify first param
             match &parameters[0].kind {
@@ -10217,7 +10652,7 @@ fn parse_define_event_multiple_params() {
                         ParameterType::Variable {
                             name, type_source, ..
                         } => {
-                            assert_eq!(name.name, "p1");
+                            assert_eq!(parser.name(name.name), "p1");
                             assert_eq!(*type_source, TypeSource::Explicit(DataType::Integer));
                         }
                         _ => panic!("Expected Variable param type"),
@@ -10266,7 +10701,7 @@ END INTERFACE.";
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Interface { body, name, .. } => {
-            assert_eq!(name.name, "IObservable");
+            assert_eq!(parser.name(name.name), "IObservable");
             assert_eq!(body.len(), 1);
             assert!(matches!(body[0].kind, StatementKind::DefineEvent { .. }));
         }
@@ -10291,8 +10726,8 @@ fn parse_publish_event_name_not_function_call() {
             ..
         } => {
             // Event name should be a plain identifier, not a function call
-            match event_name.kind {
-                ExpressionKind::Identifier(id) => assert_eq!(id.name, "myEvent"),
+            match parser.expr_node(event_name).kind {
+                ExpressionKind::Identifier(id) => assert_eq!(parser.name(id.name), "myEvent"),
                 _ => panic!("Expected identifier event name, got {:?}", event_name),
             }
             // Arguments should be parsed as PUBLISH arguments
@@ -10323,9 +10758,9 @@ fn parse_on_choose_of_button() {
             assert!(!anywhere);
             assert_eq!(clauses.len(), 1);
             assert_eq!(clauses[0].events.len(), 1);
-            assert_eq!(clauses[0].events[0].name, "CHOOSE");
+            assert_eq!(parser.name(clauses[0].events[0].name), "CHOOSE");
             assert_eq!(clauses[0].widgets.len(), 1);
-            assert_eq!(clauses[0].widgets[0].name.name, "btnOk");
+            assert_eq!(parser.name(clauses[0].widgets[0].name.name), "btnOk");
             assert!(clauses[0].widgets[0].qualifier.is_none());
             assert!(matches!(action, OnAction::Block(_)));
         }
@@ -10344,8 +10779,8 @@ fn parse_on_multiple_events() {
             kind: OnKind::UiEvent { clauses, .. },
         } => {
             assert_eq!(clauses[0].events.len(), 2);
-            assert_eq!(clauses[0].events[0].name, "CHOOSE");
-            assert_eq!(clauses[0].events[1].name, "ENTRY");
+            assert_eq!(parser.name(clauses[0].events[0].name), "CHOOSE");
+            assert_eq!(parser.name(clauses[0].events[1].name), "ENTRY");
         }
         _ => panic!("Expected On UiEvent statement"),
     }
@@ -10362,8 +10797,8 @@ fn parse_on_multiple_widgets() {
             kind: OnKind::UiEvent { clauses, .. },
         } => {
             assert_eq!(clauses[0].widgets.len(), 2);
-            assert_eq!(clauses[0].widgets[0].name.name, "btn1");
-            assert_eq!(clauses[0].widgets[1].name.name, "btn2");
+            assert_eq!(parser.name(clauses[0].widgets[0].name.name), "btn1");
+            assert_eq!(parser.name(clauses[0].widgets[1].name.name), "btn2");
         }
         _ => panic!("Expected On UiEvent statement"),
     }
@@ -10380,9 +10815,11 @@ fn parse_on_widget_in_frame() {
             kind: OnKind::UiEvent { clauses, .. },
         } => {
             assert_eq!(clauses[0].widgets.len(), 1);
-            assert_eq!(clauses[0].widgets[0].name.name, "btnOk");
+            assert_eq!(parser.name(clauses[0].widgets[0].name.name), "btnOk");
             match &clauses[0].widgets[0].qualifier {
-                Some(WidgetQualifier::InFrame(frame)) => assert_eq!(frame.name, "main-frame"),
+                Some(WidgetQualifier::InFrame(frame)) => {
+                    assert_eq!(parser.name(frame.name), "main-frame")
+                }
                 other => panic!("Expected InFrame qualifier, got {:?}", other),
             }
         }
@@ -10401,10 +10838,10 @@ fn parse_on_or_clause() {
             kind: OnKind::UiEvent { clauses, .. },
         } => {
             assert_eq!(clauses.len(), 2);
-            assert_eq!(clauses[0].events[0].name, "CHOOSE");
-            assert_eq!(clauses[0].widgets[0].name.name, "btn1");
-            assert_eq!(clauses[1].events[0].name, "ENTRY");
-            assert_eq!(clauses[1].widgets[0].name.name, "fill1");
+            assert_eq!(parser.name(clauses[0].events[0].name), "CHOOSE");
+            assert_eq!(parser.name(clauses[0].widgets[0].name.name), "btn1");
+            assert_eq!(parser.name(clauses[1].events[0].name), "ENTRY");
+            assert_eq!(parser.name(clauses[1].widgets[0].name.name), "fill1");
         }
         _ => panic!("Expected On UiEvent statement"),
     }
@@ -10443,7 +10880,7 @@ fn parse_on_anywhere_with_widgets() {
         } => {
             assert!(anywhere);
             assert_eq!(clauses.len(), 1);
-            assert_eq!(clauses[0].widgets[0].name.name, "btn1");
+            assert_eq!(parser.name(clauses[0].widgets[0].name.name), "btn1");
         }
         _ => panic!("Expected On UiEvent statement"),
     }
@@ -10496,7 +10933,9 @@ fn parse_on_persistent_run() {
                 arguments,
                 ..
             } => {
-                assert!(matches!(&procedure, PersistentRunTarget::Name(n) if n.name == "myProc"));
+                assert!(
+                    matches!(&procedure, PersistentRunTarget::Name(n) if parser.name(n.name) == "myProc")
+                );
                 assert!(arguments.is_empty());
             }
             other => panic!("Expected PersistentRun, got {:?}", other),
@@ -10534,7 +10973,7 @@ fn parse_on_leave_event_name() {
         StatementKind::On {
             kind: OnKind::UiEvent { clauses, .. },
         } => {
-            assert_eq!(clauses[0].events[0].name, "LEAVE");
+            assert_eq!(parser.name(clauses[0].events[0].name), "LEAVE");
         }
         _ => panic!("Expected On UiEvent statement"),
     }
@@ -10575,7 +11014,7 @@ fn parse_on_create_of_table() {
                 },
         } => {
             assert_eq!(event, DbTriggerEvent::Create);
-            assert_eq!(target.name, "Customer");
+            assert_eq!(parser.name(target.name), "Customer");
             assert!(!is_override);
         }
         _ => panic!("Expected On DbEvent statement"),
@@ -10596,8 +11035,14 @@ fn parse_on_write_with_buffers() {
             },
         } => {
             assert_eq!(event, DbTriggerEvent::Write);
-            assert_eq!(referencing.new_buffer.as_ref().unwrap().name, "bNew");
-            assert_eq!(referencing.old_buffer.as_ref().unwrap().name, "bOld");
+            assert_eq!(
+                parser.name(referencing.new_buffer.as_ref().unwrap().name),
+                "bNew"
+            );
+            assert_eq!(
+                parser.name(referencing.old_buffer.as_ref().unwrap().name),
+                "bOld"
+            );
         }
         _ => panic!("Expected On DbEvent statement"),
     }
@@ -10614,7 +11059,7 @@ fn parse_on_assign_of_field() {
             kind: OnKind::DbEvent { event, target, .. },
         } => {
             assert_eq!(event, DbTriggerEvent::Assign);
-            assert_eq!(target.name, "Customer.Name");
+            assert_eq!(parser.name(target.name), "Customer.Name");
         }
         _ => panic!("Expected On DbEvent statement"),
     }
@@ -10630,7 +11075,10 @@ fn parse_on_assign_old_value() {
         StatementKind::On {
             kind: OnKind::DbEvent { referencing, .. },
         } => {
-            assert_eq!(referencing.old_value.as_ref().unwrap().name, "oldName");
+            assert_eq!(
+                parser.name(referencing.old_value.as_ref().unwrap().name),
+                "oldName"
+            );
         }
         _ => panic!("Expected On DbEvent statement"),
     }
@@ -10684,8 +11132,8 @@ fn parse_on_key_remap() {
                     key_function,
                 },
         } => {
-            assert_eq!(key_label.name, "F1");
-            assert_eq!(key_function.name, "HELP");
+            assert_eq!(parser.name(key_label.name), "F1");
+            assert_eq!(parser.name(key_function.name), "HELP");
         }
         _ => panic!("Expected On KeyRemap statement"),
     }
@@ -10702,7 +11150,7 @@ fn parse_trigger_procedure_create() {
     match stmt.kind {
         StatementKind::TriggerProcedure { event, target, .. } => {
             assert_eq!(event, DbTriggerEvent::Create);
-            assert_eq!(target.name, "Customer");
+            assert_eq!(parser.name(target.name), "Customer");
         }
         _ => panic!("Expected TriggerProcedure statement"),
     }
@@ -10719,8 +11167,14 @@ fn parse_trigger_procedure_write() {
             event, referencing, ..
         } => {
             assert_eq!(event, DbTriggerEvent::Write);
-            assert_eq!(referencing.new_buffer.as_ref().unwrap().name, "bNew");
-            assert_eq!(referencing.old_buffer.as_ref().unwrap().name, "bOld");
+            assert_eq!(
+                parser.name(referencing.new_buffer.as_ref().unwrap().name),
+                "bNew"
+            );
+            assert_eq!(
+                parser.name(referencing.old_buffer.as_ref().unwrap().name),
+                "bOld"
+            );
         }
         _ => panic!("Expected TriggerProcedure statement"),
     }
@@ -10734,8 +11188,14 @@ fn parse_trigger_procedure_write_no_buffer_keyword() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::TriggerProcedure { referencing, .. } => {
-            assert_eq!(referencing.new_buffer.as_ref().unwrap().name, "bNew");
-            assert_eq!(referencing.old_buffer.as_ref().unwrap().name, "bOld");
+            assert_eq!(
+                parser.name(referencing.new_buffer.as_ref().unwrap().name),
+                "bNew"
+            );
+            assert_eq!(
+                parser.name(referencing.old_buffer.as_ref().unwrap().name),
+                "bOld"
+            );
         }
         _ => panic!("Expected TriggerProcedure statement"),
     }
@@ -10755,7 +11215,7 @@ fn parse_trigger_procedure_assign_of() {
             ..
         } => {
             assert_eq!(event, DbTriggerEvent::Assign);
-            assert_eq!(target.name, "Customer.Name");
+            assert_eq!(parser.name(target.name), "Customer.Name");
             assert!(new_value.is_none());
         }
         _ => panic!("Expected TriggerProcedure statement"),
@@ -10777,7 +11237,7 @@ fn parse_trigger_procedure_assign_new_value() {
         } => {
             assert_eq!(event, DbTriggerEvent::Assign);
             let nv = new_value.unwrap();
-            assert_eq!(nv.name.name, "newVal");
+            assert_eq!(parser.name(nv.name.name), "newVal");
             assert_eq!(nv.data_type, DataType::Character);
             assert!(old_value_param.is_none());
         }
@@ -10799,10 +11259,10 @@ fn parse_trigger_procedure_assign_new_old_value() {
             ..
         } => {
             let nv = new_value.unwrap();
-            assert_eq!(nv.name.name, "newVal");
+            assert_eq!(parser.name(nv.name.name), "newVal");
             assert_eq!(nv.data_type, DataType::Character);
             let ov = old_value_param.unwrap();
-            assert_eq!(ov.name.name, "oldVal");
+            assert_eq!(parser.name(ov.name.name), "oldVal");
             assert_eq!(ov.data_type, DataType::Character);
         }
         _ => panic!("Expected TriggerProcedure statement"),
@@ -10823,7 +11283,7 @@ END PROCEDURE."#;
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Procedure { name, body, .. } => {
-            assert_eq!(name.name, "myProc");
+            assert_eq!(parser.name(name.name), "myProc");
             assert_eq!(body.len(), 1);
             assert!(matches!(body[0].kind, StatementKind::On { .. }));
         }
@@ -10954,10 +11414,13 @@ fn parse_include_reference_as_expression() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Assignment { target, value } => {
-            assert!(matches!(target.kind, ExpressionKind::Identifier(_)));
-            match value.kind {
+            assert!(matches!(
+                parser.expr_node(target).kind,
+                ExpressionKind::Identifier(_)
+            ));
+            match parser.expr_node(value).kind {
                 ExpressionKind::IncludeReference { path_and_args, .. } => {
-                    assert_eq!(path_and_args, "file.i");
+                    assert_eq!(parser.name(path_and_args), "file.i");
                 }
                 _ => panic!("Expected IncludeReference expression, got {:?}", value),
             }
@@ -10975,8 +11438,11 @@ fn parse_include_arg_reference_as_expression() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Assignment { target, value } => {
-            assert!(matches!(target.kind, ExpressionKind::Identifier(_)));
-            match value.kind {
+            assert!(matches!(
+                parser.expr_node(target).kind,
+                ExpressionKind::Identifier(_)
+            ));
+            match parser.expr_node(value).kind {
                 ExpressionKind::IncludeArgReference { index, .. } => {
                     assert_eq!(index, 1);
                 }
@@ -11013,7 +11479,7 @@ fn parse_include_inside_procedure() {
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
         StatementKind::Procedure { name, body, .. } => {
-            assert_eq!(name.name, "my-proc");
+            assert_eq!(parser.name(name.name), "my-proc");
             assert_eq!(body.len(), 1);
             assert!(matches!(
                 body[0].kind,
@@ -11200,10 +11666,10 @@ fn buffer_value_unquoted_comma_list_standalone() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Assignment { value, .. } => match value.kind {
+        StatementKind::Assignment { value, .. } => match &parser.expr_node(value).kind {
             ExpressionKind::Literal(Literal::String(s)) => {
                 assert_eq!(
-                    s.value,
+                    parser.name(s.value),
                     "dataAvailable,confirmContinue,isUpdatePending,buildDataRequest"
                 );
             }
@@ -11222,10 +11688,10 @@ fn buffer_value_unquoted_comma_list_under_assign() {
     match stmt.kind {
         StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 1);
-            match &assignments[0].value.kind {
+            match &parser.expr_node(assignments[0].value).kind {
                 ExpressionKind::Literal(Literal::String(s)) => {
                     assert_eq!(
-                        s.value,
+                        parser.name(s.value),
                         "dataAvailable,confirmContinue,isUpdatePending,buildDataRequest"
                     );
                 }
@@ -11243,9 +11709,9 @@ fn buffer_field_chained_lvalue_quoted_still_works() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Assignment { value, .. } => match value.kind {
+        StatementKind::Assignment { value, .. } => match &parser.expr_node(value).kind {
             ExpressionKind::Literal(Literal::String(s)) => {
-                assert_eq!(s.value, "dataAvailable,confirmContinue");
+                assert_eq!(parser.name(s.value), "dataAvailable,confirmContinue");
             }
             other => panic!("expected string literal, got {other:?}"),
         },
@@ -11279,8 +11745,10 @@ fn comma_list_then_no_error_under_assign() {
     match stmt.kind {
         StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 1);
-            match &assignments[0].value.kind {
-                ExpressionKind::Literal(Literal::String(s)) => assert_eq!(s.value, "a,b,c"),
+            match &parser.expr_node(assignments[0].value).kind {
+                ExpressionKind::Literal(Literal::String(s)) => {
+                    assert_eq!(parser.name(s.value), "a,b,c")
+                }
                 other => panic!("expected string list, got {other:?}"),
             }
         }
@@ -11298,12 +11766,14 @@ fn comma_list_then_second_assign_pair() {
     match stmt.kind {
         StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 2);
-            match &assignments[0].value.kind {
-                ExpressionKind::Literal(Literal::String(s)) => assert_eq!(s.value, "a,b"),
+            match &parser.expr_node(assignments[0].value).kind {
+                ExpressionKind::Literal(Literal::String(s)) => {
+                    assert_eq!(parser.name(s.value), "a,b")
+                }
                 other => panic!("expected folded list for t1, got {other:?}"),
             }
-            match &assignments[1].value.kind {
-                ExpressionKind::Identifier(id) => assert_eq!(id.name, "c"),
+            match &parser.expr_node(assignments[1].value).kind {
+                ExpressionKind::Identifier(id) => assert_eq!(parser.name(id.name), "c"),
                 other => panic!("expected identifier c for t2, got {other:?}"),
             }
         }
@@ -11323,9 +11793,9 @@ ghProp:BUFFER-FIELD('ObjectType':U):BUFFER-VALUE = 'Procedure':U.";
     match stmt.kind {
         StatementKind::Assign { assignments } => {
             assert_eq!(assignments.len(), 2);
-            match &assignments[0].value.kind {
+            match &parser.expr_node(assignments[0].value).kind {
                 ExpressionKind::Literal(Literal::String(s)) => {
-                    assert_eq!(s.value, "dataAvailable,confirmContinue");
+                    assert_eq!(parser.name(s.value), "dataAvailable,confirmContinue");
                 }
                 other => panic!("expected folded comma list, got {other:?}"),
             }
@@ -11481,16 +11951,21 @@ fn nested_block_error_does_not_orphan_outer_block() {
 // debug_assert). See docs/plans/2026-07-22-001-feat-ast-wrapper-spans-plan.md.
 // ---------------------------------------------------------------------------
 
-fn parse_program_stmts(source: &str) -> Vec<Statement> {
+fn parse_program_stmts(source: &str) -> Parsed {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
-    parser.parse_program().statements
+    Parsed(parser.parse_program())
 }
 
-fn parse_one_expr(source: &str) -> Expression {
+fn parse_one_expr(source: &str) -> (ExprId, AstPools) {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
-    parser.parse_expression().expect("expected an expression")
+    let id = parser.parse_expression().expect("expected an expression");
+    let pools = AstPools {
+        names: std::mem::take(&mut parser.names).finish(),
+        exprs: std::mem::take(&mut parser.exprs),
+    };
+    (id, pools)
 }
 
 #[test]
@@ -11553,16 +12028,18 @@ fn empty_stmt_from_stray_period_is_period_width_and_non_overlapping() {
 fn expr_span_precedence_tree_shape() {
     // a + b * c : outer Add spans a..c; inner Multiply spans b..c; leaves single.
     let source = "a + b * c";
-    let expr = parse_one_expr(source);
+    let (id, pools) = parse_one_expr(source);
+    let expr = pools.expr(id);
     assert_eq!(expr.span, Span { start: 0, end: 9 });
     if let ExpressionKind::Add(lhs, rhs) = &expr.kind {
-        assert_eq!(lhs.span, Span { start: 0, end: 1 }); // a
-        assert_eq!(rhs.span, Span { start: 4, end: 9 }); // b * c
-        if let ExpressionKind::Multiply(m_lhs, m_rhs) = &rhs.kind {
-            assert_eq!(m_lhs.span, Span { start: 4, end: 5 }); // b
-            assert_eq!(m_rhs.span, Span { start: 8, end: 9 }); // c
+        assert_eq!(pools.expr(*lhs).span, Span { start: 0, end: 1 }); // a
+        let rhs_node = pools.expr(*rhs);
+        assert_eq!(rhs_node.span, Span { start: 4, end: 9 }); // b * c
+        if let ExpressionKind::Multiply(m_lhs, m_rhs) = &rhs_node.kind {
+            assert_eq!(pools.expr(*m_lhs).span, Span { start: 4, end: 5 }); // b
+            assert_eq!(pools.expr(*m_rhs).span, Span { start: 8, end: 9 }); // c
         } else {
-            panic!("expected Multiply, got {:?}", rhs.kind);
+            panic!("expected Multiply, got {:?}", rhs_node.kind);
         }
     } else {
         panic!("expected Add, got {:?}", expr.kind);
@@ -11572,7 +12049,8 @@ fn expr_span_precedence_tree_shape() {
 #[test]
 fn expr_span_parenthesized_includes_parens() {
     let source = "(a + b)";
-    let expr = parse_one_expr(source);
+    let (id, pools) = parse_one_expr(source);
+    let expr = pools.expr(id);
     // Node span includes the enclosing parens (round-trip fidelity).
     assert_eq!(expr.span, Span { start: 0, end: 7 });
     assert!(matches!(expr.kind, ExpressionKind::Add(..)));
@@ -11581,10 +12059,11 @@ fn expr_span_parenthesized_includes_parens() {
 #[test]
 fn expr_span_prefix_negate_starts_at_operator() {
     let source = "-x";
-    let expr = parse_one_expr(source);
+    let (id, pools) = parse_one_expr(source);
+    let expr = pools.expr(id);
     assert_eq!(expr.span, Span { start: 0, end: 2 });
     if let ExpressionKind::Negate(inner) = &expr.kind {
-        assert_eq!(inner.span, Span { start: 1, end: 2 });
+        assert_eq!(pools.expr(*inner).span, Span { start: 1, end: 2 });
     } else {
         panic!("expected Negate, got {:?}", expr.kind);
     }
@@ -11593,7 +12072,8 @@ fn expr_span_prefix_negate_starts_at_operator() {
 #[test]
 fn expr_span_prefix_not_starts_at_operator() {
     let source = "NOT x";
-    let expr = parse_one_expr(source);
+    let (id, pools) = parse_one_expr(source);
+    let expr = pools.expr(id);
     assert_eq!(expr.span, Span { start: 0, end: 5 });
     assert!(matches!(expr.kind, ExpressionKind::Not(_)));
 }
@@ -11601,7 +12081,8 @@ fn expr_span_prefix_not_starts_at_operator() {
 #[test]
 fn expr_span_ternary_starts_at_if() {
     let source = "IF c THEN a ELSE b";
-    let expr = parse_one_expr(source);
+    let (id, pools) = parse_one_expr(source);
+    let expr = pools.expr(id);
     assert_eq!(expr.span.start, 0);
     assert_eq!(expr.span.end as usize, source.len());
     assert!(matches!(expr.kind, ExpressionKind::IfThenElse(..)));
@@ -11610,12 +12091,14 @@ fn expr_span_ternary_starts_at_if() {
 #[test]
 fn expr_span_function_call_covers_through_close_paren() {
     let source = "foo(a, b)";
-    let expr = parse_one_expr(source);
+    let (id, pools) = parse_one_expr(source);
+    let expr = pools.expr(id);
     assert_eq!(expr.span, Span { start: 0, end: 9 });
     if let ExpressionKind::FunctionCall { arguments, .. } = &expr.kind {
-        assert_eq!(arguments.len(), 2);
-        assert_eq!(arguments[0].span, Span { start: 4, end: 5 }); // a
-        assert_eq!(arguments[1].span, Span { start: 7, end: 8 }); // b
+        let args = pools.exprs(*arguments);
+        assert_eq!(args.len(), 2);
+        assert_eq!(pools.expr(args[0]).span, Span { start: 4, end: 5 }); // a
+        assert_eq!(pools.expr(args[1]).span, Span { start: 7, end: 8 }); // b
     } else {
         panic!("expected FunctionCall, got {:?}", expr.kind);
     }
@@ -11625,11 +12108,12 @@ fn expr_span_function_call_covers_through_close_paren() {
 fn expr_span_postfix_method_chain() {
     // obj:method(arg) — MethodCall spans obj..close-paren; object span is just obj.
     let source = "obj:method(arg)";
-    let expr = parse_one_expr(source);
+    let (id, pools) = parse_one_expr(source);
+    let expr = pools.expr(id);
     assert_eq!(expr.span.start, 0);
     assert_eq!(expr.span.end as usize, source.len());
     if let ExpressionKind::MethodCall { object, .. } = &expr.kind {
-        assert_eq!(object.span, Span { start: 0, end: 3 }); // obj
+        assert_eq!(pools.expr(*object).span, Span { start: 0, end: 3 }); // obj
     } else {
         panic!("expected MethodCall, got {:?}", expr.kind);
     }
@@ -11923,7 +12407,7 @@ fn an_editing_block_names_survive_in_the_tail_of_a_head_parsed_statement() {
         "{:?}",
         stmts[0].kind
     );
-    let names = tail_names(&stmts[0]);
+    let names = tail_names(&stmts, &stmts[0]);
     assert!(
         names.contains(&"v-x") && names.contains(&"v-y"),
         "{names:?}"
@@ -12065,7 +12549,7 @@ fn for_each_fields_and_except_phrases_keep_where_and_body() {
                 body,
                 ..
             } => {
-                assert_eq!(buffer.name, "customer");
+                assert_eq!(stmts.name(buffer.name), "customer");
                 assert!(where_clause.is_some(), "{source}");
                 assert_eq!(*lock_type, LockType::NoLock);
                 assert_eq!(body.len(), 1, "{source}");
@@ -12149,20 +12633,21 @@ fn parse_with_errors(source: &str) -> Program {
 }
 
 #[track_caller]
-fn only_annotation(source: &str) -> oxabl_ast::Annotation {
+fn only_annotation(source: &str) -> (oxabl_ast::Annotation, Program) {
     let program = parse_with_errors(source);
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     assert_eq!(program.statements.len(), 1, "{source}");
-    match &program.statements[0].kind {
+    let annotation = match &program.statements[0].kind {
         StatementKind::Annotation(a) => a.clone(),
         other => panic!("expected an annotation, got {other:?}"),
-    }
+    };
+    (annotation, program)
 }
 
 #[test]
 fn bare_annotation_parses() {
-    let a = only_annotation("@Test.");
-    assert_eq!(a.name.name, "Test");
+    let (a, program) = only_annotation("@Test.");
+    assert_eq!(program.ident(a.name), "Test");
     assert!(a.qualifier.is_none());
     assert!(a.attributes.is_empty());
 }
@@ -12178,62 +12663,93 @@ fn annotation_span_covers_at_through_period() {
 #[test]
 fn annotation_name_span_excludes_the_at_sign() {
     let source = "@strict.effects(reads=\"Customer\").";
-    let a = only_annotation(source);
+    let (a, _) = only_annotation(source);
     assert_span_covers(source, a.name.span, "strict.effects");
 }
 
 #[test]
 fn annotation_with_attributes() {
-    let a = only_annotation("@Test (expected=\"Progress.Lang.AppError\", ignore=\"x\").");
+    let (a, program) =
+        only_annotation("@Test (expected=\"Progress.Lang.AppError\", ignore=\"x\").");
     assert_eq!(a.attributes.len(), 2);
-    assert_eq!(a.attributes[0].name.name, "expected");
+    assert_eq!(program.ident(a.attributes[0].name), "expected");
     assert_eq!(
         a.attributes[0].value,
         oxabl_ast::AnnotationValue::String("Progress.Lang.AppError".into())
     );
-    assert_eq!(a.attribute("IGNORE").unwrap().value.as_str(), "x");
+    assert_eq!(
+        a.attribute(&program.pools.names, "IGNORE")
+            .unwrap()
+            .value
+            .as_str(),
+        "x"
+    );
 }
 
 #[test]
 fn dotted_annotation_name_with_attributes() {
-    let a = only_annotation("@strict.effects(reads=\"Customer\", writes=\"Order\").");
-    assert_eq!(a.name.name, "strict.effects");
-    assert_eq!(a.attribute("reads").unwrap().value.as_str(), "Customer");
-    assert_eq!(a.attribute("writes").unwrap().value.as_str(), "Order");
+    let (a, program) = only_annotation("@strict.effects(reads=\"Customer\", writes=\"Order\").");
+    assert_eq!(program.ident(a.name), "strict.effects");
+    assert_eq!(
+        a.attribute(&program.pools.names, "reads")
+            .unwrap()
+            .value
+            .as_str(),
+        "Customer"
+    );
+    assert_eq!(
+        a.attribute(&program.pools.names, "writes")
+            .unwrap()
+            .value
+            .as_str(),
+        "Order"
+    );
 }
 
 #[test]
 fn annotation_name_may_contain_reserved_words() {
-    let a = only_annotation("@openapi.openedge.export(type=\"REST\").");
-    assert_eq!(a.name.name, "openapi.openedge.export");
-    assert_eq!(a.attribute("type").unwrap().value.as_str(), "REST");
+    let (a, program) = only_annotation("@openapi.openedge.export(type=\"REST\").");
+    assert_eq!(program.ident(a.name), "openapi.openedge.export");
+    assert_eq!(
+        a.attribute(&program.pools.names, "type")
+            .unwrap()
+            .value
+            .as_str(),
+        "REST"
+    );
 }
 
 #[test]
 fn annotation_with_qualifier() {
-    let a =
+    let (a, program) =
         only_annotation("@openapi.openedge.export FILE(type=\"REST\", useReturnValue=\"false\").");
-    assert_eq!(a.name.name, "openapi.openedge.export");
-    assert_eq!(a.qualifier.as_ref().unwrap().name, "FILE");
+    assert_eq!(program.ident(a.name), "openapi.openedge.export");
+    assert_eq!(program.ident(a.qualifier.unwrap()), "FILE");
     assert_eq!(a.attributes.len(), 2);
 }
 
 #[test]
 fn annotation_empty_parens_and_single_quotes() {
-    assert!(only_annotation("@Test().").attributes.is_empty());
-    let a = only_annotation("@Test(a='x').");
-    assert_eq!(a.attribute("a").unwrap().value.as_str(), "x");
+    assert!(only_annotation("@Test().").0.attributes.is_empty());
+    let (a, program) = only_annotation("@Test(a='x').");
+    assert_eq!(
+        a.attribute(&program.pools.names, "a")
+            .unwrap()
+            .value
+            .as_str(),
+        "x"
+    );
 }
 
 #[test]
 fn annotation_unquoted_value_is_kept_bare() {
-    let a = only_annotation("@Test(count=3, flag=yes).");
+    let (a, program) = only_annotation("@Test(count=3, flag=yes).");
     assert_eq!(
-        a.attribute("count").unwrap().value,
+        a.attribute(&program.pools.names, "count").unwrap().value,
         oxabl_ast::AnnotationValue::Bare("3".into())
     );
     assert_eq!(
-        a.attribute("flag").unwrap().value,
+        a.attribute(&program.pools.names, "flag").unwrap().value,
         oxabl_ast::AnnotationValue::Bare("yes".into())
     );
 }
@@ -12246,7 +12762,7 @@ fn trailing_period_is_not_part_of_the_name() {
     assert_eq!(program.statements.len(), 2);
     assert!(matches!(
         &program.statements[0].kind,
-        StatementKind::Annotation(a) if a.name.name == "Test"
+        StatementKind::Annotation(a) if program.ident(a.name) == "Test"
     ));
     assert!(matches!(
         program.statements[1].kind,
@@ -12274,7 +12790,8 @@ fn annotations_inside_a_class_body() {
 
 #[test]
 fn annotation_without_final_period_at_eof() {
-    assert_eq!(only_annotation("@Test").name.name, "Test");
+    let (a, program) = only_annotation("@Test");
+    assert_eq!(program.ident(a.name), "Test");
 }
 
 #[test]
@@ -12313,7 +12830,8 @@ fn lone_at_signs_are_reported_at_the_first_one() {
 
 #[test]
 fn annotation_named_at_is_a_name() {
-    assert_eq!(only_annotation("@at.").name.name, "at");
+    let (a, program) = only_annotation("@at.");
+    assert_eq!(program.ident(a.name), "at");
 }
 
 #[test]
@@ -12332,7 +12850,7 @@ fn create_call_is_a_handle_create() {
             no_error,
         } => {
             assert_eq!(*kind, CreateTargetKind::Call);
-            assert_eq!(expr_name(handle), "hCall");
+            assert_eq!(expr_name(&stmts, *handle), "hCall");
             assert!(widget_pool.is_some());
             assert!(*no_error);
         }
@@ -12375,10 +12893,10 @@ fn dynamic_new_is_a_function_call_over_the_class_and_arguments() {
     let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
         panic!("expected assignment, got {:?}", stmts[0].kind);
     };
-    let ExpressionKind::FunctionCall { name, arguments } = &value.kind else {
-        panic!("expected a call, got {:?}", value.kind);
+    let ExpressionKind::FunctionCall { name, arguments } = &stmts.expr(*value).kind else {
+        panic!("expected a call, got {:?}", stmts.expr(*value).kind);
     };
-    assert_eq!(name.name, "DYNAMIC-NEW");
+    assert_eq!(stmts.name(name.name), "DYNAMIC-NEW");
     assert!(!arguments.is_empty());
 }
 
@@ -12397,7 +12915,7 @@ fn define_workfile_declares_a_temp_table() {
                 program.statements[0].kind
             );
         };
-        assert_eq!(name.name, "wt");
+        assert_eq!(program.name(name.name), "wt");
         assert_eq!(fields.len(), 2);
     }
 }
@@ -12454,8 +12972,12 @@ fn accum_aggregate_word_is_not_an_argument() {
     let StatementKind::Display { items, .. } = &program.statements[0].kind else {
         panic!("expected DISPLAY, got {:?}", program.statements[0].kind);
     };
-    let ExpressionKind::FunctionCall { arguments, .. } = &items[0].expression.kind else {
-        panic!("expected ACCUM call, got {:?}", items[0].expression.kind);
+    let ExpressionKind::FunctionCall { arguments, .. } = &program.expr(items[0].expression).kind
+    else {
+        panic!(
+            "expected ACCUM call, got {:?}",
+            program.expr(items[0].expression).kind
+        );
     };
     assert_eq!(arguments.len(), 1);
 }
@@ -12538,10 +13060,10 @@ fn a_bare_number_is_not_a_run_target() {
 
 /// Parse `source` and require exactly the statements in `source` with no error.
 #[track_caller]
-fn parse_clean(source: &str) -> Vec<Statement> {
+fn parse_clean(source: &str) -> Parsed {
     let program = Parser::new(&tokenize(source), source).parse_program();
     assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
-    program.statements
+    Parsed(program)
 }
 
 #[test]
@@ -12609,7 +13131,7 @@ fn var_statement_comma_separated_names() {
                 initial_value,
                 no_undo: true,
                 ..
-            } => (name.name.as_str(), initial_value.is_some()),
+            } => (stmts.ident(*name), initial_value.is_some()),
             other => panic!("expected a logical declaration, got {other:?}"),
         })
         .collect();
@@ -12629,7 +13151,7 @@ fn var_statement_class_type() {
             type_source: TypeSource::Explicit(DataType::Class(c)),
             name,
             ..
-        } if c == "Foo.Bar" && name.name == "baz"
+        } if c == "Foo.Bar" && stmts.name(name.name) == "baz"
     ));
     assert!(matches!(
         &stmts[1].kind,
@@ -12637,17 +13159,22 @@ fn var_statement_class_type() {
     ));
 }
 
-fn first_param_type(source: &str) -> ParameterType {
+fn first_param_type(source: &str) -> (ParameterType, AstPools) {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
-    match stmt.kind {
+    let param = match stmt.kind {
         StatementKind::Function { body, .. } => match &body[0].kind {
             StatementKind::DefineParameter { param_type, .. } => param_type.clone(),
             other => panic!("Expected DefineParameter, got {other:?}"),
         },
         other => panic!("Expected Function, got {other:?}"),
-    }
+    };
+    let pools = AstPools {
+        names: std::mem::take(&mut parser.names).finish(),
+        exprs: std::mem::take(&mut parser.exprs),
+    };
+    (param, pools)
 }
 
 #[test]
@@ -12656,10 +13183,11 @@ fn procedure_signature_buffer_param_keeps_its_table() {
         "FUNCTION f RETURNS INTEGER (BUFFER bItem FOR ttItem):\nRETURN 1.\nEND FUNCTION.",
         "FUNCTION f RETURNS INTEGER (BUFFER bItem FOR TEMP-TABLE ttItem):\nRETURN 1.\nEND FUNCTION.",
     ] {
-        match first_param_type(source) {
+        let (param, pools) = first_param_type(source);
+        match param {
             ParameterType::Buffer { name, target } => {
-                assert_eq!(name.name, "bItem");
-                assert_eq!(target.name, "ttItem");
+                assert_eq!(pools.ident(name), "bItem");
+                assert_eq!(pools.ident(target), "ttItem");
             }
             other => panic!("Expected Buffer, got {other:?}"),
         }
@@ -12693,10 +13221,10 @@ const KEYWORD_MEMBER_NAMES: &[&str] = &[
     "Wait-For", "Disp",
 ];
 
-fn assert_parses_clean(source: &str) -> Vec<Statement> {
+fn assert_parses_clean(source: &str) -> Parsed {
     let program = Parser::new(&tokenize(source), source).parse_program();
     assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
-    program.statements
+    Parsed(program)
 }
 
 #[test]
@@ -12707,10 +13235,13 @@ fn a_keyword_is_a_method_name_after_a_colon() {
         let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
             panic!("{source}: expected assignment, got {:?}", stmts[0].kind);
         };
-        let ExpressionKind::MethodCall { method, .. } = &value.kind else {
-            panic!("{source}: expected a method call, got {:?}", value.kind);
+        let ExpressionKind::MethodCall { method, .. } = &stmts.expr(*value).kind else {
+            panic!(
+                "{source}: expected a method call, got {:?}",
+                stmts.expr(*value).kind
+            );
         };
-        assert_eq!(method.name, *kw, "{source}");
+        assert_eq!(stmts.name(method.name), *kw, "{source}");
     }
 }
 
@@ -12722,10 +13253,13 @@ fn a_keyword_is_a_property_name_after_a_colon() {
         let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
             panic!("{source}: expected assignment, got {:?}", stmts[0].kind);
         };
-        let ExpressionKind::MemberAccess { member, .. } = &value.kind else {
-            panic!("{source}: expected member access, got {:?}", value.kind);
+        let ExpressionKind::MemberAccess { member, .. } = &stmts.expr(*value).kind else {
+            panic!(
+                "{source}: expected member access, got {:?}",
+                stmts.expr(*value).kind
+            );
         };
-        assert_eq!(member.name, *kw, "{source}");
+        assert_eq!(stmts.name(member.name), *kw, "{source}");
     }
 }
 
@@ -12891,13 +13425,13 @@ fn an_option_keyword_of_an_external_procedure_is_still_a_name() {
     assert_parses_clean(source);
 }
 
-fn statements_in_first_method(stmts: &[Statement]) -> &[Statement] {
+fn statements_in_first_method(stmts: &Parsed) -> &[Statement] {
     let StatementKind::Class { body, .. } = &stmts[0].kind else {
         panic!("expected a class, got {:?}", stmts[0].kind);
     };
     body.iter()
         .find_map(|s| match &s.kind {
-            StatementKind::Method { name, body, .. } if name.name == "Run1" => {
+            StatementKind::Method { name, body, .. } if stmts.ident(*name) == "Run1" => {
                 Some(body.as_slice())
             }
             _ => None,
@@ -12920,11 +13454,11 @@ fn a_receiverless_call_to_a_method_named_like_a_statement_is_a_call() {
             };
             assert!(
                 matches!(
-                    expr.kind,
+                    stmts.expr(*expr).kind,
                     ExpressionKind::FunctionCall { .. } | ExpressionKind::MethodCall { .. }
                 ),
                 "{name}: {:?}",
-                expr.kind
+                stmts.expr(*expr).kind
             );
         }
     }
@@ -12968,10 +13502,10 @@ fn a_statement_keyword_with_a_space_before_the_paren_keeps_its_statement_reading
     }
 }
 
-fn tail_names(stmt: &Statement) -> Vec<&str> {
+fn tail_names<'a>(ctx: &'a impl HasPools, stmt: &Statement) -> Vec<&'a str> {
     stmt.skipped_tail
         .as_ref()
-        .map(|t| t.names.iter().map(|n| n.name.as_str()).collect())
+        .map(|t| t.names.iter().map(|n| ctx.pools_ident(*n)).collect())
         .unwrap_or_default()
 }
 
@@ -12980,7 +13514,7 @@ fn a_skipped_tail_keeps_the_names_it_passed_over() {
     let stmts = assert_parses_clean("DISPLAY a WITH FRAME f TITLE \"x\" + v-title + tbl.fld.");
     assert!(matches!(stmts[0].kind, StatementKind::Display { .. }));
     // `fld` is byte-adjacent to a `.`, so only the qualifier survives.
-    let names = tail_names(&stmts[0]);
+    let names = tail_names(&stmts, &stmts[0]);
     assert!(
         names.contains(&"v-title") && names.contains(&"tbl"),
         "{names:?}"
@@ -12998,21 +13532,21 @@ fn a_statement_with_no_skipped_identifiers_carries_no_tail() {
 fn a_skipped_tail_does_not_include_modelled_tokens() {
     let stmts = assert_parses_clean("RUN p.p (INPUT a) NO-ERROR v-extra ).");
     assert!(matches!(stmts[0].kind, StatementKind::Run { .. }));
-    assert_eq!(tail_names(&stmts[0]), ["v-extra"]);
+    assert_eq!(tail_names(&stmts, &stmts[0]), ["v-extra"]);
 }
 
 #[test]
 fn a_function_forward_declaration_in_super_keeps_its_tail() {
     let stmts = assert_parses_clean("FUNCTION f RETURNS INTEGER (INPUT a AS INTEGER) IN h-super.");
     assert!(matches!(stmts[0].kind, StatementKind::Function { .. }));
-    assert_eq!(tail_names(&stmts[0]), ["h-super"]);
+    assert_eq!(tail_names(&stmts, &stmts[0]), ["h-super"]);
 }
 
 #[test]
 fn a_dropped_assign_target_is_part_of_the_skipped_tail() {
     let stmts = assert_parses_clean("ASSIGN a = 1 v-target.");
     assert!(matches!(stmts[0].kind, StatementKind::Assign { .. }));
-    assert_eq!(tail_names(&stmts[0]), ["v-target"]);
+    assert_eq!(tail_names(&stmts, &stmts[0]), ["v-target"]);
 }
 
 #[test]
@@ -13029,10 +13563,14 @@ fn put_is_head_parsed_with_stream_and_items() {
     let StatementKind::Put { stream_name, items } = &stmt.kind else {
         panic!("expected Put, got {:?}", stmt.kind);
     };
-    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert_eq!(program.name(stream_name.as_ref().unwrap().name), "s1");
     assert_eq!(items.len(), 3);
     let tail = stmt.skipped_tail.as_ref().expect("options stay a tail");
-    assert!(tail.names.iter().any(|n| n.name == "tail-var"));
+    assert!(
+        tail.names
+            .iter()
+            .any(|n| program.name(n.name) == "tail-var")
+    );
 }
 
 #[test]
@@ -13042,7 +13580,7 @@ fn os_file_statements_harvest_only_value_operands() {
     let StatementKind::Skipped { names, .. } = &program.statements[0].kind else {
         panic!("expected Skipped");
     };
-    let got: Vec<_> = names.iter().map(|n| n.name.as_str()).collect();
+    let got: Vec<_> = names.iter().map(|n| program.ident(*n)).collect();
     assert_eq!(got, ["path-var"]);
 
     let source = "OS-CREATE-DIR some-dir.";
@@ -13075,7 +13613,7 @@ fn put_with_a_digit_first_stream_name_keeps_its_items() {
         panic!("expected Put, got {:?}", program.statements[0].kind);
     };
     assert_eq!(
-        stream_name.as_ref().map(|n| n.name.as_str()),
+        stream_name.as_ref().map(|n| program.ident(*n)),
         Some("2dstream")
     );
     assert_eq!(items.len(), 1);
@@ -13089,7 +13627,7 @@ fn put_with_a_non_identifier_stream_name_still_parses() {
     let stmt = &program.statements[0];
     assert!(matches!(stmt.kind, StatementKind::Put { .. }));
     let tail = stmt.skipped_tail.as_ref().expect("names kept as a tail");
-    assert!(tail.names.iter().any(|n| n.name == "apage"));
+    assert!(tail.names.iter().any(|n| program.name(n.name) == "apage"));
 }
 
 #[test]
@@ -13255,7 +13793,7 @@ fn a_do_counting_loop_comes_before_or_after_while() {
                 panic!("{source}: expected DO, got {:?}", stmts[0].kind);
             };
             (
-                loop_var.as_ref().map(|v| v.name.clone()),
+                loop_var.as_ref().map(|v| stmts.ident(*v).to_string()),
                 from.is_some(),
                 to.is_some(),
                 by.is_some(),
@@ -13359,10 +13897,10 @@ fn new_with_a_parenthesised_buffer_is_a_function_call() {
     let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
         panic!("expected assignment, got {:?}", stmts[0].kind);
     };
-    let ExpressionKind::FunctionCall { name, arguments } = &value.kind else {
-        panic!("expected a call, got {:?}", value.kind);
+    let ExpressionKind::FunctionCall { name, arguments } = &stmts.expr(*value).kind else {
+        panic!("expected a call, got {:?}", stmts.expr(*value).kind);
     };
-    assert_eq!(name.name, "NEW");
+    assert_eq!(stmts.name(name.name), "NEW");
     assert_eq!(arguments.len(), 1);
 }
 
@@ -13372,7 +13910,10 @@ fn new_with_a_class_name_is_still_an_instantiation() {
     let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
         panic!("expected assignment, got {:?}", stmts[0].kind);
     };
-    assert!(matches!(value.kind, ExpressionKind::New { .. }));
+    assert!(matches!(
+        stmts.expr(*value).kind,
+        ExpressionKind::New { .. }
+    ));
 }
 
 #[test]
@@ -13413,9 +13954,9 @@ fn input_from_os_dir_takes_a_path_expression() {
             panic!("{source}: expected INPUT FROM, got {:?}", stmts[0].kind);
         };
         assert!(
-            matches!(&source_expr.kind, ExpressionKind::FunctionCall { name, .. } if name.name.eq_ignore_ascii_case("os-dir")),
+            matches!(&stmts.expr(*source_expr).kind, ExpressionKind::FunctionCall { name, .. } if stmts.ident(*name).eq_ignore_ascii_case("os-dir")),
             "{source}: {:?}",
-            source_expr.kind
+            stmts.expr(*source_expr).kind
         );
     }
 }
@@ -13433,10 +13974,10 @@ fn export_is_head_parsed_with_stream_delimiter_and_items() {
     else {
         panic!("expected Export, got {:?}", stmts[0].kind);
     };
-    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert_eq!(stmts.name(stream_name.as_ref().unwrap().name), "s1");
     assert!(delimiter.is_some());
     assert_eq!(items.len(), 3);
-    assert_eq!(tail_names(&stmts[0]), ["tt"]);
+    assert_eq!(tail_names(&stmts, &stmts[0]), ["tt"]);
 }
 
 #[test]
@@ -13450,7 +13991,7 @@ fn import_is_head_parsed_with_targets_and_drops_a_caret() {
     else {
         panic!("expected Import, got {:?}", stmts[0].kind);
     };
-    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert_eq!(stmts.name(stream_name.as_ref().unwrap().name), "s1");
     assert_eq!(targets.len(), 3);
 
     let stmts = assert_parses_clean("IMPORT UNFORMATTED v-line.");
@@ -13473,7 +14014,7 @@ fn export_and_import_with_a_stream_handle_keep_the_rest_as_a_tail() {
             "{source}: {:?}",
             stmts[0].kind
         );
-        assert_eq!(tail_names(&stmts[0]), ["h", "v-a"], "{source}");
+        assert_eq!(tail_names(&stmts, &stmts[0]), ["h", "v-a"], "{source}");
     }
 }
 
@@ -13484,7 +14025,7 @@ fn import_stops_at_a_target_that_is_not_writable() {
         panic!("expected Import, got {:?}", stmts[0].kind);
     };
     assert_eq!(targets.len(), 1);
-    assert_eq!(tail_names(&stmts[0]), ["v-b"]);
+    assert_eq!(tail_names(&stmts, &stmts[0]), ["v-b"]);
 }
 
 #[test]
@@ -13496,7 +14037,7 @@ fn pause_is_head_parsed_with_duration_and_message() {
     };
     assert!(duration.is_some());
     assert!(message.is_some());
-    assert!(tail_names(&stmts[0]).contains(&"h"));
+    assert!(tail_names(&stmts, &stmts[0]).contains(&"h"));
 
     for source in [
         "PAUSE.",
@@ -13519,15 +14060,15 @@ fn down_and_up_are_head_parsed_with_stream_and_lines() {
     let StatementKind::Down { stream_name, lines } = &stmts[0].kind else {
         panic!("expected Down, got {:?}", stmts[0].kind);
     };
-    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert_eq!(stmts.name(stream_name.as_ref().unwrap().name), "s1");
     assert!(lines.is_some());
-    assert!(tail_names(&stmts[0]).contains(&"f"));
+    assert!(tail_names(&stmts, &stmts[0]).contains(&"f"));
 
     let stmts = assert_parses_clean("DOWN 1 STREAM s1.");
     let StatementKind::Down { stream_name, lines } = &stmts[0].kind else {
         panic!("expected Down, got {:?}", stmts[0].kind);
     };
-    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert_eq!(stmts.name(stream_name.as_ref().unwrap().name), "s1");
     assert!(lines.is_some());
 
     let stmts = assert_parses_clean("UP WITH FRAME f.");
@@ -13546,8 +14087,8 @@ fn form_is_head_parsed_with_items_and_format_options() {
     };
     // "Page:", PAGE-NUMBER(s1), v-user, 1 + v-col, tt.name, STRING(...).
     assert_eq!(items.len(), 6, "{items:?}");
-    assert!(tail_names(&stmts[0]).contains(&"v-width"));
-    assert!(!tail_names(&stmts[0]).contains(&"v-user"));
+    assert!(tail_names(&stmts, &stmts[0]).contains(&"v-width"));
+    assert!(!tail_names(&stmts, &stmts[0]).contains(&"v-user"));
 }
 
 #[test]
@@ -13566,7 +14107,7 @@ fn form_leaves_unmodelled_item_options_to_the_tail() {
             panic!("{source}: expected Form, got {:?}", stmts[0].kind);
         };
         assert_eq!(items.len(), modelled, "{source}: {items:?}");
-        assert!(tail_names(&stmts[0]).contains(&tail), "{source}");
+        assert!(tail_names(&stmts, &stmts[0]).contains(&tail), "{source}");
     }
 }
 
@@ -13596,7 +14137,7 @@ fn form_keeps_parsing_items_after_widget_and_position_options() {
             panic!("{source}: expected Form, got {:?}", stmts[0].kind);
         };
         assert_eq!(items.len(), count, "{source}: {items:?}");
-        let tail = tail_names(&stmts[0]);
+        let tail = tail_names(&stmts, &stmts[0]);
         assert!(tail.contains(&"f"), "{source}: {tail:?}");
         assert!(!tail.contains(&"v-b"), "{source}: {tail:?}");
     }
@@ -13620,7 +14161,7 @@ fn update_set_keep_items_and_when_after_widget_options() {
         };
         assert_eq!(targets.len(), 2, "{source}: {targets:?}");
         assert_eq!(options.len(), 1, "{source}: {options:?}");
-        let tail = tail_names(&stmts[0]);
+        let tail = tail_names(&stmts, &stmts[0]);
         assert!(tail.contains(&"f"), "{source}: {tail:?}");
         assert!(
             !tail.contains(&"b") && !tail.contains(&"c"),
@@ -13642,7 +14183,7 @@ fn form_and_enable_keep_items_and_when_after_widget_options() {
         };
         // a, b, and the WHEN expression.
         assert_eq!(items.len(), 3, "{source}: {items:?}");
-        let tail = tail_names(&stmts[0]);
+        let tail = tail_names(&stmts, &stmts[0]);
         assert!(tail.contains(&"f"), "{source}: {tail:?}");
         assert!(
             !tail.contains(&"b") && !tail.contains(&"c"),
@@ -13668,14 +14209,14 @@ fn format_option_keywords_stay_valid_names() {
         let StatementKind::VariableDeclaration { name: got, .. } = &stmts[0].kind else {
             panic!("{source}: got {:?}", stmts[0].kind);
         };
-        assert_eq!(got.name, name, "{source}");
+        assert_eq!(stmts.name(got.name), name, "{source}");
         let StatementKind::Assignment { target, .. } = &stmts[1].kind else {
             panic!("{source}: got {:?}", stmts[1].kind);
         };
-        let ExpressionKind::Identifier(id) = &target.kind else {
-            panic!("{source}: got {:?}", target.kind);
+        let ExpressionKind::Identifier(id) = &stmts.expr(*target).kind else {
+            panic!("{source}: got {:?}", stmts.expr(*target).kind);
         };
-        assert_eq!(id.name, name, "{source}");
+        assert_eq!(stmts.name(id.name), name, "{source}");
     }
 }
 
@@ -13697,7 +14238,7 @@ fn a_widget_definition_declares_its_name() {
         let StatementKind::DefineWidget { name: got } = &stmts[0].kind else {
             panic!("{source}: expected DefineWidget, got {:?}", stmts[0].kind);
         };
-        assert_eq!(got.name, name, "{source}");
+        assert_eq!(stmts.name(got.name), name, "{source}");
     }
 }
 
@@ -13710,7 +14251,7 @@ fn update_and_set_are_head_parsed_with_targets() {
         panic!("expected Update, got {:?}", stmts[0].kind);
     };
     assert_eq!(targets.len(), 3, "{targets:?}");
-    let tail = tail_names(&stmts[0]);
+    let tail = tail_names(&stmts, &stmts[0]);
     assert!(tail.contains(&"f") && tail.contains(&"v-x"), "{tail:?}");
 
     let stmts = assert_parses_clean("SET v-a = v-b + 1.");
@@ -13718,7 +14259,7 @@ fn update_and_set_are_head_parsed_with_targets() {
         panic!("expected Set, got {:?}", stmts[0].kind);
     };
     assert!(targets.is_empty(), "an assignment form stays in the tail");
-    assert!(tail_names(&stmts[0]).contains(&"v-b"));
+    assert!(tail_names(&stmts, &stmts[0]).contains(&"v-b"));
 }
 
 #[test]
@@ -13749,7 +14290,7 @@ fn widget_list_statements_are_head_parsed() {
         assert_eq!(items.len(), count, "{source}: {items:?}");
         if let Some(name) = tail {
             assert!(
-                tail_names(&stmts[0]).contains(&name),
+                tail_names(&stmts, &stmts[0]).contains(&name),
                 "{source}: {:?}",
                 stmts[0]
             );
@@ -13780,7 +14321,7 @@ fn apply_is_head_parsed_with_event_and_target() {
         assert!(event.is_some(), "{source}");
         assert_eq!(target.is_some(), has_target, "{source}");
         if let Some(name) = tail {
-            assert!(tail_names(&stmts[0]).contains(&name), "{source}");
+            assert!(tail_names(&stmts, &stmts[0]).contains(&name), "{source}");
         }
     }
 }
@@ -13808,7 +14349,7 @@ fn wait_for_is_head_parsed_with_the_widgets() {
         };
         assert_eq!(widgets.len(), count, "{source}: {widgets:?}");
         if let Some(name) = tail {
-            assert!(tail_names(&stmts[0]).contains(&name), "{source}");
+            assert!(tail_names(&stmts, &stmts[0]).contains(&name), "{source}");
         }
     }
 }
@@ -13829,7 +14370,7 @@ fn define_buffer_for_a_database_qualified_table_keeps_the_whole_name() {
         else {
             panic!("{source}: expected DefineBuffer, got {:?}", stmts[0].kind);
         };
-        assert_eq!(t.name, "sports.Customer", "{source}");
+        assert_eq!(stmts.name(t.name), "sports.Customer", "{source}");
     }
 }
 
@@ -13839,7 +14380,7 @@ fn buffer_parameters_and_like_take_a_database_qualified_table() {
         StatementKind::DefineParameter {
             param_type: ParameterType::Buffer { target, .. },
             ..
-        } => target.name.clone(),
+        } => target.name,
         other => panic!("expected a buffer parameter, got {other:?}"),
     };
     for source in [
@@ -13848,7 +14389,11 @@ fn buffer_parameters_and_like_take_a_database_qualified_table() {
     ] {
         let stmts = assert_parses_clean(source);
         assert_eq!(stmts.len(), 1, "{source}: {stmts:?}");
-        assert_eq!(buffer_target(&stmts[0]), "sports.Customer", "{source}");
+        assert_eq!(
+            stmts.name(buffer_target(&stmts[0])),
+            "sports.Customer",
+            "{source}"
+        );
     }
 
     let source = "FUNCTION f RETURNS LOGICAL (BUFFER b FOR sports.Customer):\nEND FUNCTION.";
@@ -13856,7 +14401,7 @@ fn buffer_parameters_and_like_take_a_database_qualified_table() {
     let StatementKind::Function { body, .. } = &stmts[0].kind else {
         panic!("expected Function, got {:?}", stmts[0].kind);
     };
-    assert_eq!(buffer_target(&body[0]), "sports.Customer");
+    assert_eq!(stmts.name(buffer_target(&body[0])), "sports.Customer");
 
     let source = "DEFINE TEMP-TABLE tt NO-UNDO LIKE sports.Customer.";
     let stmts = assert_parses_clean(source);
@@ -13864,20 +14409,20 @@ fn buffer_parameters_and_like_take_a_database_qualified_table() {
         panic!("expected DefineTempTable, got {:?}", stmts[0].kind);
     };
     assert_eq!(
-        like_table.as_ref().map(|t| t.name.as_str()),
+        like_table.as_ref().map(|t| stmts.ident(*t)),
         Some("sports.Customer")
     );
 }
 
-fn frame_field_names(fields: &[FrameField]) -> Vec<(&str, String)> {
+fn frame_field_names<'a>(ctx: &'a impl HasPools, fields: &[FrameField]) -> Vec<(&'a str, String)> {
     fields
         .iter()
         .map(|f| {
             let ty = match &f.type_source {
                 TypeSource::Explicit(dt) => format!("{dt:?}"),
-                TypeSource::Like { source } => format!("like {}", source.name),
+                TypeSource::Like { source } => format!("like {}", ctx.pools_ident(*source)),
             };
-            (f.name.name.as_str(), ty)
+            (ctx.pools_ident(f.name), ty)
         })
         .collect()
 }
@@ -13891,13 +14436,13 @@ fn form_declares_frame_fields_and_keeps_parsing_items() {
     };
     assert_eq!(items.len(), 3, "v-a, v-b, v-c: {items:?}");
     assert_eq!(
-        frame_field_names(fields),
+        frame_field_names(&stmts, fields),
         vec![
             ("v-new", "Character".to_string()),
             ("v-qty", "like sports.Item.Qty".to_string()),
         ]
     );
-    let tail = tail_names(&stmts[0]);
+    let tail = tail_names(&stmts, &stmts[0]);
     assert!(
         !tail.contains(&"v-new") && !tail.contains(&"v-c"),
         "{tail:?}"
@@ -13922,14 +14467,14 @@ fn update_and_set_declare_frame_fields_and_keep_parsing_items() {
         };
         assert_eq!(targets.len(), 3, "{source}: v-a, v-b, v-c: {targets:?}");
         assert_eq!(
-            frame_field_names(fields),
+            frame_field_names(&stmts, fields),
             vec![
                 ("v-new", "Character".to_string()),
                 ("v-qty", "like item.qty".to_string()),
             ],
             "{source}"
         );
-        let tail = tail_names(&stmts[0]);
+        let tail = tail_names(&stmts, &stmts[0]);
         assert!(
             !tail.contains(&"v-new") && !tail.contains(&"v-c"),
             "{source}: {tail:?}"
@@ -13942,7 +14487,7 @@ fn enable_does_not_declare_frame_fields() {
     let source = "ENABLE v-a v-new AS CHARACTER v-b.";
     let stmts = assert_parses_clean(source);
     assert!(
-        tail_names(&stmts[0]).contains(&"v-new"),
+        tail_names(&stmts, &stmts[0]).contains(&"v-new"),
         "{source}: {:?}",
         stmts[0]
     );
@@ -13956,9 +14501,9 @@ fn define_frame_declares_its_frame_fields() {
     let StatementKind::DefineFrame { name, fields, .. } = &stmts[0].kind else {
         panic!("expected DefineFrame, got {:?}", stmts[0].kind);
     };
-    assert_eq!(name.name, "f-main");
+    assert_eq!(stmts.name(name.name), "f-main");
     assert_eq!(
-        frame_field_names(fields),
+        frame_field_names(&stmts, fields),
         vec![
             ("v-order", "Character".to_string()),
             ("v-count", "Integer".to_string()),
@@ -14094,7 +14639,7 @@ fn update_and_set_keep_the_expressions_of_their_format_options() {
         };
         assert_eq!(targets.len(), 1, "{source}: {targets:?}");
         assert_eq!(options.len(), 1, "{source}: {options:?}");
-        assert!(tail_names(&stmts[0]).contains(&"f"), "{source}");
+        assert!(tail_names(&stmts, &stmts[0]).contains(&"f"), "{source}");
     }
 
     let stmts =
@@ -14125,7 +14670,7 @@ fn form_and_enable_keep_the_expressions_of_their_format_options() {
             panic!("{source}: got {:?}", stmts[0].kind);
         };
         assert_eq!(items.len(), 2, "{source}: {items:?}");
-        assert!(tail_names(&stmts[0]).contains(&"f"), "{source}");
+        assert!(tail_names(&stmts, &stmts[0]).contains(&"f"), "{source}");
     }
 }
 
@@ -14147,12 +14692,12 @@ fn assert_next_stmt_survives(stmts: &[Statement], source: &str) {
 }
 
 #[track_caller]
-fn handle_create(stmt: &Statement) -> (&CreateTargetKind, &Expression, bool) {
+fn handle_create(stmt: &Statement) -> (&CreateTargetKind, ExprId, bool) {
     match &stmt.kind {
         StatementKind::Create {
             target: CreateTarget::Handle { kind, handle, .. },
             no_error,
-        } => (kind, handle, *no_error),
+        } => (kind, *handle, *no_error),
         other => panic!("expected a handle create, got {other:?}"),
     }
 }
@@ -14189,7 +14734,7 @@ fn create_handle_types_keep_their_kind_and_handle() {
             assert_next_stmt_survives(&stmts, &source);
             let (kind, handle, no_error) = handle_create(&stmts[0]);
             assert_eq!(*kind, expected, "{source}");
-            assert_eq!(expr_name(handle), "h", "{source}");
+            assert_eq!(expr_name(&stmts, handle), "h", "{source}");
             assert_eq!(no_error, tail.ends_with("NO-ERROR"), "{source}");
             match &stmts[0].kind {
                 StatementKind::Create {
@@ -14235,7 +14780,7 @@ fn create_widget_types_are_widget_creates() {
             assert_next_stmt_survives(&stmts, &source);
             let (kind, handle, _) = handle_create(&stmts[0]);
             assert_eq!(*kind, CreateTargetKind::Widget, "{source}");
-            assert_eq!(expr_name(handle), "h", "{source}");
+            assert_eq!(expr_name(&stmts, handle), "h", "{source}");
         }
     }
 }
@@ -14253,10 +14798,13 @@ fn create_widget_keeps_its_assign_expressions() {
         } => {
             let names: Vec<_> = assignments
                 .iter()
-                .map(|a| a.attribute.name.as_str())
+                .map(|a| stmts.ident(a.attribute))
                 .collect();
             assert_eq!(names, ["LABEL", "ROW", "SENSITIVE"]);
-            assert!(matches!(assignments[1].value.kind, ExpressionKind::Add(..)));
+            assert!(matches!(
+                stmts.expr(assignments[1].value).kind,
+                ExpressionKind::Add(..)
+            ));
         }
         other => panic!("got {other:?}"),
     }
@@ -14284,7 +14832,7 @@ fn create_widget_keeps_its_triggers_phrase_as_statements() {
             assert!(no_error);
             assert_eq!(assignments.len(), 1);
             assert_eq!(triggers.len(), 2);
-            assert_eq!(triggers[0].events[0].name, "CHOOSE");
+            assert_eq!(stmts.name(triggers[0].events[0].name), "CHOOSE");
             match &triggers[0].action {
                 OnAction::Block(body) => match &body.kind {
                     StatementKind::Do { body, .. } => assert_eq!(body.len(), 1),
@@ -14310,7 +14858,7 @@ fn create_handle_keeps_subscripts_and_member_access() {
         assert_next_stmt_survives(&stmts, &source);
         let (kind, handle, _) = handle_create(&stmts[0]);
         assert_eq!(*kind, CreateTargetKind::Query);
-        let debug = format!("{:?}", handle.kind);
+        let debug = format!("{:?}", stmts.expr(handle).kind);
         assert!(debug.starts_with(expected), "{source}: {debug}");
     }
 }
@@ -14323,7 +14871,7 @@ fn create_value_is_a_dynamic_create_with_its_class_expression() {
         assert_next_stmt_survives(&stmts, &source);
         let (kind, handle, no_error) = handle_create(&stmts[0]);
         assert_eq!(*kind, CreateTargetKind::Dynamic);
-        assert_eq!(expr_name(handle), "h");
+        assert_eq!(expr_name(&stmts, handle), "h");
         assert_eq!(no_error, !tail.is_empty());
         match &stmts[0].kind {
             StatementKind::Create {
@@ -14332,7 +14880,7 @@ fn create_value_is_a_dynamic_create_with_its_class_expression() {
                         class: Some(class), ..
                     },
                 ..
-            } => assert_eq!(expr_name(class), "cClass"),
+            } => assert_eq!(expr_name(&stmts, *class), "cClass"),
             other => panic!("got {other:?}"),
         }
     }
@@ -14352,7 +14900,7 @@ fn create_com_class_literal_is_an_automation_create() {
         assert_next_stmt_survives(&stmts, &source);
         let (kind, handle, _) = handle_create(&stmts[0]);
         assert_eq!(*kind, CreateTargetKind::Automation, "{source}");
-        assert_eq!(expr_name(handle), "chExcel", "{source}");
+        assert_eq!(expr_name(&stmts, handle), "chExcel", "{source}");
         match &stmts[0].kind {
             StatementKind::Create {
                 target:
@@ -14364,7 +14912,7 @@ fn create_com_class_literal_is_an_automation_create() {
                 ..
             } => {
                 assert!(matches!(
-                    class.kind,
+                    stmts.expr(*class).kind,
                     ExpressionKind::Literal(Literal::String(_))
                 ));
                 assert_eq!(conn.is_some(), connect, "{source}");
@@ -14483,7 +15031,7 @@ fn delete_handle_forms_are_not_record_deletes() {
                 no_error,
             } => {
                 assert_eq!(*kind, expected, "{source}");
-                assert!(expr_name(target).starts_with('h'), "{source}");
+                assert!(expr_name(&stmts, *target).starts_with('h'), "{source}");
                 assert_eq!(extra_targets.len(), extra, "{source}");
                 assert_eq!(*no_error, source.contains("NO-ERROR"), "{source}");
             }
@@ -14522,7 +15070,7 @@ fn release_object_is_a_com_release_and_release_buffer_is_not() {
                 target,
                 no_error: n,
             } => {
-                assert_eq!(expr_name(target), "chExcel");
+                assert_eq!(expr_name(&stmts, *target), "chExcel");
                 assert_eq!(*n, no_error);
             }
             other => panic!("{source}: got {other:?}"),
@@ -14709,9 +15257,8 @@ fn create_buffer_accepts_buffer_name() {
                 assert!(for_table.is_some(), "{source}");
                 assert_eq!(assignments.len(), 1, "{source}");
                 assert!(
-                    assignments[0]
-                        .attribute
-                        .name
+                    stmts
+                        .ident(assignments[0].attribute)
                         .eq_ignore_ascii_case("BUFFER-NAME"),
                     "{source}"
                 );
@@ -14802,7 +15349,7 @@ fn on_persistent_run_takes_in_handle_and_path_names() {
                     },
             } => {
                 assert!(
-                    matches!(&procedure, PersistentRunTarget::Name(n) if n.name == name),
+                    matches!(&procedure, PersistentRunTarget::Name(n) if stmts.name(n.name) == name),
                     "{on}"
                 );
                 assert_eq!(in_handle.is_some(), has_in, "{on}");
@@ -14918,10 +15465,10 @@ fn record_statements_take_database_qualified_names() {
             StatementKind::Create {
                 target: CreateTarget::Name(n),
                 ..
-            } => &n.name,
+            } => program.ident(*n),
             StatementKind::Delete { buffer, .. }
             | StatementKind::Release { buffer, .. }
-            | StatementKind::Validate { buffer, .. } => &buffer.name,
+            | StatementKind::Validate { buffer, .. } => program.ident(*buffer),
             other => panic!("{source}: {other:?}"),
         };
         assert_eq!(name, expected, "{source}");
@@ -14933,8 +15480,8 @@ fn record_statements_take_database_qualified_names() {
     match &program.statements[..] {
         [s] => match &s.kind {
             StatementKind::BufferCopy { source, target, .. } => {
-                assert_eq!(source.name, "sports.customer");
-                assert_eq!(target.name, "sports.cust2");
+                assert_eq!(program.name(source.name), "sports.customer");
+                assert_eq!(program.name(target.name), "sports.cust2");
             }
             other => panic!("{other:?}"),
         },
@@ -14958,11 +15505,11 @@ fn buffer_definitions_take_database_qualified_tables() {
             StatementKind::DefineBuffer {
                 target: BufferTarget::Table(t),
                 ..
-            } => &t.name,
+            } => program.ident(*t),
             StatementKind::DefineParameter {
                 param_type: ParameterType::Buffer { target, .. },
                 ..
-            } => &target.name,
+            } => program.ident(*target),
             other => panic!("{source}: {other:?}"),
         };
         assert_eq!(target, "sports.customer", "{source}");
@@ -14982,7 +15529,7 @@ fn temp_table_like_takes_a_database_qualified_table() {
             fields,
             ..
         } => {
-            assert_eq!(like.name, "sports.customer");
+            assert_eq!(program.name(like.name), "sports.customer");
             assert_eq!(fields.len(), 1);
         }
         other => panic!("{other:?}"),
@@ -15160,7 +15707,7 @@ fn get_is_head_parsed_with_position_query_and_lock() {
             panic!("{source}: expected Get, got {:?}", stmts[0].kind);
         };
         assert_eq!((t, l, w), (&get_type, &lock, &no_wait), "{source}");
-        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+        assert!(tail_names(&stmts, &stmts[0]).is_empty(), "{source}");
     }
 }
 
@@ -15197,7 +15744,7 @@ fn close_is_head_parsed_for_a_query_and_a_stored_procedure() {
             (kind, status, handle),
             "{source}"
         );
-        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+        assert!(tail_names(&stmts, &stmts[0]).is_empty(), "{source}");
     }
 }
 
@@ -15228,7 +15775,7 @@ fn reposition_is_head_parsed_with_query_and_operands() {
             panic!("{source}: expected Reposition, got {:?}", stmts[0].kind);
         };
         assert_eq!((o.len(), *n), (operands, no_error), "{source}: {o:?}");
-        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+        assert!(tail_names(&stmts, &stmts[0]).is_empty(), "{source}");
     }
 }
 
@@ -15244,7 +15791,7 @@ fn clear_is_head_parsed_with_its_frame() {
         let StatementKind::Clear { frame: f } = &stmts[0].kind else {
             panic!("{source}: expected Clear, got {:?}", stmts[0].kind);
         };
-        assert_eq!(f.as_ref().map(|i| i.name.as_str()), frame, "{source}");
+        assert_eq!(f.as_ref().map(|i| stmts.ident(*i)), frame, "{source}");
     }
 }
 
@@ -15272,7 +15819,7 @@ fn accumulate_is_head_parsed_with_expression_and_breaks() {
             panic!("{source}: expected Accumulate, got {:?}", stmts[0].kind);
         };
         assert_eq!(b.len(), breaks, "{source}: {b:?}");
-        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+        assert!(tail_names(&stmts, &stmts[0]).is_empty(), "{source}");
     }
 }
 
@@ -15401,7 +15948,7 @@ fn copy_lob_is_head_parsed_with_source_target_and_options() {
             (source_file, target_file, options, no_error),
             "{source}: {o:?}"
         );
-        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+        assert!(tail_names(&stmts, &stmts[0]).is_empty(), "{source}");
     }
 }
 

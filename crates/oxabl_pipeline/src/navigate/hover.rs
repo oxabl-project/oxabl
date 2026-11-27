@@ -14,8 +14,8 @@
 use std::path::{Path, PathBuf};
 
 use oxabl_ast::{
-    AccessModifier, BufferTarget, DataType, HandleParamKind, ParameterType, Span, Statement,
-    StatementKind, TempTableField, TypeSource,
+    AccessModifier, AstPools, BufferTarget, DataType, HandleParamKind, Identifier, ParameterType,
+    Span, Statement, StatementKind, TempTableField, TypeSource,
 };
 use oxabl_common::VirtualSpan;
 use oxabl_flow::UnitKind;
@@ -193,7 +193,7 @@ impl Navigation<'_, '_> {
                     // The declaration in the handle's program may be a prototype.
                     let text = self.run.file_system().read(path).ok()?;
                     let parsed = Parsed::of(&text);
-                    let source = Source::new(&text, &parsed.tokens);
+                    let source = Source::new(&text, &parsed.tokens, &parsed.program.pools);
                     let found = find_declaration(
                         &parsed.program.statements,
                         VirtualSpan::new(declared.start, declared.end),
@@ -229,7 +229,7 @@ impl Navigation<'_, '_> {
             let name = symbol.name.as_ref();
             let text = self.run.file_system().read(&path).ok()?;
             let parsed = Parsed::of(&text);
-            let source = Source::new(&text, &parsed.tokens);
+            let source = Source::new(&text, &parsed.tokens, &parsed.program.pools);
             let elsewhere = method_elsewhere(&source, &parsed.program.statements, name, None);
             return Some(Routine::Unit {
                 file: path,
@@ -249,12 +249,12 @@ impl Navigation<'_, '_> {
             StatementKind::Method { name, .. } => (UnitKind::Method, name),
             _ => return None,
         };
-        let source = Source::new(&self.expanded.text, &parsed.tokens);
+        let source = Source::new(&self.expanded.text, &parsed.tokens, &parsed.program.pools);
         let elsewhere = match &found.statement.kind {
             StatementKind::Method { .. } => method_elsewhere(
                 &source,
                 &parsed.program.statements,
-                &name.name,
+                source.name(name),
                 Some(found.statement.span),
             ),
             StatementKind::Procedure { .. } => procedure_elsewhere(&source, found.statement),
@@ -263,7 +263,7 @@ impl Navigation<'_, '_> {
         Some(Routine::Unit {
             file: self.root_path()?,
             kind,
-            name: name.name.clone(),
+            name: source.name(name).to_string(),
             elsewhere,
         })
     }
@@ -339,12 +339,14 @@ impl Navigation<'_, '_> {
         }
         let parsed = self.parsed();
         let folding = self.folding();
-        let source = Source::new(&self.expanded.text, &parsed.tokens).folded(&folding);
+        let source = Source::new(&self.expanded.text, &parsed.tokens, &parsed.program.pools)
+            .folded(&folding);
         let found = find_declaration(&parsed.program.statements, symbol.name_span)?;
         let mut out = source.declaration(&found)?;
         if found.field.is_none()
             && symbol.kind == SymbolKind::TempTable
-            && let Some(shape) = self.temp_table_shape(found.statement, Some(sym))
+            && let Some(shape) =
+                self.temp_table_shape(found.statement, &parsed.program.pools, Some(sym))
         {
             out.push_str("\n\n");
             out.push_str(&shape);
@@ -379,7 +381,10 @@ impl Navigation<'_, '_> {
         };
         Some(format!(
             "{} is {}.",
-            inline(&format!("LIKE {}", like.name)),
+            inline(&format!(
+                "LIKE {}",
+                self.parsed().program.pools.ident(*like)
+            )),
             inline(&shown)
         ))
     }
@@ -467,7 +472,7 @@ impl Navigation<'_, '_> {
     /// The statement whose head holds the token at `virt`.
     fn statement_hover(&self, virt: u32) -> Option<String> {
         let parsed = self.parsed();
-        let source = Source::new(&self.expanded.text, &parsed.tokens);
+        let source = Source::new(&self.expanded.text, &parsed.tokens, &parsed.program.pools);
         let words: Vec<&Token> = parsed
             .tokens
             .iter()
@@ -525,11 +530,12 @@ impl Navigation<'_, '_> {
         let path = self.path_of(file)?;
         let text = self.run.file_system().read(&path).ok()?;
         let parsed = Parsed::of(&text);
+        let source = Source::new(&text, &parsed.tokens, &parsed.program.pools);
         parsed
             .program
             .statements
             .iter()
-            .find_map(class_header)
+            .find_map(|statement| class_header(&source, statement))
             .map(|header| code(&header))
     }
 
@@ -564,7 +570,7 @@ impl Navigation<'_, '_> {
         let lines: Vec<String> = body
             .iter()
             .filter(|member| {
-                member_named(member, kind, name) && view.written_here(member.span.start)
+                member_named(&source, member, kind, name) && view.written_here(member.span.start)
             })
             .filter_map(|member| {
                 let mut text = source.declaration(&Declaration {
@@ -572,7 +578,7 @@ impl Navigation<'_, '_> {
                     routine: None,
                     field: None,
                 })?;
-                if let Some(shape) = self.temp_table_shape(member, None) {
+                if let Some(shape) = self.temp_table_shape(member, view.pools, None) {
                     text.push_str("\n\n");
                     text.push_str(&shape);
                 }
@@ -585,7 +591,7 @@ impl Navigation<'_, '_> {
         Some(format!(
             "{}\n\nDeclared in {}.",
             lines.join("\n\n"),
-            inline(&class_name.name)
+            inline(source.name(class_name))
         ))
     }
 
@@ -603,7 +609,11 @@ impl Navigation<'_, '_> {
         };
         let text = self.run.file_system().read(path).ok()?;
         let loaded = Loaded::new(text.clone(), Parsed::of(&text));
-        let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
+        let raw = Source::new(
+            &loaded.text,
+            &loaded.parsed.tokens,
+            &loaded.parsed.program.pools,
+        );
         let written = find_declaration(
             &loaded.parsed.program.statements,
             VirtualSpan::new(span.start, span.end),
@@ -823,7 +833,7 @@ fn method_elsewhere(
         else {
             return false;
         };
-        declared.name.eq_ignore_ascii_case(name)
+        source.name(declared).eq_ignore_ascii_case(name)
             && at.is_none_or(|at| member.span == at)
             && !*is_static
             && *access != AccessModifier::Private
@@ -833,7 +843,7 @@ fn method_elsewhere(
 }
 
 /// Whether class member `member` declares `name` as a symbol of `kind`.
-fn member_named(member: &Statement, kind: SymbolKind, name: &str) -> bool {
+fn member_named(source: &Source, member: &Statement, kind: SymbolKind, name: &str) -> bool {
     let declared = match (&member.kind, kind) {
         (StatementKind::Method { name, .. }, SymbolKind::Function) => name,
         (StatementKind::Property { name, .. }, SymbolKind::Property) => name,
@@ -844,11 +854,11 @@ fn member_named(member: &Statement, kind: SymbolKind, name: &str) -> bool {
         (StatementKind::DefineDataset { name, .. }, SymbolKind::Dataset) => name,
         _ => return false,
     };
-    declared.name.eq_ignore_ascii_case(name)
+    source.name(declared).eq_ignore_ascii_case(name)
 }
 
 /// `CLASS a.B INHERITS a.Base IMPLEMENTS a.I`, or the `INTERFACE` header.
-fn class_header(statement: &Statement) -> Option<String> {
+fn class_header(source: &Source, statement: &Statement) -> Option<String> {
     match &statement.kind {
         StatementKind::Class {
             name,
@@ -858,12 +868,12 @@ fn class_header(statement: &Statement) -> Option<String> {
             is_final,
             ..
         } => {
-            let mut header = format!("CLASS {}", name.name);
+            let mut header = format!("CLASS {}", source.name(name));
             if let Some(parent) = inherits {
-                header.push_str(&format!(" INHERITS {}", parent.name));
+                header.push_str(&format!(" INHERITS {}", source.name(parent)));
             }
             if !implements.is_empty() {
-                let names: Vec<&str> = implements.iter().map(|i| i.name.as_str()).collect();
+                let names: Vec<&str> = implements.iter().map(|i| source.name(i)).collect();
                 header.push_str(&format!(" IMPLEMENTS {}", names.join(", ")));
             }
             if *is_abstract {
@@ -875,9 +885,9 @@ fn class_header(statement: &Statement) -> Option<String> {
             Some(header)
         }
         StatementKind::Interface { name, inherits, .. } => {
-            let mut header = format!("INTERFACE {}", name.name);
+            let mut header = format!("INTERFACE {}", source.name(name));
             if !inherits.is_empty() {
-                let names: Vec<&str> = inherits.iter().map(|i| i.name.as_str()).collect();
+                let names: Vec<&str> = inherits.iter().map(|i| source.name(i)).collect();
                 header.push_str(&format!(" INHERITS {}", names.join(", ")));
             }
             Some(header)
@@ -990,18 +1000,31 @@ fn skipped(ranges: &[(u32, u32)], at: u32) -> bool {
 pub(super) struct Source<'t> {
     text: &'t str,
     tokens: &'t [Token],
+    /// The names and expressions of the parse of `text`.
+    pools: &'t AstPools,
     /// How the includes of a parameter list group. `None` lists every
     /// parameter as the parser read it.
     folding: Option<&'t Folding<'t>>,
 }
 
 impl<'t> Source<'t> {
-    pub(super) fn new(text: &'t str, tokens: &'t [Token]) -> Self {
+    pub(super) fn new(text: &'t str, tokens: &'t [Token], pools: &'t AstPools) -> Self {
         Source {
             text,
             tokens,
+            pools,
             folding: None,
         }
+    }
+
+    /// The pools of the parse of the text.
+    pub(super) fn pools(&self) -> &'t AstPools {
+        self.pools
+    }
+
+    /// The name `ident` holds, as written.
+    pub(super) fn name(&self, ident: &Identifier) -> &'t str {
+        self.pools.ident(*ident)
     }
 
     pub(super) fn folded(self, folding: &'t Folding<'t>) -> Self {
@@ -1177,12 +1200,12 @@ impl<'t> Source<'t> {
 
     /// ` AS INTEGER` or ` LIKE Customer.Name`; empty for a type that an
     /// `&IF` chooses, which has no one name.
-    fn type_text(type_source: &TypeSource) -> String {
+    fn type_text(&self, type_source: &TypeSource) -> String {
         match type_source {
             TypeSource::Explicit(data_type) => type_name(data_type)
                 .map(|name| format!(" AS {name}"))
                 .unwrap_or_default(),
-            TypeSource::Like { source } => format!(" LIKE {}", source.name),
+            TypeSource::Like { source } => format!(" LIKE {}", self.name(source)),
         }
     }
 
@@ -1196,15 +1219,15 @@ impl<'t> Source<'t> {
             let options = (field.name.span.end, field.span.end.max(field.name.span.end));
             let mut line = format!(
                 "FIELD {}{}",
-                field.name.name,
-                Self::type_text(&field.type_source)
+                self.name(&field.name),
+                self.type_text(&field.type_source)
             );
             line.push_str(&self.extent(options.0, options.1).unwrap_or_default());
             line.push_str(&self.initial(options.0, options.1).unwrap_or_default());
             return Some(format!(
                 "{}\n\nField of temp-table {}.",
                 code(&line),
-                inline(&name.name)
+                inline(self.name(name))
             ));
         }
         let text = match &statement.kind {
@@ -1231,8 +1254,8 @@ impl<'t> Source<'t> {
                 push_access(&mut line, *access, *is_static);
                 line.push_str(&format!(
                     " VARIABLE {}{}",
-                    name.name,
-                    Self::type_text(type_source)
+                    self.name(name),
+                    self.type_text(type_source)
                 ));
                 let written = self.extent(name.span.end, span.end).or(match extent {
                     Some(0) => Some(" EXTENT".to_string()),
@@ -1268,7 +1291,11 @@ impl<'t> Source<'t> {
                     let direction = direction_name(direction);
                     match param_type {
                         ParameterType::Buffer { name, target } => {
-                            format!("DEFINE PARAMETER BUFFER {} FOR {}", name.name, target.name)
+                            format!(
+                                "DEFINE PARAMETER BUFFER {} FOR {}",
+                                self.name(name),
+                                self.name(target)
+                            )
                         }
                         ParameterType::Handle { name, .. } => format!(
                             "DEFINE {direction} PARAMETER {}{}",
@@ -1286,7 +1313,7 @@ impl<'t> Source<'t> {
                     line.push_str(" NO-UNDO");
                 }
                 let mut out = code(&line);
-                if let Some(owner) = found.routine.and_then(routine_label) {
+                if let Some(owner) = found.routine.and_then(|r| routine_label(self, r)) {
                     out.push_str(&format!("\n\nParameter of {}.", inline(&owner)));
                 }
                 out
@@ -1301,7 +1328,7 @@ impl<'t> Source<'t> {
             } => {
                 let mut line = String::from("DEFINE");
                 push_access(&mut line, Some(*access), *is_static);
-                line.push_str(&format!(" PROPERTY {}", name.name));
+                line.push_str(&format!(" PROPERTY {}", self.name(name)));
                 if let Some(type_name) = type_name(data_type) {
                     line.push_str(&format!(" AS {type_name}"));
                 }
@@ -1323,9 +1350,9 @@ impl<'t> Source<'t> {
                 no_undo,
                 ..
             } => {
-                let mut line = format!("DEFINE TEMP-TABLE {}", name.name);
+                let mut line = format!("DEFINE TEMP-TABLE {}", self.name(name));
                 if let Some(like) = like_table {
-                    line.push_str(&format!(" LIKE {}", like.name));
+                    line.push_str(&format!(" LIKE {}", self.name(like)));
                 }
                 if *no_undo {
                     line.push_str(" NO-UNDO");
@@ -1334,23 +1361,33 @@ impl<'t> Source<'t> {
             }
             StatementKind::DefineBuffer { name, target, .. } => code(&match target {
                 BufferTarget::Table(table) => {
-                    format!("DEFINE BUFFER {} FOR {}", name.name, table.name)
+                    format!("DEFINE BUFFER {} FOR {}", self.name(name), self.name(table))
                 }
                 BufferTarget::TempTable(table) => {
-                    format!("DEFINE BUFFER {} FOR TEMP-TABLE {}", name.name, table.name)
+                    format!(
+                        "DEFINE BUFFER {} FOR TEMP-TABLE {}",
+                        self.name(name),
+                        self.name(table)
+                    )
                 }
             }),
             StatementKind::DefineDataset { name, .. } => {
-                code(&format!("DEFINE DATASET {}", name.name))
+                code(&format!("DEFINE DATASET {}", self.name(name)))
             }
             StatementKind::DefineDataSource { name, .. } => {
-                code(&format!("DEFINE DATA-SOURCE {}", name.name))
+                code(&format!("DEFINE DATA-SOURCE {}", self.name(name)))
             }
-            StatementKind::DefineEvent { name, .. } => code(&format!("DEFINE EVENT {}", name.name)),
-            StatementKind::DefineStream { name } => code(&format!("DEFINE STREAM {}", name.name)),
-            StatementKind::DefineFrame { name, .. } => code(&format!("DEFINE FRAME {}", name.name)),
+            StatementKind::DefineEvent { name, .. } => {
+                code(&format!("DEFINE EVENT {}", self.name(name)))
+            }
+            StatementKind::DefineStream { name } => {
+                code(&format!("DEFINE STREAM {}", self.name(name)))
+            }
+            StatementKind::DefineFrame { name, .. } => {
+                code(&format!("DEFINE FRAME {}", self.name(name)))
+            }
             StatementKind::Class { .. } | StatementKind::Interface { .. } => {
-                code(&class_header(statement)?)
+                code(&class_header(self, statement)?)
             }
             _ => return None,
         };
@@ -1364,9 +1401,10 @@ impl<'t> Source<'t> {
     /// or `METHOD PUBLIC VOID m (...)`.
     fn signature(&self, statement: &Statement) -> Option<String> {
         let (head, parameters): (String, Vec<&Statement>) = match &statement.kind {
-            StatementKind::Procedure { name, body, .. } => {
-                (format!("PROCEDURE {}", name.name), parameters_of(body))
-            }
+            StatementKind::Procedure { name, body, .. } => (
+                format!("PROCEDURE {}", self.name(name)),
+                parameters_of(body),
+            ),
             StatementKind::Function {
                 name,
                 return_type,
@@ -1378,7 +1416,7 @@ impl<'t> Source<'t> {
                 } else {
                     prototype_parameters
                 };
-                let mut head = format!("FUNCTION {}", name.name);
+                let mut head = format!("FUNCTION {}", self.name(name));
                 if let Some(returns) = type_name(return_type) {
                     head.push_str(&format!(" RETURNS {returns}"));
                 }
@@ -1414,7 +1452,7 @@ impl<'t> Source<'t> {
                         }
                     }
                 }
-                head.push_str(&format!(" {}", name.name));
+                head.push_str(&format!(" {}", self.name(name)));
                 (head, parameters_of(parameters))
             }
             _ => return None,
@@ -1562,7 +1600,11 @@ impl<'t> Source<'t> {
             return None;
         };
         if let ParameterType::Buffer { name, target } = param_type {
-            return Some(format!("BUFFER {} FOR {}", name.name, target.name));
+            return Some(format!(
+                "BUFFER {} FOR {}",
+                self.name(name),
+                self.name(target)
+            ));
         }
         let mut text = format!(
             "{} {}",
@@ -1589,22 +1631,22 @@ impl<'t> Source<'t> {
             ParameterType::Variable {
                 name, type_source, ..
             } => {
-                let type_text = Self::type_text(type_source);
+                let type_text = self.type_text(type_source);
                 // The parser names an unnamed prototype parameter `$N`.
-                if name.name.starts_with('$') {
+                if self.name(name).starts_with('$') {
                     type_text.trim_start().to_string()
                 } else {
-                    format!("{}{type_text}", name.name)
+                    format!("{}{type_text}", self.name(name))
                 }
             }
             ParameterType::Handle { kind, name, .. } => match kind {
-                HandleParamKind::Table => format!("TABLE FOR {}", name.name),
-                HandleParamKind::TableHandle => format!("TABLE-HANDLE {}", name.name),
-                HandleParamKind::Dataset => format!("DATASET FOR {}", name.name),
-                HandleParamKind::DatasetHandle => format!("DATASET-HANDLE {}", name.name),
+                HandleParamKind::Table => format!("TABLE FOR {}", self.name(name)),
+                HandleParamKind::TableHandle => format!("TABLE-HANDLE {}", self.name(name)),
+                HandleParamKind::Dataset => format!("DATASET FOR {}", self.name(name)),
+                HandleParamKind::DatasetHandle => format!("DATASET-HANDLE {}", self.name(name)),
             },
             ParameterType::Buffer { name, target } => {
-                format!("BUFFER {} FOR {}", name.name, target.name)
+                format!("BUFFER {} FOR {}", self.name(name), self.name(target))
             }
         }
     }
@@ -1637,7 +1679,7 @@ fn initial_value_text(source: &Source, kind: &StatementKind) -> Option<String> {
     else {
         return None;
     };
-    let written = source.slice(value.span);
+    let written = source.slice(source.pools().expr(*value).span);
     (!written.is_empty()).then(|| {
         format!(
             " INITIAL {}",
@@ -1655,13 +1697,14 @@ pub(super) fn parameters_of(list: &[Statement]) -> Vec<&Statement> {
 
 /// `PROCEDURE p`, `FUNCTION f` or `METHOD m`, for the routine that owns a
 /// parameter.
-fn routine_label(routine: &Statement) -> Option<String> {
+fn routine_label(source: &Source, routine: &Statement) -> Option<String> {
+    let name = |ident: &Identifier| source.name(ident);
     match &routine.kind {
-        StatementKind::Procedure { name, .. } => Some(format!("PROCEDURE {}", name.name)),
-        StatementKind::Function { name, .. } => Some(format!("FUNCTION {}", name.name)),
-        StatementKind::Method { name, .. } => Some(format!("METHOD {}", name.name)),
-        StatementKind::Property { name, .. } => Some(format!("PROPERTY {}", name.name)),
-        StatementKind::DefineEvent { name, .. } => Some(format!("EVENT {}", name.name)),
+        StatementKind::Procedure { name: n, .. } => Some(format!("PROCEDURE {}", name(n))),
+        StatementKind::Function { name: n, .. } => Some(format!("FUNCTION {}", name(n))),
+        StatementKind::Method { name: n, .. } => Some(format!("METHOD {}", name(n))),
+        StatementKind::Property { name: n, .. } => Some(format!("PROPERTY {}", name(n))),
+        StatementKind::DefineEvent { name: n, .. } => Some(format!("EVENT {}", name(n))),
         StatementKind::Constructor { .. } => Some("CONSTRUCTOR".to_string()),
         _ => None,
     }

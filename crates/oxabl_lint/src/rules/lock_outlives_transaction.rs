@@ -139,7 +139,7 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
         }
         group.push(read);
     }
-    let skipped = super::scope_widened::skipped_statements(program);
+    let skipped = super::scope_widened::skipped_statements(program, ctx.pools);
     let mut diags = Vec::new();
     for key in order {
         let (b, unit_id, tx) = key;

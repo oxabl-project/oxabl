@@ -67,7 +67,7 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
         ctx,
         diags: Vec::new(),
     };
-    walk_block(&mut v, program);
+    walk_block(&mut v, ctx.pools, program);
     v.diags
 }
 
@@ -83,6 +83,7 @@ impl Visitor for RunValues<'_> {
             ..
         } = &stmt.kind
         {
+            let target = self.ctx.pools.expr(*target);
             // `RUN VALUE("prog.p")` still names its callee.
             if matches!(&target.kind, ExpressionKind::Literal(Literal::String(_))) {
                 return true;

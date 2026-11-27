@@ -1,8 +1,11 @@
-use crate::Span;
+use crate::{NameId, Span};
 use rust_decimal::Decimal;
 
 /// An ABL literal value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Copy` because string and date literal text is interned in the AST's
+/// [`NamePool`](crate::NamePool) and referenced via 4-byte [`NameId`] handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Literal {
     Integer(IntegerLiteral),
 
@@ -22,10 +25,10 @@ pub enum Literal {
 // Lock the size of a literal deliberately. Gated to 64-bit; bump the bound
 // deliberately.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<Literal>() <= 40);
+const _: () = assert!(std::mem::size_of::<Literal>() <= 32);
 
 /// An integer literal value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntegerLiteral {
     pub span: Span,
 
@@ -33,23 +36,23 @@ pub struct IntegerLiteral {
 }
 
 /// A decimal literal value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecimalLiteral {
     pub span: Span,
 
     pub value: Decimal,
 }
 
-/// A string literal value (single or double quoted).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A string literal value (single or double quoted), interned in [`NamePool`](crate::NamePool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StringLiteral {
     pub span: Span,
 
-    pub value: String,
+    pub value: NameId,
 }
 
 /// A boolean literal (`TRUE`/`FALSE`/`YES`/`NO`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BooleanLiteral {
     pub span: Span,
 
@@ -58,16 +61,16 @@ pub struct BooleanLiteral {
 
 /// A date constant: digit runs joined by `/` with no whitespace (`mm/dd/yy`,
 /// `mm/dd/yyyy`, `mm/dd`). The order of the parts follows the `-d` startup
-/// parameter, so the literal keeps its spelling and not a date value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// parameter, so the literal keeps its spelling interned in [`NamePool`](crate::NamePool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateLiteral {
     pub span: Span,
 
-    pub text: String,
+    pub text: NameId,
 }
 
 /// The ABL unknown value literal (`?`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnknownLiteral {
     pub span: Span, // Just ?
 }

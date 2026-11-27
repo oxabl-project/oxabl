@@ -5,14 +5,17 @@ use std::path::Path;
 
 /// Load a fixture file from the workspace resources/ directory.
 fn load_fixture(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let Some(workspace_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("resources")
-        .join(name);
-    fs::read_to_string(path).unwrap()
+        .and_then(Path::parent)
+    else {
+        panic!("CARGO_MANIFEST_DIR must have two parent directories");
+    };
+    let path = workspace_root.join("resources").join(name);
+    match fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(err) => panic!("failed to read fixture {}: {err}", path.display()),
+    }
 }
 
 /// Benchmark a single fixture: tokenize and measure throughput.

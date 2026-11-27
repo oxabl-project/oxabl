@@ -11,7 +11,10 @@ use oxabl_preprocessor::Preprocessor;
 use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 
 fn parse(source: &str) -> Program {
-    try_parse(source).expect("the parser must not panic")
+    match try_parse(source) {
+        Ok(program) => program,
+        Err(err) => panic!("the parser must not panic: {err:?}"),
+    }
 }
 
 #[track_caller]
@@ -42,19 +45,24 @@ fn call_arguments(program: &Program) -> (&str, Vec<&ExpressionKind>) {
     let StatementKind::Assignment { value, .. } = &stmt.kind else {
         panic!("expected an assignment, got {:?}", stmt.kind);
     };
-    let ExpressionKind::FunctionCall { name, arguments } = &value.kind else {
-        panic!("expected a call, got {:?}", value.kind);
+    let value_expr = program.expr(*value);
+    let ExpressionKind::FunctionCall { name, arguments } = &value_expr.kind else {
+        panic!("expected a call, got {:?}", value_expr.kind);
     };
     (
-        name.name.as_str(),
-        arguments.iter().map(|a| &a.kind).collect(),
+        program.ident(*name),
+        program
+            .exprs(*arguments)
+            .iter()
+            .map(|a| &program.expr(*a).kind)
+            .collect(),
     )
 }
 
 #[track_caller]
-fn identifier(kind: &ExpressionKind) -> &str {
+fn identifier<'a>(program: &'a Program, kind: &ExpressionKind) -> &'a str {
     match kind {
-        ExpressionKind::Identifier(id) => id.name.as_str(),
+        ExpressionKind::Identifier(id) => program.ident(*id),
         other => panic!("expected an identifier, got {other:?}"),
     }
 }
@@ -73,11 +81,11 @@ fn dynamic_function_takes_modes_and_table_arguments() {
     let (name, args) = call_arguments(&program);
     assert_eq!(name, "DYNAMIC-FUNCTION");
     assert_eq!(args.len(), 6);
-    assert_eq!(identifier(args[1]), "hLib");
-    assert_eq!(identifier(args[2]), "ttStep");
-    assert_eq!(identifier(args[3]), "iOrder");
+    assert_eq!(identifier(&program, args[1]), "hLib");
+    assert_eq!(identifier(&program, args[2]), "ttStep");
+    assert_eq!(identifier(&program, args[3]), "iOrder");
     assert!(matches!(args[4], ExpressionKind::Literal(_)));
-    assert_eq!(identifier(args[5]), "dsX");
+    assert_eq!(identifier(&program, args[5]), "dsX");
 }
 
 #[test]
@@ -87,7 +95,7 @@ fn dynamic_function_takes_every_argument_form_of_run() {
                        DATASET-HANDLE dh BY-VALUE, TABLE t APPEND).",
     );
     let (_, args) = call_arguments(&program);
-    let names: Vec<_> = args[1..].iter().map(|a| identifier(a)).collect();
+    let names: Vec<_> = args[1..].iter().map(|a| identifier(&program, a)).collect();
     assert_eq!(names, ["a", "h", "dh", "t"]);
 }
 
@@ -97,8 +105,8 @@ fn dynamic_new_takes_modes_and_table_arguments() {
         parse_clean("oObj = DYNAMIC-NEW 'Cls' (INPUT-OUTPUT TABLE ttStep BY-REFERENCE, OUTPUT b).");
     let (_, args) = call_arguments(&program);
     assert_eq!(args.len(), 3);
-    assert_eq!(identifier(args[1]), "ttStep");
-    assert_eq!(identifier(args[2]), "b");
+    assert_eq!(identifier(&program, args[1]), "ttStep");
+    assert_eq!(identifier(&program, args[2]), "b");
 }
 
 #[test]
@@ -366,15 +374,16 @@ fn can_find(source: &str) -> (FindType, LockType, bool, bool) {
     let StatementKind::If { condition, .. } = &stmt.kind else {
         panic!("expected IF, got {:?}", stmt.kind);
     };
+    let cond_expr = program.expr(*condition);
     let ExpressionKind::CanFind {
         find_type,
         where_clause,
         lock_type,
         no_error,
         ..
-    } = &condition.kind
+    } = &cond_expr.kind
     else {
-        panic!("expected CAN-FIND, got {:?}", condition.kind);
+        panic!("expected CAN-FIND, got {:?}", cond_expr.kind);
     };
     (
         find_type.clone(),
@@ -432,10 +441,10 @@ fn parse_with_include(main: &str) -> Program {
     fs.insert(PathBuf::from("lib/tt.v"), TT_INCLUDE);
     let include_paths = vec![PathBuf::from("")];
     let pp = Preprocessor::new(&fs as &dyn FileSystem, &include_paths);
-    let expanded = pp
-        .process(FileId::new(1), main)
-        .expect("preprocessing should succeed")
-        .to_text();
+    let expanded = match pp.process(FileId::new(1), main) {
+        Ok(preprocessed) => preprocessed.to_text(),
+        Err(err) => panic!("preprocessing should succeed: {err:?}"),
+    };
     parse(&expanded)
 }
 
@@ -460,12 +469,9 @@ fn a_quoted_include_argument_substitutes_without_its_quotes() {
         else {
             panic!("{main}: expected DEFINE TEMP-TABLE, got {:?}", stmt.kind);
         };
-        assert_eq!(name.name, "ttOrders", "{main}");
+        assert_eq!(program.ident(*name), "ttOrders", "{main}");
         assert!(*no_undo);
-        assert_eq!(
-            like_table.as_ref().map(|t| t.name.as_str()),
-            Some("customer")
-        );
+        assert_eq!(like_table.map(|t| program.ident(t)), Some("customer"));
         assert_eq!(fields.len(), 1);
     }
 }

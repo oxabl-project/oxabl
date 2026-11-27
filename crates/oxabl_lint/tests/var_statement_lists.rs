@@ -19,7 +19,7 @@ fn lint(source: &str) -> Vec<(String, String)> {
         program.errors
     );
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema)
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
         .with_lint_severities(LintSeverityMap::default());
     let sem = analyze_file(&program.statements, &ctx);
     lint_file(&program.statements, &sem, &ctx)

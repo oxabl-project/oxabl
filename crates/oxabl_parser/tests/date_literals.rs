@@ -7,7 +7,10 @@ use oxabl_parser::{Program, try_parse};
 
 #[track_caller]
 fn parse_clean(source: &str) -> Program {
-    let program = try_parse(source).expect("the parser must not panic");
+    let program = match try_parse(source) {
+        Ok(program) => program,
+        Err(err) => panic!("the parser must not panic: {err:?}"),
+    };
     assert!(
         program.errors.is_empty(),
         "unexpected parse errors: {:?}",
@@ -25,7 +28,7 @@ fn assigned_value(program: &Program) -> &Expression {
     let StatementKind::Assignment { value, .. } = &stmt.kind else {
         panic!("expected an assignment, got {:?}", stmt.kind);
     };
-    value
+    program.expr(*value)
 }
 
 #[test]
@@ -43,7 +46,7 @@ fn a_date_constant_is_one_date_literal_with_its_spelling_and_span() {
                 value.kind
             );
         };
-        assert_eq!(date.text, text);
+        assert_eq!(program.name(date.text), text);
         assert_eq!(
             &source[date.span.start as usize..date.span.end as usize],
             text
@@ -60,7 +63,7 @@ fn a_date_constant_is_an_operand() {
         panic!("expected an addition, got {:?}", value.kind);
     };
     assert!(matches!(
-        left.kind,
+        program.expr(*left).kind,
         ExpressionKind::Literal(Literal::Date(_))
     ));
 }
@@ -73,10 +76,13 @@ fn a_spaced_slash_is_a_division() {
         panic!("expected a division, got {:?}", value.kind);
     };
     assert!(matches!(
-        right.kind,
+        program.expr(*right).kind,
         ExpressionKind::Literal(Literal::Integer(_))
     ));
-    assert!(matches!(left.kind, ExpressionKind::Divide(..)));
+    assert!(matches!(
+        program.expr(*left).kind,
+        ExpressionKind::Divide(..)
+    ));
 }
 
 #[test]
@@ -128,7 +134,7 @@ fn a_date_constant_in_an_initial_value() {
         );
     };
     assert!(matches!(
-        init.kind,
+        program.expr(*init).kind,
         ExpressionKind::Literal(Literal::Date(_))
     ));
 }

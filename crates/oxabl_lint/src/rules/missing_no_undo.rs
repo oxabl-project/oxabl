@@ -118,7 +118,7 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
         ctx,
         diags: Vec::new(),
     };
-    walk_block(&mut v, program);
+    walk_block(&mut v, ctx.pools, program);
     v.diags
 }
 
@@ -143,7 +143,10 @@ impl Definitions<'_> {
         self.diags.push(
             Diagnostic::warning(
                 TX006,
-                format!("{noun} `{}` is defined without NO-UNDO", name.name),
+                format!(
+                    "{noun} `{}` is defined without NO-UNDO",
+                    self.ctx.pools.ident(*name)
+                ),
                 file_span(self.ctx, name.span),
             )
             .with_help(help.to_string()),

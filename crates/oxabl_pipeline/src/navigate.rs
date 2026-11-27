@@ -1059,6 +1059,7 @@ impl Navigation<'_, '_> {
             let parsed = self.parsed();
             FileCalls::extract(
                 &parsed.program.statements,
+                &parsed.program.pools,
                 &self.expanded.text,
                 &parsed.tokens,
             )

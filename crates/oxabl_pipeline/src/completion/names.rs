@@ -189,13 +189,19 @@ impl Engine<'_, '_, '_, '_> {
     fn declared_before(&self, name: &str) -> bool {
         let text = self.request.text;
         let window = self.found.window_start as usize;
-        self.tokens
-            .windows(2)
-            .take_while(|pair| pair[1].end <= window)
-            .any(|pair| {
-                pair[0].kind == oxabl_lexer::Kind::Function
-                    && text[pair[1].start..pair[1].end].eq_ignore_ascii_case(name)
-            })
+        let count = self.tokens.len();
+        for i in 0..count.saturating_sub(1) {
+            let next = &self.tokens[i + 1];
+            if next.end > window {
+                break;
+            }
+            if self.tokens[i].kind == oxabl_lexer::Kind::Function
+                && text[next.start..next.end].eq_ignore_ascii_case(name)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// The item of one declared symbol, when `wanted` takes its kind.

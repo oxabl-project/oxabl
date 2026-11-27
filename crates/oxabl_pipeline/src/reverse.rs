@@ -41,10 +41,12 @@
 //! They are a different fact from an unresolved reference and are never merged
 //! with one.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use oxabl_analyze::{
     DependencyEdgeRow, DependencySection, LookupSpanRow, UnresolvedEdgeRow, unresolved_reason_str,
@@ -368,7 +370,7 @@ impl NamedEdges {
         subject_of: impl Fn(&EdgeTarget) -> Option<Arc<Subject>>,
     ) -> Self {
         let mut rows: Vec<EdgeRow> = Vec::new();
-        let mut at: HashMap<(*const Subject, EdgeKind), usize> = HashMap::new();
+        let mut at: FxHashMap<(*const Subject, EdgeKind), usize> = FxHashMap::default();
         let mut named = 0;
         let mut unnameable = Vec::new();
         for edge in edges.edges() {
@@ -407,7 +409,7 @@ impl NamedEdges {
 
 /// One copy of each subject for the parts that one thread analyses.
 #[derive(Default)]
-struct Subjects(HashMap<Subject, Arc<Subject>>);
+struct Subjects(FxHashMap<Subject, Arc<Subject>>);
 
 impl Subjects {
     fn intern(&mut self, subject: Subject) -> Arc<Subject> {
@@ -423,8 +425,8 @@ impl Subjects {
 /// first, which has the lowest span start.
 fn sort_dependents(rows: &mut Vec<Dependent>) {
     rows.sort_by(|a, b| {
-        (a.file.as_path(), a.kind, a.span.map(|s| s.start)).cmp(&(
-            b.file.as_path(),
+        (a.file.as_os_str(), a.kind, a.span.map(|s| s.start)).cmp(&(
+            b.file.as_os_str(),
             b.kind,
             b.span.map(|s| s.start),
         ))
@@ -435,8 +437,8 @@ fn sort_dependents(rows: &mut Vec<Dependent>) {
 /// Order the unresolved references of one name, and drop the repeats.
 fn sort_unresolved(rows: &mut Vec<UnresolvedRow>) {
     rows.sort_by(|a, b| {
-        (a.file.as_path(), a.reference.name.as_str())
-            .cmp(&(b.file.as_path(), b.reference.name.as_str()))
+        (a.file.as_os_str(), a.reference.name.as_str())
+            .cmp(&(b.file.as_os_str(), b.reference.name.as_str()))
     });
     rows.dedup();
 }
@@ -446,10 +448,10 @@ fn sort_unresolved(rows: &mut Vec<UnresolvedRow>) {
 pub struct ReverseGraph {
     /// Subject → the files that depend on it. The rows of a subject are shared
     /// with the graph that [`updated`](Self::updated) starts from.
-    dependents: HashMap<Subject, Arc<Vec<Dependent>>>,
+    dependents: FxHashMap<Subject, Arc<Vec<Dependent>>>,
     /// Every unresolved reference in the workspace, keyed by folded name, so a
     /// query can find the references that *should* have reached its subject.
-    unresolved_by_name: HashMap<String, Arc<Vec<UnresolvedRow>>>,
+    unresolved_by_name: FxHashMap<String, Arc<Vec<UnresolvedRow>>>,
     /// Files the pass could not analyse at all.
     unanalysed: Vec<Unanalysed>,
     /// Files analysed whose edge set reports itself incomplete.
@@ -716,7 +718,7 @@ impl ReverseGraph {
         for part in parts {
             graph.absorb_totals(part);
         }
-        let changed: HashSet<&Path> = removed
+        let changed: FxHashSet<&Path> = removed
             .iter()
             .chain(added)
             .map(|part| part.file.as_path())
@@ -730,11 +732,11 @@ impl ReverseGraph {
     /// Replace the rows of the files in `changed` in `dependents`.
     fn replace_dependents(
         &mut self,
-        changed: &HashSet<&Path>,
+        changed: &FxHashSet<&Path>,
         removed: &[&FilePart],
         added: &[&FilePart],
     ) {
-        let mut fresh: HashMap<&Subject, Vec<Dependent>> = HashMap::new();
+        let mut fresh: FxHashMap<&Subject, Vec<Dependent>> = FxHashMap::default();
         for part in added {
             for (subject, kind, span) in part.edge_rows() {
                 fresh.entry(subject).or_default().push(Dependent {
@@ -744,7 +746,7 @@ impl ReverseGraph {
                 });
             }
         }
-        let mut touched: HashSet<&Subject> = fresh.keys().copied().collect();
+        let mut touched: FxHashSet<&Subject> = fresh.keys().copied().collect();
         touched.extend(
             removed
                 .iter()
@@ -775,11 +777,11 @@ impl ReverseGraph {
     /// Replace the rows of the files in `changed` in `unresolved_by_name`.
     fn replace_unresolved(
         &mut self,
-        changed: &HashSet<&Path>,
+        changed: &FxHashSet<&Path>,
         removed: &[&FilePart],
         added: &[&FilePart],
     ) {
-        let mut fresh: HashMap<String, Vec<UnresolvedRow>> = HashMap::new();
+        let mut fresh: FxHashMap<String, Vec<UnresolvedRow>> = FxHashMap::default();
         for part in added {
             for reference in part.unresolved_refs() {
                 fresh
@@ -791,7 +793,7 @@ impl ReverseGraph {
                     });
             }
         }
-        let mut touched: HashSet<String> = fresh.keys().cloned().collect();
+        let mut touched: FxHashSet<String> = fresh.keys().cloned().collect();
         touched.extend(
             removed
                 .iter()
@@ -823,8 +825,8 @@ impl ReverseGraph {
     fn empty(pipeline: &LintPipeline<'_>, files: &[PathBuf]) -> Self {
         let files: Vec<PathBuf> = files.iter().map(|p| normalize_lexically(p)).collect();
         ReverseGraph {
-            dependents: HashMap::new(),
-            unresolved_by_name: HashMap::new(),
+            dependents: FxHashMap::default(),
+            unresolved_by_name: FxHashMap::default(),
             unanalysed: Vec::new(),
             degraded: Vec::new(),
             unnameable: Vec::new(),
@@ -1086,9 +1088,9 @@ impl ReverseGraph {
     /// well as its resolved dependents: a file that is created or renamed into
     /// place must rebuild the files that could not find it before.
     pub fn rebuild_set(&self, subject: &Subject) -> Vec<PathBuf> {
-        let mut seen: HashSet<PathBuf> = HashSet::new();
+        let mut seen: FxHashSet<PathBuf> = FxHashSet::default();
         let mut queue: VecDeque<Subject> = VecDeque::new();
-        let mut visited: HashSet<Subject> = HashSet::new();
+        let mut visited: FxHashSet<Subject> = FxHashSet::default();
 
         if let Subject::File(path) = subject {
             seen.insert(path.clone());
@@ -1199,13 +1201,25 @@ impl ReverseGraph {
     /// A freshness check that watched roots only would miss the most important
     /// change in this product: editing a shared `.i` file.
     pub fn tracked_files(&self) -> Vec<PathBuf> {
-        let mut files = self.files.clone();
-        files.extend(self.dependents.keys().filter_map(|subject| match subject {
-            Subject::File(path) => Some(path.clone()),
-            Subject::Table(_) => None,
-        }));
-        files.sort();
-        files.dedup();
+        let capacity = self.files.len() + self.dependents.len();
+        let mut seen: FxHashSet<&Path> =
+            FxHashSet::with_capacity_and_hasher(capacity, Default::default());
+        let mut files = Vec::with_capacity(capacity);
+        for path in &self.files {
+            if seen.insert(path.as_path()) {
+                files.push(path.clone());
+            }
+        }
+        for subject in self.dependents.keys() {
+            if let Subject::File(path) = subject
+                && seen.insert(path.as_path())
+            {
+                files.push(path.clone());
+            }
+        }
+        // Sort by raw OS-string bytes: `Path::cmp` parses path components on
+        // every comparison and dominated incremental workspace passes.
+        files.sort_unstable_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
         files
     }
 

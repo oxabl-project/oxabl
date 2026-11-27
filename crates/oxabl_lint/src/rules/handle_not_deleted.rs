@@ -116,7 +116,10 @@ pub const DESCRIPTION: &str = "A dynamic object that some path loses without del
 
 /// Entry point: analyse the file, then [`check`].
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
-    check(&oxabl_handles::analyze_file(program, ctx.source), ctx)
+    check(
+        &oxabl_handles::analyze_file(program, ctx.pools, ctx.source),
+        ctx,
+    )
 }
 
 /// The findings over an analysed file.

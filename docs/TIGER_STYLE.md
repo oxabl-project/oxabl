@@ -178,4 +178,11 @@ A lint comes in with a ratchet. It does not come in with a blanket `#[allow]`.
 3. Fix one crate at a time. Start with the lexer and the parser.
 4. When the count of a crate is zero, set the lint to `deny` for that crate and delete the count.
 
+The tools:
+
+- `tigerstyle-ratchet.txt` holds the counts, one line for each crate and lint.
+- `cargo xtask tigerstyle` runs clippy over the libraries and binaries of the workspace with the full configuration of `xtask/tigerstyle/clippy.toml` and a `-W` for each lint above, and fails when a count is higher than the file. `cargo xtask ci clippy` runs it after clippy, so CI runs it too.
+- `cargo xtask tigerstyle --update` writes the current counts to the file. Run it when a count went down, and commit the file in the same change.
+- The root `clippy.toml` holds only the settings that every crate meets today. A crate at zero (`oxabl_lexer`, `oxabl_parser`) has its own `clippy.toml` with the full configuration and `[lints] workspace = true` in its `Cargo.toml`.
+
 One `#[allow]` on one item is permitted when the item cannot meet the rule. It needs a comment that gives the reason.

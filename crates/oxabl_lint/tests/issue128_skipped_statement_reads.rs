@@ -35,8 +35,8 @@ fn lint_all(source: &str, severities: LintSeverityMap) -> Vec<(String, String, u
         program.errors
     );
     let schema = Schema::empty();
-    let ctx =
-        AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_lint_severities(severities);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
+        .with_lint_severities(severities);
     let sem = analyze_file(&program.statements, &ctx);
     lint_file(&program.statements, &sem, &ctx)
         .into_iter()
@@ -54,7 +54,7 @@ fn flagged_variables(source: &str) -> Vec<String> {
     let mut parser = Parser::new(&tokens, source);
     let program = parser.parse_program();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     let sem = analyze_file(&program.statements, &ctx);
     sem.symbols
         .iter()
@@ -138,7 +138,7 @@ fn ae3_fixture_is_non_vacuous() {
     let mut parser = Parser::new(&tokens, AE3_SRC);
     let program = parser.parse_program();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, AE3_SRC, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, AE3_SRC, &schema, &program.pools);
     let sem = analyze_file(&program.statements, &ctx);
     let (_, sym) = sem
         .symbols

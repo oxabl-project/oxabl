@@ -47,7 +47,8 @@ pub(super) fn codes_of(src: &str, map: LintSeverityMap, prefix: &str) -> Vec<&'s
     let tokens = tokenize(src);
     let program = Parser::new(&tokens, src).parse_program();
     let schema = schema();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema).with_lint_severities(map);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema, &program.pools)
+        .with_lint_severities(map);
     let sem = analyze_file(&program.statements, &ctx);
     Registry::builtin()
         .run(&program.statements, &sem, &ctx)

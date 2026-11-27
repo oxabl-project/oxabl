@@ -187,7 +187,12 @@ fn the_envelope_reports_dependencies_at_version_four_and_nothing_else_moves() {
     let source = "MESSAGE \"hi\".\n";
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
-    let ctx = oxabl_semantic::AnalysisContext::new(oxabl_pipeline::ROOT_FILE_ID, source, &schema);
+    let ctx = oxabl_semantic::AnalysisContext::new(
+        oxabl_pipeline::ROOT_FILE_ID,
+        source,
+        &schema,
+        &program.pools,
+    );
     let sem = oxabl_semantic::analyze_file(&program.statements, &ctx);
 
     let v: Value = dump_json(

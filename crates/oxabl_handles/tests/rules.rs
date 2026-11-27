@@ -12,7 +12,7 @@ fn analyze(source: &str) -> (FileHandles, Vec<usize>) {
         .chain(source.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
     (
-        oxabl_handles::analyze_file(&program.statements, source),
+        oxabl_handles::analyze_file(&program.statements, &program.pools, source),
         starts,
     )
 }

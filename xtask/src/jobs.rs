@@ -203,6 +203,7 @@ pub fn all(context: &Context, tests: &Tests) -> Vec<Job> {
                     ]),
                 )
                 .needing(CLIPPY),
+                check("tigerstyle ratchet", crate::tigerstyle::check_ratchet).needing(CLIPPY),
             ],
         ),
         fuzz_targets(),

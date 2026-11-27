@@ -39,3 +39,6 @@ harness = false
 [[bench]]
 name = "nulls_bench"
 harness = false
+
+# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+[lints]

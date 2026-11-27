@@ -9,8 +9,8 @@
 //! `docs/design/strict-analysis-open-questions.md`, section 10.
 
 use oxabl_ast::{
-    HandleParamKind, ParameterDirection, ParameterExtent, ParameterType, PreprocIf, Statement,
-    StatementKind, TypeSource,
+    AstPools, HandleParamKind, ParameterDirection, ParameterExtent, ParameterType, PreprocIf,
+    Statement, StatementKind, TypeSource,
 };
 
 use crate::index::{IndexName, MemberType};
@@ -79,7 +79,7 @@ pub struct ProgramSignatures {
 
 impl ProgramSignatures {
     /// The parameters `statements` define.
-    pub fn of(statements: &[Statement]) -> Self {
+    pub fn of(statements: &[Statement], pools: &AstPools) -> Self {
         let mut out = ProgramSignatures::default();
         let class = statements.iter().any(|s| {
             matches!(
@@ -96,7 +96,7 @@ impl ProgramSignatures {
         out.main = main;
         out.main_written = written;
         let mut found = Vec::new();
-        procedures(statements, &mut found);
+        procedures(statements, pools, &mut found);
         for (name, list, written) in found {
             out.procedures.push((name.clone(), list));
             out.procedures_written.push((name, written));
@@ -238,7 +238,11 @@ fn hides_parameters(branches: &PreprocIf<Vec<Statement>>) -> bool {
 }
 
 /// The internal procedures of `statements`, nested `&IF` branches included.
-fn procedures(statements: &[Statement], out: &mut Vec<(IndexName, Option<Signature>, usize)>) {
+fn procedures(
+    statements: &[Statement],
+    pools: &AstPools,
+    out: &mut Vec<(IndexName, Option<Signature>, usize)>,
+) {
     for s in statements {
         match &s.kind {
             StatementKind::Procedure {
@@ -247,7 +251,7 @@ fn procedures(statements: &[Statement], out: &mut Vec<(IndexName, Option<Signatu
                 is_prototype: false,
                 ..
             } => {
-                let key = IndexName::new(&name.name);
+                let key = IndexName::new(pools.ident(*name));
                 if let Some(entry) = out.iter_mut().find(|(n, _, _)| *n == key) {
                     entry.1 = None;
                 } else {
@@ -256,12 +260,12 @@ fn procedures(statements: &[Statement], out: &mut Vec<(IndexName, Option<Signatu
                 }
             }
             StatementKind::PreprocIf(branches) => {
-                procedures(&branches.then_branch, out);
+                procedures(&branches.then_branch, pools, out);
                 for (_, b) in &branches.elseif_branches {
-                    procedures(b, out);
+                    procedures(b, pools, out);
                 }
                 if let Some(b) = &branches.else_branch {
-                    procedures(b, out);
+                    procedures(b, pools, out);
                 }
             }
             _ => {}
@@ -311,7 +315,7 @@ mod tests {
     fn signatures(source: &str) -> ProgramSignatures {
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
-        ProgramSignatures::of(&program.statements)
+        ProgramSignatures::of(&program.statements, &program.pools)
     }
 
     fn scalar(mode: ParamMode, ty: Option<PrimitiveTy>) -> Param {
@@ -458,16 +462,19 @@ pub enum MemberParamShape {
 /// parentheses. `None` when a statement is not a plain parameter definition
 /// (an `&IF`, an include reference, a `RETURN` parameter): then the list is
 /// not known.
-pub fn member_params(parameters: &[Statement]) -> Option<Vec<MemberParam>> {
-    parameters.iter().map(member_param_of).collect()
+pub fn member_params(parameters: &[Statement], pools: &AstPools) -> Option<Vec<MemberParam>> {
+    parameters
+        .iter()
+        .map(|s| member_param_of(s, pools))
+        .collect()
 }
 
-fn member_param_of(statement: &Statement) -> Option<MemberParam> {
+fn member_param_of(statement: &Statement, pools: &AstPools) -> Option<MemberParam> {
     match &statement.kind {
         StatementKind::DefineParameter {
             direction,
             param_type,
-        } => member_param(direction, param_type),
+        } => member_param(direction, param_type, pools),
         _ => None,
     }
 }
@@ -476,14 +483,18 @@ fn member_param_of(statement: &Statement) -> Option<MemberParam> {
 /// A class name, `LIKE` and an unknown type give `Unknown`: the statement
 /// alone cannot resolve them. `None` for a statement that is not a plain
 /// parameter definition.
-pub fn call_param_of(statement: &Statement) -> Option<CallParam> {
-    let declared = [member_param_of(statement)?];
+pub fn call_param_of(statement: &Statement, pools: &AstPools) -> Option<CallParam> {
+    let declared = [member_param_of(statement, pools)?];
     call_params(&declared, |_| ResolvedType::Unknown)
         .into_iter()
         .next()
 }
 
-fn member_param(direction: &ParameterDirection, param_type: &ParameterType) -> Option<MemberParam> {
+fn member_param(
+    direction: &ParameterDirection,
+    param_type: &ParameterType,
+    pools: &AstPools,
+) -> Option<MemberParam> {
     let mode = match direction {
         ParameterDirection::Input => ParamMode::Input,
         ParameterDirection::Output => ParamMode::Output,
@@ -511,7 +522,7 @@ fn member_param(direction: &ParameterDirection, param_type: &ParameterType) -> O
             extent,
             ..
         } => MemberParamShape::Like {
-            source: IndexName::new(&source.name),
+            source: IndexName::new(pools.ident(*source)),
             extent: *extent,
         },
         ParameterType::Handle { kind, .. } => match kind {

@@ -78,7 +78,7 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
         ctx,
         diags: Vec::new(),
     };
-    walk_block(&mut v, program);
+    walk_block(&mut v, ctx.pools, program);
     v.diags
 }
 
@@ -203,7 +203,7 @@ impl Visitor for SharedDefinitions<'_> {
                 *is_new_global_shared,
             ),
             StatementKind::DefineTempTable { name, .. } if self.is_workfile(stmt) => {
-                self.report_from_tokens(stmt, Some((&name.name, name.span)));
+                self.report_from_tokens(stmt, Some((self.ctx.pools.ident(*name), name.span)));
             }
             StatementKind::DefineTempTable {
                 name,
@@ -247,7 +247,7 @@ impl Visitor for SharedDefinitions<'_> {
             StatementKind::DefineStream { name }
             | StatementKind::DefineFrame { name, .. }
             | StatementKind::DefineWidget { name } => {
-                self.report_from_tokens(stmt, Some((&name.name, name.span)));
+                self.report_from_tokens(stmt, Some((self.ctx.pools.ident(*name), name.span)));
             }
             StatementKind::Skipped { .. } => self.report_from_tokens(stmt, None),
             _ => {}
@@ -274,7 +274,7 @@ impl SharedDefinitions<'_> {
         new_global_shared: bool,
     ) {
         if let Some(mode) = Mode::from_flags(new_shared, shared, new_global_shared) {
-            self.report(name.span, mode, noun, Some(&name.name));
+            self.report(name.span, mode, noun, Some(self.ctx.pools.ident(*name)));
         }
     }
 }

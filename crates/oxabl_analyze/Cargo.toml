@@ -27,3 +27,6 @@ serde_json = "1"
 # must never become a normal dependency of it.
 oxabl_index = { path = "../oxabl_index", version = "7.0.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.6.2", features = ["test-support"] }
+
+# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+[lints]

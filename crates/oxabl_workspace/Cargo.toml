@@ -21,3 +21,6 @@ walkdir = "2"
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
+
+# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+[lints]

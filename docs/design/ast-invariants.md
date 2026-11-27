@@ -125,8 +125,8 @@ Both `Statement` and `Expression` carry a stable `NodeId` as of Phase 1
 
 ## 3. Identifier casing
 
-- `Identifier.name: String` preserves the **source casing** of the identifier and
-  performs no case folding.
+- `Identifier.name` is a `NameId` into the program's `NamePool` (§14). The text it names
+  keeps the **source casing** of the identifier; the pool does no case folding.
 - **Escape-marker normalization is a property of `Identifier`, not of every name in the
   tree.** An `Identifier` built through the parser's identifier helper drops UNIX-shaped
   escape markers, because they are not part of the name the compiler sees: `ab\cd` has
@@ -143,8 +143,9 @@ Both `Statement` and `Expression` carry a stable `NodeId` as of Phase 1
   (`eq_ignore_ascii_case`) or atom interning with case folding at intern time — see
   `CLAUDE.md` § Lexer for the no-heap-allocation rule. A shared helper will live in
   `oxabl_common::atom` when semantic lands; it does not exist today.
-- Equivalently: `Identifier` field equality in `PartialEq` is **case-sensitive**. Test
-  fixtures that assert identifier equality must use the source casing.
+- Equivalently: name equality is **case-sensitive**. The interner gives two spellings that
+  differ only in case two different `NameId`s. Test fixtures that compare a name must read
+  its text through the pools and use the source casing.
 
 ## 4. Operator precedence is baked into tree shape
 
@@ -174,8 +175,8 @@ should bottom out on the innermost non-postfix expression.
 ## 6. `PreprocIf<T>` never commits to preprocessor truth
 
 - `PreprocIf<T>` appears at three levels: `Statement::PreprocIf(PreprocIf<Vec<Statement>>)`,
-  `Expression::PreprocIf(Box<PreprocIf<Expression>>)`, and (per the plan) a future
-  `DataType::PreprocIf(Box<PreprocIf<DataType>>)`.
+  `Expression::PreprocIf(Box<PreprocIf<ExprId>>)` (its branches are `ExprId`s, §14), and
+  (per the plan) a future `DataType::PreprocIf(Box<PreprocIf<DataType>>)`.
 - Every branch (`then_branch`, each `elseif_branches` branch, `else_branch` if present) is
   **parsed as though it were reachable**. The AST carries all branches; it does not evaluate
   the `&IF` condition.
@@ -490,6 +491,35 @@ Slice 3's verbatim-by-span re-emit and blank-line gap math depend on knowing whi
 Both `//` and `&`-directive comments are `CommentKind::Line` despite this tail asymmetry.
 
 ---
+
+## 14. Names and expressions live in the program's pools
+
+`Program.pools` (`AstPools`) holds the text of every name and every expression node of one
+parse. The tree holds only handles into it.
+
+- **`NameId`** (4 bytes) is a handle into `NamePool`. `Identifier.name`, the value of a
+  `StringLiteral` and the other names of the tree are `NameId`s. Read the text with
+  `pools.name(id)` or `pools.ident(identifier)`. While it parses, the parser interns each
+  text once (`NameInterner`, case-sensitive); `finish` drops the hash table, so a kept tree
+  has no map.
+- **`ExprId`** (4 bytes) is a handle into `ExprPool`. Every place that held an `Expression`,
+  a `Box<Expression>` or an `Option<Expression>` holds an `ExprId` or an `Option<ExprId>`.
+  Read the node with `pools.expr(id)`.
+- **`ExprList`** (8 bytes, a start and a length) is a run of `ExprId`s in the pool. Every
+  place that held a `Vec<Expression>` holds an `ExprList`. Read it with `pools.exprs(list)`.
+  An empty list is `ExprList::EMPTY` and holds no storage.
+- **A handle is valid only with the pools of its own parse.** A handle from one `Program`
+  read through the pools of another gives a wrong node or a panic. Code that keeps
+  statements of several files (the workspace index, the daemon, a cross-file view) keeps each
+  file's pools beside its statements and passes them together. An analysis entry point takes
+  `pools: &AstPools` directly after `program: &[Statement]`, and `AnalysisContext` carries
+  the pools of the file it analyses.
+- **`NameId::DUMMY` and `ExprId::DUMMY`** are placeholders for hand-built trees. They are
+  in no pool: `get` panics on them and `try_get` gives `None`.
+- **Hand-built trees** (unit tests) put their names and expressions in an `AstPools` of
+  their own and give that pool to the analysis. `AstPools::new()` makes no allocation.
+- **Sibling order.** The ids of an `ExprList` are in source order, as statement siblings
+  are (§1); a debug build asserts this for each list the parser stores.
 
 ## Debug assertions
 

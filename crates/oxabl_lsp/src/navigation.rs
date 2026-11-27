@@ -31,7 +31,7 @@ use lsp_types::{
 use oxabl_daemon::canonical_path;
 use oxabl_daemon::db::{
     AnalysisDatabase, Buffer, NavigationAnswer, NavigationQuery, buffer_dependencies,
-    compute_highlights, compute_navigation,
+    compute_highlights, compute_links, compute_navigation,
 };
 use ropey::Rope;
 
@@ -281,6 +281,11 @@ impl Server<'_> {
                                 if !reads_unsaved_include(&snapshot, buffer, &root, &overlay) =>
                             {
                                 compute_highlights(&snapshot, buffer, schema, *offset)
+                            }
+                            (NavigationQuery::Links, Some(buffer))
+                                if !reads_unsaved_include(&snapshot, buffer, &root, &overlay) =>
+                            {
+                                compute_links(&snapshot, buffer, schema)
                             }
                             _ => compute_navigation(&snapshot, schema, &root, overlay, &query),
                         };

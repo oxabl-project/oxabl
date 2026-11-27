@@ -1102,10 +1102,18 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxabl_ast::{DataType, Identifier, Span, Statement, StatementKind, TypeSource};
+    use oxabl_ast::{
+        AstPools, DataType, ExprId, Expression, Identifier, Span, Statement, StatementKind,
+        TypeSource,
+    };
     use oxabl_common::FileId;
     use oxabl_schema::Schema;
     use oxabl_semantic::{SourceContext, analyze_file};
+    use std::cell::RefCell;
+
+    thread_local! {
+        static POOLS: RefCell<AstPools> = const { RefCell::new(AstPools::new()) };
+    }
 
     fn ident(n: &str) -> Identifier {
         Identifier {
@@ -1113,8 +1121,17 @@ mod tests {
                 start: 0,
                 end: n.len() as u32,
             },
-            name: n.into(),
+            name: POOLS.with(|pools| pools.borrow_mut().names.push(n)),
         }
+    }
+
+    fn expr(expression: Expression) -> ExprId {
+        POOLS.with(|pools| pools.borrow_mut().exprs.push(expression))
+    }
+
+    /// A copy of this thread's pools. Take it after the test built its tree.
+    fn pools() -> AstPools {
+        POOLS.with(|pools| pools.borrow().clone())
     }
 
     fn var_decl(n: &str, ty: DataType) -> Statement {
@@ -1134,7 +1151,8 @@ mod tests {
 
     fn run_dump(stmts: Vec<Statement>) -> Value {
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
+        let pools = pools();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema, &pools);
         let sem = analyze_file(&stmts, &ctx);
         dump_json(&stmts, &sem, &ctx, true, &DependencySection::default())
     }
@@ -1242,8 +1260,9 @@ mod tests {
     #[test]
     fn dump_text_contains_scopes_and_symbols_headers() {
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
         let stmts = vec![var_decl("x", DataType::Integer)];
+        let pools = pools();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema, &pools);
         let sem = analyze_file(&stmts, &ctx);
         let text = dump_text(&stmts, &sem, &ctx, &DependencySection::default());
         assert!(text.contains("=== Scopes"));
@@ -1271,10 +1290,9 @@ mod tests {
     /// synthesized population is exactly what that version records.
     #[test]
     fn symbols_section_v2_includes_schema_derived_symbols() {
-        use oxabl_ast::{BufferTarget, Expression, ExpressionKind, XmlSerializeOptions};
+        use oxabl_ast::{BufferTarget, ExpressionKind, XmlSerializeOptions};
 
         let schema = test_schema();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
         // `Customer.Name` with no DEFINE BUFFER: the qualifier binds a
         // synthesized default buffer and the field a synthesized Field
         // symbol — both must appear in the dump.
@@ -1282,7 +1300,7 @@ mod tests {
             NodeId::from_u32(2),
             oxabl_ast::Span::DUMMY,
             ExpressionKind::FieldAccess {
-                qualifier: Box::new(Expression::with_id(
+                qualifier: expr(Expression::with_id(
                     NodeId::from_u32(3),
                     oxabl_ast::Span::DUMMY,
                     ExpressionKind::Identifier(ident("Customer")),
@@ -1310,9 +1328,11 @@ mod tests {
             Statement::with_id(
                 NodeId::from_u32(5),
                 oxabl_ast::Span::DUMMY,
-                StatementKind::ExpressionStatement(fa),
+                StatementKind::ExpressionStatement(expr(fa)),
             ),
         ];
+        let pools = pools();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema, &pools);
         let sem = analyze_file(&stmts, &ctx);
         let v = dump_json(&stmts, &sem, &ctx, true, &DependencySection::default());
 
@@ -1394,7 +1414,8 @@ mod tests {
             "fixture must parse cleanly: {:?}",
             program.errors
         );
-        let ctx = AnalysisContext::new(FileId::new(1), source, &schema).with_index(&index);
+        let ctx = AnalysisContext::new(FileId::new(1), source, &schema, &program.pools)
+            .with_index(&index);
         let sem = analyze_file(&program.statements, &ctx);
         (
             dump_json(
@@ -1552,7 +1573,8 @@ mod tests {
     fn fragment_context_is_an_explicit_coverage_fact() {
         let schema = Schema::empty();
         let statements = vec![var_decl("x", DataType::Integer)];
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema)
+        let pools = pools();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema, &pools)
             .with_source_context(SourceContext::IncludeFragment);
         let sem = analyze_file(&statements, &ctx);
         let json = dump_json(&statements, &sem, &ctx, true, &DependencySection::default());
@@ -1576,7 +1598,8 @@ mod tests {
 
         let schema = Schema::empty();
         let stmts = vec![var_decl("x", DataType::Integer)];
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
+        let pools = pools();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema, &pools);
         let sem = analyze_file(&stmts, &ctx);
         let collected = CollectedDiagnostics::default();
         let text = dump_text_with_diagnostics(&sem, &collected, &DependencySection::default());

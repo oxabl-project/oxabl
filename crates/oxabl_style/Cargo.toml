@@ -17,3 +17,6 @@ toml = "0.8"
 
 [dev-dependencies]
 serde_json = "1"
+
+# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+[lints]

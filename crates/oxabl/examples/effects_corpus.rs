@@ -434,14 +434,20 @@ fn analyse(
         ..ScopeOptions::default()
     };
     let t = Instant::now();
-    let flow = oxabl_flow::build_file_with(&program.statements, text, &options.flow);
-    let scopes =
-        oxabl_scope::analyze_flow(&program.statements, text, &tokens, &flow, schema, &options);
+    let flow =
+        oxabl_flow::build_file_with(&program.statements, &program.pools, text, &options.flow);
+    let scopes = oxabl_scope::analyze_flow(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, text, &tokens),
+        &flow,
+        schema,
+        &options,
+    );
     times.scope += t.elapsed();
     let t = Instant::now();
-    let calls = FileCalls::extract(&program.statements, text, &tokens);
+    let calls = FileCalls::extract(&program.statements, &program.pools, text, &tokens);
     let effects = oxabl_effects::analyze_file(
         &program.statements,
+        &program.pools,
         text,
         &tokens,
         &flow,
@@ -453,11 +459,16 @@ fn analyse(
     times.effects += t.elapsed();
 
     let empty = Schema::empty();
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, text, schema.unwrap_or(&empty))
-        .with_tokens(&tokens)
-        .with_elided(elided)
-        .with_elided_includes(elided_includes)
-        .with_parse_recovered(recovered);
+    let mut ctx = AnalysisContext::new(
+        FileId::UNKNOWN,
+        text,
+        schema.unwrap_or(&empty),
+        &program.pools,
+    )
+    .with_tokens(&tokens)
+    .with_elided(elided)
+    .with_elided_includes(elided_includes)
+    .with_parse_recovered(recovered);
     ctx.schema_loaded = config.schema_loaded;
     // Only findings in the file's own text: one in an include is reported
     // in the include, or at the `{...}` site, by the lint run.

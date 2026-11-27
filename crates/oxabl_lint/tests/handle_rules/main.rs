@@ -43,7 +43,8 @@ pub fn check_with_include(rule: RuleFn, source: &str, include_len: u32) -> Vec<D
         start: 0,
         end: include_len,
     }];
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_include_regions(&regions);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
+        .with_include_regions(&regions);
     let sem = analyze_file(&program.statements, &ctx);
     rule(&program.statements, &sem, &ctx)
 }
@@ -57,7 +58,8 @@ fn check_in(rule: RuleFn, source: &str, context: SourceContext) -> Vec<Diagnosti
         program.errors
     );
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_source_context(context);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
+        .with_source_context(context);
     let sem = analyze_file(&program.statements, &ctx);
     rule(&program.statements, &sem, &ctx)
 }
@@ -82,7 +84,7 @@ pub fn check_recovered(
     } else {
         SourceContext::CompilationUnit
     };
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema)
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
         .with_source_context(context)
         .with_parse_recovered(flagged);
     let sem = analyze_file(&program.statements, &ctx);

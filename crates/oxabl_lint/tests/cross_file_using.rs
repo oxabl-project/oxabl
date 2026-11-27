@@ -80,8 +80,10 @@ fn sole_using(stmts: &[Statement]) -> (NodeId, oxabl_ast::Span) {
 fn a_using_naming_a_class_that_exists_resolves_on_the_statement() {
     let source = "USING myapp.cache.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n";
 
-    let (stmts, sem) = with_index(source, &WORKSPACE);
-    let (using_id, _) = sole_using(&stmts);
+    let (program, sem) = with_index(source, &WORKSPACE);
+
+    let stmts = &program.statements;
+    let (using_id, _) = sole_using(stmts);
     let sym = match sem.references.get(using_id) {
         Some(Resolution::Resolved(sym)) => *sym,
         other => panic!("the USING statement must carry a resolved reference, got {other:?}"),
@@ -97,8 +99,9 @@ fn a_using_naming_a_class_that_exists_resolves_on_the_statement() {
     // The firewall. Today a `USING` produces no reference entry at all, and an
     // `External` placeholder would add a row to the analyze envelope of every
     // file that imports anything, on a run where nothing was looked at.
-    let (stmts, plain) = without_index(source);
-    let (using_id, _) = sole_using(&stmts);
+    let (program, plain) = without_index(source);
+    let stmts = &program.statements;
+    let (using_id, _) = sole_using(stmts);
     assert_eq!(plain.references.get(using_id), None);
     assert!(symbols_named(&plain, "myapp.cache").is_empty());
 }
@@ -107,8 +110,10 @@ fn a_using_naming_a_class_that_exists_resolves_on_the_statement() {
 fn a_using_naming_a_class_no_file_declares_is_reported_on_the_qualified_name() {
     let source = "USING myapp.absent-thing.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n";
 
-    let (stmts, sem) = with_index(source, &WORKSPACE);
-    let (using_id, name_span) = sole_using(&stmts);
+    let (program, sem) = with_index(source, &WORKSPACE);
+
+    let stmts = &program.statements;
+    let (using_id, name_span) = sole_using(stmts);
     assert_eq!(
         sem.references.get(using_id),
         Some(&Resolution::Unresolved {
@@ -136,8 +141,10 @@ fn a_using_naming_a_class_no_file_declares_is_reported_on_the_qualified_name() {
         "with nothing attached there is no import entry at all, so nothing fires"
     );
 
-    let (stmts, plain) = without_index(source);
-    let (using_id, _) = sole_using(&stmts);
+    let (program, plain) = without_index(source);
+
+    let stmts = &program.statements;
+    let (using_id, _) = sole_using(stmts);
     assert_eq!(plain.references.get(using_id), None);
 }
 
@@ -147,8 +154,10 @@ fn an_assembly_using_is_external_to_the_source_workspace() {
                   DEFINE VARIABLE v-widget AS CLASS Widget NO-UNDO.\n\
                   v-widget = NEW Widget().\n";
 
-    let (stmts, sem) = with_index(source, &[]);
-    let (using_id, _) = sole_using(&stmts);
+    let (program, sem) = with_index(source, &[]);
+
+    let stmts = &program.statements;
+    let (using_id, _) = sole_using(stmts);
     assert_eq!(
         sem.references.get(using_id),
         Some(&Resolution::Unresolved {
@@ -179,8 +188,9 @@ fn a_wildcard_using_names_no_single_class_so_it_records_nothing() {
     // prefixes a later unqualified name is tried against, which the `NEW` test
     // below observes.
     let source = "USING myapp.*.\nDEFINE VARIABLE v-count AS INTEGER NO-UNDO.\n";
-    let (stmts, sem) = with_index(source, &WORKSPACE);
-    let (using_id, _) = sole_using(&stmts);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let stmts = &program.statements;
+    let (using_id, _) = sole_using(stmts);
     assert_eq!(sem.references.get(using_id), None);
 }
 
@@ -194,14 +204,18 @@ fn new_after_an_explicit_using_resolves_to_that_class() {
                   DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
                   v-cache = NEW cache().\n";
 
-    let (_stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+
+    let _stmts = &program.statements;
     // One symbol, not two: the `USING` and the `NEW` share it, which is what
     // makes class identity comparable at all.
     let sym = sole_resolved(&sem, "myapp.cache");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Class);
     assert_synthesized(&sem, sym, NamespaceId::Types);
 
-    let (_stmts, plain) = without_index(source);
+    let (program, plain) = without_index(source);
+
+    let _stmts = &program.statements;
     assert_eq!(
         unresolved_reasons(&plain, "cache"),
         vec![UnresolvedReason::External],
@@ -215,11 +229,15 @@ fn new_fully_qualified_resolves_with_no_using_present() {
     let source = "DEFINE VARIABLE v-cache AS CLASS myapp.cache NO-UNDO.\n\
                   v-cache = NEW myapp.cache().\n";
 
-    let (_stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "myapp.cache");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Class);
 
-    let (_stmts, plain) = without_index(source);
+    let (program, plain) = without_index(source);
+
+    let _stmts = &program.statements;
     assert_eq!(
         unresolved_reasons(&plain, "myapp.cache"),
         vec![UnresolvedReason::External]
@@ -232,11 +250,15 @@ fn new_after_a_wildcard_using_resolves_through_the_wildcard() {
                   DEFINE VARIABLE v-cache AS CLASS cache NO-UNDO.\n\
                   v-cache = NEW cache().\n";
 
-    let (_stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "myapp.cache");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Class);
 
-    let (_stmts, plain) = without_index(source);
+    let (program, plain) = without_index(source);
+
+    let _stmts = &program.statements;
     assert_eq!(
         unresolved_reasons(&plain, "cache"),
         vec![UnresolvedReason::External]
@@ -246,7 +268,8 @@ fn new_after_a_wildcard_using_resolves_through_the_wildcard() {
 #[test]
 fn new_of_a_class_no_file_declares_is_reported() {
     let source = "USING myapp.*.\nv-x = NEW absent-thing().\n";
-    let (_stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+    let _stmts = &program.statements;
     assert!(
         unresolved_reasons(&sem, "absent-thing").contains(&UnresolvedReason::AbsentFromWorkspace),
         "a `NEW` operand is unambiguously a type name, so a miss is a fact about \
@@ -282,7 +305,9 @@ fn a_locally_declared_class_wins_over_a_workspace_class_of_the_same_name() {
                       END METHOD.\n\
                   END CLASS.\n";
 
-    let (_stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "cache");
     assert_ne!(
         sem.symbols.get(sym).declaration,
@@ -316,7 +341,9 @@ fn instance_source(last_line: &str) -> String {
 fn a_method_call_on_a_using_imported_instance_resolves_with_its_return_type() {
     let source = instance_source("v-label = v-cache:fetch-label().");
 
-    let (_stmts, sem) = with_index(&source, &WORKSPACE);
+    let (program, sem) = with_index(&source, &WORKSPACE);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "fetch-label");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Function);
     assert_eq!(
@@ -327,7 +354,8 @@ fn a_method_call_on_a_using_imported_instance_resolves_with_its_return_type() {
     assert_synthesized(&sem, sym, NamespaceId::Functions);
 
     // The firewall: today a method name gets no reference entry at all.
-    let (_stmts, plain) = without_index(&source);
+    let (program, plain) = without_index(&source);
+    let _stmts = &program.statements;
     assert!(resolved_to(&plain, "fetch-label").is_empty());
     assert!(symbols_named(&plain, "fetch-label").is_empty());
 }
@@ -336,7 +364,9 @@ fn a_method_call_on_a_using_imported_instance_resolves_with_its_return_type() {
 fn a_property_read_on_a_using_imported_instance_resolves_and_types() {
     let source = instance_source("v-count = v-cache:entry-count.");
 
-    let (_stmts, sem) = with_index(&source, &WORKSPACE);
+    let (program, sem) = with_index(&source, &WORKSPACE);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "entry-count");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Property);
     assert_eq!(
@@ -345,7 +375,9 @@ fn a_property_read_on_a_using_imported_instance_resolves_and_types() {
     );
     assert_synthesized(&sem, sym, NamespaceId::Values);
 
-    let (_stmts, plain) = without_index(&source);
+    let (program, plain) = without_index(&source);
+
+    let _stmts = &program.statements;
     assert!(symbols_named(&plain, "entry-count").is_empty());
 }
 
@@ -356,7 +388,9 @@ fn a_method_call_through_a_using_imported_type_name_resolves() {
     // tried as a type name *first*, and only softened on a miss.
     let source = instance_source("v-label = cache:fetch-label().");
 
-    let (_stmts, sem) = with_index(&source, &WORKSPACE);
+    let (program, sem) = with_index(&source, &WORKSPACE);
+
+    let _stmts = &program.statements;
     let class = sole_resolved(&sem, "myapp.cache");
     assert_eq!(sem.symbols.get(class).kind, SymbolKind::Class);
     let member = sole_resolved(&sem, "fetch-label");
@@ -365,7 +399,9 @@ fn a_method_call_through_a_using_imported_type_name_resolves() {
         Some(&ResolvedType::Primitive(PrimitiveTy::Character))
     );
 
-    let (_stmts, plain) = without_index(&source);
+    let (program, plain) = without_index(&source);
+
+    let _stmts = &program.statements;
     assert_eq!(
         unresolved_reasons(&plain, "cache"),
         vec![UnresolvedReason::External],
@@ -382,7 +418,9 @@ fn a_local_variable_receiver_is_never_shadowed_by_a_workspace_class() {
                   DEFINE VARIABLE v-label AS CHARACTER NO-UNDO.\n\
                   v-label = cache.\n";
 
-    let (_stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "cache");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Variable);
     assert_ne!(sem.symbols.get(sym).declaration, NodeId::DUMMY);
@@ -392,7 +430,9 @@ fn a_local_variable_receiver_is_never_shadowed_by_a_workspace_class() {
 fn a_method_the_class_does_not_declare_resolves_as_not_found_and_produces_no_finding() {
     let source = instance_source("v-label = v-cache:absent-method().");
 
-    let (_stmts, sem) = with_index(&source, &WORKSPACE);
+    let (program, sem) = with_index(&source, &WORKSPACE);
+
+    let _stmts = &program.statements;
     assert!(resolved_to(&sem, "absent-method").is_empty());
     assert!(
         symbols_named(&sem, "absent-method").is_empty(),
@@ -427,7 +467,8 @@ fn a_protected_or_private_member_is_not_reachable_from_outside_the_class() {
     // inherits `PROTECTED`, but a caller holding an instance does not see it.
     for member in ["shared-slot", "hidden-slot"] {
         let source = instance_source(&format!("v-count = v-cache:{member}()."));
-        let (_stmts, sem) = with_index(&source, &WORKSPACE);
+        let (program, sem) = with_index(&source, &WORKSPACE);
+        let _stmts = &program.statements;
         assert!(
             resolved_to(&sem, member).is_empty(),
             "`{member}` is not part of the class's public surface"
@@ -451,7 +492,9 @@ fn a_member_of_a_new_expression_resolves_without_an_intervening_variable() {
                   DEFINE VARIABLE v-label AS CHARACTER NO-UNDO.\n\
                   v-label = NEW cache():fetch-label().\n";
 
-    let (_stmts, sem) = with_index(source, &WORKSPACE);
+    let (program, sem) = with_index(source, &WORKSPACE);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "fetch-label");
     assert_eq!(
         sem.symbols.get(sym).data_type.as_ref(),
@@ -472,7 +515,8 @@ fn twenty_references_to_one_member_synthesize_it_once() {
     for _ in 0..20 {
         source.push_str("v-label = v-cache:fetch-label().\n");
     }
-    let (_stmts, sem) = with_index(&source, &WORKSPACE);
+    let (program, sem) = with_index(&source, &WORKSPACE);
+    let _stmts = &program.statements;
     assert_eq!(symbols_named(&sem, "fetch-label").len(), 1);
     assert_eq!(symbols_named(&sem, "myapp.cache").len(), 1);
 }
@@ -710,7 +754,8 @@ fn a_mismatch_through_a_colon_qualified_member_is_reported_at_the_call_site() {
     // incompatible `INTEGER` — and the type-check pass types the call with the
     // member's type, so LINT0004 reports it.
     let source = instance_source("v-count = v-cache:fetch-label().");
-    let (_stmts, sem) = with_index(&source, &WORKSPACE);
+    let (program, sem) = with_index(&source, &WORKSPACE);
+    let _stmts = &program.statements;
 
     let member = sole_resolved(&sem, "fetch-label");
     assert_eq!(
@@ -741,7 +786,7 @@ fn run_value_still_produces_the_dynamic_arm() {
         ("with an index", with_index(source, &WORKSPACE)),
         ("without one", without_index(source)),
     ] {
-        let dynamic = stmts.iter().any(|s| {
+        let dynamic = stmts.statements.iter().any(|s| {
             matches!(
                 &s.kind,
                 StatementKind::Run {

@@ -123,7 +123,12 @@ mod tests {
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
         let schema = oxabl_schema::Schema::empty();
-        let ctx = crate::AnalysisContext::new(oxabl_common::FileId::new(1), source, &schema);
+        let ctx = crate::AnalysisContext::new(
+            oxabl_common::FileId::new(1),
+            source,
+            &schema,
+            &program.pools,
+        );
         let sem = crate::analyze_file(&program.statements, &ctx);
 
         let slots = NodeIndexVec::<u32>::for_program(&program.statements)

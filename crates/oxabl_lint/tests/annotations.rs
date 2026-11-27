@@ -13,7 +13,7 @@ fn lint_codes(source: &str) -> Vec<&'static str> {
     let program = Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema)
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
         .with_lint_severities(LintSeverityMap::new());
     let sem = analyze_file(&program.statements, &ctx);
     lint_file(&program.statements, &sem, &ctx)

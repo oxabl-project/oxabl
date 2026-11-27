@@ -8,6 +8,7 @@
 use oxabl_lexer::{Kind, Token};
 
 use super::keywords::is_define_modifier;
+use super::tokens::TokenStream;
 
 /// Where the record names of a [`Context::Records`] come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +118,7 @@ pub(super) fn is_path_byte(byte: u8) -> bool {
 /// What the text asks for at byte `cursor`. `None` when oxabl does not know:
 /// a comment, a string, right after a statement end, a window that holds an
 /// include or macro reference, or a position no row of the table names.
-pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
+pub(crate) fn find(text: &str, tokens: &TokenStream<'_>, cursor: u32) -> Option<Found> {
     let bytes = text.as_bytes();
     let cursor_at = (cursor as usize).min(bytes.len());
     let mut start = cursor_at;
@@ -182,8 +183,8 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
     if start > 0 {
         match bytes[start - 1] {
             b':' => {
-                let mut previous = tokens[..before]
-                    .iter()
+                let mut previous = tokens
+                    .iter_to(before)
                     .rev()
                     .filter(|t| t.kind != Kind::Comment);
                 let joined = previous
@@ -267,7 +268,7 @@ struct Window {
 /// The statement window that ends before token `before`. `None` when it
 /// holds an include or macro reference: oxabl cannot read the statement as
 /// the compiler sees it.
-fn statement_window(text: &str, tokens: &[Token], before: usize) -> Option<Window> {
+fn statement_window(text: &str, tokens: &TokenStream<'_>, before: usize) -> Option<Window> {
     let bytes = text.as_bytes();
     let mut window: Vec<usize> = Vec::new();
     let mut boundary = false;
@@ -322,7 +323,7 @@ fn statement_window(text: &str, tokens: &[Token], before: usize) -> Option<Windo
 /// The context of a word after `name.`, whose word starts at `start`, the
 /// start of its statement window, and whether the window reaches the start of
 /// the text. `None` when the text before the `.` is not a name.
-fn qualified(text: &str, tokens: &[Token], start: usize) -> Option<(Context, u32, bool)> {
+fn qualified(text: &str, tokens: &TokenStream<'_>, start: usize) -> Option<(Context, u32, bool)> {
     let bytes = text.as_bytes();
     let dot = start - 1;
     let mut from = dot;
@@ -357,7 +358,12 @@ fn qualified(text: &str, tokens: &[Token], start: usize) -> Option<(Context, u32
 }
 
 /// The row of the context table that the window ends with.
-fn classify(text: &str, tokens: &[Token], window: &[usize], word_start: usize) -> Option<Context> {
+fn classify(
+    text: &str,
+    tokens: &TokenStream<'_>,
+    window: &[usize],
+    word_start: usize,
+) -> Option<Context> {
     let kinds: Vec<Kind> = window.iter().map(|at| tokens[*at].kind).collect();
     let n = kinds.len();
     let Some(&last) = kinds.last() else {
@@ -614,7 +620,7 @@ fn followed_by_space(bytes: &[u8], at: usize) -> bool {
 
 /// Whether the `THEN` or `ELSE` at `at` belongs to an `IF` that is an
 /// expression (`x = IF a THEN b ELSE c`), not a statement.
-fn in_expression(tokens: &[Token], at: usize) -> bool {
+fn in_expression(tokens: &TokenStream<'_>, at: usize) -> bool {
     let mut depth = 0usize;
     let mut i = at;
     while i > 0 {
@@ -624,7 +630,7 @@ fn in_expression(tokens: &[Token], at: usize) -> bool {
             Kind::Then | Kind::KwElse => depth += 1,
             Kind::KwIf if depth > 0 => depth -= 1,
             Kind::KwIf => {
-                let before = tokens[..i].iter().rev().find(|t| t.kind != Kind::Comment);
+                let before = tokens.iter_to(i).rev().find(|t| t.kind != Kind::Comment);
                 return before.is_some_and(|t| {
                     opens_operand(t.kind) || matches!(t.kind, Kind::Comma | Kind::KwReturn)
                 });
@@ -651,7 +657,7 @@ fn unclosed_brace(bytes: &[u8], cursor: usize) -> Option<usize> {
 }
 
 /// Whether byte `at` is inside a token of `kind`.
-fn in_kind(tokens: &[Token], at: u32, kind: Kind) -> bool {
+fn in_kind(tokens: &TokenStream<'_>, at: u32, kind: Kind) -> bool {
     let at = at as usize;
     let index = tokens.partition_point(|token| token.start <= at);
     index > 0 && {
@@ -662,7 +668,7 @@ fn in_kind(tokens: &[Token], at: u32, kind: Kind) -> bool {
 
 /// Whether the cursor is inside a comment or a string: after its first byte,
 /// and before its end or at the end of one that is not closed.
-fn inside_text(tokens: &[Token], bytes: &[u8], cursor: u32) -> bool {
+fn inside_text(tokens: &TokenStream<'_>, bytes: &[u8], cursor: u32) -> bool {
     let at = cursor as usize;
     let index = tokens.partition_point(|token| token.start < at);
     if index == 0 {
@@ -697,7 +703,7 @@ mod tests {
         let at = source.find('|').expect("a cursor");
         let text = source.replacen('|', "", 1);
         let tokens = oxabl_lexer::tokenize(&text);
-        find(&text, &tokens, at as u32).map(|found| found.context)
+        find(&text, &TokenStream::from_slice(&tokens), at as u32).map(|found| found.context)
     }
 
     #[test]
@@ -770,7 +776,8 @@ mod tests {
             let at = source.find('|').expect("a cursor");
             let text = source.replacen('|', "", 1);
             let tokens = oxabl_lexer::tokenize(&text);
-            find(&text, &tokens, at as u32).map(|found| found.after_branch)
+            find(&text, &TokenStream::from_slice(&tokens), at as u32)
+                .map(|found| found.after_branch)
         };
         assert_eq!(after("IF x THEN |"), Some(true));
         assert_eq!(after("IF x THEN y = 1. ELSE |"), Some(true));

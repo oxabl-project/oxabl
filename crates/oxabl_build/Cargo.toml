@@ -27,3 +27,6 @@ walkdir = "2"
 [dev-dependencies]
 oxabl_lexer = { path = "../oxabl_lexer", version = "3.0.0" }
 tempfile = "3"
+
+# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+[lints]

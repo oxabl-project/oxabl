@@ -31,3 +31,6 @@ oxabl_schema = { path = "../oxabl_schema", version = "0.6.2", features = ["test-
 [[bench]]
 name = "semantic_bench"
 harness = false
+
+# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+[lints]

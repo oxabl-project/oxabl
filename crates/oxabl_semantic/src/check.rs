@@ -24,8 +24,8 @@
 //! `docs/design/class-members.md`.
 
 use oxabl_ast::{
-    AssignPair, CreateTarget, Expression, ExpressionKind, Literal, OnAction, OnKind, RunTarget,
-    Statement, StatementKind, StreamOperation, SubscribeTarget,
+    AssignPair, AstPools, CreateTarget, ExprId, ExprList, Expression, ExpressionKind, Literal,
+    OnAction, OnKind, RunTarget, Statement, StatementKind, StreamOperation, SubscribeTarget,
 };
 use oxabl_common::Diagnostic;
 use smallvec::SmallVec;
@@ -51,6 +51,7 @@ pub fn check_pass(
     types: &mut NodeIndexVec<ResolvedType>,
 ) -> Vec<Diagnostic> {
     let mut walker = CheckWalker {
+        pools: ctx.pools,
         index: ctx.index,
         tree,
         symbols,
@@ -62,6 +63,7 @@ pub fn check_pass(
 }
 
 struct CheckWalker<'a> {
+    pools: &'a AstPools,
     index: &'a dyn WorkspaceIndex,
     tree: &'a ScopeTree,
     symbols: &'a SymbolTable,
@@ -81,15 +83,15 @@ impl<'a> CheckWalker<'a> {
         match &stmt.kind {
             // ---- Declarations with initializers --------------------------
             StatementKind::VariableDeclaration { initial_value, .. } => {
-                if let Some(e) = initial_value {
+                if let Some(e) = *initial_value {
                     self.check_expression(e, scope);
                 }
             }
             StatementKind::DefineParameter { .. } => {}
             StatementKind::DefineTempTable { fields, .. } => {
                 for f in fields {
-                    if let Some(init) = &f.initial_value {
-                        for e in init {
+                    if let Some(init) = f.initial_value {
+                        for &e in self.pools.exprs(init) {
                             self.check_expression(e, scope);
                         }
                     }
@@ -187,10 +189,10 @@ impl<'a> CheckWalker<'a> {
                 let bs = self
                     .find_child_scope(scope, stmt, ScopeKind::Block)
                     .unwrap_or(scope);
-                for e in [from, to, by, while_condition].into_iter().flatten() {
+                for e in [*from, *to, *by, *while_condition].into_iter().flatten() {
                     self.check_expression(e, bs);
                 }
-                for e in on_actions {
+                for &e in self.pools.exprs(*on_actions) {
                     self.check_expression(e, bs);
                 }
                 self.walk_block(body, bs);
@@ -203,10 +205,10 @@ impl<'a> CheckWalker<'a> {
                 let bs = self
                     .find_child_scope(scope, stmt, ScopeKind::Block)
                     .unwrap_or(scope);
-                if let Some(e) = while_condition {
+                if let Some(e) = *while_condition {
                     self.check_expression(e, bs);
                 }
-                for e in on_actions {
+                for &e in self.pools.exprs(*on_actions) {
                     self.check_expression(e, bs);
                 }
                 self.walk_block(body, bs);
@@ -220,10 +222,10 @@ impl<'a> CheckWalker<'a> {
                 let bs = self
                     .find_child_scope(scope, stmt, ScopeKind::Block)
                     .unwrap_or(scope);
-                if let Some(w) = where_clause {
+                if let Some(w) = *where_clause {
                     self.check_expression(w, bs);
                 }
-                for e in on_actions {
+                for &e in self.pools.exprs(*on_actions) {
                     self.check_expression(e, bs);
                 }
                 self.walk_block(body, bs);
@@ -233,10 +235,10 @@ impl<'a> CheckWalker<'a> {
                 where_clause,
                 ..
             } => {
-                if let Some(k) = key_value {
+                if let Some(k) = *key_value {
                     self.check_expression(k, scope);
                 }
-                if let Some(w) = where_clause {
+                if let Some(w) = *where_clause {
                     self.check_expression(w, scope);
                 }
             }
@@ -245,7 +247,7 @@ impl<'a> CheckWalker<'a> {
                 then_branch,
                 else_branch,
             } => {
-                self.check_expression(condition, scope);
+                self.check_expression(*condition, scope);
                 self.walk_statement(then_branch, scope);
                 if let Some(eb) = else_branch {
                     self.walk_statement(eb, scope);
@@ -256,9 +258,9 @@ impl<'a> CheckWalker<'a> {
                 when_branches,
                 otherwise,
             } => {
-                self.check_expression(expression, scope);
+                self.check_expression(*expression, scope);
                 for wb in when_branches {
-                    for v in &wb.values {
+                    for &v in self.pools.exprs(wb.values) {
                         self.check_expression(v, scope);
                     }
                     self.walk_block(&wb.body, scope);
@@ -280,7 +282,12 @@ impl<'a> CheckWalker<'a> {
                         self.walk_statement(body, s);
                     }
                     OnAction::PersistentRun { procedure, in_handle, arguments } => {
-                        for arg in procedure.expression().into_iter().chain(in_handle.iter()).chain(arguments) {
+                        for arg in procedure
+                            .expression()
+                            .into_iter()
+                            .chain(*in_handle)
+                            .chain(self.pools.exprs(*arguments).iter().copied())
+                        {
                             self.check_expression(arg, scope);
                         }
                     }
@@ -290,10 +297,10 @@ impl<'a> CheckWalker<'a> {
             },
             StatementKind::TriggerProcedure { .. } => {}
             StatementKind::PreprocIf(pif) => {
-                self.check_expression(&pif.condition, scope);
+                self.check_expression(pif.condition, scope);
                 self.walk_block(&pif.then_branch, scope);
                 for (c, br) in &pif.elseif_branches {
-                    self.check_expression(c, scope);
+                    self.check_expression(*c, scope);
                     self.walk_block(br, scope);
                 }
                 if let Some(eb) = &pif.else_branch {
@@ -302,37 +309,37 @@ impl<'a> CheckWalker<'a> {
             }
             StatementKind::PreprocDefine { .. } | StatementKind::PreprocUndefine { .. } => {}
             StatementKind::PreprocMessage { expression } => {
-                self.check_expression(expression, scope);
+                self.check_expression(*expression, scope);
             }
 
             // ---- Assignment / expression forms ---------------------------
             StatementKind::Assignment { target, value } => {
-                self.check_expression(target, scope);
-                self.check_expression(value, scope);
+                self.check_expression(*target, scope);
+                self.check_expression(*value, scope);
             }
             StatementKind::Assign { assignments } => {
                 for AssignPair { target, value } in assignments {
-                    self.check_expression(target, scope);
-                    self.check_expression(value, scope);
+                    self.check_expression(*target, scope);
+                    self.check_expression(*value, scope);
                 }
             }
             StatementKind::ExpressionStatement(expr) => {
-                self.check_expression(expr, scope);
+                self.check_expression(*expr, scope);
             }
             StatementKind::Return(opt) => {
-                if let Some(e) = opt {
+                if let Some(e) = *opt {
                     self.check_expression(e, scope);
                 }
             }
             StatementKind::Throw(expr) => {
-                self.check_expression(expr, scope);
+                self.check_expression(*expr, scope);
             }
 
             // ---- Output / display ----------------------------------------
             StatementKind::Display { items, .. } => {
                 for item in items {
-                    self.check_expression(&item.expression, scope);
-                    if let Some(w) = &item.when_condition {
+                    self.check_expression(item.expression, scope);
+                    if let Some(w) = item.when_condition {
                         self.check_expression(w, scope);
                     }
                 }
@@ -345,7 +352,7 @@ impl<'a> CheckWalker<'a> {
             | StatementKind::Disable { items }
             | StatementKind::Hide { items, .. }
             | StatementKind::View { items, .. } => {
-                for e in items {
+                for &e in self.pools.exprs(*items) {
                     self.check_expression(e, scope);
                 }
             }
@@ -357,7 +364,10 @@ impl<'a> CheckWalker<'a> {
                 targets: items,
                 ..
             } => {
-                for e in delimiter.iter().chain(items) {
+                for e in (*delimiter)
+                    .into_iter()
+                    .chain(self.pools.exprs(*items).iter().copied())
+                {
                     self.check_expression(e, scope);
                 }
             }
@@ -370,7 +380,12 @@ impl<'a> CheckWalker<'a> {
             | StatementKind::PromptFor {
                 targets, options, ..
             } => {
-                for e in targets.iter().chain(options) {
+                for &e in self
+                    .pools
+                    .exprs(*targets)
+                    .iter()
+                    .chain(self.pools.exprs(*options))
+                {
                     self.check_expression(e, scope);
                 }
             }
@@ -382,17 +397,17 @@ impl<'a> CheckWalker<'a> {
                 event: a,
                 target: b,
             } => {
-                for e in a.iter().chain(b) {
+                for e in (*a).into_iter().chain(*b) {
                     self.check_expression(e, scope);
                 }
             }
             StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
-                if let Some(e) = lines {
+                if let Some(e) = *lines {
                     self.check_expression(e, scope);
                 }
             }
             StatementKind::Get { query, .. } => {
-                self.check_expression(query, scope);
+                self.check_expression(*query, scope);
             }
             StatementKind::CopyLob {
                 source,
@@ -400,24 +415,31 @@ impl<'a> CheckWalker<'a> {
                 options,
                 ..
             } => {
-                for e in [source, target].into_iter().chain(options) {
+                for e in [*source, *target]
+                    .into_iter()
+                    .chain(self.pools.exprs(*options).iter().copied())
+                {
                     self.check_expression(e, scope);
                 }
             }
             StatementKind::Color { items, .. } => {
-                for e in items {
+                for &e in self.pools.exprs(*items) {
                     self.check_expression(e, scope);
                 }
             }
             StatementKind::Accumulate { expression, breaks } => {
-                for e in std::iter::once(expression).chain(breaks) {
+                for e in std::iter::once(*expression)
+                    .chain(self.pools.exprs(*breaks).iter().copied())
+                {
                     self.check_expression(e, scope);
                 }
             }
             StatementKind::Reposition {
                 query, operands, ..
             } => {
-                for e in std::iter::once(query).chain(operands) {
+                for e in std::iter::once(*query)
+                    .chain(self.pools.exprs(*operands).iter().copied())
+                {
                     self.check_expression(e, scope);
                 }
             }
@@ -427,7 +449,7 @@ impl<'a> CheckWalker<'a> {
                 handle,
                 ..
             } => {
-                for e in std::iter::once(target).chain(status).chain(handle) {
+                for e in std::iter::once(*target).chain(*status).chain(*handle) {
                     self.check_expression(e, scope);
                 }
             }
@@ -443,14 +465,19 @@ impl<'a> CheckWalker<'a> {
                 ..
             } => {
                 if let RunTarget::Dynamic(e) = target {
-                    self.check_expression(e, scope);
+                    self.check_expression(*e, scope);
                 }
                 for arg in arguments {
-                    self.check_expression(&arg.expression, scope);
+                    self.check_expression(arg.expression, scope);
                 }
-                for e in [in_handle, persistent_handle, async_handle, event_procedure]
-                    .into_iter()
-                    .flatten()
+                for e in [
+                    *in_handle,
+                    *persistent_handle,
+                    *async_handle,
+                    *event_procedure,
+                ]
+                .into_iter()
+                .flatten()
                 {
                     self.check_expression(e, scope);
                 }
@@ -463,27 +490,27 @@ impl<'a> CheckWalker<'a> {
                 extra_targets,
                 ..
             } => {
-                self.check_expression(target, scope);
-                for t in extra_targets {
+                self.check_expression(*target, scope);
+                for &t in self.pools.exprs(*extra_targets) {
                     self.check_expression(t, scope);
                 }
             }
             StatementKind::CreateWidgetPool { name, .. }
             | StatementKind::DeleteWidgetPool { name, .. } => {
-                if let Some(n) = name {
+                if let Some(n) = *name {
                     self.check_expression(n, scope);
                 }
             }
             StatementKind::ReleaseObject { target, .. } => {
-                self.check_expression(target, scope);
+                self.check_expression(*target, scope);
             }
             StatementKind::Delete { .. }
             | StatementKind::Release { .. }
             | StatementKind::Validate { .. } => {}
             StatementKind::BufferCopy { assignments, .. } => {
                 for AssignPair { target, value } in assignments {
-                    self.check_expression(target, scope);
-                    self.check_expression(value, scope);
+                    self.check_expression(*target, scope);
+                    self.check_expression(*value, scope);
                 }
             }
             StatementKind::BufferCompare { .. } => {}
@@ -499,18 +526,18 @@ impl<'a> CheckWalker<'a> {
                     ..
                 } = target
                 {
-                    self.check_expression(handle, scope);
-                    if let Some(t) = for_table {
+                    self.check_expression(*handle, scope);
+                    if let Some(t) = *for_table {
                         self.check_expression(t, scope);
                     }
-                    for e in [widget_pool.as_ref(), class.as_ref()].into_iter().flatten() {
+                    for e in [*widget_pool, *class].into_iter().flatten() {
                         self.check_expression(e, scope);
                     }
-                    if let Some(file) = connect.as_ref().and_then(|c| c.file.as_ref()) {
+                    if let Some(file) = connect.as_ref().and_then(|c| c.file) {
                         self.check_expression(file, scope);
                     }
                     for a in assignments {
-                        self.check_expression(&a.value, scope);
+                        self.check_expression(a.value, scope);
                     }
                     if !triggers.is_empty() {
                         let ts = self
@@ -520,7 +547,12 @@ impl<'a> CheckWalker<'a> {
                             match &trigger.action {
                                 OnAction::Block(body) => self.walk_statement(body, ts),
                                 OnAction::PersistentRun { procedure, in_handle, arguments } => {
-                                    for arg in procedure.expression().into_iter().chain(in_handle.iter()).chain(arguments) {
+                                    for arg in procedure
+                                        .expression()
+                                        .into_iter()
+                                        .chain(*in_handle)
+                                        .chain(self.pools.exprs(*arguments).iter().copied())
+                                    {
                                         self.check_expression(arg, scope);
                                     }
                                 }
@@ -536,12 +568,12 @@ impl<'a> CheckWalker<'a> {
                 from_handle,
                 arguments,
             } => {
-                self.check_expression(event_name, scope);
-                if let Some(fh) = from_handle {
+                self.check_expression(*event_name, scope);
+                if let Some(fh) = *from_handle {
                     self.check_expression(fh, scope);
                 }
                 for arg in arguments {
-                    self.check_expression(&arg.expression, scope);
+                    self.check_expression(arg.expression, scope);
                 }
             }
             StatementKind::Subscribe {
@@ -550,12 +582,12 @@ impl<'a> CheckWalker<'a> {
                 target,
                 ..
             } => {
-                if let Some(s) = subscriber {
+                if let Some(s) = *subscriber {
                     self.check_expression(s, scope);
                 }
-                self.check_expression(event_name, scope);
+                self.check_expression(*event_name, scope);
                 if let SubscribeTarget::InHandle(h) = target {
-                    self.check_expression(h, scope);
+                    self.check_expression(*h, scope);
                 }
             }
             StatementKind::Unsubscribe {
@@ -563,13 +595,13 @@ impl<'a> CheckWalker<'a> {
                 event_name,
                 in_handle,
             } => {
-                if let Some(s) = subscriber {
+                if let Some(s) = *subscriber {
                     self.check_expression(s, scope);
                 }
-                if let Some(e) = event_name {
+                if let Some(e) = *event_name {
                     self.check_expression(e, scope);
                 }
-                if let Some(h) = in_handle {
+                if let Some(h) = *in_handle {
                     self.check_expression(h, scope);
                 }
             }
@@ -581,7 +613,7 @@ impl<'a> CheckWalker<'a> {
                     }
                 }
                 StreamOperation::Through(e) => {
-                    self.check_expression(e, scope);
+                    self.check_expression(*e, scope);
                 }
                 StreamOperation::Close => {}
             },
@@ -607,7 +639,8 @@ impl<'a> CheckWalker<'a> {
     /// `types[expr.id]`. Returns the synthesized type so callers can feed
     /// it into the operator tables without re-reading.
     #[allow(clippy::only_used_in_recursion)]
-    fn check_expression(&mut self, expr: &Expression, scope: ScopeId) -> ResolvedType {
+    fn check_expression(&mut self, expr_id: ExprId, scope: ScopeId) -> ResolvedType {
+        let expr = self.pools.expr(expr_id);
         let ty = match &expr.kind {
             ExpressionKind::Literal(l) => literal_type(l),
 
@@ -633,30 +666,30 @@ impl<'a> CheckWalker<'a> {
             | ExpressionKind::Begins(l, r)
             | ExpressionKind::Matches(l, r)
             | ExpressionKind::Contains(l, r) => {
-                let lt = self.check_expression(l, scope);
-                let rt = self.check_expression(r, scope);
+                let lt = self.check_expression(*l, scope);
+                let rt = self.check_expression(*r, scope);
                 operators::binary_op_result(&expr.kind, &lt, &rt)
             }
 
             ExpressionKind::Negate(e) => {
-                let t = self.check_expression(e, scope);
+                let t = self.check_expression(*e, scope);
                 operators::unary_negate_result(&t)
             }
             ExpressionKind::Not(e) => {
-                let t = self.check_expression(e, scope);
+                let t = self.check_expression(*e, scope);
                 operators::unary_not_result(&t)
             }
             ExpressionKind::IfThenElse(c, t, f) => {
-                self.check_expression(c, scope);
-                let tt = self.check_expression(t, scope);
-                let ft = self.check_expression(f, scope);
+                self.check_expression(*c, scope);
+                let tt = self.check_expression(*t, scope);
+                let ft = self.check_expression(*f, scope);
                 // Widen then/else to a common type. If incompatible,
                 // result is Unknown — ternary is a late-checked place.
                 widen_types(&tt, &ft)
             }
 
             ExpressionKind::FunctionCall { arguments, .. } => {
-                let args = self.check_arguments(arguments, scope);
+                let args = self.check_arguments(*arguments, scope);
                 if let Some(class) = self.symbols.expr_class(expr.id) {
                     // `CAST(x, Cls)`.
                     ResolvedType::Class(class)
@@ -675,8 +708,8 @@ impl<'a> CheckWalker<'a> {
             ExpressionKind::MethodCall {
                 object, arguments, ..
             } => {
-                self.check_expression(object, scope);
-                let args = self.check_arguments(arguments, scope);
+                self.check_expression(*object, scope);
+                let args = self.check_arguments(*arguments, scope);
                 match self.references.get(expr.id) {
                     Some(Resolution::Resolved(sym)) => self.method_call_type(expr, *sym, &args),
                     // A receiver whose class oxabl does not know.
@@ -684,7 +717,7 @@ impl<'a> CheckWalker<'a> {
                 }
             }
             ExpressionKind::MemberAccess { object, .. } => {
-                self.check_expression(object, scope);
+                self.check_expression(*object, scope);
                 if self.symbols.is_untyped_member(expr.id) {
                     ResolvedType::Unknown
                 } else {
@@ -692,8 +725,8 @@ impl<'a> CheckWalker<'a> {
                 }
             }
             ExpressionKind::ArrayAccess { array, index } => {
-                let at = self.check_expression(array, scope);
-                self.check_expression(index, scope);
+                let at = self.check_expression(*array, scope);
+                self.check_expression(*index, scope);
                 match at {
                     ResolvedType::Array { element, .. } => *element,
                     ResolvedType::Unknown => ResolvedType::Unknown,
@@ -701,7 +734,7 @@ impl<'a> CheckWalker<'a> {
                 }
             }
             ExpressionKind::FieldAccess { qualifier, .. } => {
-                self.check_expression(qualifier, scope);
+                self.check_expression(*qualifier, scope);
                 // The resolve pass records the field's resolution on the
                 // composite node: a validated schema field resolves to a
                 // synthesized `Field` symbol whose `data_type` is the schema
@@ -709,13 +742,13 @@ impl<'a> CheckWalker<'a> {
                 self.type_from_reference(expr)
             }
             ExpressionKind::New { arguments, .. } => {
-                for a in arguments {
+                for &a in self.pools.exprs(*arguments) {
                     self.check_expression(a, scope);
                 }
                 self.type_from_reference(expr)
             }
             ExpressionKind::CanFind { where_clause, .. } => {
-                if let Some(w) = where_clause {
+                if let Some(w) = *where_clause {
                     self.check_expression(w, scope);
                 }
                 ResolvedType::Primitive(PrimitiveTy::Logical)
@@ -726,14 +759,14 @@ impl<'a> CheckWalker<'a> {
             | ExpressionKind::PreprocReference(_) => ResolvedType::Unknown,
 
             ExpressionKind::PreprocIf(pif) => {
-                self.check_expression(&pif.condition, scope);
-                let tt = self.check_expression(&pif.then_branch, scope);
+                self.check_expression(pif.condition, scope);
+                let tt = self.check_expression(pif.then_branch, scope);
                 for (c, br) in &pif.elseif_branches {
-                    self.check_expression(c, scope);
-                    let bt = self.check_expression(br, scope);
+                    self.check_expression(*c, scope);
+                    let bt = self.check_expression(*br, scope);
                     let _ = bt;
                 }
-                if let Some(eb) = &pif.else_branch {
+                if let Some(eb) = pif.else_branch {
                     let et = self.check_expression(eb, scope);
                     widen_types(&tt, &et)
                 } else {
@@ -749,12 +782,13 @@ impl<'a> CheckWalker<'a> {
     /// Check each argument and collect its type.
     fn check_arguments(
         &mut self,
-        arguments: &[Expression],
+        arguments: ExprList,
         scope: ScopeId,
     ) -> SmallVec<[ResolvedType; 4]> {
-        arguments
+        self.pools
+            .exprs(arguments)
             .iter()
-            .map(|a| self.check_expression(a, scope))
+            .map(|&a| self.check_expression(a, scope))
             .collect()
     }
 
@@ -862,6 +896,9 @@ fn widen_types(a: &ResolvedType, b: &ResolvedType) -> ResolvedType {
 mod tests {
     use super::*;
 
+    /// The pools of a walker that reads no name.
+    static NO_POOLS: AstPools = AstPools::new();
+
     #[test]
     fn literal_integer_in_i32_range_is_integer() {
         use oxabl_ast::{IntegerLiteral, Span};
@@ -890,10 +927,10 @@ mod tests {
 
     #[test]
     fn literal_string_is_character() {
-        use oxabl_ast::{Span, StringLiteral};
+        use oxabl_ast::{NameId, Span, StringLiteral};
         let lit = Literal::String(StringLiteral {
             span: Span { start: 0, end: 1 },
-            value: "hi".into(),
+            value: NameId::DUMMY,
         });
         assert_eq!(
             literal_type(&lit),
@@ -973,9 +1010,10 @@ mod tests {
 
     use crate::{AnalysisContext, analyze_file};
     use oxabl_ast::{
-        BooleanLiteral, BufferTarget, DataType, DecimalLiteral, Expression, ExpressionKind,
-        Identifier, IntegerLiteral, NodeId, ParameterDirection, ParameterType, Span, Statement,
-        StatementKind, StringLiteral, TypeSource, UnknownLiteral, XmlSerializeOptions,
+        AstPools, BooleanLiteral, BufferTarget, DataType, DecimalLiteral, ExprId, ExprList,
+        Expression, ExpressionKind, Identifier, IntegerLiteral, NameId, NodeId, ParameterDirection,
+        ParameterType, Span, Statement, StatementKind, StringLiteral, TypeSource, UnknownLiteral,
+        XmlSerializeOptions,
     };
     use oxabl_common::FileId;
     use oxabl_schema::Schema;
@@ -986,82 +1024,109 @@ mod tests {
         NodeId::from_u32(C.fetch_add(1, Ordering::Relaxed))
     }
 
-    fn ident(name: &str) -> Identifier {
-        Identifier {
-            span: Span {
-                start: 0,
-                end: name.len() as u32,
-            },
-            name: name.into(),
+    struct B {
+        pools: AstPools,
+    }
+
+    impl B {
+        fn new() -> Self {
+            Self {
+                pools: AstPools::new(),
+            }
+        }
+
+        fn name(&mut self, s: &str) -> NameId {
+            self.pools.names.push(s)
+        }
+
+        fn ident(&mut self, name: &str) -> Identifier {
+            Identifier {
+                span: Span {
+                    start: 0,
+                    end: name.len() as u32,
+                },
+                name: self.name(name),
+            }
+        }
+
+        fn expr_n(&mut self, kind: ExpressionKind) -> ExprId {
+            self.pools.exprs.push(Expression::with_id(
+                next_nid(),
+                oxabl_ast::Span::DUMMY,
+                kind,
+            ))
+        }
+
+        fn nid(&self, expr: ExprId) -> NodeId {
+            self.pools.expr(expr).id
+        }
+
+        fn int_lit(&mut self, v: i64) -> ExprId {
+            self.expr_n(ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
+                span: Span { start: 0, end: 1 },
+                value: v,
+            })))
+        }
+
+        fn dec_lit(&mut self, d: &str) -> ExprId {
+            use std::str::FromStr;
+            self.expr_n(ExpressionKind::Literal(Literal::Decimal(DecimalLiteral {
+                span: Span { start: 0, end: 1 },
+                value: ::rust_decimal::Decimal::from_str(d).unwrap(),
+            })))
+        }
+
+        fn str_lit(&mut self, s: &str) -> ExprId {
+            let value = self.name(s);
+            self.expr_n(ExpressionKind::Literal(Literal::String(StringLiteral {
+                span: Span { start: 0, end: 1 },
+                value,
+            })))
+        }
+
+        fn bool_lit(&mut self, b: bool) -> ExprId {
+            self.expr_n(ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
+                span: Span { start: 0, end: 1 },
+                value: b,
+            })))
+        }
+
+        fn unknown_lit(&mut self) -> ExprId {
+            self.expr_n(ExpressionKind::Literal(Literal::Unknown(UnknownLiteral {
+                span: Span { start: 0, end: 1 },
+            })))
+        }
+
+        fn id_expr(&mut self, name: &str) -> ExprId {
+            let id = self.ident(name);
+            self.expr_n(ExpressionKind::Identifier(id))
+        }
+
+        fn var_decl(&mut self, name: &str, ty: DataType) -> Statement {
+            let name = self.ident(name);
+            stmt_n(StatementKind::VariableDeclaration {
+                access: None,
+                is_static: false,
+                name,
+                type_source: TypeSource::Explicit(ty),
+                initial_value: None,
+                no_undo: false,
+                extent: None,
+                is_new_shared: false,
+                is_shared: false,
+                is_new_global_shared: false,
+            })
+        }
+
+        fn analyze(&self, stmts: Vec<Statement>) -> crate::Semantic {
+            let schema = Schema::empty();
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema, &self.pools);
+            analyze_file(&stmts, &ctx)
         }
     }
 
     fn stmt_n(kind: StatementKind) -> Statement {
         Statement::with_id(next_nid(), oxabl_ast::Span::DUMMY, kind)
-    }
-
-    fn expr_n(kind: ExpressionKind) -> Expression {
-        Expression::with_id(next_nid(), oxabl_ast::Span::DUMMY, kind)
-    }
-
-    fn int_lit(v: i64) -> Expression {
-        expr_n(ExpressionKind::Literal(Literal::Integer(IntegerLiteral {
-            span: Span { start: 0, end: 1 },
-            value: v,
-        })))
-    }
-
-    fn dec_lit(d: &str) -> Expression {
-        use std::str::FromStr;
-        expr_n(ExpressionKind::Literal(Literal::Decimal(DecimalLiteral {
-            span: Span { start: 0, end: 1 },
-            value: ::rust_decimal::Decimal::from_str(d).unwrap(),
-        })))
-    }
-
-    fn str_lit(s: &str) -> Expression {
-        expr_n(ExpressionKind::Literal(Literal::String(StringLiteral {
-            span: Span { start: 0, end: 1 },
-            value: s.into(),
-        })))
-    }
-
-    fn bool_lit(b: bool) -> Expression {
-        expr_n(ExpressionKind::Literal(Literal::Boolean(BooleanLiteral {
-            span: Span { start: 0, end: 1 },
-            value: b,
-        })))
-    }
-
-    fn unknown_lit() -> Expression {
-        expr_n(ExpressionKind::Literal(Literal::Unknown(UnknownLiteral {
-            span: Span { start: 0, end: 1 },
-        })))
-    }
-
-    fn id_expr(name: &str) -> Expression {
-        expr_n(ExpressionKind::Identifier(ident(name)))
-    }
-
-    fn var_decl(name: &str, ty: DataType) -> Statement {
-        stmt_n(StatementKind::VariableDeclaration {
-            access: None,
-            is_static: false,
-            name: ident(name),
-            type_source: TypeSource::Explicit(ty),
-            initial_value: None,
-            no_undo: false,
-            extent: None,
-            is_new_shared: false,
-            is_shared: false,
-            is_new_global_shared: false,
-        })
-    }
-
-    fn analyze(stmts: Vec<Statement>) -> crate::Semantic {
-        let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
-        analyze_file(&stmts, &ctx)
     }
 
     fn ty_of(sem: &crate::Semantic, id: NodeId) -> &ResolvedType {
@@ -1072,9 +1137,10 @@ mod tests {
 
     #[test]
     fn check_integer_literal() {
-        let lit = int_lit(5);
-        let lid = lit.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(lit))]);
+        let mut b = B::new();
+        let lit = b.int_lit(5);
+        let lid = b.nid(lit);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(lit))]);
         assert_eq!(
             ty_of(&sem, lid),
             &ResolvedType::Primitive(PrimitiveTy::Integer)
@@ -1083,9 +1149,10 @@ mod tests {
 
     #[test]
     fn check_decimal_literal() {
-        let lit = dec_lit("3.14");
-        let lid = lit.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(lit))]);
+        let mut b = B::new();
+        let lit = b.dec_lit("3.14");
+        let lid = b.nid(lit);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(lit))]);
         assert_eq!(
             ty_of(&sem, lid),
             &ResolvedType::Primitive(PrimitiveTy::Decimal)
@@ -1094,9 +1161,10 @@ mod tests {
 
     #[test]
     fn check_string_literal() {
-        let lit = str_lit("hi");
-        let lid = lit.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(lit))]);
+        let mut b = B::new();
+        let lit = b.str_lit("hi");
+        let lid = b.nid(lit);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(lit))]);
         assert_eq!(
             ty_of(&sem, lid),
             &ResolvedType::Primitive(PrimitiveTy::Character)
@@ -1105,9 +1173,10 @@ mod tests {
 
     #[test]
     fn check_boolean_literal() {
-        let lit = bool_lit(true);
-        let lid = lit.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(lit))]);
+        let mut b = B::new();
+        let lit = b.bool_lit(true);
+        let lid = b.nid(lit);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(lit))]);
         assert_eq!(
             ty_of(&sem, lid),
             &ResolvedType::Primitive(PrimitiveTy::Logical)
@@ -1116,18 +1185,21 @@ mod tests {
 
     #[test]
     fn check_unknown_literal_is_unknown_lattice_bottom() {
-        let lit = unknown_lit();
-        let lid = lit.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(lit))]);
+        let mut b = B::new();
+        let lit = b.unknown_lit();
+        let lid = b.nid(lit);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(lit))]);
         assert_eq!(ty_of(&sem, lid), &ResolvedType::Unknown);
     }
 
     #[test]
     fn check_identifier_takes_symbol_type() {
-        let use_x = id_expr("x");
-        let uid = use_x.id;
-        let sem = analyze(vec![
-            var_decl("x", DataType::Character),
+        let mut b = B::new();
+        let use_x = b.id_expr("x");
+        let uid = b.nid(use_x);
+        let decl = b.var_decl("x", DataType::Character);
+        let sem = b.analyze(vec![
+            decl,
             stmt_n(StatementKind::ExpressionStatement(use_x)),
         ]);
         assert_eq!(
@@ -1138,19 +1210,21 @@ mod tests {
 
     #[test]
     fn check_unresolved_identifier_is_unknown() {
-        let ghost = id_expr("ghost");
-        let gid = ghost.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(ghost))]);
+        let mut b = B::new();
+        let ghost = b.id_expr("ghost");
+        let gid = b.nid(ghost);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(ghost))]);
         assert_eq!(ty_of(&sem, gid), &ResolvedType::Unknown);
     }
 
     #[test]
     fn check_integer_plus_integer_is_integer() {
-        let l = int_lit(1);
-        let r = int_lit(2);
-        let sum = expr_n(ExpressionKind::Add(Box::new(l), Box::new(r)));
-        let sid = sum.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(sum))]);
+        let mut b = B::new();
+        let l = b.int_lit(1);
+        let r = b.int_lit(2);
+        let sum = b.expr_n(ExpressionKind::Add(l, r));
+        let sid = b.nid(sum);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(sum))]);
         assert_eq!(
             ty_of(&sem, sid),
             &ResolvedType::Primitive(PrimitiveTy::Integer)
@@ -1159,11 +1233,12 @@ mod tests {
 
     #[test]
     fn check_integer_plus_decimal_is_decimal() {
-        let l = int_lit(1);
-        let r = dec_lit("2.0");
-        let sum = expr_n(ExpressionKind::Add(Box::new(l), Box::new(r)));
-        let sid = sum.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(sum))]);
+        let mut b = B::new();
+        let l = b.int_lit(1);
+        let r = b.dec_lit("2.0");
+        let sum = b.expr_n(ExpressionKind::Add(l, r));
+        let sid = b.nid(sum);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(sum))]);
         assert_eq!(
             ty_of(&sem, sid),
             &ResolvedType::Primitive(PrimitiveTy::Decimal)
@@ -1172,11 +1247,12 @@ mod tests {
 
     #[test]
     fn check_integer_div_integer_is_decimal() {
-        let l = int_lit(10);
-        let r = int_lit(2);
-        let div = expr_n(ExpressionKind::Divide(Box::new(l), Box::new(r)));
-        let did = div.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(div))]);
+        let mut b = B::new();
+        let l = b.int_lit(10);
+        let r = b.int_lit(2);
+        let div = b.expr_n(ExpressionKind::Divide(l, r));
+        let did = b.nid(div);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(div))]);
         assert_eq!(
             ty_of(&sem, did),
             &ResolvedType::Primitive(PrimitiveTy::Decimal)
@@ -1185,11 +1261,12 @@ mod tests {
 
     #[test]
     fn check_string_concat_is_character() {
-        let l = str_lit("a");
-        let r = str_lit("b");
-        let cat = expr_n(ExpressionKind::Add(Box::new(l), Box::new(r)));
-        let cid = cat.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(cat))]);
+        let mut b = B::new();
+        let l = b.str_lit("a");
+        let r = b.str_lit("b");
+        let cat = b.expr_n(ExpressionKind::Add(l, r));
+        let cid = b.nid(cat);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(cat))]);
         assert_eq!(
             ty_of(&sem, cid),
             &ResolvedType::Primitive(PrimitiveTy::Character)
@@ -1198,11 +1275,12 @@ mod tests {
 
     #[test]
     fn check_comparison_is_logical() {
-        let l = int_lit(1);
-        let r = int_lit(2);
-        let eq = expr_n(ExpressionKind::Equal(Box::new(l), Box::new(r)));
-        let eid = eq.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(eq))]);
+        let mut b = B::new();
+        let l = b.int_lit(1);
+        let r = b.int_lit(2);
+        let eq = b.expr_n(ExpressionKind::Equal(l, r));
+        let eid = b.nid(eq);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(eq))]);
         assert_eq!(
             ty_of(&sem, eid),
             &ResolvedType::Primitive(PrimitiveTy::Logical)
@@ -1211,11 +1289,12 @@ mod tests {
 
     #[test]
     fn check_and_of_logicals_is_logical() {
-        let l = bool_lit(true);
-        let r = bool_lit(false);
-        let and_e = expr_n(ExpressionKind::And(Box::new(l), Box::new(r)));
-        let aid = and_e.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(and_e))]);
+        let mut b = B::new();
+        let l = b.bool_lit(true);
+        let r = b.bool_lit(false);
+        let and_e = b.expr_n(ExpressionKind::And(l, r));
+        let aid = b.nid(and_e);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(and_e))]);
         assert_eq!(
             ty_of(&sem, aid),
             &ResolvedType::Primitive(PrimitiveTy::Logical)
@@ -1224,11 +1303,12 @@ mod tests {
 
     #[test]
     fn check_begins_of_chars_is_logical() {
-        let l = str_lit("hello");
-        let r = str_lit("he");
-        let b = expr_n(ExpressionKind::Begins(Box::new(l), Box::new(r)));
-        let bid = b.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(b))]);
+        let mut b = B::new();
+        let l = b.str_lit("hello");
+        let r = b.str_lit("he");
+        let be = b.expr_n(ExpressionKind::Begins(l, r));
+        let bid = b.nid(be);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(be))]);
         assert_eq!(
             ty_of(&sem, bid),
             &ResolvedType::Primitive(PrimitiveTy::Logical)
@@ -1237,10 +1317,11 @@ mod tests {
 
     #[test]
     fn check_negate_integer_is_integer() {
-        let e = int_lit(5);
-        let neg = expr_n(ExpressionKind::Negate(Box::new(e)));
-        let nid = neg.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(neg))]);
+        let mut b = B::new();
+        let e = b.int_lit(5);
+        let neg = b.expr_n(ExpressionKind::Negate(e));
+        let nid = b.nid(neg);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(neg))]);
         assert_eq!(
             ty_of(&sem, nid),
             &ResolvedType::Primitive(PrimitiveTy::Integer)
@@ -1249,10 +1330,11 @@ mod tests {
 
     #[test]
     fn check_not_of_logical_is_logical() {
-        let e = bool_lit(true);
-        let not_e = expr_n(ExpressionKind::Not(Box::new(e)));
-        let nid = not_e.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(not_e))]);
+        let mut b = B::new();
+        let e = b.bool_lit(true);
+        let not_e = b.expr_n(ExpressionKind::Not(e));
+        let nid = b.nid(not_e);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(not_e))]);
         assert_eq!(
             ty_of(&sem, nid),
             &ResolvedType::Primitive(PrimitiveTy::Logical)
@@ -1261,25 +1343,23 @@ mod tests {
 
     #[test]
     fn check_not_of_integer_is_error() {
-        let e = int_lit(5);
-        let not_e = expr_n(ExpressionKind::Not(Box::new(e)));
-        let nid = not_e.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(not_e))]);
+        let mut b = B::new();
+        let e = b.int_lit(5);
+        let not_e = b.expr_n(ExpressionKind::Not(e));
+        let nid = b.nid(not_e);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(not_e))]);
         assert_eq!(ty_of(&sem, nid), &ResolvedType::Error);
     }
 
     #[test]
     fn check_ternary_widens_to_common() {
-        let c = bool_lit(true);
-        let t = int_lit(1);
-        let f = dec_lit("2.0");
-        let tern = expr_n(ExpressionKind::IfThenElse(
-            Box::new(c),
-            Box::new(t),
-            Box::new(f),
-        ));
-        let tid = tern.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(tern))]);
+        let mut b = B::new();
+        let c = b.bool_lit(true);
+        let t = b.int_lit(1);
+        let f = b.dec_lit("2.0");
+        let tern = b.expr_n(ExpressionKind::IfThenElse(c, t, f));
+        let tid = b.nid(tern);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(tern))]);
         assert_eq!(
             ty_of(&sem, tid),
             &ResolvedType::Primitive(PrimitiveTy::Decimal)
@@ -1288,16 +1368,13 @@ mod tests {
 
     #[test]
     fn check_ternary_with_unknown_branch_takes_other() {
-        let c = bool_lit(true);
-        let t = int_lit(1);
-        let f = unknown_lit();
-        let tern = expr_n(ExpressionKind::IfThenElse(
-            Box::new(c),
-            Box::new(t),
-            Box::new(f),
-        ));
-        let tid = tern.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(tern))]);
+        let mut b = B::new();
+        let c = b.bool_lit(true);
+        let t = b.int_lit(1);
+        let f = b.unknown_lit();
+        let tern = b.expr_n(ExpressionKind::IfThenElse(c, t, f));
+        let tid = b.nid(tern);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(tern))]);
         assert_eq!(
             ty_of(&sem, tid),
             &ResolvedType::Primitive(PrimitiveTy::Integer)
@@ -1306,30 +1383,35 @@ mod tests {
 
     #[test]
     fn check_unknown_arithmetic_propagates_as_unknown() {
-        let l = unknown_lit();
-        let r = int_lit(1);
-        let sum = expr_n(ExpressionKind::Add(Box::new(l), Box::new(r)));
-        let sid = sum.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(sum))]);
+        let mut b = B::new();
+        let l = b.unknown_lit();
+        let r = b.int_lit(1);
+        let sum = b.expr_n(ExpressionKind::Add(l, r));
+        let sid = b.nid(sum);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(sum))]);
         assert_eq!(ty_of(&sem, sid), &ResolvedType::Unknown);
     }
 
     #[test]
     fn check_can_find_is_logical() {
-        let cf = expr_n(ExpressionKind::CanFind {
+        let mut b = B::new();
+        let buf = b.ident("bCust");
+        let cf = b.expr_n(ExpressionKind::CanFind {
             find_type: oxabl_ast::FindType::First,
-            buffer: ident("bCust"),
+            buffer: buf,
             where_clause: None,
             lock_type: oxabl_ast::LockType::NoLock,
             no_error: false,
         });
-        let cid = cf.id;
-        let sem = analyze(vec![
+        let cid = b.nid(cf);
+        let bname = b.ident("bCust");
+        let tname = b.ident("Customer");
+        let sem = b.analyze(vec![
             stmt_n(StatementKind::DefineBuffer {
                 access: None,
                 is_static: false,
-                name: ident("bCust"),
-                target: BufferTarget::Table(ident("Customer")),
+                name: bname,
+                target: BufferTarget::Table(tname),
                 preselect: false,
                 label: None,
                 xml_options: XmlSerializeOptions::default(),
@@ -1347,15 +1429,18 @@ mod tests {
 
     #[test]
     fn check_function_call_type_is_return_type() {
-        let call = expr_n(ExpressionKind::FunctionCall {
-            name: ident("calc"),
-            arguments: vec![],
+        let mut b = B::new();
+        let call_name = b.ident("calc");
+        let call = b.expr_n(ExpressionKind::FunctionCall {
+            name: call_name,
+            arguments: ExprList::EMPTY,
         });
-        let cid = call.id;
-        let sem = analyze(vec![
+        let cid = b.nid(call);
+        let fn_name = b.ident("calc");
+        let sem = b.analyze(vec![
             stmt_n(StatementKind::Function {
                 prototype_parameters: Vec::new(),
-                name: ident("calc"),
+                name: fn_name,
                 return_type: DataType::Decimal,
                 body: vec![],
             }),
@@ -1369,18 +1454,20 @@ mod tests {
 
     #[test]
     fn check_array_access_returns_element_type() {
-        let arr = id_expr("arr");
-        let idx = int_lit(0);
-        let ax = expr_n(ExpressionKind::ArrayAccess {
-            array: Box::new(arr),
-            index: Box::new(idx),
+        let mut b = B::new();
+        let arr = b.id_expr("arr");
+        let idx = b.int_lit(0);
+        let ax = b.expr_n(ExpressionKind::ArrayAccess {
+            array: arr,
+            index: idx,
         });
-        let aid = ax.id;
-        let sem = analyze(vec![
+        let aid = b.nid(ax);
+        let arr_name = b.ident("arr");
+        let sem = b.analyze(vec![
             stmt_n(StatementKind::VariableDeclaration {
                 access: None,
                 is_static: false,
-                name: ident("arr"),
+                name: arr_name,
                 type_source: TypeSource::Explicit(DataType::Integer),
                 initial_value: None,
                 no_undo: false,
@@ -1399,14 +1486,13 @@ mod tests {
 
     #[test]
     fn check_date_plus_integer_is_date() {
-        let d = id_expr("d");
-        let n = int_lit(7);
-        let sum = expr_n(ExpressionKind::Add(Box::new(d), Box::new(n)));
-        let sid = sum.id;
-        let sem = analyze(vec![
-            var_decl("d", DataType::Date),
-            stmt_n(StatementKind::ExpressionStatement(sum)),
-        ]);
+        let mut b = B::new();
+        let d = b.id_expr("d");
+        let n = b.int_lit(7);
+        let sum = b.expr_n(ExpressionKind::Add(d, n));
+        let sid = b.nid(sum);
+        let decl = b.var_decl("d", DataType::Date);
+        let sem = b.analyze(vec![decl, stmt_n(StatementKind::ExpressionStatement(sum))]);
         assert_eq!(
             ty_of(&sem, sid),
             &ResolvedType::Primitive(PrimitiveTy::Date)
@@ -1415,13 +1501,16 @@ mod tests {
 
     #[test]
     fn check_datetime_minus_datetime_is_int64() {
-        let a = id_expr("a");
-        let b = id_expr("b");
-        let diff = expr_n(ExpressionKind::Minus(Box::new(a), Box::new(b)));
-        let did = diff.id;
-        let sem = analyze(vec![
-            var_decl("a", DataType::DateTime),
-            var_decl("b", DataType::DateTime),
+        let mut b = B::new();
+        let a = b.id_expr("a");
+        let bv = b.id_expr("b");
+        let diff = b.expr_n(ExpressionKind::Minus(a, bv));
+        let did = b.nid(diff);
+        let da = b.var_decl("a", DataType::DateTime);
+        let db = b.var_decl("b", DataType::DateTime);
+        let sem = b.analyze(vec![
+            da,
+            db,
             stmt_n(StatementKind::ExpressionStatement(diff)),
         ]);
         assert_eq!(
@@ -1432,11 +1521,12 @@ mod tests {
 
     #[test]
     fn check_logical_and_integer_comparison_is_error() {
-        let a = bool_lit(true);
-        let b = int_lit(1);
-        let cmp = expr_n(ExpressionKind::Equal(Box::new(a), Box::new(b)));
-        let cid = cmp.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(cmp))]);
+        let mut b = B::new();
+        let a = b.bool_lit(true);
+        let bv = b.int_lit(1);
+        let cmp = b.expr_n(ExpressionKind::Equal(a, bv));
+        let cid = b.nid(cmp);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(cmp))]);
         assert_eq!(ty_of(&sem, cid), &ResolvedType::Error);
     }
 
@@ -1444,16 +1534,20 @@ mod tests {
     fn check_method_call_of_an_undeclared_method_is_unknown() {
         // `Foo` declares no `doIt`: the call resolves to nothing and has no
         // type, so LINT0004 skips it.
-        let obj = id_expr("svc");
-        let mc = expr_n(ExpressionKind::MethodCall {
-            object: Box::new(obj),
-            method: ident("doIt"),
-            arguments: vec![],
+        let mut b = B::new();
+        let obj = b.id_expr("svc");
+        let method = b.ident("doIt");
+        let mc = b.expr_n(ExpressionKind::MethodCall {
+            object: obj,
+            method,
+            arguments: ExprList::EMPTY,
         });
-        let mid = mc.id;
-        let sem = analyze(vec![
+        let mid = b.nid(mc);
+        let cls = b.ident("Foo");
+        let decl = b.var_decl("svc", DataType::Class("Foo".into()));
+        let sem = b.analyze(vec![
             stmt_n(StatementKind::Class {
-                name: ident("Foo"),
+                name: cls,
                 inherits: None,
                 implements: vec![],
                 is_abstract: false,
@@ -1461,7 +1555,7 @@ mod tests {
                 use_widget_pool: false,
                 body: vec![],
             }),
-            var_decl("svc", DataType::Class("Foo".into())),
+            decl,
             stmt_n(StatementKind::ExpressionStatement(mc)),
         ]);
         assert_eq!(ty_of(&sem, mid), &ResolvedType::Unknown);
@@ -1469,13 +1563,12 @@ mod tests {
 
     #[test]
     fn check_field_access_is_unknown_without_schema_typing() {
-        let qualifier = id_expr("Customer");
-        let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(qualifier),
-            field: ident("CustNum"),
-        });
-        let fid = fa.id;
-        let sem = analyze(vec![stmt_n(StatementKind::ExpressionStatement(fa))]);
+        let mut b = B::new();
+        let qualifier = b.id_expr("Customer");
+        let field = b.ident("CustNum");
+        let fa = b.expr_n(ExpressionKind::FieldAccess { qualifier, field });
+        let fid = b.nid(fa);
+        let sem = b.analyze(vec![stmt_n(StatementKind::ExpressionStatement(fa))]);
         // No schema loaded: the field reference is `Unresolved { NoSchema }`,
         // so the node types as Unknown.
         assert_eq!(ty_of(&sem, fid), &ResolvedType::Unknown);
@@ -1483,15 +1576,18 @@ mod tests {
 
     #[test]
     fn check_new_class_type_is_class_symbol() {
-        let new_e = expr_n(ExpressionKind::New {
+        let mut b = B::new();
+        let foo = b.name("Foo");
+        let new_e = b.expr_n(ExpressionKind::New {
             type_arguments: None,
-            class_name: "Foo".into(),
-            arguments: vec![],
+            class_name: foo,
+            arguments: ExprList::EMPTY,
         });
-        let nid = new_e.id;
-        let sem = analyze(vec![
+        let nid = b.nid(new_e);
+        let cls = b.ident("Foo");
+        let sem = b.analyze(vec![
             stmt_n(StatementKind::Class {
-                name: ident("Foo"),
+                name: cls,
                 inherits: None,
                 implements: vec![],
                 is_abstract: false,
@@ -1511,15 +1607,13 @@ mod tests {
     fn check_analyze_file_runs_all_three_passes() {
         // Smoke test: analyze_file returns a Semantic with non-empty side
         // tables when the program has both declarations and expressions.
-        let sum = expr_n(ExpressionKind::Add(
-            Box::new(id_expr("x")),
-            Box::new(int_lit(1)),
-        ));
-        let sid = sum.id;
-        let sem = analyze(vec![
-            var_decl("x", DataType::Integer),
-            stmt_n(StatementKind::ExpressionStatement(sum)),
-        ]);
+        let mut b = B::new();
+        let x = b.id_expr("x");
+        let one = b.int_lit(1);
+        let sum = b.expr_n(ExpressionKind::Add(x, one));
+        let sid = b.nid(sum);
+        let decl = b.var_decl("x", DataType::Integer);
+        let sem = b.analyze(vec![decl, stmt_n(StatementKind::ExpressionStatement(sum))]);
         assert!(!sem.references.is_empty());
         assert!(!sem.types.is_empty());
         // The sum expression type is synthesized by check.
@@ -1533,12 +1627,15 @@ mod tests {
     fn check_semantic_emits_no_diagnostics_for_type_mismatch() {
         // The check pass must not emit diagnostics — LINT0004 owns them.
         // Construct a mismatch: `x: LOGICAL = 1` (integer into logical).
-        let sem = analyze(vec![stmt_n(StatementKind::VariableDeclaration {
+        let mut b = B::new();
+        let x = b.ident("x");
+        let init = b.int_lit(1);
+        let sem = b.analyze(vec![stmt_n(StatementKind::VariableDeclaration {
             access: None,
             is_static: false,
-            name: ident("x"),
+            name: x,
             type_source: TypeSource::Explicit(DataType::Logical),
-            initial_value: Some(int_lit(1)),
+            initial_value: Some(init),
             no_undo: false,
             extent: None,
             is_new_shared: false,
@@ -1553,23 +1650,26 @@ mod tests {
     fn check_parameter_type_populated() {
         // Parameters get types in `types[decl_stmt.id]` via resolve, and
         // the check pass preserves them unchanged.
+        let mut b = B::new();
+        let n = b.ident("n");
         let param = stmt_n(StatementKind::DefineParameter {
             direction: ParameterDirection::Input,
             param_type: ParameterType::Variable {
-                name: ident("n"),
+                name: n,
                 type_source: TypeSource::Explicit(DataType::Integer),
                 no_undo: false,
                 extent: None,
             },
         });
         let pid = param.id;
+        let f = b.ident("f");
         let func = stmt_n(StatementKind::Function {
             prototype_parameters: Vec::new(),
-            name: ident("f"),
+            name: f,
             return_type: DataType::Integer,
             body: vec![param],
         });
-        let sem = analyze(vec![func]);
+        let sem = b.analyze(vec![func]);
         assert_eq!(
             sem.types.get(pid),
             Some(&ResolvedType::Primitive(PrimitiveTy::Integer))
@@ -1626,7 +1726,7 @@ mod tests {
         for reason in reasons {
             let expr = Expression::new(ExpressionKind::Identifier(Identifier {
                 span: Span { start: 0, end: 4 },
-                name: "name".into(),
+                name: NameId::DUMMY,
             }));
             let mut references = NodeIndexVec::new();
             references.insert(
@@ -1638,6 +1738,7 @@ mod tests {
             );
             let mut types = NodeIndexVec::new();
             let walker = CheckWalker {
+                pools: &NO_POOLS,
                 index: &crate::NullIndex,
                 tree: &tree,
                 symbols: &symbols,
@@ -1655,11 +1756,12 @@ mod tests {
         // other half of the `_ =>` arm: an expression resolution never looked at.
         let expr = Expression::new(ExpressionKind::Identifier(Identifier {
             span: Span { start: 0, end: 4 },
-            name: "name".into(),
+            name: NameId::DUMMY,
         }));
         let references = NodeIndexVec::new();
         let mut types = NodeIndexVec::new();
         let walker = CheckWalker {
+            pools: &NO_POOLS,
             index: &crate::NullIndex,
             tree: &tree,
             symbols: &symbols,

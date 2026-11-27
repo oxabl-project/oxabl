@@ -70,7 +70,7 @@
 //! A finding in an include is reported in the include when the include alone
 //! shows it, else at the `{...}` site in the including file.
 
-use oxabl_ast::{Span, Statement, StatementKind};
+use oxabl_ast::{AstPools, Span, Statement, StatementKind};
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_flow::{BlockId, UnitId};
 use oxabl_scope::{
@@ -130,7 +130,7 @@ pub(crate) fn reported_scopes<'s>(
     if not_judged(scopes) || is_class(scopes) {
         return Vec::new();
     }
-    let skipped = skipped_statements(program);
+    let skipped = skipped_statements(program, ctx.pools);
     let mut found = Vec::new();
     for buffer in scopes.buffers() {
         let Some(seen) = buffer.scopes().filter(|_| judged_buffer(buffer)) else {
@@ -283,7 +283,7 @@ fn in_header(source: &str, unit: &UnitScopes, block: BlockId, at: Span) -> bool 
 
 /// The statements the parser skips. A reference in one is a free reference by
 /// an inferred rule (S3): `DISABLE TRIGGERS FOR LOAD OF t` names a table.
-pub(crate) fn skipped_statements(program: &[Statement]) -> Vec<Span> {
+pub(crate) fn skipped_statements(program: &[Statement], pools: &AstPools) -> Vec<Span> {
     struct Skipped(Vec<Span>);
     impl Visitor for Skipped {
         fn statement(&mut self, stmt: &Statement) -> bool {
@@ -294,6 +294,6 @@ pub(crate) fn skipped_statements(program: &[Statement]) -> Vec<Span> {
         }
     }
     let mut v = Skipped(Vec::new());
-    walk_block(&mut v, program);
+    walk_block(&mut v, pools, program);
     v.0
 }

@@ -184,7 +184,7 @@ pub fn program_signatures_at(
         let program = Parser::new(&tokens, source).parse_program();
         program
             .is_ok()
-            .then(|| ProgramSignatures::of(&program.statements))
+            .then(|| ProgramSignatures::of(&program.statements, &program.pools))
     }
     let Some(written) = parse(source) else {
         return (None, Vec::new());
@@ -287,16 +287,17 @@ fn index_file_and_signatures(
     let written = Written::parse(source);
     if let Some(written) = written.as_ref().filter(|w| !w.needs_expansion()) {
         let shown = signatures
-            .then(|| ProgramSignatures::of(&written.program.statements))
+            .then(|| ProgramSignatures::of(&written.program.statements, &written.program.pools))
             .filter(|s| s.main.is_some() && s.procedures.iter().all(|(_, list)| list.is_some()));
-        return (written.facts(file, None), shown, Vec::new());
+        return (written.facts(file, None, true), shown, Vec::new());
     }
     // The facts of the text as written are read only when the expansion does
     // not give them.
     let as_written = |values: Option<&KnownValues>| {
-        written
-            .as_ref()
-            .map_or_else(|| FileFacts::unparseable(file), |w| w.facts(file, values))
+        written.as_ref().map_or_else(
+            || FileFacts::unparseable(file),
+            |w| w.facts(file, values, true),
+        )
     };
     let Some(expansion) = expand(source, includes) else {
         return (as_written(None), None, Vec::new());
@@ -306,7 +307,7 @@ fn index_file_and_signatures(
         .text
         .as_deref()
         .and_then(Written::parse)
-        .map(|expanded| expanded.facts(file, None));
+        .map(|expanded| expanded.facts(file, None, false));
     match expanded {
         Some(expanded) => (expanded, None, read),
         // The expansion settled and its text does not parse: the values of
@@ -406,9 +407,13 @@ pub(crate) fn may_be_expanded_parsed(program: &Program) -> bool {
 
 /// The names the declare pass gives the `NEW [GLOBAL] SHARED` flags in
 /// `statements`, the text of `source`: what [`index_file`] reports.
-pub(crate) fn declared_shared(statements: &[Statement], source: &str) -> Vec<IndexName> {
+pub(crate) fn declared_shared(
+    statements: &[Statement],
+    pools: &oxabl_ast::AstPools,
+    source: &str,
+) -> Vec<IndexName> {
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(INDEXED_FILE, source, &schema);
+    let ctx = AnalysisContext::new(INDEXED_FILE, source, &schema, pools);
     let (_scopes, symbols, _diagnostics, _schema_revision) = declare_pass(statements, &ctx);
     symbols
         .iter()
@@ -531,8 +536,14 @@ impl<'s> Written<'s> {
     }
 
     /// The facts of the text. `values` are the values of its references, when
-    /// an expansion knows them.
-    fn facts(&self, file: IndexedFileId, values: Option<&KnownValues>) -> FileFacts {
+    /// an expansion knows them. `raw_spans` is `true` only when `self.source`
+    /// is the unexpanded file text, so byte spans match raw file coordinates.
+    fn facts(
+        &self,
+        file: IndexedFileId,
+        values: Option<&KnownValues>,
+        raw_spans: bool,
+    ) -> FileFacts {
         // The declare pass is the same machinery a client runs over the file it is
         // analyzing, which is what keeps an indexed declaration and a local one from
         // being recognized by two different sets of rules. It is also why the
@@ -541,7 +552,7 @@ impl<'s> Written<'s> {
         // one symbol there (#69), and a name the pass refused to declare twice
         // appears once.
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(INDEXED_FILE, self.source, &schema);
+        let ctx = AnalysisContext::new(INDEXED_FILE, self.source, &schema, &self.program.pools);
         let (_scopes, symbols, _diagnostics, _schema_revision) =
             declare_pass(&self.program.statements, &ctx);
 
@@ -576,14 +587,15 @@ impl<'s> Written<'s> {
             parsed: true,
             classes: declared_classes(
                 file,
-                &self.program.statements,
+                &self.program,
                 &self.tokens,
                 self.source,
                 values,
                 &Arc::new(imports),
+                raw_spans,
             )
             .into_iter()
-            .chain(declared_enums(file, &self.tokens, self.source))
+            .chain(declared_enums(file, &self.tokens, self.source, raw_spans))
             .collect(),
             procedures,
             functions,
@@ -644,7 +656,7 @@ fn include_before_header(tokens: &[Token], statements: &[Statement]) -> bool {
         .any(|t| t.kind == Kind::IncludeReference)
 }
 
-/// Project the class and interface declarations of `statements`.
+/// Project the class and interface declarations of `program`.
 ///
 /// Read from the AST rather than from the declare pass's symbols, because the
 /// two facts the seam needs are precisely the two the pass discards: it keeps no
@@ -665,11 +677,12 @@ fn include_before_header(tokens: &[Token], statements: &[Statement]) -> bool {
 /// descriptor, and every answer keyed on it, unchanged.
 fn declared_classes(
     file: IndexedFileId,
-    statements: &[Statement],
+    program: &Program,
     tokens: &[Token],
     source: &str,
     values: Option<&KnownValues>,
     imports: &Arc<ImportContext>,
+    raw_spans: bool,
 ) -> Vec<ClassFacts> {
     let imports_for = |has_supertype: bool, members: &[MemberDescriptor]| {
         if has_supertype || members.iter().any(names_a_class) {
@@ -678,8 +691,9 @@ fn declared_classes(
             Arc::default()
         }
     };
+    let pools = &program.pools;
     let mut classes = Vec::new();
-    for stmt in statements {
+    for stmt in &program.statements {
         if let StatementKind::Class {
             name,
             inherits,
@@ -689,22 +703,23 @@ fn declared_classes(
             ..
         } = &stmt.kind
         {
-            let members = declared_members(body, tokens, source);
+            let members = declared_members(body, pools, tokens, source);
             classes.push(ClassFacts {
                 descriptor: Arc::new(ClassDescriptor {
-                    name: IndexName::new(&name.name),
+                    name: IndexName::new(pools.ident(*name)),
                     file,
                     kind: ClassKind::Class,
-                    inherits: inherits.as_ref().map(|id| IndexName::new(&id.name)),
+                    inherits: inherits.map(|id| IndexName::new(pools.ident(id))),
                     implements: implements
                         .iter()
-                        .map(|id| IndexName::new(&id.name))
+                        .map(|id| IndexName::new(pools.ident(*id)))
                         .collect(),
                     imports: imports_for(inherits.is_some() || !implements.is_empty(), &members),
                     members_complete: members_readable(stmt, body, tokens, source, values),
                     is_abstract: *is_abstract,
                 }),
                 members,
+                name_span: raw_spans.then_some(name.span),
             });
         } else if let StatementKind::Interface {
             name,
@@ -712,26 +727,23 @@ fn declared_classes(
             body,
         } = &stmt.kind
         {
-            let members = declared_members(body, tokens, source);
+            let members = declared_members(body, pools, tokens, source);
             classes.push(ClassFacts {
                 descriptor: Arc::new(ClassDescriptor {
-                    name: IndexName::new(&name.name),
+                    name: IndexName::new(pools.ident(*name)),
                     file,
                     kind: ClassKind::Interface,
-                    // An interface may extend *several* interfaces, so its
-                    // `INHERITS` list cannot fit `inherits: Option<_>`. The list
-                    // goes to `implements`, which is already "the other
-                    // supertypes, as a set" — no information is lost and the
-                    // consumer's walk is unchanged, whereas picking a first
-                    // parent and discarding the rest would silently drop
-                    // members.
                     inherits: None,
-                    implements: inherits.iter().map(|id| IndexName::new(&id.name)).collect(),
+                    implements: inherits
+                        .iter()
+                        .map(|id| IndexName::new(pools.ident(*id)))
+                        .collect(),
                     imports: imports_for(!inherits.is_empty(), &members),
                     members_complete: members_readable(stmt, body, tokens, source, values),
                     is_abstract: false,
                 }),
                 members,
+                name_span: raw_spans.then_some(name.span),
             });
         }
     }
@@ -830,7 +842,12 @@ fn hides_members(body: &[Statement]) -> bool {
 /// stream: an `ENUM` at the start of a statement is a declaration, and a
 /// `DEFINE ENUM` inside it is a member list. A member list that does not follow
 /// the grammar yields no members rather than a guessed one.
-fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<ClassFacts> {
+fn declared_enums(
+    file: IndexedFileId,
+    tokens: &[Token],
+    source: &str,
+    raw_spans: bool,
+) -> Vec<ClassFacts> {
     let text = |t: &Token| &source[t.start..t.end];
     let is_word = |t: &Token| text(t).starts_with(|c: char| c.is_alphabetic() || c == '_');
     let mut enums = Vec::new();
@@ -846,6 +863,8 @@ fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<Cl
             i += 1;
             continue;
         };
+        let name_start = first.start;
+        let mut name_end = first.end;
         let mut name = text(first).to_string();
         i += 2;
         while let (
@@ -857,6 +876,7 @@ fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<Cl
         {
             name.push('.');
             name.push_str(text(next));
+            name_end = next.end;
             i += 2;
         }
         let mut members = Vec::new();
@@ -874,6 +894,10 @@ fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<Cl
                 i += 1;
             }
         }
+        let enum_span = match (u32::try_from(name_start), u32::try_from(name_end)) {
+            (Ok(start), Ok(end)) if raw_spans => Some(oxabl_ast::Span { start, end }),
+            _ => None,
+        };
         enums.push(ClassFacts {
             descriptor: Arc::new(ClassDescriptor {
                 name: IndexName::new(&name),
@@ -890,6 +914,7 @@ fn declared_enums(file: IndexedFileId, tokens: &[Token], source: &str) -> Vec<Cl
             } else {
                 Arc::from([])
             },
+            name_span: enum_span,
         });
     }
     enums
@@ -951,9 +976,14 @@ fn enum_members(
 /// buffers, temp-tables, datasets, data-sources, events).
 ///
 /// A data member written without an access modifier is `PRIVATE`, as in ABL.
-fn declared_members(body: &[Statement], tokens: &[Token], source: &str) -> Arc<[MemberDescriptor]> {
+fn declared_members(
+    body: &[Statement],
+    pools: &oxabl_ast::AstPools,
+    tokens: &[Token],
+    source: &str,
+) -> Arc<[MemberDescriptor]> {
     let mut members = Vec::new();
-    collect_members(body, tokens, source, &mut members);
+    collect_members(body, pools, tokens, source, &mut members);
     members.into()
 }
 
@@ -996,6 +1026,7 @@ fn list_hides_params(tokens: &[Token], source: &str, name_end: usize) -> bool {
 
 fn collect_members(
     body: &[Statement],
+    pools: &oxabl_ast::AstPools,
     tokens: &[Token],
     source: &str,
     members: &mut Vec<MemberDescriptor>,
@@ -1005,7 +1036,7 @@ fn collect_members(
                 ty: MemberType,
                 access: Option<AccessModifier>,
                 is_static: bool| MemberDescriptor {
-        name: IndexName::new(&name.name),
+        name: IndexName::new(pools.ident(*name)),
         kind,
         ty,
         access: access.unwrap_or(AccessModifier::Private),
@@ -1024,13 +1055,8 @@ fn collect_members(
                 parameters,
                 ..
             } => members.push(MemberDescriptor {
-                name: IndexName::new(&name.name),
-                // The same kind the declare pass gives a locally declared
-                // method, so a synthesized member is indistinguishable from a
-                // local one downstream.
+                name: IndexName::new(pools.ident(*name)),
                 kind: SymbolKind::Function,
-                // `None` is `VOID`: the declaration names no type at all, which
-                // is a different fact from naming one the index cannot carry.
                 ty: return_type
                     .as_ref()
                     .map_or(MemberType::Untyped, |dt| member_type(dt, *extent)),
@@ -1040,7 +1066,7 @@ fn collect_members(
                 params: if list_hides_params(tokens, source, name.span.end as usize) {
                     None
                 } else {
-                    member_params(parameters).map(Into::into)
+                    member_params(parameters, pools).map(Into::into)
                 },
             }),
             StatementKind::Property {
@@ -1051,7 +1077,7 @@ fn collect_members(
                 extent,
                 ..
             } => members.push(MemberDescriptor {
-                name: IndexName::new(&name.name),
+                name: IndexName::new(pools.ident(*name)),
                 kind: SymbolKind::Property,
                 ty: member_type(data_type, *extent),
                 access: *access,
@@ -1100,7 +1126,7 @@ fn collect_members(
                 };
                 members.push(MemberDescriptor {
                     record: Some(MemberRecord {
-                        table: IndexName::new(&table.name),
+                        table: IndexName::new(pools.ident(*table)),
                         temp_table,
                     }),
                     ..data(
@@ -1149,7 +1175,7 @@ fn collect_members(
                 *is_static,
             )),
             StatementKind::Block(inner) | StatementKind::VariableDeclarationList(inner) => {
-                collect_members(inner, tokens, source, members);
+                collect_members(inner, pools, tokens, source, members);
             }
             _ => {}
         }

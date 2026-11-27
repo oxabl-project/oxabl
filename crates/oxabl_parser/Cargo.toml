@@ -31,3 +31,6 @@ serde_json = "1"
 [[bench]]
 name = "parser_bench"
 harness = false
+
+[lints]
+workspace = true

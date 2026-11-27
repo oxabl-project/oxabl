@@ -77,7 +77,7 @@ fn records_of(classes: Classes) -> oxabl_semantic::InheritedRecords {
     let source = "CLASS app.sub INHERITS pkg.base:\nEND CLASS.\n";
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
-    inherited_records(&program.statements, &classes)
+    inherited_records(&program.statements, &program.pools, &classes)
 }
 
 #[test]
@@ -211,7 +211,7 @@ fn a_long_chain_with_many_records_binds_in_linear_time() {
     let classes = Classes(classes);
 
     let start = std::time::Instant::now();
-    let found = inherited_records(&program.statements, &classes);
+    let found = inherited_records(&program.statements, &program.pools, &classes);
     let elapsed = start.elapsed();
 
     assert_eq!(found.records.len(), LEVELS * PER_LEVEL * 2);

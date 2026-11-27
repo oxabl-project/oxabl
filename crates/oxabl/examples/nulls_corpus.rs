@@ -213,9 +213,19 @@ fn count_fallbacks(
             parse_recovered: !program.errors.is_empty(),
             ..Default::default()
         };
-        let flow = oxabl_flow::build_file_tokens(&program.statements, text, &tokens, &options.flow);
-        let scopes =
-            oxabl_scope::analyze_flow(&program.statements, text, &tokens, &flow, schema, &options);
+        let flow = oxabl_flow::build_file_tokens(
+            &program.statements,
+            &program.pools,
+            text,
+            &tokens,
+            &options.flow,
+        );
+        let scopes = oxabl_scope::analyze_flow(
+            oxabl_flow::FileInput::new(&program.statements, &program.pools, text, &tokens),
+            &flow,
+            schema,
+            &options,
+        );
         let nulls = oxabl_nulls::analyze_file(
             text,
             &tokens,
@@ -224,17 +234,13 @@ fn count_fallbacks(
             &oxabl_nulls::NullOptions::default(),
         )
         .with_values(
-            text,
-            &tokens,
-            &program.statements,
+            oxabl_flow::FileInput::new(&program.statements, &program.pools, text, &tokens),
             &flow,
             &oxabl_nulls::NullOptions::default(),
         );
         let nulls = match schema {
             Some(schema) => nulls.with_fields(
-                text,
-                &tokens,
-                &program.statements,
+                oxabl_flow::FileInput::new(&program.statements, &program.pools, text, &tokens),
                 &flow,
                 &oxabl_nulls::FieldSources {
                     scopes: &scopes,

@@ -38,7 +38,8 @@ fn schema_tables(source: &str) -> Vec<String> {
     let schema = customer_schema();
     let tokens = oxabl_lexer::tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
-    let mut ctx = AnalysisContext::new(FileId::new(1), source, &schema).with_index(&index);
+    let mut ctx =
+        AnalysisContext::new(FileId::new(1), source, &schema, &program.pools).with_index(&index);
     ctx.schema_loaded = true;
     let semantic = analyze_file(&program.statements, &ctx);
     let identity = |span: VirtualSpan| {

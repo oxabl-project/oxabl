@@ -22,3 +22,6 @@ criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
 [[bench]]
 name = "formatter_bench"
 harness = false
+
+# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+[lints]

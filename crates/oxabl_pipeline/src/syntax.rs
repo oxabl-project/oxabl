@@ -5,8 +5,9 @@
 //! references stay references: their expanded text never enters these ranges.
 
 use oxabl_ast::{
-    CreateTarget, DataType, Expression, ExpressionKind, OnAction, OnKind, ParameterType, PreprocIf,
-    Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeSource,
+    AstPools, CreateTarget, DataType, ExprId, ExprList, Expression, ExpressionKind, OnAction,
+    OnKind, ParameterType, PreprocIf, Span, Statement, StatementKind, StreamOperation,
+    SubscribeTarget, TypeSource,
 };
 use oxabl_common::{InternalPanic, catch_panic, panic_if_injected, panic_sites};
 use oxabl_lexer::{Kind, Token};
@@ -63,7 +64,7 @@ impl DocumentSyntax {
             statements: Vec::new(),
             expressions: Vec::new(),
         };
-        walk_statements(&mut builder, &program.statements);
+        walk_statements(&mut builder, &program.pools, &program.statements);
         builder.comments_and_markers();
         builder.preproc_branches();
         let folds = builder.one_fold_per_line();
@@ -568,20 +569,26 @@ trait Visitor {
     fn expression(&mut self, expression: &Expression);
 }
 
-fn walk_statements(v: &mut impl Visitor, statements: &[Statement]) {
+fn walk_statements(v: &mut impl Visitor, p: &AstPools, statements: &[Statement]) {
     v.statement_list(statements);
     for statement in statements {
-        walk_statement(v, statement);
+        walk_statement(v, p, statement);
     }
 }
 
-fn walk_opt(v: &mut impl Visitor, expression: Option<&Expression>) {
+fn walk_opt(v: &mut impl Visitor, p: &AstPools, expression: Option<ExprId>) {
     if let Some(expression) = expression {
-        walk_expression(v, expression);
+        walk_expression(v, p, expression);
     }
 }
 
-fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
+fn walk_list(v: &mut impl Visitor, p: &AstPools, list: ExprList) {
+    for &expression in p.exprs(list) {
+        walk_expression(v, p, expression);
+    }
+}
+
+fn walk_statement(v: &mut impl Visitor, p: &AstPools, statement: &Statement) {
     v.statement(statement);
     match &statement.kind {
         StatementKind::VariableDeclaration {
@@ -589,15 +596,15 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             type_source,
             ..
         } => {
-            walk_type_source(v, type_source);
-            walk_opt(v, initial_value.as_ref());
+            walk_type_source(v, p, type_source);
+            walk_opt(v, p, *initial_value);
         }
-        StatementKind::VariableDeclarationList(body) => walk_statements(v, body),
+        StatementKind::VariableDeclarationList(body) => walk_statements(v, p, body),
         StatementKind::DefineTempTable { fields, .. } => {
             for field in fields {
-                walk_type_source(v, &field.type_source);
-                for expression in field.initial_value.iter().flatten() {
-                    walk_expression(v, expression);
+                walk_type_source(v, p, &field.type_source);
+                if let Some(init) = field.initial_value {
+                    walk_list(v, p, init);
                 }
             }
         }
@@ -608,10 +615,10 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             set_parameters,
             ..
         } => {
-            walk_data_type(v, data_type);
-            walk_statements(v, set_parameters);
+            walk_data_type(v, p, data_type);
+            walk_statements(v, p, set_parameters);
             for body in [get_body, set_body].into_iter().flatten() {
-                walk_statements(v, body);
+                walk_statements(v, p, body);
             }
         }
         StatementKind::Procedure { body, .. }
@@ -620,16 +627,16 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
         | StatementKind::Destructor { body }
         | StatementKind::Finally { body }
         | StatementKind::Catch { body, .. }
-        | StatementKind::Block(body) => walk_statements(v, body),
+        | StatementKind::Block(body) => walk_statements(v, p, body),
         StatementKind::Function {
             return_type,
             body,
             prototype_parameters,
             ..
         } => {
-            walk_data_type(v, return_type);
-            walk_statements(v, prototype_parameters);
-            walk_statements(v, body);
+            walk_data_type(v, p, return_type);
+            walk_statements(v, p, prototype_parameters);
+            walk_statements(v, p, body);
         }
         StatementKind::Method {
             return_type,
@@ -638,21 +645,21 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             ..
         } => {
             if let Some(data_type) = return_type {
-                walk_data_type(v, data_type);
+                walk_data_type(v, p, data_type);
             }
-            walk_statements(v, parameters);
-            walk_statements(v, body);
+            walk_statements(v, p, parameters);
+            walk_statements(v, p, body);
         }
         StatementKind::Constructor {
             parameters, body, ..
         } => {
-            walk_statements(v, parameters);
-            walk_statements(v, body);
+            walk_statements(v, p, parameters);
+            walk_statements(v, p, body);
         }
-        StatementKind::DefineEvent { parameters, .. } => walk_statements(v, parameters),
+        StatementKind::DefineEvent { parameters, .. } => walk_statements(v, p, parameters),
         StatementKind::DefineParameter { param_type, .. } => {
             if let ParameterType::Variable { type_source, .. } = param_type {
-                walk_type_source(v, type_source);
+                walk_type_source(v, p, type_source);
             }
         }
         StatementKind::Do {
@@ -665,23 +672,19 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             ..
         } => {
             for expression in [from, to, by, while_condition].into_iter().flatten() {
-                walk_expression(v, expression);
+                walk_expression(v, p, *expression);
             }
-            for expression in on_actions {
-                walk_expression(v, expression);
-            }
-            walk_statements(v, body);
+            walk_list(v, p, *on_actions);
+            walk_statements(v, p, body);
         }
         StatementKind::Repeat {
             while_condition,
             on_actions,
             body,
         } => {
-            walk_opt(v, while_condition.as_ref());
-            for expression in on_actions {
-                walk_expression(v, expression);
-            }
-            walk_statements(v, body);
+            walk_opt(v, p, *while_condition);
+            walk_list(v, p, *on_actions);
+            walk_statements(v, p, body);
         }
         StatementKind::ForEach {
             where_clause,
@@ -689,29 +692,27 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             body,
             ..
         } => {
-            walk_opt(v, where_clause.as_ref());
-            for expression in on_actions {
-                walk_expression(v, expression);
-            }
-            walk_statements(v, body);
+            walk_opt(v, p, *where_clause);
+            walk_list(v, p, *on_actions);
+            walk_statements(v, p, body);
         }
         StatementKind::Find {
             key_value,
             where_clause,
             ..
         } => {
-            walk_opt(v, key_value.as_ref());
-            walk_opt(v, where_clause.as_ref());
+            walk_opt(v, p, *key_value);
+            walk_opt(v, p, *where_clause);
         }
         StatementKind::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            walk_expression(v, condition);
-            walk_statement(v, then_branch);
+            walk_expression(v, p, *condition);
+            walk_statement(v, p, then_branch);
             if let Some(else_branch) = else_branch {
-                walk_statement(v, else_branch);
+                walk_statement(v, p, else_branch);
             }
         }
         StatementKind::Case {
@@ -719,68 +720,64 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             when_branches,
             otherwise,
         } => {
-            walk_expression(v, expression);
+            walk_expression(v, p, *expression);
             for branch in when_branches {
-                for value in &branch.values {
-                    walk_expression(v, value);
-                }
-                walk_statements(v, &branch.body);
+                walk_list(v, p, branch.values);
+                walk_statements(v, p, &branch.body);
             }
             if let Some(otherwise) = otherwise {
-                walk_statements(v, otherwise);
+                walk_statements(v, p, otherwise);
             }
         }
-        StatementKind::Label { body, .. } => walk_statement(v, body),
+        StatementKind::Label { body, .. } => walk_statement(v, p, body),
         StatementKind::On { kind } => match kind {
             OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => {
-                walk_on_action(v, action)
+                walk_on_action(v, p, action)
             }
             OnKind::KeyRemap { .. } => {}
         },
         StatementKind::PreprocIf(preproc) => {
-            walk_expression(v, &preproc.condition);
-            walk_statements(v, &preproc.then_branch);
+            walk_expression(v, p, preproc.condition);
+            walk_statements(v, p, &preproc.then_branch);
             for (condition, branch) in &preproc.elseif_branches {
-                walk_expression(v, condition);
-                walk_statements(v, branch);
+                walk_expression(v, p, *condition);
+                walk_statements(v, p, branch);
             }
             if let Some(branch) = &preproc.else_branch {
-                walk_statements(v, branch);
+                walk_statements(v, p, branch);
             }
         }
-        StatementKind::PreprocMessage { expression } => walk_expression(v, expression),
+        StatementKind::PreprocMessage { expression } => walk_expression(v, p, *expression),
         StatementKind::Assignment { target, value } => {
-            walk_expression(v, target);
-            walk_expression(v, value);
+            walk_expression(v, p, *target);
+            walk_expression(v, p, *value);
         }
         StatementKind::Assign { assignments } | StatementKind::BufferCopy { assignments, .. } => {
             for pair in assignments {
-                walk_expression(v, &pair.target);
-                walk_expression(v, &pair.value);
+                walk_expression(v, p, pair.target);
+                walk_expression(v, p, pair.value);
             }
         }
         StatementKind::ExpressionStatement(expression)
         | StatementKind::Throw(expression)
         | StatementKind::ReleaseObject {
             target: expression, ..
-        } => walk_expression(v, expression),
+        } => walk_expression(v, p, *expression),
         StatementKind::DeleteObject {
             target,
             extra_targets,
             ..
         } => {
-            walk_expression(v, target);
-            for expression in extra_targets {
-                walk_expression(v, expression);
-            }
+            walk_expression(v, p, *target);
+            walk_list(v, p, *extra_targets);
         }
         StatementKind::CreateWidgetPool { name, .. }
-        | StatementKind::DeleteWidgetPool { name, .. } => walk_opt(v, name.as_ref()),
-        StatementKind::Return(expression) => walk_opt(v, expression.as_ref()),
+        | StatementKind::DeleteWidgetPool { name, .. } => walk_opt(v, p, *name),
+        StatementKind::Return(expression) => walk_opt(v, p, *expression),
         StatementKind::Display { items, .. } => {
             for item in items {
-                walk_expression(v, &item.expression);
-                walk_opt(v, item.when_condition.as_ref());
+                walk_expression(v, p, item.expression);
+                walk_opt(v, p, item.when_condition);
             }
         }
         StatementKind::Message { items, .. }
@@ -791,9 +788,7 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
         | StatementKind::Disable { items }
         | StatementKind::Hide { items, .. }
         | StatementKind::View { items, .. } => {
-            for expression in items {
-                walk_expression(v, expression);
-            }
+            walk_list(v, p, *items);
         }
         StatementKind::Export {
             delimiter, items, ..
@@ -803,9 +798,8 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             targets: items,
             ..
         } => {
-            for expression in delimiter.iter().chain(items) {
-                walk_expression(v, expression);
-            }
+            walk_opt(v, p, *delimiter);
+            walk_list(v, p, *items);
         }
         StatementKind::Update {
             targets, options, ..
@@ -813,9 +807,8 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
         | StatementKind::Set {
             targets, options, ..
         } => {
-            for expression in targets.iter().chain(options) {
-                walk_expression(v, expression);
-            }
+            walk_list(v, p, *targets);
+            walk_list(v, p, *options);
         }
         StatementKind::PromptFor {
             targets,
@@ -823,44 +816,37 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             fields,
             ..
         } => {
-            for expression in targets.iter().chain(options) {
-                walk_expression(v, expression);
-            }
+            walk_list(v, p, *targets);
+            walk_list(v, p, *options);
             for field in fields {
-                walk_type_source(v, &field.type_source);
+                walk_type_source(v, p, &field.type_source);
             }
         }
-        StatementKind::Get { query, .. } => walk_expression(v, query),
+        StatementKind::Get { query, .. } => walk_expression(v, p, *query),
         StatementKind::Close {
             target,
             status,
             handle,
             ..
         } => {
-            walk_expression(v, target);
-            walk_opt(v, status.as_ref());
-            walk_opt(v, handle.as_ref());
+            walk_expression(v, p, *target);
+            walk_opt(v, p, *status);
+            walk_opt(v, p, *handle);
         }
         StatementKind::Reposition {
             query, operands, ..
         } => {
-            walk_expression(v, query);
-            for expression in operands {
-                walk_expression(v, expression);
-            }
+            walk_expression(v, p, *query);
+            walk_list(v, p, *operands);
         }
         StatementKind::Accumulate {
             expression, breaks, ..
         } => {
-            walk_expression(v, expression);
-            for expression in breaks {
-                walk_expression(v, expression);
-            }
+            walk_expression(v, p, *expression);
+            walk_list(v, p, *breaks);
         }
         StatementKind::Color { items, .. } => {
-            for expression in items {
-                walk_expression(v, expression);
-            }
+            walk_list(v, p, *items);
         }
         StatementKind::CopyLob {
             source,
@@ -868,11 +854,9 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             options,
             ..
         } => {
-            walk_expression(v, source);
-            walk_expression(v, target);
-            for expression in options {
-                walk_expression(v, expression);
-            }
+            walk_expression(v, p, *source);
+            walk_expression(v, p, *target);
+            walk_list(v, p, *options);
         }
         StatementKind::Clear { .. } => {}
         StatementKind::Pause {
@@ -884,11 +868,11 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             target: second,
         } => {
             for expression in first.iter().chain(second) {
-                walk_expression(v, expression);
+                walk_expression(v, p, *expression);
             }
         }
         StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
-            walk_opt(v, lines.as_ref());
+            walk_opt(v, p, *lines);
         }
         StatementKind::Run {
             target,
@@ -900,16 +884,16 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             ..
         } => {
             if let oxabl_ast::RunTarget::Dynamic(expression) = target {
-                walk_expression(v, expression);
+                walk_expression(v, p, *expression);
             }
             for argument in arguments {
-                walk_expression(v, &argument.expression);
+                walk_expression(v, p, argument.expression);
             }
             for expression in [in_handle, persistent_handle, async_handle, event_procedure]
                 .into_iter()
                 .flatten()
             {
-                walk_expression(v, expression);
+                walk_expression(v, p, *expression);
             }
         }
         StatementKind::Publish {
@@ -917,10 +901,10 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             from_handle,
             arguments,
         } => {
-            walk_expression(v, event_name);
-            walk_opt(v, from_handle.as_ref());
+            walk_expression(v, p, *event_name);
+            walk_opt(v, p, *from_handle);
             for argument in arguments {
-                walk_expression(v, &argument.expression);
+                walk_expression(v, p, argument.expression);
             }
         }
         StatementKind::Subscribe {
@@ -929,10 +913,10 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             target,
             ..
         } => {
-            walk_opt(v, subscriber.as_ref());
-            walk_expression(v, event_name);
+            walk_opt(v, p, *subscriber);
+            walk_expression(v, p, *event_name);
             if let SubscribeTarget::InHandle(handle) = target {
-                walk_expression(v, handle);
+                walk_expression(v, p, *handle);
             }
         }
         StatementKind::Unsubscribe {
@@ -941,16 +925,14 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             in_handle,
         } => {
             for expression in [subscriber, event_name, in_handle].into_iter().flatten() {
-                walk_expression(v, expression);
+                walk_expression(v, p, *expression);
             }
         }
         StatementKind::StreamIo { operation, .. } => match operation {
             StreamOperation::From(target) | StreamOperation::To { target, .. } => {
-                if let Some(expression) = target.expression() {
-                    walk_expression(v, expression);
-                }
+                walk_opt(v, p, target.expression());
             }
-            StreamOperation::Through(expression) => walk_expression(v, expression),
+            StreamOperation::Through(expression) => walk_expression(v, p, *expression),
             StreamOperation::Close => {}
         },
         StatementKind::Create { target, .. } => {
@@ -965,25 +947,22 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
                 ..
             } = target
             {
-                walk_expression(v, handle);
-                walk_opt(v, for_table.as_ref());
-                walk_opt(v, widget_pool.as_ref());
-                walk_opt(v, class.as_ref());
-                walk_opt(
-                    v,
-                    connect.as_ref().and_then(|connect| connect.file.as_ref()),
-                );
+                walk_expression(v, p, *handle);
+                walk_opt(v, p, *for_table);
+                walk_opt(v, p, *widget_pool);
+                walk_opt(v, p, *class);
+                walk_opt(v, p, connect.as_ref().and_then(|connect| connect.file));
                 for assignment in assignments {
-                    walk_expression(v, &assignment.value);
+                    walk_expression(v, p, assignment.value);
                 }
                 for trigger in triggers {
-                    walk_on_action(v, &trigger.action);
+                    walk_on_action(v, p, &trigger.action);
                 }
             }
         }
         StatementKind::DefineFrame { fields, .. } => {
             for field in fields {
-                walk_type_source(v, &field.type_source);
+                walk_type_source(v, p, &field.type_source);
             }
         }
         StatementKind::TriggerProcedure {
@@ -992,7 +971,7 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
             ..
         } => {
             for parameter in [new_value, old_value_param].into_iter().flatten() {
-                walk_data_type(v, &parameter.data_type);
+                walk_data_type(v, p, &parameter.data_type);
             }
         }
         StatementKind::DefineBuffer { .. }
@@ -1017,48 +996,44 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
     }
 }
 
-fn walk_on_action(v: &mut impl Visitor, action: &OnAction) {
+fn walk_on_action(v: &mut impl Visitor, p: &AstPools, action: &OnAction) {
     match action {
-        OnAction::Block(body) => walk_statement(v, body),
+        OnAction::Block(body) => walk_statement(v, p, body),
         OnAction::PersistentRun {
             procedure,
             in_handle,
             arguments,
         } => {
-            for expression in procedure
-                .expression()
-                .into_iter()
-                .chain(in_handle.iter())
-                .chain(arguments)
-            {
-                walk_expression(v, expression);
-            }
+            walk_opt(v, p, procedure.expression());
+            walk_opt(v, p, *in_handle);
+            walk_list(v, p, *arguments);
         }
         OnAction::Revert => {}
     }
 }
 
-fn walk_type_source(v: &mut impl Visitor, source: &TypeSource) {
+fn walk_type_source(v: &mut impl Visitor, p: &AstPools, source: &TypeSource) {
     if let TypeSource::Explicit(data_type) = source {
-        walk_data_type(v, data_type);
+        walk_data_type(v, p, data_type);
     }
 }
 
-fn walk_data_type(v: &mut impl Visitor, data_type: &DataType) {
+fn walk_data_type(v: &mut impl Visitor, p: &AstPools, data_type: &DataType) {
     if let DataType::PreprocIf(preproc) = data_type {
-        walk_expression(v, &preproc.condition);
-        walk_data_type(v, &preproc.then_branch);
+        walk_expression(v, p, preproc.condition);
+        walk_data_type(v, p, &preproc.then_branch);
         for (condition, branch) in &preproc.elseif_branches {
-            walk_expression(v, condition);
-            walk_data_type(v, branch);
+            walk_expression(v, p, *condition);
+            walk_data_type(v, p, branch);
         }
         if let Some(branch) = &preproc.else_branch {
-            walk_data_type(v, branch);
+            walk_data_type(v, p, branch);
         }
     }
 }
 
-fn walk_expression(v: &mut impl Visitor, expression: &Expression) {
+fn walk_expression(v: &mut impl Visitor, p: &AstPools, id: ExprId) {
+    let expression = p.expr(id);
     v.expression(expression);
     match &expression.kind {
         ExpressionKind::Literal(_)
@@ -1086,50 +1061,46 @@ fn walk_expression(v: &mut impl Visitor, expression: &Expression) {
             array: left,
             index: right,
         } => {
-            walk_expression(v, left);
-            walk_expression(v, right);
+            walk_expression(v, p, *left);
+            walk_expression(v, p, *right);
         }
         ExpressionKind::Negate(inner)
         | ExpressionKind::Not(inner)
         | ExpressionKind::MemberAccess { object: inner, .. }
         | ExpressionKind::FieldAccess {
             qualifier: inner, ..
-        } => walk_expression(v, inner),
+        } => walk_expression(v, p, *inner),
         ExpressionKind::IfThenElse(condition, then_expression, else_expression) => {
-            walk_expression(v, condition);
-            walk_expression(v, then_expression);
-            walk_expression(v, else_expression);
+            walk_expression(v, p, *condition);
+            walk_expression(v, p, *then_expression);
+            walk_expression(v, p, *else_expression);
         }
         ExpressionKind::FunctionCall { arguments, .. } | ExpressionKind::New { arguments, .. } => {
-            for argument in arguments {
-                walk_expression(v, argument);
-            }
+            walk_list(v, p, *arguments);
         }
         ExpressionKind::MethodCall {
             object, arguments, ..
         } => {
-            walk_expression(v, object);
-            for argument in arguments {
-                walk_expression(v, argument);
-            }
+            walk_expression(v, p, *object);
+            walk_list(v, p, *arguments);
         }
         ExpressionKind::PreprocIf(preproc) => {
-            walk_expression_preproc(v, preproc);
+            walk_expression_preproc(v, p, preproc);
         }
         ExpressionKind::CanFind { where_clause, .. } => {
-            walk_opt(v, where_clause.as_deref());
+            walk_opt(v, p, *where_clause);
         }
     }
 }
 
-fn walk_expression_preproc(v: &mut impl Visitor, preproc: &PreprocIf<Expression>) {
-    walk_expression(v, &preproc.condition);
-    walk_expression(v, &preproc.then_branch);
+fn walk_expression_preproc(v: &mut impl Visitor, p: &AstPools, preproc: &PreprocIf<ExprId>) {
+    walk_expression(v, p, preproc.condition);
+    walk_expression(v, p, preproc.then_branch);
     for (condition, branch) in &preproc.elseif_branches {
-        walk_expression(v, condition);
-        walk_expression(v, branch);
+        walk_expression(v, p, *condition);
+        walk_expression(v, p, *branch);
     }
     if let Some(branch) = &preproc.else_branch {
-        walk_expression(v, branch);
+        walk_expression(v, p, *branch);
     }
 }

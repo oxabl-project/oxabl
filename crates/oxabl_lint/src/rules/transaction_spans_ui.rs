@@ -62,7 +62,7 @@
 //! A finding in an include is reported in the include when the include alone
 //! shows it, else at the `{...}` site in the including file.
 
-use oxabl_ast::{Span, Statement, StatementKind};
+use oxabl_ast::{AstPools, Span, Statement, StatementKind};
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_lexer::{Kind, Lexer, Token};
 use oxabl_scope::FileScopes;
@@ -98,7 +98,7 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
     }
     let fragment = ctx.source_context.is_include_fragment();
     let mut diags = Vec::new();
-    for (span, candidate) in candidates(program) {
+    for (span, candidate) in candidates(program, ctx.pools) {
         let Some((unit, block)) = locate(scopes, span.start) else {
             continue;
         };
@@ -148,7 +148,7 @@ impl Candidate {
 }
 
 /// The statements that may wait for the user, in source order.
-fn candidates(program: &[Statement]) -> Vec<(Span, Candidate)> {
+fn candidates(program: &[Statement], pools: &AstPools) -> Vec<(Span, Candidate)> {
     struct Candidates(Vec<(Span, Candidate)>);
     impl Visitor for Candidates {
         fn statement(&mut self, stmt: &Statement) -> bool {
@@ -173,7 +173,7 @@ fn candidates(program: &[Statement]) -> Vec<(Span, Candidate)> {
         }
     }
     let mut v = Candidates(Vec::new());
-    walk_block(&mut v, program);
+    walk_block(&mut v, pools, program);
     v.0.sort_by_key(|(s, _)| s.start);
     v.0
 }

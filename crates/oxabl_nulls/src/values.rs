@@ -1,12 +1,12 @@
 //! Local unknown-value facts. Low-confidence operations produce Unknown.
 use oxabl_ast::{
-    DataType, Expression, ExpressionKind as E, Literal, NodeId, OnAction, OnKind,
+    AstPools, DataType, ExprId, ExpressionKind as E, Literal, NodeId, OnAction, OnKind,
     ParameterDirection, ParameterType, Span, Statement, StatementKind as S, TypeSource,
 };
 use oxabl_flow::dataflow::{
     Analysis, BitSet, Direction, Limits, Solution, default_budget, solve_bounded,
 };
-use oxabl_flow::{Cfg, Edge, EdgeKind, FileFlow, NodeIx, NodeKind, UnitId};
+use oxabl_flow::{Cfg, Edge, EdgeKind, FileFlow, FileInput, NodeIx, NodeKind, UnitId};
 use oxabl_scope::{BufferId, ReadKind, UpdateKind};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -123,6 +123,7 @@ struct Variable {
     entry: Option<Span>,
 }
 struct Problem<'a> {
+    pools: &'a AstPools,
     statements: FxHashMap<NodeId, &'a Statement>,
     variables: Vec<Variable>,
     names: FxHashMap<String, usize>,
@@ -136,8 +137,6 @@ struct Problem<'a> {
     /// The header of each counted loop whose constant bounds make its body
     /// run, with the index of its [`Fact::fresh`] atom.
     counted: FxHashMap<NodeIx, usize>,
-    /// Comparisons whose left operand the parser read as `NOT a`.
-    loosened: &'a FxHashMap<NodeId, Expression>,
     /// The leading variables that some test reads (section 9.9).
     tracked: usize,
     /// The variables are database fields, found by the span of their
@@ -148,6 +147,64 @@ struct Problem<'a> {
     effects: FxHashMap<NodeId, Effects>,
     /// The values of `ASSIGN` pairs with a `WHEN`, which the AST does not keep.
     when_values: &'a FxHashSet<NodeId>,
+}
+
+/// The operator of a comparison.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CmpOp {
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    Begins,
+    Matches,
+    Contains,
+}
+
+impl CmpOp {
+    /// An operator whose result is `?` when an operand is `?`, and whose true
+    /// result proves both operands known.
+    fn needs_known_operands(self) -> bool {
+        matches!(
+            self,
+            CmpOp::LessThan
+                | CmpOp::LessThanOrEqual
+                | CmpOp::GreaterThan
+                | CmpOp::GreaterThanOrEqual
+                | CmpOp::Begins
+                | CmpOp::Matches
+        )
+    }
+}
+
+/// A comparison `a op b`: one in the tree, or the `NOT (a op b)` that
+/// [`loosen_not`] reads from a `(NOT a) op b`, which the tree cannot hold.
+#[derive(Clone, Copy)]
+struct Cmp {
+    op: CmpOp,
+    a: ExprId,
+    b: ExprId,
+}
+
+impl Cmp {
+    /// The comparison that `kind` is, if it is one.
+    fn of(kind: &E) -> Option<Cmp> {
+        let (op, a, b) = match kind {
+            E::Equal(a, b) => (CmpOp::Equal, *a, *b),
+            E::NotEqual(a, b) => (CmpOp::NotEqual, *a, *b),
+            E::LessThan(a, b) => (CmpOp::LessThan, *a, *b),
+            E::LessThanOrEqual(a, b) => (CmpOp::LessThanOrEqual, *a, *b),
+            E::GreaterThan(a, b) => (CmpOp::GreaterThan, *a, *b),
+            E::GreaterThanOrEqual(a, b) => (CmpOp::GreaterThanOrEqual, *a, *b),
+            E::Begins(a, b) => (CmpOp::Begins, *a, *b),
+            E::Matches(a, b) => (CmpOp::Matches, *a, *b),
+            E::Contains(a, b) => (CmpOp::Contains, *a, *b),
+            _ => return None,
+        };
+        Some(Cmp { op, a, b })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -209,24 +266,25 @@ fn is_available(name: &str) -> bool {
 }
 
 /// The buffer `AVAILABLE b` or `AVAILABLE(db.b)` tests.
-fn available_buffer(e: &Expression) -> Option<&str> {
-    let E::FunctionCall { name, arguments } = &e.kind else {
+fn available_buffer(pools: &AstPools, e: ExprId) -> Option<&str> {
+    let E::FunctionCall { name, arguments } = &pools.expr(e).kind else {
         return None;
     };
-    if !is_available(&name.name) || arguments.len() != 1 {
+    let args = pools.exprs(*arguments);
+    if !is_available(pools.ident(*name)) || args.len() != 1 {
         return None;
     }
-    match &arguments[0].kind {
-        E::Identifier(i) => Some(&i.name),
-        E::FieldAccess { field, .. } => Some(&field.name),
+    match &pools.expr(args[0]).kind {
+        E::Identifier(i) => Some(pools.ident(*i)),
+        E::FieldAccess { field, .. } => Some(pools.ident(*field)),
         _ => None,
     }
 }
 
 /// Visit `e` and every subexpression.
-fn walk<'a>(e: &'a Expression, visit: &mut impl FnMut(&'a Expression)) {
+fn walk(pools: &AstPools, e: ExprId, visit: &mut impl FnMut(ExprId)) {
     visit(e);
-    match &e.kind {
+    match &pools.expr(e).kind {
         E::Add(a, b)
         | E::Minus(a, b)
         | E::Multiply(a, b)
@@ -244,29 +302,29 @@ fn walk<'a>(e: &'a Expression, visit: &mut impl FnMut(&'a Expression)) {
         | E::And(a, b)
         | E::Or(a, b)
         | E::ArrayAccess { array: a, index: b } => {
-            walk(a, visit);
-            walk(b, visit);
+            walk(pools, *a, visit);
+            walk(pools, *b, visit);
         }
         E::Negate(a)
         | E::Not(a)
         | E::MemberAccess { object: a, .. }
-        | E::FieldAccess { qualifier: a, .. } => walk(a, visit),
+        | E::FieldAccess { qualifier: a, .. } => walk(pools, *a, visit),
         E::IfThenElse(c, a, b) => {
-            walk(c, visit);
-            walk(a, visit);
-            walk(b, visit);
+            walk(pools, *c, visit);
+            walk(pools, *a, visit);
+            walk(pools, *b, visit);
         }
         E::FunctionCall { arguments, .. } | E::New { arguments, .. } => {
-            for a in arguments {
-                walk(a, visit);
+            for &a in pools.exprs(*arguments) {
+                walk(pools, a, visit);
             }
         }
         E::MethodCall {
             object, arguments, ..
         } => {
-            walk(object, visit);
-            for a in arguments {
-                walk(a, visit);
+            walk(pools, *object, visit);
+            for &a in pools.exprs(*arguments) {
+                walk(pools, a, visit);
             }
         }
         _ => {}
@@ -274,11 +332,11 @@ fn walk<'a>(e: &'a Expression, visit: &mut impl FnMut(&'a Expression)) {
 }
 
 /// Whether evaluating `e` may run code the model does not see.
-fn calls(e: &Expression) -> bool {
+fn calls(pools: &AstPools, e: ExprId) -> bool {
     let mut found = false;
-    walk(e, &mut |e| {
-        found |= match &e.kind {
-            E::FunctionCall { name, .. } => builtin(&name.name) == Builtin::Unknown,
+    walk(pools, e, &mut |e| {
+        found |= match &pools.expr(e).kind {
+            E::FunctionCall { name, .. } => builtin(pools.ident(*name)) == Builtin::Unknown,
             E::MethodCall { .. } | E::New { .. } => true,
             _ => false,
         }
@@ -287,14 +345,14 @@ fn calls(e: &Expression) -> bool {
 }
 
 /// The expressions of a statement the model reads.
-fn expressions(s: &Statement) -> Vec<&Expression> {
+fn expressions(pools: &AstPools, s: &Statement) -> Vec<ExprId> {
     match &s.kind {
-        S::Assignment { target, value } => vec![target, value],
+        S::Assignment { target, value } => vec![*target, *value],
         S::Assign { assignments } => assignments
             .iter()
-            .flat_map(|a| [&a.target, &a.value])
+            .flat_map(|a| [a.target, a.value])
             .collect(),
-        S::If { condition, .. } => vec![condition],
+        S::If { condition, .. } => vec![*condition],
         S::Do {
             from,
             to,
@@ -304,54 +362,28 @@ fn expressions(s: &Statement) -> Vec<&Expression> {
         } => [from, to, by, while_condition]
             .into_iter()
             .flatten()
+            .copied()
             .collect(),
         S::Repeat {
             while_condition, ..
-        } => while_condition.iter().collect(),
-        S::Display { items, .. } => items.iter().map(|i| &i.expression).collect(),
+        } => while_condition.iter().copied().collect(),
+        S::Display { items, .. } => items.iter().map(|i| i.expression).collect(),
         S::Message { items, .. } | S::Put { items, .. } | S::Export { items, .. } => {
-            items.iter().collect()
+            pools.exprs(*items).to_vec()
         }
-        S::Case { expression, .. } => vec![expression],
+        S::Case { expression, .. } => vec![*expression],
         _ => Vec::new(),
     }
 }
 
 /// `NOT a = b` is `NOT (a = b)` in ABL: `NOT` binds looser than a comparison,
 /// while the parser reads `(NOT a) = b`.
-fn loosen_not(e: &Expression) -> Option<Expression> {
-    let (a, b) = match &e.kind {
-        E::Equal(a, b)
-        | E::NotEqual(a, b)
-        | E::LessThan(a, b)
-        | E::LessThanOrEqual(a, b)
-        | E::GreaterThan(a, b)
-        | E::GreaterThanOrEqual(a, b)
-        | E::Begins(a, b)
-        | E::Matches(a, b)
-        | E::Contains(a, b) => (a, b),
-        _ => return None,
-    };
-    let E::Not(a) = &a.kind else {
+fn loosen_not(pools: &AstPools, e: ExprId) -> Option<Cmp> {
+    let cmp = Cmp::of(&pools.expr(e).kind)?;
+    let E::Not(inner_a) = pools.expr(cmp.a).kind else {
         return None;
     };
-    let (a, b) = (a.clone(), b.clone());
-    let kind = match &e.kind {
-        E::Equal(..) => E::Equal(a, b),
-        E::NotEqual(..) => E::NotEqual(a, b),
-        E::LessThan(..) => E::LessThan(a, b),
-        E::LessThanOrEqual(..) => E::LessThanOrEqual(a, b),
-        E::GreaterThan(..) => E::GreaterThan(a, b),
-        E::GreaterThanOrEqual(..) => E::GreaterThanOrEqual(a, b),
-        E::Begins(..) => E::Begins(a, b),
-        E::Matches(..) => E::Matches(a, b),
-        _ => E::Contains(a, b),
-    };
-    let mut inner = Expression::new(kind);
-    inner.span = e.span;
-    let mut outer = Expression::new(E::Not(Box::new(inner)));
-    outer.span = e.span;
-    Some(outer)
+    Some(Cmp { a: inner_a, ..cmp })
 }
 
 // Bound the relations between locals without limiting the value facts.
@@ -367,42 +399,50 @@ const SEARCH_LIMIT: usize = 2 * WORK_LIMIT;
 /// The keys of the locals, or of the fields given by `spans`, that a
 /// condition, comparison or loop limit reads.
 fn tested_names<'a>(
+    pools: &AstPools,
     statements: impl Iterator<Item = &'a Statement>,
     spans: Option<&FxHashMap<(u32, u32), String>>,
 ) -> FxHashSet<String> {
     let mut out = FxHashSet::default();
-    let mut collect = |e: &Expression| {
-        walk(e, &mut |e| match (spans, &e.kind) {
-            (Some(spans), E::Identifier(_) | E::FieldAccess { .. }) => {
-                if let Some(key) = spans.get(&(e.span.start, e.span.end)) {
-                    out.insert(key.clone());
+    let mut collect = |e: ExprId| {
+        walk(pools, e, &mut |e| {
+            let expr = pools.expr(e);
+            match (spans, &expr.kind) {
+                (Some(spans), E::Identifier(_) | E::FieldAccess { .. }) => {
+                    if let Some(key) = spans.get(&(expr.span.start, expr.span.end)) {
+                        out.insert(key.clone());
+                    }
                 }
+                (None, E::Identifier(i)) => {
+                    out.insert(pools.ident(*i).to_ascii_lowercase());
+                }
+                _ => {}
             }
-            (None, E::Identifier(i)) => {
-                out.insert(i.name.to_ascii_lowercase());
-            }
-            _ => {}
         })
     };
     for s in statements {
-        let whole: Vec<&Expression> = match &s.kind {
-            S::If { condition, .. } => vec![condition],
+        let whole: Vec<ExprId> = match &s.kind {
+            S::If { condition, .. } => vec![*condition],
             S::Do {
                 from,
                 to,
                 while_condition,
                 ..
-            } => [from, to, while_condition].into_iter().flatten().collect(),
+            } => [from, to, while_condition]
+                .into_iter()
+                .flatten()
+                .copied()
+                .collect(),
             S::Repeat {
                 while_condition, ..
-            } => while_condition.iter().collect(),
+            } => while_condition.iter().copied().collect(),
             _ => Vec::new(),
         };
         for e in whole {
             collect(e);
         }
-        for e in expressions(s) {
-            walk(e, &mut |e| match &e.kind {
+        for e in expressions(pools, s) {
+            walk(pools, e, &mut |e| match &pools.expr(e).kind {
                 E::Equal(a, b)
                 | E::NotEqual(a, b)
                 | E::LessThan(a, b)
@@ -414,10 +454,10 @@ fn tested_names<'a>(
                 | E::Contains(a, b)
                 | E::And(a, b)
                 | E::Or(a, b) => {
-                    collect(a);
-                    collect(b);
+                    collect(*a);
+                    collect(*b);
                 }
-                E::Not(c) | E::IfThenElse(c, ..) => collect(c),
+                E::Not(c) | E::IfThenElse(c, ..) => collect(*c),
                 _ => {}
             });
         }
@@ -426,7 +466,7 @@ fn tested_names<'a>(
 }
 
 /// A statement that cannot change which record a buffer holds.
-fn keeps_buffers(s: &Statement) -> bool {
+fn keeps_buffers(pools: &AstPools, s: &Statement) -> bool {
     matches!(
         s.kind,
         S::Assignment { .. }
@@ -442,7 +482,7 @@ fn keeps_buffers(s: &Statement) -> bool {
             | S::Leave(_)
             | S::Next(_)
             | S::VariableDeclaration { .. }
-    ) && !expressions(s).into_iter().any(calls)
+    ) && !expressions(pools, s).into_iter().any(|e| calls(pools, e))
 }
 
 fn default_value(t: &TypeSource) -> u8 {
@@ -626,40 +666,44 @@ fn field_effects(
 }
 
 impl Problem<'_> {
-    fn view<'s>(&'s self, e: &'s Expression) -> &'s Expression {
-        self.loosened.get(&e.id).unwrap_or(e)
-    }
     /// The condition `e` tests, as the atom that says it is true, and whether
     /// it may also be `?` (a logical local).
-    fn atom(&self, e: &Expression) -> Option<(usize, bool)> {
+    fn atom(&self, e: ExprId) -> Option<(usize, bool)> {
         if let Some(i) = self.variable(e) {
             return Fact::flag(self.tracked, i).map(|a| (a, true));
         }
-        let k = lookup(&self.buffers, available_buffer(e)?)?;
+        let k = lookup(&self.buffers, available_buffer(self.pools, e)?)?;
         Some((Fact::buffer(self.tracked, self.counted.len(), k), false))
     }
     fn forget_buffers(&self, f: &mut Fact) {
         f.drop_atoms_from(Fact::buffer(self.tracked, self.counted.len(), 0));
     }
-    fn variable(&self, e: &Expression) -> Option<usize> {
+    fn variable(&self, e: ExprId) -> Option<usize> {
+        let expr = self.pools.expr(e);
         if self.fields_only {
-            if matches!(e.kind, E::Identifier(_) | E::FieldAccess { .. }) {
-                return self.field_spans.get(&(e.span.start, e.span.end)).copied();
+            if matches!(expr.kind, E::Identifier(_) | E::FieldAccess { .. }) {
+                return self
+                    .field_spans
+                    .get(&(expr.span.start, expr.span.end))
+                    .copied();
             }
             return None;
         }
-        if let E::Identifier(i) = &e.kind {
-            lookup(&self.names, &i.name)
+        if let E::Identifier(i) = &expr.kind {
+            lookup(&self.names, self.pools.ident(*i))
         } else {
             None
         }
     }
-    fn eval(&self, e: &Expression, f: &Fact) -> u8 {
-        let e = self.view(e);
+    fn eval(&self, e: ExprId, f: &Fact) -> u8 {
         if f.dead() {
             return 0;
         }
-        match &e.kind {
+        if loosen_not(self.pools, e).is_some() {
+            return UNKNOWN;
+        }
+        let kind = &self.pools.expr(e).kind;
+        match kind {
             E::Literal(Literal::Unknown(_)) => QUESTION,
             E::Literal(_) | E::New { .. } | E::CanFind { .. } => KNOWN,
             E::Identifier(_) | E::FieldAccess { .. } => self
@@ -671,37 +715,40 @@ impl Problem<'_> {
             | E::Divide(a, b)
             | E::Modulo(a, b) => {
                 // A zero divisor (V3, medium) is no source.
-                if matches!(e.kind, E::Divide(..)) && self.number(b) == Some(0) {
+                if matches!(kind, E::Divide(..)) && self.number(*b) == Some(0) {
                     return UNKNOWN;
                 }
-                let (a, b) = (self.eval(a, f), self.eval(b, f));
+                let (a, b) = (self.eval(*a, f), self.eval(*b, f));
                 if a == QUESTION || b == QUESTION {
                     return QUESTION;
                 }
                 ((a | b) & (QUESTION | OPAQUE)) | ((a & b) & KNOWN)
             }
-            E::Negate(a) => self.eval(a, f),
+            E::Negate(a) => self.eval(*a, f),
             E::Equal(..) | E::NotEqual(..) => KNOWN,
             E::IfThenElse(c, a, b) => {
-                if let E::Literal(Literal::Boolean(v)) = &c.kind {
-                    return self.eval(if v.value { a } else { b }, f);
+                if let E::Literal(Literal::Boolean(v)) = &self.pools.expr(*c).kind {
+                    return self.eval(if v.value { *a } else { *b }, f);
                 }
-                if self.eval(c, f) == QUESTION {
-                    return self.eval(b, f);
+                if self.eval(*c, f) == QUESTION {
+                    return self.eval(*b, f);
                 }
                 let mut yes = f.clone();
                 let mut no = f.clone();
-                self.narrow(c, true, &mut yes);
-                self.narrow(c, false, &mut no);
-                self.eval(a, &yes) | self.eval(b, &no)
+                self.narrow(*c, true, &mut yes);
+                self.narrow(*c, false, &mut no);
+                self.eval(*a, &yes) | self.eval(*b, &no)
             }
-            E::FunctionCall { name, arguments } => match builtin(&name.name) {
+            E::FunctionCall { name, arguments } => match builtin(self.pools.ident(*name)) {
                 Builtin::Absorbs => KNOWN,
                 Builtin::Propagates => {
-                    let (maybe, known) = arguments.iter().fold((0, KNOWN), |(maybe, known), a| {
-                        let value = self.eval(a, f);
-                        (maybe | (value & (QUESTION | OPAQUE)), known & value)
-                    });
+                    let (maybe, known) = self.pools.exprs(*arguments).iter().fold(
+                        (0, KNOWN),
+                        |(maybe, known), &a| {
+                            let value = self.eval(a, f);
+                            (maybe | (value & (QUESTION | OPAQUE)), known & value)
+                        },
+                    );
                     maybe | (known & KNOWN)
                 }
                 Builtin::Unknown => UNKNOWN,
@@ -709,9 +756,10 @@ impl Problem<'_> {
             _ => UNKNOWN,
         }
     }
-    fn assign(&self, target: &Expression, value: &Expression, f: &mut Fact) {
+    fn assign(&self, target: ExprId, value: ExprId, f: &mut Fact) {
         self.forget_calls(value, f);
-        if self.when_values.contains(&value.id) {
+        let value_expr = self.pools.expr(value);
+        if self.when_values.contains(&value_expr.id) {
             // The pair may not run: the target keeps the old value or gets the new.
             if let Some(i) = self.variable(target) {
                 f.forget(i, UNKNOWN);
@@ -723,7 +771,7 @@ impl Problem<'_> {
             let required = self.required(value, f).unwrap_or_default();
             let preserves = self.propagates_variable(value, i);
             f.write(i, result, required, preserves);
-            if let E::Literal(Literal::Boolean(v)) = &value.kind
+            if let E::Literal(Literal::Boolean(v)) = &value_expr.kind
                 && let Some(a) = Fact::flag(self.tracked, i)
             {
                 f.assume(a + usize::from(!v.value));
@@ -731,40 +779,43 @@ impl Problem<'_> {
         }
     }
     /// Whether the condition of a choice in `e` reads variable `i`.
-    fn chooses_on(&self, e: &Expression, i: usize) -> bool {
+    fn chooses_on(&self, e: ExprId, i: usize) -> bool {
         let mut found = false;
-        walk(e, &mut |e| {
-            if let E::IfThenElse(c, ..) = &e.kind {
-                walk(c, &mut |c| found |= self.variable(c) == Some(i));
+        walk(self.pools, e, &mut |e| {
+            if let E::IfThenElse(c, ..) = &self.pools.expr(e).kind {
+                walk(self.pools, *c, &mut |c| {
+                    found |= self.variable(c) == Some(i)
+                });
             }
         });
         found
     }
 
-    fn propagates_variable(&self, e: &Expression, i: usize) -> bool {
+    fn propagates_variable(&self, e: ExprId, i: usize) -> bool {
         if self.variable(e) == Some(i) {
             return true;
         }
-        match &e.kind {
+        match &self.pools.expr(e).kind {
             E::Add(a, b)
             | E::Minus(a, b)
             | E::Multiply(a, b)
             | E::Divide(a, b)
-            | E::Modulo(a, b) => self.propagates_variable(a, i) || self.propagates_variable(b, i),
-            E::Negate(a) => self.propagates_variable(a, i),
-            E::FunctionCall { name, arguments } if propagates(&name.name) => {
-                arguments.iter().any(|a| self.propagates_variable(a, i))
-            }
+            | E::Modulo(a, b) => self.propagates_variable(*a, i) || self.propagates_variable(*b, i),
+            E::Negate(a) => self.propagates_variable(*a, i),
+            E::FunctionCall { name, arguments } if propagates(self.pools.ident(*name)) => self
+                .pools
+                .exprs(*arguments)
+                .iter()
+                .any(|&a| self.propagates_variable(a, i)),
             _ => false,
         }
     }
-    fn required(&self, e: &Expression, f: &Fact) -> Option<Required> {
-        let e = self.view(e);
+    fn required(&self, e: ExprId, f: &Fact) -> Option<Required> {
         if self.eval(e, f) & QUESTION == 0 {
             return None;
         }
         if let Some(i) = self.variable(e) {
-            return f.requires.get(&i).cloned();
+            return f.requires.get(i).cloned();
         }
         let mut merged: Option<Required> = None;
         let mut add = |r: Option<Required>| {
@@ -776,62 +827,66 @@ impl Problem<'_> {
                 }
             }
         };
-        match &e.kind {
+        match &self.pools.expr(e).kind {
             E::Add(a, b)
             | E::Minus(a, b)
             | E::Multiply(a, b)
             | E::Divide(a, b)
             | E::Modulo(a, b) => {
-                add(self.required(a, f));
-                add(self.required(b, f));
+                add(self.required(*a, f));
+                add(self.required(*b, f));
             }
-            E::Negate(a) => add(self.required(a, f)),
-            E::FunctionCall { name, arguments } if propagates(&name.name) => {
-                for a in arguments {
+            E::Negate(a) => add(self.required(*a, f)),
+            E::FunctionCall { name, arguments } if propagates(self.pools.ident(*name)) => {
+                for &a in self.pools.exprs(*arguments) {
                     add(self.required(a, f));
                 }
             }
             E::IfThenElse(c, a, b) => {
                 let mut yes = f.clone();
                 let mut no = f.clone();
-                self.narrow(c, true, &mut yes);
-                self.narrow(c, false, &mut no);
-                add(self.required(a, &yes));
-                add(self.required(b, &no));
+                self.narrow(*c, true, &mut yes);
+                self.narrow(*c, false, &mut no);
+                add(self.required(*a, &yes));
+                add(self.required(*b, &no));
             }
             _ => {}
         }
         Some(merged.unwrap_or_else(|| f.certain()))
     }
-    fn number(&self, e: &Expression) -> Option<i64> {
-        match &e.kind {
+    fn number(&self, e: ExprId) -> Option<i64> {
+        match &self.pools.expr(e).kind {
             E::Literal(Literal::Integer(v)) => Some(v.value),
             E::Literal(Literal::Decimal(v)) if v.value.is_zero() => Some(0),
             E::Identifier(_) => self.variable(e).and_then(|i| self.variables[i].constant),
-            E::Negate(a) => self.number(a)?.checked_neg(),
+            E::Negate(a) => self.number(*a)?.checked_neg(),
             _ => None,
         }
     }
-    fn constant_condition(&self, e: &Expression) -> Option<bool> {
-        let (a, b) = match &e.kind {
-            E::LessThan(a, b)
-            | E::LessThanOrEqual(a, b)
-            | E::GreaterThan(a, b)
-            | E::GreaterThanOrEqual(a, b)
-            | E::Equal(a, b)
-            | E::NotEqual(a, b) => (self.number(a)?, self.number(b)?),
-            _ => return None,
+    fn constant_condition_cmp(&self, cmp: Cmp) -> Option<bool> {
+        let Cmp { op, a, b } = cmp;
+        let (a, b) = match op {
+            CmpOp::LessThan
+            | CmpOp::LessThanOrEqual
+            | CmpOp::GreaterThan
+            | CmpOp::GreaterThanOrEqual
+            | CmpOp::Equal
+            | CmpOp::NotEqual => (self.number(a)?, self.number(b)?),
+            CmpOp::Begins | CmpOp::Matches | CmpOp::Contains => return None,
         };
-        Some(match e.kind {
-            E::LessThan(..) => a < b,
-            E::LessThanOrEqual(..) => a <= b,
-            E::GreaterThan(..) => a > b,
-            E::GreaterThanOrEqual(..) => a >= b,
-            E::Equal(..) => a == b,
+        Some(match op {
+            CmpOp::LessThan => a < b,
+            CmpOp::LessThanOrEqual => a <= b,
+            CmpOp::GreaterThan => a > b,
+            CmpOp::GreaterThanOrEqual => a >= b,
+            CmpOp::Equal => a == b,
             _ => a != b,
         })
     }
-    fn prove_known(&self, e: &Expression, strong: bool, f: &mut Fact) {
+    fn constant_condition(&self, e: ExprId) -> Option<bool> {
+        self.constant_condition_cmp(Cmp::of(&self.pools.expr(e).kind)?)
+    }
+    fn prove_known(&self, e: ExprId, strong: bool, f: &mut Fact) {
         if f.dead() {
             return;
         }
@@ -843,59 +898,105 @@ impl Problem<'_> {
             f.known(i, strong);
             return;
         }
-        match &e.kind {
+        match &self.pools.expr(e).kind {
             E::Add(a, b)
             | E::Minus(a, b)
             | E::Multiply(a, b)
             | E::Divide(a, b)
             | E::Modulo(a, b) => {
-                self.prove_known(a, strong, f);
-                self.prove_known(b, strong, f);
+                self.prove_known(*a, strong, f);
+                self.prove_known(*b, strong, f);
             }
-            E::Negate(a) => self.prove_known(a, strong, f),
-            E::FunctionCall { name, arguments } if propagates(&name.name) => {
-                for a in arguments {
+            E::Negate(a) => self.prove_known(*a, strong, f),
+            E::FunctionCall { name, arguments } if propagates(self.pools.ident(*name)) => {
+                for &a in self.pools.exprs(*arguments) {
                     self.prove_known(a, strong, f);
                 }
             }
             _ => {}
         }
     }
-    fn nullable_variable(&self, e: &Expression) -> Option<usize> {
+    fn nullable_variable(&self, e: ExprId) -> Option<usize> {
         if let Some(i) = self.variable(e) {
             return Some(i);
         }
-        if let E::FunctionCall { name, arguments } = &e.kind
-            && arguments.len() == 1
-            && (name.name.eq_ignore_ascii_case("NUM-ENTRIES")
-                || name.name.eq_ignore_ascii_case("LENGTH"))
-        {
-            return self.nullable_variable(&arguments[0]);
+        if let E::FunctionCall { name, arguments } = &self.pools.expr(e).kind {
+            let args = self.pools.exprs(*arguments);
+            let n = self.pools.ident(*name);
+            if args.len() == 1
+                && (n.eq_ignore_ascii_case("NUM-ENTRIES") || n.eq_ignore_ascii_case("LENGTH"))
+            {
+                return self.nullable_variable(args[0]);
+            }
         }
         None
     }
-    fn required_question(&self, e: &Expression, f: &Fact, r: &Required) -> bool {
-        let e = self.view(e);
+    fn required_question(&self, e: ExprId, f: &Fact, r: &Required) -> bool {
+        if loosen_not(self.pools, e).is_some() {
+            return false;
+        }
         if let Some(i) = self.variable(e) {
             return f[i] == QUESTION || r.contains(i);
         }
-        match &e.kind {
+        match &self.pools.expr(e).kind {
             E::Literal(Literal::Unknown(_)) => true,
             E::Add(a, b)
             | E::Minus(a, b)
             | E::Multiply(a, b)
             | E::Divide(a, b)
-            | E::Modulo(a, b) => self.required_question(a, f, r) || self.required_question(b, f, r),
-            E::Negate(a) => self.required_question(a, f, r),
-            E::FunctionCall { name, arguments } if propagates(&name.name) => {
-                arguments.iter().any(|a| self.required_question(a, f, r))
+            | E::Modulo(a, b) => {
+                self.required_question(*a, f, r) || self.required_question(*b, f, r)
             }
+            E::Negate(a) => self.required_question(*a, f, r),
+            E::FunctionCall { name, arguments } if propagates(self.pools.ident(*name)) => self
+                .pools
+                .exprs(*arguments)
+                .iter()
+                .any(|&a| self.required_question(a, f, r)),
             _ => self.eval(e, f) == QUESTION,
         }
     }
+    fn truth_cmp(&self, cmp: Cmp, f: &Fact, r: &Required) -> u8 {
+        if let Some(value) = self.constant_condition_cmp(cmp) {
+            return if value { 1 } else { 2 };
+        }
+        let Cmp { op, a, b } = cmp;
+        match op {
+            CmpOp::Equal | CmpOp::NotEqual => {
+                let (aq, bq) = (
+                    self.required_question(a, f, r),
+                    self.required_question(b, f, r),
+                );
+                let result = if aq && bq {
+                    Some(true)
+                } else if (aq && self.eval(b, f) == KNOWN) || (bq && self.eval(a, f) == KNOWN) {
+                    Some(false)
+                } else {
+                    None
+                };
+                result.map_or(3, |v| if v == (op == CmpOp::Equal) { 1 } else { 2 })
+            }
+            CmpOp::LessThan
+            | CmpOp::LessThanOrEqual
+            | CmpOp::GreaterThan
+            | CmpOp::GreaterThanOrEqual
+            | CmpOp::Begins
+            | CmpOp::Matches => {
+                if self.required_question(a, f, r) || self.required_question(b, f, r) {
+                    4
+                } else {
+                    7
+                }
+            }
+            CmpOp::Contains => 7,
+        }
+    }
     // Possible logical values: yes=1, no=2, ?=4. These only remove sources.
-    fn truth(&self, e: &Expression, f: &Fact, r: &Required) -> u8 {
-        let e = self.view(e);
+    fn truth(&self, e: ExprId, f: &Fact, r: &Required) -> u8 {
+        if let Some(cmp) = loosen_not(self.pools, e) {
+            let inner = self.truth_cmp(cmp, f, r);
+            return ((inner & 1) << 1) | ((inner & 2) >> 1) | (inner & 4);
+        }
         if let Some(value) = self.constant_condition(e) {
             return if value { 1 } else { 2 };
         }
@@ -918,7 +1019,12 @@ impl Problem<'_> {
             };
             return known & base;
         }
-        match &e.kind {
+        let kind = &self.pools.expr(e).kind;
+        // `CONTAINS` is not a comparison here: it takes the default below.
+        if let Some(cmp) = Cmp::of(kind).filter(|cmp| cmp.op != CmpOp::Contains) {
+            return self.truth_cmp(cmp, f, r);
+        }
+        match kind {
             E::Literal(Literal::Boolean(v)) => {
                 if v.value {
                     1
@@ -927,51 +1033,19 @@ impl Problem<'_> {
                 }
             }
             E::Literal(Literal::Unknown(_)) => 4,
-            E::Equal(a, b) | E::NotEqual(a, b) => {
-                let (aq, bq) = (
-                    self.required_question(a, f, r),
-                    self.required_question(b, f, r),
-                );
-                let result = if aq && bq {
-                    Some(true)
-                } else if (aq && self.eval(b, f) == KNOWN) || (bq && self.eval(a, f) == KNOWN) {
-                    Some(false)
-                } else {
-                    None
-                };
-                result.map_or(3, |v| {
-                    if v == matches!(e.kind, E::Equal(..)) {
-                        1
-                    } else {
-                        2
-                    }
-                })
-            }
-            E::LessThan(a, b)
-            | E::LessThanOrEqual(a, b)
-            | E::GreaterThan(a, b)
-            | E::GreaterThanOrEqual(a, b)
-            | E::Begins(a, b)
-            | E::Matches(a, b) => {
-                if self.required_question(a, f, r) || self.required_question(b, f, r) {
-                    4
-                } else {
-                    7
-                }
-            }
             E::Not(a) => {
-                let a = self.truth(a, f, r);
+                let a = self.truth(*a, f, r);
                 ((a & 1) << 1) | ((a & 2) >> 1) | (a & 4)
             }
             E::And(a, b) | E::Or(a, b) => {
-                let (a, b) = (self.truth(a, f, r), self.truth(b, f, r));
+                let (a, b) = (self.truth(*a, f, r), self.truth(*b, f, r));
                 let mut out = 0;
                 for x in [1, 2, 4] {
                     for y in [1, 2, 4] {
                         if a & x == 0 || b & y == 0 {
                             continue;
                         }
-                        out |= if matches!(e.kind, E::And(..)) {
+                        out |= if matches!(kind, E::And(..)) {
                             if x == 2 || y == 2 {
                                 2
                             } else if x == 1 && y == 1 {
@@ -999,16 +1073,21 @@ impl Problem<'_> {
             }
         }
     }
-    fn filter_sources(&self, c: &Expression, yes: bool, f: &mut Fact) {
+    fn filter_sources_by(
+        &self,
+        yes: bool,
+        f: &mut Fact,
+        eval_truth: impl Fn(&Fact, &Required) -> u8,
+    ) {
         let wanted = if yes { 1 } else { 2 | 4 };
-        if self.truth(c, f, &Required::new()) & wanted == 0 {
+        if eval_truth(f, &Required::new()) & wanted == 0 {
             f.fill(0);
             return;
         }
         let cut: Vec<usize> = f
             .requires
             .iter()
-            .filter(|(_, r)| self.truth(c, f, r) & wanted == 0)
+            .filter(|(_, r)| eval_truth(f, r) & wanted == 0)
             .map(|(&i, _)| i)
             .collect();
         for i in cut {
@@ -1018,47 +1097,24 @@ impl Problem<'_> {
             }
         }
     }
-    fn narrow(&self, e: &Expression, yes: bool, f: &mut Fact) {
+    fn filter_sources(&self, c: ExprId, yes: bool, f: &mut Fact) {
+        self.filter_sources_by(yes, f, |f, r| self.truth(c, f, r));
+    }
+    fn narrow(&self, e: ExprId, yes: bool, f: &mut Fact) {
         self.narrow_with(e, yes, true, f);
     }
-    /// Narrow `f` by `e` being `yes`. A weak narrowing only removes values:
-    /// it never turns an Unknown local into a known one or into a source.
-    /// Narrowing that depends on the fact must be weak to stay monotone.
-    fn narrow_with(&self, e: &Expression, yes: bool, strong: bool, f: &mut Fact) {
-        let e = self.view(e);
-        if f.dead() {
-            return;
-        }
-        if self.constant_condition(e).is_some_and(|value| value != yes) {
-            f.fill(0);
-            return;
-        }
-        self.filter_sources(e, yes, f);
-        if f.dead() {
-            return;
-        }
-        if let Some((a, _)) = self.atom(e) {
-            f.assume(if yes { a } else { a + 1 });
-        }
-        match &e.kind {
-            E::Literal(Literal::Boolean(v)) if v.value != yes => f.fill(0),
-            E::Literal(Literal::Unknown(_)) if yes => f.fill(0),
-            E::LessThan(a, b)
-            | E::LessThanOrEqual(a, b)
-            | E::GreaterThan(a, b)
-            | E::GreaterThanOrEqual(a, b)
-            | E::Begins(a, b)
-            | E::Matches(a, b)
-                if yes =>
-            {
+    fn narrow_cmp_body(&self, cmp: Cmp, yes: bool, strong: bool, f: &mut Fact) {
+        let Cmp { op, a, b } = cmp;
+        match op {
+            op if yes && op.needs_known_operands() => {
                 self.prove_known(a, strong, f);
                 self.prove_known(b, strong, f);
             }
-            E::Equal(a, b) | E::NotEqual(a, b) => {
-                let equal = matches!(e.kind, E::Equal(..)) == yes;
-                let var = if matches!(a.kind, E::Literal(Literal::Unknown(_))) {
+            CmpOp::Equal | CmpOp::NotEqual => {
+                let equal = (op == CmpOp::Equal) == yes;
+                let var = if matches!(self.pools.expr(a).kind, E::Literal(Literal::Unknown(_))) {
                     self.nullable_variable(b)
-                } else if matches!(b.kind, E::Literal(Literal::Unknown(_))) {
+                } else if matches!(self.pools.expr(b).kind, E::Literal(Literal::Unknown(_))) {
                     self.nullable_variable(a)
                 } else {
                     None
@@ -1104,6 +1160,61 @@ impl Problem<'_> {
                     }
                 }
             }
+            _ => {}
+        }
+    }
+    fn narrow_cmp(&self, cmp: Cmp, yes: bool, strong: bool, f: &mut Fact) {
+        if f.dead() {
+            return;
+        }
+        if self
+            .constant_condition_cmp(cmp)
+            .is_some_and(|value| value != yes)
+        {
+            f.fill(0);
+            return;
+        }
+        self.filter_sources_by(yes, f, |f, r| self.truth_cmp(cmp, f, r));
+        if f.dead() {
+            return;
+        }
+        self.narrow_cmp_body(cmp, yes, strong, f);
+        if f.dead() {
+            f.fill(0);
+        }
+    }
+    /// Narrow `f` by `e` being `yes`. A weak narrowing only removes values:
+    /// it never turns an Unknown local into a known one or into a source.
+    /// Narrowing that depends on the fact must be weak to stay monotone.
+    fn narrow_with(&self, e: ExprId, yes: bool, strong: bool, f: &mut Fact) {
+        if f.dead() {
+            return;
+        }
+        if let Some(cmp) = loosen_not(self.pools, e) {
+            self.filter_sources(e, yes, f);
+            if f.dead() {
+                return;
+            }
+            self.narrow_cmp(cmp, !yes, strong, f);
+            return;
+        }
+        if self.constant_condition(e).is_some_and(|value| value != yes) {
+            f.fill(0);
+            return;
+        }
+        self.filter_sources(e, yes, f);
+        if f.dead() {
+            return;
+        }
+        if let Some((a, _)) = self.atom(e) {
+            f.assume(if yes { a } else { a + 1 });
+        }
+        let kind = &self.pools.expr(e).kind;
+        match kind {
+            E::Literal(Literal::Boolean(v)) if v.value != yes => f.fill(0),
+            E::Literal(Literal::Unknown(_)) if yes => f.fill(0),
+            // `narrow_cmp_body` does nothing for `CONTAINS`.
+            _ if let Some(cmp) = Cmp::of(kind) => self.narrow_cmp_body(cmp, yes, strong, f),
             E::Identifier(_) | E::FieldAccess { .. } if yes => {
                 if let Some(i) = self.variable(e) {
                     if f[i] == QUESTION {
@@ -1114,57 +1225,57 @@ impl Problem<'_> {
                 }
             }
             E::And(a, b) if yes => {
-                self.narrow_with(a, true, strong, f);
-                self.narrow_with(b, true, strong, f);
+                self.narrow_with(*a, true, strong, f);
+                self.narrow_with(*b, true, strong, f);
             }
             E::Or(a, b) if !yes => {
-                self.narrow_with(a, false, strong, f);
-                self.narrow_with(b, false, strong, f);
+                self.narrow_with(*a, false, strong, f);
+                self.narrow_with(*b, false, strong, f);
             }
             // A false AND with one side true: the other is false (OR dually).
             E::And(a, b) | E::Or(a, b) => {
                 let side = if yes { 2 } else { 1 };
-                let a_decided = self.truth(a, f, &Required::new()) == side;
-                let b_decided = self.truth(b, f, &Required::new()) == side;
+                let a_decided = self.truth(*a, f, &Required::new()) == side;
+                let b_decided = self.truth(*b, f, &Required::new()) == side;
                 if a_decided {
-                    self.narrow_with(b, yes, false, f);
+                    self.narrow_with(*b, yes, false, f);
                 }
                 if b_decided {
-                    self.narrow_with(a, yes, false, f);
+                    self.narrow_with(*a, yes, false, f);
                 }
             }
-            E::Not(a) => self.narrow_with(a, !yes, strong, f),
+            E::Not(a) => self.narrow_with(*a, !yes, strong, f),
             _ => {}
         }
         if f.dead() {
             f.fill(0);
         }
     }
-    fn condition<'a>(&self, s: &'a Statement) -> Option<&'a Expression> {
+    fn condition(&self, s: &Statement) -> Option<ExprId> {
         match &s.kind {
-            S::If { condition, .. } => Some(condition),
+            S::If { condition, .. } => Some(*condition),
             S::Do {
                 while_condition, ..
             }
             | S::Repeat {
                 while_condition, ..
-            } => while_condition.as_ref(),
+            } => *while_condition,
             _ => None,
         }
     }
-    fn forget_calls(&self, e: &Expression, f: &mut Fact) {
+    fn forget_calls(&self, e: ExprId, f: &mut Fact) {
         if f.dead() {
             return;
         }
-        match &e.kind {
+        match &self.pools.expr(e).kind {
             E::FunctionCall { name, arguments } => {
-                let pure = builtin(&name.name) != Builtin::Unknown;
+                let pure = builtin(self.pools.ident(*name)) != Builtin::Unknown;
                 if !pure {
                     for &i in &self.call_writes {
                         f.forget(i, UNKNOWN);
                     }
                 }
-                for a in arguments {
+                for &a in self.pools.exprs(*arguments) {
                     self.forget_calls(a, f);
                     if !pure && let Some(i) = self.variable(a) {
                         f.forget(i, UNKNOWN);
@@ -1177,8 +1288,8 @@ impl Problem<'_> {
                 for &i in &self.call_writes {
                     f.forget(i, UNKNOWN);
                 }
-                self.forget_calls(object, f);
-                for a in arguments {
+                self.forget_calls(*object, f);
+                for &a in self.pools.exprs(*arguments) {
                     self.forget_calls(a, f);
                     if let Some(i) = self.variable(a) {
                         f.forget(i, UNKNOWN);
@@ -1201,17 +1312,17 @@ impl Problem<'_> {
             | E::Contains(a, b)
             | E::And(a, b)
             | E::Or(a, b) => {
-                self.forget_calls(a, f);
-                self.forget_calls(b, f);
+                self.forget_calls(*a, f);
+                self.forget_calls(*b, f);
             }
             E::Negate(a)
             | E::Not(a)
             | E::MemberAccess { object: a, .. }
-            | E::FieldAccess { qualifier: a, .. } => self.forget_calls(a, f),
+            | E::FieldAccess { qualifier: a, .. } => self.forget_calls(*a, f),
             E::IfThenElse(c, a, b) => {
-                self.forget_calls(c, f);
-                self.forget_calls(a, f);
-                self.forget_calls(b, f);
+                self.forget_calls(*c, f);
+                self.forget_calls(*a, f);
+                self.forget_calls(*b, f);
             }
             _ => {}
         }
@@ -1225,24 +1336,24 @@ impl Problem<'_> {
         if f.dead() {
             return;
         }
-        if !keeps_buffers(s) {
+        if !keeps_buffers(self.pools, s) {
             self.forget_buffers(f);
         }
         if let Some(c) = self.condition(s) {
             self.forget_calls(c, f);
         }
         match &s.kind {
-            S::Assignment { target, value } => self.assign(target, value, f),
+            S::Assignment { target, value } => self.assign(*target, *value, f),
             S::Assign { assignments } => {
                 for a in assignments {
-                    self.assign(&a.target, &a.value, f);
+                    self.assign(a.target, a.value, f);
                 }
             }
             S::Do {
                 loop_var: Some(name),
                 ..
             } => {
-                if let Some(i) = lookup(&self.names, &name.name) {
+                if let Some(i) = lookup(&self.names, self.pools.ident(*name)) {
                     f.forget(i, UNKNOWN);
                 }
             }
@@ -1260,7 +1371,7 @@ impl Problem<'_> {
                 if !matches!(s.kind, S::Import { .. }) {
                     self.forget_call_writes(f);
                 }
-                for target in targets {
+                for &target in self.pools.exprs(*targets) {
                     if let Some(i) = self.variable(target) {
                         f.forget(i, UNKNOWN);
                     }
@@ -1270,7 +1381,7 @@ impl Problem<'_> {
                 status: Some(target),
                 ..
             } => {
-                if let Some(i) = self.variable(target) {
+                if let Some(i) = self.variable(*target) {
                     f.forget(i, UNKNOWN);
                 }
             }
@@ -1279,7 +1390,7 @@ impl Problem<'_> {
                 target_file: false,
                 ..
             } => {
-                if let Some(i) = self.variable(target) {
+                if let Some(i) = self.variable(*target) {
                     f.forget(i, UNKNOWN);
                 }
             }
@@ -1290,9 +1401,9 @@ impl Problem<'_> {
             S::Publish { arguments, .. } => {
                 self.forget_call_writes(f);
                 for a in arguments {
-                    self.forget_calls(&a.expression, f);
+                    self.forget_calls(a.expression, f);
                     if a.direction != ParameterDirection::Input
-                        && let Some(i) = self.variable(&a.expression)
+                        && let Some(i) = self.variable(a.expression)
                     {
                         f.forget(i, UNKNOWN);
                     }
@@ -1301,11 +1412,11 @@ impl Problem<'_> {
             S::Message {
                 items, set_targets, ..
             } => {
-                for e in items {
+                for &e in self.pools.exprs(*items) {
                     self.forget_calls(e, f);
                 }
                 for target in set_targets {
-                    if let Some(i) = lookup(&self.names, &target.name) {
+                    if let Some(i) = lookup(&self.names, self.pools.ident(*target)) {
                         f.forget(i, UNKNOWN);
                     }
                 }
@@ -1314,22 +1425,22 @@ impl Problem<'_> {
             S::Run { arguments, .. } => {
                 self.forget_call_writes(f);
                 for a in arguments {
-                    self.forget_calls(&a.expression, f);
+                    self.forget_calls(a.expression, f);
                     if a.direction != ParameterDirection::Input
-                        && let Some(i) = self.variable(&a.expression)
+                        && let Some(i) = self.variable(a.expression)
                     {
                         f.forget(i, UNKNOWN);
                     }
                 }
             }
-            S::ExpressionStatement(e) => self.forget_calls(e, f),
+            S::ExpressionStatement(e) => self.forget_calls(*e, f),
             S::Display { items, .. } => {
                 for i in items {
-                    self.forget_calls(&i.expression, f);
+                    self.forget_calls(i.expression, f);
                 }
             }
             S::Put { items, .. } | S::Export { items, .. } => {
-                for e in items {
+                for &e in self.pools.exprs(*items) {
                     self.forget_calls(e, f);
                 }
             }
@@ -1357,12 +1468,12 @@ impl Problem<'_> {
             ..
         } = &s.kind
         {
-            self.narrow(w, true, f);
+            self.narrow(*w, true, f);
         }
     }
     fn use_var(
         &self,
-        e: &Expression,
+        e: ExprId,
         f: &Fact,
         unit: UnitId,
         propagation: bool,
@@ -1376,19 +1487,19 @@ impl Problem<'_> {
         {
             out.push(ValueUse {
                 unit,
-                at: e.span,
+                at: self.pools.expr(e).span,
                 name: self.variables[i].name.clone(),
                 propagation,
                 sources: None,
             });
         }
     }
-    fn sinks(&self, e: &Expression, f: &Fact, unit: UnitId, stored: bool, out: &mut Vec<ValueUse>) {
+    fn sinks(&self, e: ExprId, f: &Fact, unit: UnitId, stored: bool, out: &mut Vec<ValueUse>) {
         self.sinks_under(e, f, unit, stored, &[], out);
     }
     /// Narrow `f` by `c`, then again by the enclosing conditions: an outer
     /// `A AND B` known false decides `B` once an inner test proves `A`.
-    fn narrow_under(&self, c: &Expression, yes: bool, outer: &[(&Expression, bool)], f: &mut Fact) {
+    fn narrow_under(&self, c: ExprId, yes: bool, outer: &[(ExprId, bool)], f: &mut Fact) {
         self.narrow(c, yes, f);
         for &(c, yes) in outer {
             self.narrow(c, yes, f);
@@ -1396,91 +1507,89 @@ impl Problem<'_> {
     }
     fn sinks_under(
         &self,
-        e: &Expression,
+        e: ExprId,
         f: &Fact,
         unit: UnitId,
         stored: bool,
-        outer: &[(&Expression, bool)],
+        outer: &[(ExprId, bool)],
         out: &mut Vec<ValueUse>,
     ) {
-        let e = self.view(e);
-        match &e.kind {
+        if let Some(cmp) = loosen_not(self.pools, e) {
+            if cmp.op.needs_known_operands() {
+                self.operands(cmp.a, f, unit, false, out);
+                self.operands(cmp.b, f, unit, false, out);
+            }
+            return;
+        }
+        let kind = &self.pools.expr(e).kind;
+        match kind {
             E::Add(a, b)
             | E::Minus(a, b)
             | E::Multiply(a, b)
             | E::Divide(a, b)
             | E::Modulo(a, b) => {
                 if stored {
-                    self.operands(a, f, unit, true, out);
-                    self.operands(b, f, unit, true, out);
+                    self.operands(*a, f, unit, true, out);
+                    self.operands(*b, f, unit, true, out);
                 }
-                self.sinks_under(a, f, unit, stored, outer, out);
-                self.sinks_under(b, f, unit, stored, outer, out);
+                self.sinks_under(*a, f, unit, stored, outer, out);
+                self.sinks_under(*b, f, unit, stored, outer, out);
             }
             E::Negate(a) => {
                 if stored {
-                    self.operands(a, f, unit, true, out);
+                    self.operands(*a, f, unit, true, out);
                 }
-                self.sinks_under(a, f, unit, stored, outer, out);
+                self.sinks_under(*a, f, unit, stored, outer, out);
             }
-            E::LessThan(a, b)
-            | E::LessThanOrEqual(a, b)
-            | E::GreaterThan(a, b)
-            | E::GreaterThanOrEqual(a, b)
-            | E::Begins(a, b)
-            | E::Matches(a, b) => {
-                self.operands(a, f, unit, false, out);
-                self.operands(b, f, unit, false, out);
+            _ if let Some(cmp) = Cmp::of(kind).filter(|cmp| cmp.op.needs_known_operands()) => {
+                self.operands(cmp.a, f, unit, false, out);
+                self.operands(cmp.b, f, unit, false, out);
             }
             E::And(a, b) | E::Or(a, b) => {
-                let and = matches!(e.kind, E::And(..));
+                let and = matches!(kind, E::And(..));
                 let mut inner = outer.to_vec();
-                let mut left = f.clone();
-                self.narrow_under(b, and, outer, &mut left);
-                inner.push((b, and));
-                self.sinks_under(a, &left, unit, false, &inner, out);
-                inner.pop();
-                let mut narrowed = f.clone();
-                self.narrow_under(a, and, outer, &mut narrowed);
-                inner.push((a, and));
-                self.sinks_under(b, &narrowed, unit, false, &inner, out);
+                for (side, other) in [(*a, *b), (*b, *a)] {
+                    let mut narrowed = f.clone();
+                    self.narrow_under(other, and, outer, &mut narrowed);
+                    inner.push((other, and));
+                    self.sinks_under(side, &narrowed, unit, false, &inner, out);
+                    inner.pop();
+                }
             }
-            E::Not(a) => self.sinks_under(a, f, unit, false, outer, out),
+            E::Not(a) => self.sinks_under(*a, f, unit, false, outer, out),
             E::IfThenElse(c, a, b) => {
-                self.sinks_under(c, f, unit, false, outer, out);
+                self.sinks_under(*c, f, unit, false, outer, out);
                 let mut inner = outer.to_vec();
-                let mut yes = f.clone();
-                let mut no = f.clone();
-                self.narrow_under(c, true, outer, &mut yes);
-                self.narrow_under(c, false, outer, &mut no);
-                inner.push((c, true));
-                self.sinks_under(a, &yes, unit, stored, &inner, out);
-                inner.pop();
-                inner.push((c, false));
-                self.sinks_under(b, &no, unit, stored, &inner, out);
+                for (branch, yes) in [(*a, true), (*b, false)] {
+                    let mut narrowed = f.clone();
+                    self.narrow_under(*c, yes, outer, &mut narrowed);
+                    inner.push((*c, yes));
+                    self.sinks_under(branch, &narrowed, unit, stored, &inner, out);
+                    inner.pop();
+                }
             }
-            E::FunctionCall { name, arguments } if propagates(&name.name) => {
-                for a in arguments {
+            E::FunctionCall { name, arguments } if propagates(self.pools.ident(*name)) => {
+                for &a in self.pools.exprs(*arguments) {
                     self.sinks_under(a, f, unit, stored, outer, out);
                 }
             }
             _ => {}
         }
     }
-    fn operands(&self, e: &Expression, f: &Fact, unit: UnitId, p: bool, out: &mut Vec<ValueUse>) {
+    fn operands(&self, e: ExprId, f: &Fact, unit: UnitId, p: bool, out: &mut Vec<ValueUse>) {
         self.use_var(e, f, unit, p, out);
-        match &e.kind {
+        match &self.pools.expr(e).kind {
             E::Add(a, b)
             | E::Minus(a, b)
             | E::Multiply(a, b)
             | E::Divide(a, b)
             | E::Modulo(a, b) => {
-                self.operands(a, f, unit, p, out);
-                self.operands(b, f, unit, p, out);
+                self.operands(*a, f, unit, p, out);
+                self.operands(*b, f, unit, p, out);
             }
-            E::Negate(a) => self.operands(a, f, unit, p, out),
-            E::FunctionCall { name, arguments } if propagates(&name.name) => {
-                for a in arguments {
+            E::Negate(a) => self.operands(*a, f, unit, p, out),
+            E::FunctionCall { name, arguments } if propagates(self.pools.ident(*name)) => {
+                for &a in self.pools.exprs(*arguments) {
                     self.operands(a, f, unit, p, out);
                 }
             }
@@ -1570,7 +1679,7 @@ impl Problem<'_> {
                     ..
                 } = &s.kind
                 {
-                    self.narrow(w, true, f);
+                    self.narrow(*w, true, f);
                 }
             }
             EdgeKind::LoopDone => {
@@ -1595,10 +1704,10 @@ impl Problem<'_> {
         else {
             return false;
         };
-        let (Some(from), Some(to)) = (self.number(from), self.number(to)) else {
+        let (Some(from), Some(to)) = (self.number(*from), self.number(*to)) else {
             return false;
         };
-        match by.as_ref().map(|b| self.number(b)) {
+        match by.map(|b| self.number(b)) {
             None => from <= to,
             Some(Some(k)) if k > 0 => from <= to,
             Some(Some(k)) if k < 0 => from >= to,
@@ -1645,9 +1754,9 @@ impl Problem<'_> {
         ) = (e.kind, &s.kind)
         {
             if let Some(from) = from {
-                self.prove_known(from, true, f);
+                self.prove_known(*from, true, f);
             }
-            self.prove_known(to, true, f);
+            self.prove_known(*to, true, f);
         }
         if let Some(cond) = self.condition(s) {
             match e.kind {
@@ -1670,30 +1779,30 @@ impl Problem<'_> {
             self.sinks(c, f, unit, false, out);
         }
         match &s.kind {
-            S::Assignment { value, .. } => self.sinks(value, f, unit, true, out),
+            S::Assignment { value, .. } => self.sinks(*value, f, unit, true, out),
             S::Assign { assignments } => {
                 let mut f = f.clone();
                 for a in assignments {
-                    if !self.when_values.contains(&a.value.id) {
-                        self.sinks(&a.value, &f, unit, true, out);
+                    if !self.when_values.contains(&self.pools.expr(a.value).id) {
+                        self.sinks(a.value, &f, unit, true, out);
                     }
-                    self.assign(&a.target, &a.value, &mut f);
+                    self.assign(a.target, a.value, &mut f);
                 }
             }
             S::Display { items, .. } => {
                 for i in items {
-                    match &i.when_condition {
+                    match i.when_condition {
                         Some(w) if self.fields_only => {
                             let mut shown = f.clone();
                             self.narrow(w, true, &mut shown);
-                            self.sinks(&i.expression, &shown, unit, true, out);
+                            self.sinks(i.expression, &shown, unit, true, out);
                         }
-                        _ => self.sinks(&i.expression, f, unit, true, out),
+                        _ => self.sinks(i.expression, f, unit, true, out),
                     }
                 }
             }
             S::Message { items, .. } | S::Put { items, .. } | S::Export { items, .. } => {
-                for e in items {
+                for &e in self.pools.exprs(*items) {
                     self.sinks(e, f, unit, true, out);
                 }
             }
@@ -1802,9 +1911,10 @@ impl Problem<'_> {
         let s = node.stmt.and_then(|id| self.statements.get(&id))?;
         // A use in pair `k` of an `ASSIGN` reads what the pairs before it left.
         let pair = match &s.kind {
-            S::Assign { assignments } => assignments
-                .iter()
-                .position(|a| a.value.span.start <= at.start && at.end <= a.value.span.end),
+            S::Assign { assignments } => assignments.iter().position(|a| {
+                let span = self.pools.expr(a.value).span;
+                span.start <= at.start && at.end <= span.end
+            }),
             _ => None,
         };
         if let Some(k) = pair {
@@ -1945,7 +2055,7 @@ impl Problem<'_> {
             return false;
         };
         let mut names = false;
-        walk(self.view(c), &mut |e| names |= self.variable(e) == Some(i));
+        walk(self.pools, c, &mut |e| names |= self.variable(e) == Some(i));
         names
     }
 
@@ -2024,11 +2134,9 @@ impl Problem<'_> {
         let Some(s) = node.stmt.and_then(|id| self.statements.get(&id)) else {
             return out;
         };
-        let pairs: Vec<(&Expression, &Expression)> = match &s.kind {
-            S::Assignment { target, value } => vec![(target, value)],
-            S::Assign { assignments } => {
-                assignments.iter().map(|a| (&a.target, &a.value)).collect()
-            }
+        let pairs: Vec<(ExprId, ExprId)> = match &s.kind {
+            S::Assignment { target, value } => vec![(*target, *value)],
+            S::Assign { assignments } => assignments.iter().map(|a| (a.target, a.value)).collect(),
             _ => Vec::new(),
         };
         let effects = self.effects.get(&s.id).filter(|_| self.fields_only);
@@ -2036,7 +2144,7 @@ impl Problem<'_> {
             return out;
         }
         let mut f = before.clone();
-        if !keeps_buffers(s) {
+        if !keeps_buffers(self.pools, s) {
             self.forget_buffers(&mut f);
         }
         for (k, (target, value)) in pairs.into_iter().enumerate() {
@@ -2045,7 +2153,8 @@ impl Problem<'_> {
                 && !f.dead()
             {
                 let old = f.values[var];
-                let (gives, keeps) = if self.when_values.contains(&value.id) {
+                let value_expr = self.pools.expr(value);
+                let (gives, keeps) = if self.when_values.contains(&value_expr.id) {
                     (false, false)
                 } else {
                     // What the pair stores when the variable was known, and
@@ -2068,12 +2177,13 @@ impl Problem<'_> {
                             && !self.chooses_on(value, var),
                     )
                 };
+                let target_span = self.pools.expr(target).span;
                 out.push(Write {
                     var,
                     pair: Some(k),
                     at: Span {
-                        start: target.span.start,
-                        end: value.span.end.max(target.span.end),
+                        start: target_span.start,
+                        end: value_expr.span.end.max(target_span.end),
                     },
                     kind: ValueSourceKind::Assignment,
                     gives,
@@ -2105,23 +2215,25 @@ impl Problem<'_> {
     fn source_at(&self, cfg: &Cfg, n: NodeIx, use_at: Option<Span>) -> Option<ValueSource> {
         let node = cfg.node(n);
         let s = node.stmt.and_then(|id| self.statements.get(&id))?;
-        let inside = |e: &Expression, at: Span| e.span.start <= at.start && at.end <= e.span.end;
+        let inside = |e: ExprId, at: Span| {
+            let span = self.pools.expr(e).span;
+            span.start <= at.start && at.end <= span.end
+        };
         if let Some(c) = self.condition(s)
             && use_at.is_none_or(|at| inside(c, at))
         {
             return Some(ValueSource {
-                at: c.span,
+                at: self.pools.expr(c).span,
                 kind: ValueSourceKind::Test,
             });
         }
         if let (S::Display { items, .. }, Some(at)) = (&s.kind, use_at) {
             let when = items
                 .iter()
-                .find(|i| inside(&i.expression, at))?
-                .when_condition
-                .as_ref()?;
+                .find(|i| inside(i.expression, at))?
+                .when_condition?;
             return Some(ValueSource {
-                at: when.span,
+                at: self.pools.expr(when).span,
                 kind: ValueSourceKind::Test,
             });
         }
@@ -2215,7 +2327,11 @@ pub(crate) fn first_uses<'a>(
 
 /// The values of the `ASSIGN` pairs of `all` that a `WHEN` follows. The parser
 /// drops the condition, so it reads the tokens.
-fn when_values(all: &[&Statement], tokens: &[oxabl_lexer::Token]) -> FxHashSet<NodeId> {
+fn when_values(
+    all: &[&Statement],
+    pools: &AstPools,
+    tokens: &[oxabl_lexer::Token],
+) -> FxHashSet<NodeId> {
     let mut out = FxHashSet::default();
     for s in all {
         let S::Assign { assignments } = &s.kind else {
@@ -2229,10 +2345,10 @@ fn when_values(all: &[&Statement], tokens: &[oxabl_lexer::Token]) -> FxHashSet<N
         {
             let pair = assignments
                 .iter()
-                .filter(|a| a.value.span.end as usize <= t.start)
-                .max_by_key(|a| a.value.span.end);
+                .filter(|a| pools.expr(a.value).span.end as usize <= t.start)
+                .max_by_key(|a| pools.expr(a.value).span.end);
             if let Some(a) = pair {
-                out.insert(a.value.id);
+                out.insert(pools.expr(a.value).id);
             }
         }
     }
@@ -2280,42 +2396,22 @@ fn repeat_vars(
 }
 
 pub(crate) fn analyze(
-    source: &str,
-    tokens: &[oxabl_lexer::Token],
-    program: &[Statement],
+    input: FileInput<'_>,
     flow: &FileFlow,
     elided: &[u32],
 ) -> (Vec<ValueUse>, Vec<UnitValues>) {
-    analyze_inspect(
-        source,
-        tokens,
-        program,
-        flow,
-        elided,
-        None,
-        &mut |_, _, _| {},
-    )
+    analyze_inspect(input, flow, elided, None, &mut |_, _, _| {})
 }
 
 /// The uses of database fields that may hold `?`, and the units whose solve
 /// ran out of its budget.
 pub(crate) fn analyze_fields(
-    source: &str,
-    tokens: &[oxabl_lexer::Token],
-    program: &[Statement],
+    input: FileInput<'_>,
     flow: &FileFlow,
     elided: &[u32],
-    input: &FieldSources<'_>,
+    sources: &FieldSources<'_>,
 ) -> (Vec<ValueUse>, Vec<UnitId>) {
-    let (uses, facts) = analyze_inspect(
-        source,
-        tokens,
-        program,
-        flow,
-        elided,
-        Some(input),
-        &mut |_, _, _| {},
-    );
+    let (uses, facts) = analyze_inspect(input, flow, elided, Some(sources), &mut |_, _, _| {});
     let exhausted = facts
         .iter()
         .filter(|f| f.exhausted)
@@ -2326,14 +2422,18 @@ pub(crate) fn analyze_fields(
 
 /// [`analyze`], showing each solved unit to `inspect`.
 fn analyze_inspect(
-    source: &str,
-    tokens: &[oxabl_lexer::Token],
-    program: &[Statement],
+    input: FileInput<'_>,
     flow: &FileFlow,
     elided: &[u32],
     fields: Option<&FieldSources<'_>>,
     inspect: &mut dyn FnMut(&Cfg, &Problem<'_>, &Solution<Fact>),
 ) -> (Vec<ValueUse>, Vec<UnitValues>) {
+    let FileInput {
+        statements: program,
+        pools,
+        source,
+        tokens,
+    } = input;
     let unit_fields = fields.map(|input| fields::collect(source, input));
     let mut all = Vec::new();
     for s in program {
@@ -2341,43 +2441,43 @@ fn analyze_inspect(
     }
     let repeat_vars = repeat_vars(&all, source, tokens);
     let when_values = if fields.is_some() {
-        when_values(&all, tokens)
+        when_values(&all, pools, tokens)
     } else {
         FxHashSet::default()
     };
     // The locals are not read in a field run.
     let local_all: &[&Statement] = if fields.is_some() { &[] } else { &all };
     let mut written = FxHashSet::default();
-    let mut write = |e: &Expression| {
-        if let E::Identifier(i) = &e.kind {
-            written.insert(i.name.to_ascii_lowercase());
+    let mut write = |e: ExprId| {
+        if let E::Identifier(i) = &pools.expr(e).kind {
+            written.insert(pools.ident(*i).to_ascii_lowercase());
         }
     };
     for s in local_all {
         match &s.kind {
-            S::Assignment { target, .. } => write(target),
+            S::Assignment { target, .. } => write(*target),
             S::Assign { assignments } => {
                 for a in assignments {
-                    write(&a.target);
+                    write(a.target);
                 }
             }
             S::Import { targets, .. } | S::Update { targets, .. } | S::Set { targets, .. } => {
-                for t in targets {
+                for &t in pools.exprs(*targets) {
                     write(t);
                 }
             }
             S::Close {
                 status: Some(t), ..
-            } => write(t),
+            } => write(*t),
             S::CopyLob {
                 target,
                 target_file: false,
                 ..
-            } => write(target),
+            } => write(*target),
             S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {
-                        write(&a.expression);
+                        write(a.expression);
                     }
                 }
             }
@@ -2391,11 +2491,11 @@ fn analyze_inspect(
                 loop_var: Some(name),
                 ..
             } => {
-                written.insert(name.name.to_ascii_lowercase());
+                written.insert(pools.ident(*name).to_ascii_lowercase());
             }
             S::Message { set_targets, .. } => {
                 for name in set_targets {
-                    written.insert(name.name.to_ascii_lowercase());
+                    written.insert(pools.ident(*name).to_ascii_lowercase());
                 }
             }
             _ => {}
@@ -2437,7 +2537,7 @@ fn analyze_inspect(
                 } => name,
                 _ => return None,
             };
-            Some((*owners.get(&s.id)?, name.name.to_ascii_lowercase()))
+            Some((*owners.get(&s.id)?, pools.ident(*name).to_ascii_lowercase()))
         })
         .collect();
     let mut nonlocal = FxHashSet::default();
@@ -2445,52 +2545,42 @@ fn analyze_inspect(
         let Some(&unit) = owners.get(&s.id) else {
             continue;
         };
-        let mut record = |e: &Expression| {
-            if let E::Identifier(i) = &e.kind {
-                let name = i.name.to_ascii_lowercase();
+        let mut record = |e: ExprId| {
+            if let E::Identifier(i) = &pools.expr(e).kind {
+                let name = pools.ident(*i).to_ascii_lowercase();
                 if !declared.contains(&(unit, name.clone())) {
                     nonlocal.insert(name);
                 }
             }
         };
         match &s.kind {
-            S::Assignment { target, .. } => record(target),
+            S::Assignment { target, .. } => record(*target),
             S::Assign { assignments } => {
                 for a in assignments {
-                    record(&a.target);
+                    record(a.target);
                 }
             }
             S::Import { targets, .. } | S::Update { targets, .. } | S::Set { targets, .. } => {
-                for t in targets {
+                for &t in pools.exprs(*targets) {
                     record(t);
                 }
             }
             S::Close {
                 status: Some(t), ..
-            } => record(t),
+            } => record(*t),
             S::CopyLob {
                 target,
                 target_file: false,
                 ..
-            } => record(target),
+            } => record(*target),
             S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {
-                        record(&a.expression);
+                        record(a.expression);
                     }
                 }
             }
             _ => {}
-        }
-    }
-    let mut loosened = FxHashMap::default();
-    for s in &all {
-        for e in expressions(s) {
-            walk(e, &mut |e| {
-                if let Some(r) = loosen_not(e) {
-                    loosened.insert(e.id, r);
-                }
-            });
         }
     }
     let mut out = Vec::new();
@@ -2514,6 +2604,7 @@ fn analyze_inspect(
             .filter_map(|id| Some((id, *by_id.get(&id)?)))
             .collect();
         let mut p = Problem {
+            pools,
             statements,
             variables: Vec::new(),
             names: FxHashMap::default(),
@@ -2522,7 +2613,6 @@ fn analyze_inspect(
             call_writes: Vec::new(),
             buffers: FxHashMap::default(),
             counted: FxHashMap::default(),
-            loosened: &loosened,
             tracked: 0,
             fields_only: fields.is_some(),
             field_spans: FxHashMap::default(),
@@ -2577,7 +2667,7 @@ fn analyze_inspect(
                     {
                         UNKNOWN
                     } else {
-                        initial_value.as_ref().map_or_else(
+                        initial_value.map_or_else(
                             || default_value(type_source),
                             |e| p.eval(e, &Fact::new(Vec::new(), 0)),
                         )
@@ -2601,15 +2691,12 @@ fn analyze_inspect(
                 _ => None,
             };
             if let Some((name, initial)) = declaration {
-                p.names
-                    .insert(name.name.to_ascii_lowercase(), p.variables.len());
+                let name_str = pools.ident(*name);
+                let key = name_str.to_ascii_lowercase();
+                p.names.insert(key.clone(), p.variables.len());
                 p.variables.push(Variable {
-                    name: name.name.clone(),
-                    key: name.name.to_ascii_lowercase(),
-                    initial,
-                    declared: Some(s.span),
-                    entry: None,
-                    constant: if written.contains(&name.name.to_ascii_lowercase()) {
+                    name: name_str.to_string(),
+                    constant: if written.contains(&key) {
                         None
                     } else {
                         match &s.kind {
@@ -2618,13 +2705,17 @@ fn analyze_inspect(
                                     TypeSource::Explicit(DataType::Integer | DataType::Int64),
                                 initial_value,
                                 ..
-                            } if initial == KNOWN => match initial_value {
+                            } if initial == KNOWN => match *initial_value {
                                 Some(e) => p.number(e),
                                 None => Some(0),
                             },
                             _ => None,
                         }
                     },
+                    key,
+                    initial,
+                    declared: Some(s.span),
+                    entry: None,
                 });
             }
         }
@@ -2633,7 +2724,7 @@ fn analyze_inspect(
         }
         // Tested locals first: a source records which of them must be `?`.
         let spans = own_fields.flatten().map(|u| &u.spans);
-        let tested = tested_names(p.statements.values().copied(), spans);
+        let tested = tested_names(pools, p.statements.values().copied(), spans);
         let (mut first, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut p.variables)
             .into_iter()
             .partition(|v| tested.contains(&v.key));
@@ -2663,9 +2754,9 @@ fn analyze_inspect(
         }
         let mut buffers = FxHashMap::default();
         for s in p.statements.values() {
-            for e in expressions(s) {
-                walk(e, &mut |e| {
-                    if let Some(b) = available_buffer(e) {
+            for e in expressions(pools, s) {
+                walk(pools, e, &mut |e| {
+                    if let Some(b) = available_buffer(pools, e) {
                         let next = buffers.len();
                         buffers.entry(b.to_ascii_lowercase()).or_insert(next);
                     }
@@ -2761,39 +2852,6 @@ mod tests {
 
     #[test]
     fn expression_transfer_is_monotone() {
-        let p = Problem {
-            statements: FxHashMap::default(),
-            variables: vec![
-                Variable {
-                    name: "a".into(),
-                    key: "a".into(),
-                    initial: UNKNOWN,
-                    constant: None,
-                    declared: None,
-                    entry: None,
-                },
-                Variable {
-                    name: "b".into(),
-                    key: "b".into(),
-                    initial: UNKNOWN,
-                    constant: None,
-                    declared: None,
-                    entry: None,
-                },
-            ],
-            names: [("a".into(), 0), ("b".into(), 1)].into_iter().collect(),
-            elided: &[],
-            repeat_vars: &FxHashMap::default(),
-            call_writes: Vec::new(),
-            buffers: FxHashMap::default(),
-            counted: FxHashMap::default(),
-            loosened: &FxHashMap::default(),
-            tracked: 2,
-            fields_only: false,
-            field_spans: FxHashMap::default(),
-            effects: FxHashMap::default(),
-            when_values: &FxHashSet::default(),
-        };
         let states = [
             0,
             KNOWN,
@@ -2820,10 +2878,49 @@ mod tests {
             "a AND b",
             "a = b",
         ] {
-            let tokens = oxabl_lexer::tokenize(source);
-            let expression = oxabl_parser::Parser::new(&tokens, source)
-                .parse_expression()
-                .expect("expression");
+            let wrapped = format!("x = ({source}).");
+            let tokens = oxabl_lexer::tokenize(&wrapped);
+            let program = oxabl_parser::Parser::new(&tokens, &wrapped).parse_program();
+            assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+            let expression = match &program.statements[0].kind {
+                S::Assignment { value, .. } => *value,
+                other => panic!("expected assignment for {source}, got {other:?}"),
+            };
+            let repeat_vars = FxHashMap::default();
+            let when_values = FxHashSet::default();
+            let p = Problem {
+                pools: &program.pools,
+                statements: FxHashMap::default(),
+                variables: vec![
+                    Variable {
+                        name: "a".into(),
+                        key: "a".into(),
+                        initial: UNKNOWN,
+                        constant: None,
+                        declared: None,
+                        entry: None,
+                    },
+                    Variable {
+                        name: "b".into(),
+                        key: "b".into(),
+                        initial: UNKNOWN,
+                        constant: None,
+                        declared: None,
+                        entry: None,
+                    },
+                ],
+                names: [("a".into(), 0), ("b".into(), 1)].into_iter().collect(),
+                elided: &[],
+                repeat_vars: &repeat_vars,
+                call_writes: Vec::new(),
+                buffers: FxHashMap::default(),
+                counted: FxHashMap::default(),
+                tracked: 2,
+                fields_only: false,
+                field_spans: FxHashMap::default(),
+                effects: FxHashMap::default(),
+                when_values: &when_values,
+            };
             for a in states {
                 for b in states {
                     for c in states {
@@ -2835,8 +2932,8 @@ mod tests {
                             if (a == 0) != (b == 0) || (c == 0) != (d == 0) {
                                 continue;
                             }
-                            let left = p.eval(&expression, &Fact::new(vec![a, b], 2));
-                            let right = p.eval(&expression, &Fact::new(vec![c, d], 2));
+                            let left = p.eval(expression, &Fact::new(vec![a, b], 2));
+                            let right = p.eval(expression, &Fact::new(vec![c, d], 2));
                             assert_eq!(left | right, right, "{source}: [{a},{b}] <= [{c},{d}]");
                         }
                     }
@@ -2850,6 +2947,7 @@ mod tests {
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
         let flow = oxabl_flow::build_file_tokens(
             &program.statements,
+            &program.pools,
             source,
             &tokens,
             &Default::default(),
@@ -2863,7 +2961,8 @@ mod tests {
         for k in 0..300 {
             let source = programs.program();
             let (tokens, program, flow) = parse(&source);
-            let (_, facts) = analyze(&source, &tokens, &program.statements, &flow, &[]);
+            let input = FileInput::new(&program.statements, &program.pools, &source, &tokens);
+            let (_, facts) = analyze(input, &flow, &[]);
             assert!(
                 facts.iter().all(|f| !f.exhausted),
                 "program {k} spent its budget:\n{source}"
@@ -2877,47 +2976,39 @@ mod tests {
         for k in 0..100 {
             let source = programs.program();
             let (tokens, program, flow) = parse(&source);
-            let (statements, elided) = (&program.statements, &[]);
-            analyze_inspect(
-                &source,
-                &tokens,
-                statements,
-                &flow,
-                elided,
-                None,
-                &mut |cfg, p, solution| {
-                    let mut pool: Vec<&Fact> = Vec::new();
-                    for (n, _) in cfg.nodes() {
-                        let f = solution.before(n);
-                        if !f.dead() && !pool.contains(&f) && pool.len() < 6 {
-                            pool.push(f);
-                        }
+            let input = FileInput::new(&program.statements, &program.pools, &source, &tokens);
+            analyze_inspect(input, &flow, &[], None, &mut |cfg, p, solution| {
+                let mut pool: Vec<&Fact> = Vec::new();
+                for (n, _) in cfg.nodes() {
+                    let f = solution.before(n);
+                    if !f.dead() && !pool.contains(&f) && pool.len() < 6 {
+                        pool.push(f);
                     }
-                    for (n, node) in cfg.nodes() {
-                        if !matches!(node.kind, NodeKind::Stmt | NodeKind::Head) {
-                            continue;
-                        }
-                        for e in cfg.successors(n) {
-                            for small in &pool {
-                                for other in &pool {
-                                    let mut large = (*small).clone();
-                                    large.join(other);
-                                    let (mut a, mut b) = ((*small).clone(), large.clone());
-                                    p.transfer_edge(cfg, n, e, &mut a);
-                                    p.transfer_edge(cfg, n, e, &mut b);
-                                    assert!(
-                                        a.leq(&b),
-                                        "program {k}, node {} {:?} by {:?}:\n{small:?}\n<= {large:?}\ngives {a:?}\nnot <= {b:?}\n{source}",
-                                        n.index(),
-                                        cfg.node(n).kind,
-                                        e.kind,
-                                    );
-                                }
+                }
+                for (n, node) in cfg.nodes() {
+                    if !matches!(node.kind, NodeKind::Stmt | NodeKind::Head) {
+                        continue;
+                    }
+                    for e in cfg.successors(n) {
+                        for small in &pool {
+                            for other in &pool {
+                                let mut large = (*small).clone();
+                                large.join(other);
+                                let (mut a, mut b) = ((*small).clone(), large.clone());
+                                p.transfer_edge(cfg, n, e, &mut a);
+                                p.transfer_edge(cfg, n, e, &mut b);
+                                assert!(
+                                    a.leq(&b),
+                                    "program {k}, node {} {:?} by {:?}:\n{small:?}\n<= {large:?}\ngives {a:?}\nnot <= {b:?}\n{source}",
+                                    n.index(),
+                                    cfg.node(n).kind,
+                                    e.kind,
+                                );
                             }
                         }
                     }
-                },
-            );
+                }
+            });
         }
     }
 }

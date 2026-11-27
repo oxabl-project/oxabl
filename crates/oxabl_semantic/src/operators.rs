@@ -213,21 +213,16 @@ fn comparable(lhs: &ResolvedType, rhs: &ResolvedType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxabl_ast::{Expression, ExpressionKind, Literal};
+    use oxabl_ast::{ExprId, ExpressionKind};
 
     fn p(t: PrimitiveTy) -> ResolvedType {
         ResolvedType::Primitive(t)
     }
 
     // Dummy sub-expressions carry no semantic weight; only the operator
-    // variant is inspected. Use a cheap literal placeholder.
-    fn dummy_expr() -> Box<Expression> {
-        use oxabl_ast::{Span, UnknownLiteral};
-        Box::new(Expression::new(ExpressionKind::Literal(Literal::Unknown(
-            UnknownLiteral {
-                span: Span { start: 0, end: 0 },
-            },
-        ))))
+    // variant is inspected.
+    fn dummy_expr() -> ExprId {
+        ExprId::DUMMY
     }
 
     fn add_kind() -> ExpressionKind {

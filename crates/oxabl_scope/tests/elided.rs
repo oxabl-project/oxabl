@@ -26,11 +26,15 @@ fn locks(source: &str, fragment: bool) -> Vec<Lock> {
         fragment,
         ..ScopeOptions::default()
     };
-    oxabl_scope::analyze_tokens(&program.statements, &text, &tokens, Some(&schema), &options)
-        .reads()
-        .iter()
-        .map(|r| r.lock)
-        .collect()
+    oxabl_scope::analyze_tokens(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, &text, &tokens),
+        Some(&schema),
+        &options,
+    )
+    .reads()
+    .iter()
+    .map(|r| r.lock)
+    .collect()
 }
 
 const HIDDEN: Lock = Lock::Unknown(oxabl_scope::UnknownReason::UnexpandedInclude);
@@ -88,11 +92,15 @@ fn written(source: &str) -> Vec<Written> {
         elided_includes: &includes,
         ..ScopeOptions::default()
     };
-    oxabl_scope::analyze_tokens(&program.statements, &text, &tokens, Some(&schema), &options)
-        .reads()
-        .iter()
-        .map(|r| r.written)
-        .collect()
+    oxabl_scope::analyze_tokens(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, &text, &tokens),
+        Some(&schema),
+        &options,
+    )
+    .reads()
+    .iter()
+    .map(|r| r.written)
+    .collect()
 }
 
 const MAY_WRITE: Written = Written::Unknown(UnknownReason::UnexpandedInclude);

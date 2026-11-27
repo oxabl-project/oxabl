@@ -87,7 +87,10 @@ pub const DESCRIPTION: &str = "Dynamic objects created with no widget pool scope
 
 /// Entry point: analyse the file, then [`check`].
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
-    check(&oxabl_handles::analyze_file(program, ctx.source), ctx)
+    check(
+        &oxabl_handles::analyze_file(program, ctx.pools, ctx.source),
+        ctx,
+    )
 }
 
 /// Whether the rule counts `o`: its kind goes into a widget pool, no pool of

@@ -12,7 +12,7 @@
 //!   replaces the inherited primary index.
 //! - A table has one primary index. When none is marked, the first is.
 
-use oxabl_ast::{TempTableIndex, UseIndex};
+use oxabl_ast::{NamePool, TempTableIndex, UseIndex};
 
 use crate::schema::{Index, Table};
 
@@ -44,9 +44,9 @@ impl EffectiveIndex {
         }
     }
 
-    pub fn from_temp_table(index: &TempTableIndex) -> EffectiveIndex {
+    pub fn from_temp_table(index: &TempTableIndex, names: &NamePool) -> EffectiveIndex {
         EffectiveIndex {
-            name: index.name.name.clone(),
+            name: names.get(index.name.name).to_owned(),
             primary: index.is_primary,
             unique: index.is_unique,
             word: index.is_word_index,
@@ -54,7 +54,7 @@ impl EffectiveIndex {
             fields: index
                 .fields
                 .iter()
-                .map(|field| field.name.name.clone())
+                .map(|field| names.get(field.name.name).to_owned())
                 .collect(),
         }
     }
@@ -94,14 +94,20 @@ impl EffectiveTable {
         use_indexes: &[UseIndex],
         fields: impl IntoIterator<Item = &'a str>,
         indexes: &[TempTableIndex],
+        names: &NamePool,
     ) -> EffectiveTable {
         let (mut all_fields, mut inherited) = match source {
             Some(source) if use_indexes.is_empty() => (source.fields, source.indexes),
-            Some(source) => (source.fields, used_indexes(source.indexes, use_indexes)),
+            Some(source) => (
+                source.fields,
+                used_indexes(source.indexes, use_indexes, names),
+            ),
             None => (Vec::new(), Vec::new()),
         };
         all_fields.extend(fields.into_iter().map(str::to_string));
-        let own = indexes.iter().map(EffectiveIndex::from_temp_table);
+        let own = indexes
+            .iter()
+            .map(|index| EffectiveIndex::from_temp_table(index, names));
         let own_primary = indexes.iter().any(|index| index.is_primary);
         if own_primary {
             for index in &mut inherited {
@@ -123,10 +129,14 @@ impl EffectiveTable {
 
 /// The inherited indexes that `USE-INDEX` names, in the order of the source
 /// table.
-fn used_indexes(inherited: Vec<EffectiveIndex>, used: &[UseIndex]) -> Vec<EffectiveIndex> {
+fn used_indexes(
+    inherited: Vec<EffectiveIndex>,
+    used: &[UseIndex],
+    names: &NamePool,
+) -> Vec<EffectiveIndex> {
     let named = |index: &EffectiveIndex, only_primary: bool| {
         used.iter().any(|wanted| {
-            index.name.eq_ignore_ascii_case(&wanted.name.name)
+            index.name.eq_ignore_ascii_case(names.get(wanted.name.name))
                 && (!only_primary || wanted.as_primary)
         })
     };

@@ -271,10 +271,15 @@ impl WorkspaceIndex for BenchIndex {
     }
 }
 
-fn parse_program(source: &str) -> Vec<oxabl_ast::Statement> {
+fn parse_program(source: &str) -> oxabl_parser::Program {
     let tokens = tokenize(source);
-    let mut parser = Parser::new(&tokens, source);
-    parser.parse_statements().expect("parse fixture")
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(
+        program.errors.is_empty(),
+        "parse fixture: {:?}",
+        program.errors
+    );
+    program
 }
 
 fn bench_fixture(
@@ -291,16 +296,17 @@ fn bench_fixture_with(
     source: &str,
     index: Option<&dyn WorkspaceIndex>,
 ) {
-    let program = parse_program(source);
+    let parsed = parse_program(source);
+    let program = &parsed.statements;
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::new(1), source, &schema);
+    let ctx = AnalysisContext::new(FileId::new(1), source, &schema, &parsed.pools);
     let ctx = match index {
         Some(index) => ctx.with_index(index),
         None => ctx,
     };
     if index.is_some() {
         // The fixture measures the surface walk only if the stub answers.
-        let sem = analyze_file(&program, &ctx);
+        let sem = analyze_file(program, &ctx);
         assert!(
             sem.symbols
                 .iter()
@@ -314,7 +320,7 @@ fn bench_fixture_with(
     // Declare pass in isolation.
     group.bench_function(format!("{name}/declare"), |b| {
         b.iter(|| {
-            let (tree, symbols, diags, rev) = declare_pass(black_box(&program), black_box(&ctx));
+            let (tree, symbols, diags, rev) = declare_pass(black_box(program), black_box(&ctx));
             black_box((tree, symbols, diags, rev));
         })
     });
@@ -323,10 +329,10 @@ fn bench_fixture_with(
     // so the measurement captures resolve in isolation.
     group.bench_function(format!("{name}/resolve"), |b| {
         b.iter_batched(
-            || declare_pass(&program, &ctx),
+            || declare_pass(program, &ctx),
             |(tree, mut symbols, _diags, rev)| {
                 let (refs, types, rd) = resolve_pass(
-                    black_box(&program),
+                    black_box(program),
                     black_box(&ctx),
                     &tree,
                     &mut symbols,
@@ -342,13 +348,13 @@ fn bench_fixture_with(
     group.bench_function(format!("{name}/check"), |b| {
         b.iter_batched(
             || {
-                let (tree, mut symbols, _d, rev) = declare_pass(&program, &ctx);
-                let (refs, types, _rd) = resolve_pass(&program, &ctx, &tree, &mut symbols, rev);
+                let (tree, mut symbols, _d, rev) = declare_pass(program, &ctx);
+                let (refs, types, _rd) = resolve_pass(program, &ctx, &tree, &mut symbols, rev);
                 (tree, symbols, refs, types)
             },
             |(tree, symbols, refs, mut types)| {
                 let diags = check_pass(
-                    black_box(&program),
+                    black_box(program),
                     black_box(&ctx),
                     &tree,
                     &symbols,
@@ -364,7 +370,7 @@ fn bench_fixture_with(
     // End-to-end `analyze_file` — the user-visible entry point.
     group.bench_function(format!("{name}/analyze_file"), |b| {
         b.iter(|| {
-            let sem = analyze_file(black_box(&program), black_box(&ctx));
+            let sem = analyze_file(black_box(program), black_box(&ctx));
             black_box(sem);
         })
     });
@@ -427,26 +433,27 @@ fn schema_heavy_source() -> String {
 
 fn bench_schema_heavy(group: &mut BenchmarkGroup<'_, criterion::measurement::WallTime>) {
     let source = schema_heavy_source();
-    let program = parse_program(&source);
+    let parsed = parse_program(&source);
+    let program = &parsed.statements;
 
     let schema = oxabl_schema::test_support::schema_from_df(&bench_df());
-    let ctx = AnalysisContext::new(FileId::new(1), &source, &schema);
+    let ctx = AnalysisContext::new(FileId::new(1), &source, &schema, &parsed.pools);
 
     group.throughput(Throughput::Bytes(source.len() as u64));
 
     group.bench_function("schema_heavy/declare", |b| {
         b.iter(|| {
-            let (tree, symbols, diags, rev) = declare_pass(black_box(&program), black_box(&ctx));
+            let (tree, symbols, diags, rev) = declare_pass(black_box(program), black_box(&ctx));
             black_box((tree, symbols, diags, rev));
         })
     });
 
     group.bench_function("schema_heavy/resolve", |b| {
         b.iter_batched(
-            || declare_pass(&program, &ctx),
+            || declare_pass(program, &ctx),
             |(tree, mut symbols, _diags, rev)| {
                 let (refs, types, rd) = resolve_pass(
-                    black_box(&program),
+                    black_box(program),
                     black_box(&ctx),
                     &tree,
                     &mut symbols,

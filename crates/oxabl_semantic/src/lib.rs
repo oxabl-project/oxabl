@@ -78,7 +78,7 @@ pub use symbol::{
 };
 pub use types::{AblType, PrimitiveTy, ResolvedType};
 
-use oxabl_ast::{NodeId, Span};
+use oxabl_ast::{AstPools, NodeId, Span};
 use oxabl_common::{Diagnostic, FileId, LintSeverityMap, VirtualSpan};
 use oxabl_schema::{Schema, SchemaRevision};
 
@@ -175,16 +175,20 @@ pub struct AnalysisContext<'a> {
     /// (`oxabl_parser::Program::unclosed_blocks`). Their scopes run to the end
     /// of the text.
     pub unclosed_blocks: &'a [NodeId],
+    /// Interned names and flat expression arena for the parsed AST.
+    pub pools: &'a AstPools,
 }
 
 impl<'a> AnalysisContext<'a> {
-    /// Construct a context with a default-empty schema and no workspace index.
-    /// Used by tests and by the analyze subcommand when `--schema` is absent.
+    /// Construct a context with no workspace index.
     ///
-    /// The signature deliberately stays three-argument: a cross-file index is
-    /// an addition, and every caller that has nothing to say about one keeps
-    /// today's single-file behavior by saying nothing.
-    pub fn new(file_id: FileId, source: &'a str, schema: &'a Schema) -> Self {
+    /// `pools` are the name and expression pools of the parsed program
+    /// (`oxabl_parser::Program::pools`). They are an argument, not a builder
+    /// step: every pass reads the AST through them, so a context without the
+    /// program's pools cannot be built. A cross-file index is an addition, and
+    /// every caller that has nothing to say about one keeps the single-file
+    /// behavior by saying nothing.
+    pub fn new(file_id: FileId, source: &'a str, schema: &'a Schema, pools: &'a AstPools) -> Self {
         AnalysisContext {
             file_id,
             source,
@@ -202,6 +206,7 @@ impl<'a> AnalysisContext<'a> {
             elided_includes: &[],
             record_sites: false,
             unclosed_blocks: &[],
+            pools,
         }
     }
 
@@ -405,6 +410,9 @@ pub fn resolve_span(ctx: &AnalysisContext, vs: VirtualSpan) -> oxabl_common::Fil
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pools of a context that reads no AST.
+    static NO_POOLS: oxabl_ast::AstPools = oxabl_ast::AstPools::new();
     use std::sync::Arc;
 
     /// Minimal index that answers `Found` for one class and carries a
@@ -451,7 +459,7 @@ mod tests {
     #[test]
     fn new_context_has_no_index_loaded() {
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema, &NO_POOLS);
         assert!(!ctx.index_loaded);
         assert_eq!(ctx.index.revision(), IndexRevision::ABSENT);
     }
@@ -462,7 +470,7 @@ mod tests {
         let source = "DEFINE VARIABLE n AS INTEGER NO-UNDO.\nn = 1 + 2.\nMESSAGE missing.";
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
 
         let typed = analyze_file(&program.statements, &ctx);
         let untyped = analyze_file_untyped(&program.statements, &ctx);
@@ -487,7 +495,7 @@ mod tests {
 
         let unit = analyze_file(
             &program.statements,
-            &AnalysisContext::new(FileId::UNKNOWN, source, &schema),
+            &AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools),
         );
         assert!(unit.references.iter().any(|(_, resolution)| matches!(
             resolution,
@@ -499,7 +507,7 @@ mod tests {
 
         let fragment = analyze_file(
             &program.statements,
-            &AnalysisContext::new(FileId::UNKNOWN, source, &schema)
+            &AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
                 .with_source_context(SourceContext::IncludeFragment),
         );
         assert!(fragment.source_context.is_include_fragment());
@@ -523,7 +531,7 @@ mod tests {
     fn with_index_marks_loaded_and_installs_the_handle() {
         let schema = Schema::empty();
         let stub = StubIndex;
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema).with_index(&stub);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema, &NO_POOLS).with_index(&stub);
         assert!(ctx.index_loaded);
         // The handle the passes see is the one supplied, not the null index.
         assert_eq!(ctx.index.revision(), STUB_REVISION);
@@ -544,7 +552,8 @@ mod tests {
         // `External` ("we did not look") rather than becoming a claim about
         // what the workspace contains.
         let schema = Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema).with_index(&NullIndex);
+        let ctx =
+            AnalysisContext::new(FileId::UNKNOWN, "", &schema, &NO_POOLS).with_index(&NullIndex);
         assert!(!ctx.index_loaded);
         assert_eq!(ctx.index.revision(), IndexRevision::ABSENT);
     }
@@ -555,7 +564,8 @@ mod tests {
         // its config and borrows it into the `&dyn` slot.
         let schema = Schema::empty();
         let shared: Arc<dyn WorkspaceIndex> = Arc::new(StubIndex);
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema).with_index(&*shared);
+        let ctx =
+            AnalysisContext::new(FileId::UNKNOWN, "", &schema, &NO_POOLS).with_index(&*shared);
         assert!(ctx.index_loaded);
         assert_eq!(ctx.index.revision(), STUB_REVISION);
     }
@@ -569,12 +579,13 @@ mod tests {
 
         let without = analyze_file(
             &program.statements,
-            &AnalysisContext::new(FileId::UNKNOWN, source, &schema),
+            &AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools),
         );
         let stub = StubIndex;
         let with = analyze_file(
             &program.statements,
-            &AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&stub),
+            &AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
+                .with_index(&stub),
         );
 
         assert_eq!(without.index_revision, IndexRevision::ABSENT);

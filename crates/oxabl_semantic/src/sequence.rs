@@ -1,6 +1,6 @@
 //! Sequence operands of `NEXT-VALUE`, `CURRENT-VALUE` and their dynamic forms.
 
-use oxabl_ast::{Expression, ExpressionKind, Identifier, Literal, Span};
+use oxabl_ast::{AstPools, ExprList, Expression, ExpressionKind, Identifier, Literal, Span};
 
 /// The operand of a sequence function that names a database sequence.
 #[derive(Debug, Clone, Copy)]
@@ -23,14 +23,15 @@ pub struct SequenceOperand<'e> {
 /// `db.name` for the static pair, a string literal for the dynamic pair.
 pub fn sequence_operand<'e>(
     name: &Identifier,
-    arguments: &'e [Expression],
+    arguments: ExprList,
+    pools: &'e AstPools,
 ) -> Option<SequenceOperand<'e>> {
-    let callee = name.name.as_str();
-    let first = arguments.first()?;
+    let callee = pools.ident(*name);
+    let first = pools.expr(*pools.exprs(arguments).first()?);
     if callee.eq_ignore_ascii_case("next-value") || callee.eq_ignore_ascii_case("current-value") {
         let (name, span) = match &first.kind {
-            ExpressionKind::Identifier(id) => (id.name.as_str(), id.span),
-            ExpressionKind::FieldAccess { field, .. } => (field.name.as_str(), field.span),
+            ExpressionKind::Identifier(id) => (pools.ident(*id), id.span),
+            ExpressionKind::FieldAccess { field, .. } => (pools.ident(*field), field.span),
             _ => return None,
         };
         return Some(SequenceOperand {
@@ -48,7 +49,7 @@ pub fn sequence_operand<'e>(
         };
         return Some(SequenceOperand {
             expr: first,
-            name: s.value.as_str(),
+            name: pools.name(s.value),
             span: s.span,
             is_static: false,
         });

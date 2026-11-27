@@ -102,7 +102,7 @@ fn main() {
         let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
         print!(
             "{}",
-            oxabl_handles::analyze_file(&program.statements, text).dump(text)
+            oxabl_handles::analyze_file(&program.statements, &program.pools, text).dump(text)
         );
         return;
     }
@@ -179,7 +179,7 @@ fn run_file(pipeline: &LintPipeline, root: &Path, file: &Path, r: &mut Report) {
 
     let t = Instant::now();
     let analysed = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        oxabl_handles::analyze_file(&program.statements, &text)
+        oxabl_handles::analyze_file(&program.statements, &program.pools, &text)
     }));
     r.handles_time += t.elapsed();
     let handles = match analysed {

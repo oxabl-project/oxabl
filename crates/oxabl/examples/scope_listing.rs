@@ -175,7 +175,11 @@ fn compare_file(
         elided_includes: expanded.elided_include_offsets(),
         ..ScopeOptions::default()
     };
-    let scopes = oxabl_scope::analyze_tokens(&program.statements, text, &tokens, schema, &options);
+    let scopes = oxabl_scope::analyze_tokens(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, text, &tokens),
+        schema,
+        &options,
+    );
     let root_name = rel.display().to_string();
     let root_lines = Lines::new(source);
     let mut include_lines: HashMap<PathBuf, Option<Lines>> = HashMap::new();
