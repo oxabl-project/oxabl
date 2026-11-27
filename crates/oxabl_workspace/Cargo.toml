@@ -1,15 +1,15 @@
 [package]
 name = "oxabl_workspace"
-version = "3.8.0"
+version = "4.0.0"
 edition = "2024"
 license = "MIT"
 description = "Workspace configuration, file system abstraction, and file discovery for the Oxabl ABL tooling suite"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_workspace"
 
 [dependencies]
-oxabl_common = { path = "../oxabl_common", version = "1.6.0" }
-oxabl_ast = { path = "../oxabl_ast", version = "7.0.0" }
-oxabl_style = { path = "../oxabl_style", version = "0.2.1" }
+oxabl_common = { path = "../oxabl_common", version = "2.0.0" }
+oxabl_ast = { path = "../oxabl_ast", version = "8.0.0" }
+oxabl_style = { path = "../oxabl_style", version = "0.3.0" }
 encoding_rs = "0.8"
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }

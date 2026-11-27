@@ -1,21 +1,21 @@
 [package]
 name = "oxabl_analyze"
-version = "5.0.0"
+version = "6.0.0"
 edition = "2024"
 license = "MIT"
 description = "JSON dump + analyze CLI wiring for the oxabl semantic model"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_analyze"
 
 [dependencies]
-oxabl_ast = { path = "../oxabl_ast", version = "7.0.0" }
-oxabl_common = { path = "../oxabl_common", version = "1.6.0" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "3.0.0" }
-oxabl_lint = { path = "../oxabl_lint", version = "7.0.0" }
-oxabl_parser = { path = "../oxabl_parser", version = "6.0.0" }
-oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.10.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.6.2" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "7.0.0" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "3.8.0" }
+oxabl_ast = { path = "../oxabl_ast", version = "8.0.0" }
+oxabl_common = { path = "../oxabl_common", version = "2.0.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "4.0.0" }
+oxabl_lint = { path = "../oxabl_lint", version = "8.0.0" }
+oxabl_parser = { path = "../oxabl_parser", version = "7.0.0" }
+oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.11.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.7.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "8.0.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "4.0.0" }
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -25,8 +25,8 @@ serde_json = "1"
 # in-memory filesystem rather than a hand-written stub, so what they pin is the
 # dump every client emits. `oxabl_index` sits above this crate at run time and
 # must never become a normal dependency of it.
-oxabl_index = { path = "../oxabl_index", version = "7.0.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.6.2", features = ["test-support"] }
+oxabl_index = { path = "../oxabl_index", version = "8.0.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.7.0", features = ["test-support"] }
 
 # Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
 # (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.

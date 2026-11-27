@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_style-v0.2.1...oxabl_style-v0.3.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ast:** Identifier.name is a NameId, expression fields are ExprId or ExprList, and the analysis entry points take the program's AstPools.
+
+### Performance Improvements
+
+* **ast:** keep names and expressions in per-program pools ([#632](https://github.com/oxabl-project/oxabl/issues/632)) ([e6fbebd](https://github.com/oxabl-project/oxabl/commit/e6fbebd1ec47740059c1557fd5e3118a4818df6a))
+
 ## [0.2.1](https://github.com/oxabl-project/oxabl/compare/oxabl_style-v0.2.0...oxabl_style-v0.2.1) (2026-11-06)
 
 

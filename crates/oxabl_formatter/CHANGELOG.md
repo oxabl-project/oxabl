@@ -1,5 +1,29 @@
 # Changelog
 
+## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v3.0.0...oxabl_formatter-v4.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ast:** Identifier.name is a NameId, expression fields are ExprId or ExprList, and the analysis entry points take the program's AstPools.
+
+### Performance Improvements
+
+* **ast:** keep names and expressions in per-program pools ([#632](https://github.com/oxabl-project/oxabl/issues/632)) ([e6fbebd](https://github.com/oxabl-project/oxabl/commit/e6fbebd1ec47740059c1557fd5e3118a4818df6a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 7.0.0 to 8.0.0
+    * oxabl_common bumped from 1.6.0 to 2.0.0
+    * oxabl_lexer bumped from 3.0.0 to 4.0.0
+    * oxabl_parser bumped from 6.0.0 to 7.0.0
+    * oxabl_style bumped from 0.2.1 to 0.3.0
+  * dev-dependencies
+    * oxabl_lexer bumped from 3.0.0 to 4.0.0
+
 ## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.1.3...oxabl_formatter-v3.0.0) (2026-11-27)
 
 

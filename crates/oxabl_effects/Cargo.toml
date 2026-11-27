@@ -1,23 +1,23 @@
 [package]
 name = "oxabl_effects"
-version = "0.3.11"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 description = "Database effects per unit, likely index per record read, and transitive summaries over the call graph, for Progress ABL"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_effects"
 
 [dependencies]
-oxabl_ast = { path = "../oxabl_ast", version = "7.0.0" }
-oxabl_flow = { path = "../oxabl_flow", version = "0.5.2" }
-oxabl_index = { path = "../oxabl_index", version = "7.0.0" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "3.0.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.6.2" }
-oxabl_scope = { path = "../oxabl_scope", version = "0.3.2" }
+oxabl_ast = { path = "../oxabl_ast", version = "8.0.0" }
+oxabl_flow = { path = "../oxabl_flow", version = "0.6.0" }
+oxabl_index = { path = "../oxabl_index", version = "8.0.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "4.0.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.7.0" }
+oxabl_scope = { path = "../oxabl_scope", version = "0.4.0" }
 rustc-hash = "2"
 
 [dev-dependencies]
-oxabl_parser = { path = "../oxabl_parser", version = "6.0.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.6.2", features = ["test-support"] }
+oxabl_parser = { path = "../oxabl_parser", version = "7.0.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.7.0", features = ["test-support"] }
 
 # Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
 # (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.

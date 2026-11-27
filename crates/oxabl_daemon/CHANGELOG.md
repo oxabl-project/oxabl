@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.11.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.10.0...oxabl_daemon-v0.11.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ast:** Identifier.name is a NameId, expression fields are ExprId or ExprList, and the analysis entry points take the program's AstPools.
+
+### Features
+
+* **lsp:** complete the members of a class after obj: ([#620](https://github.com/oxabl-project/oxabl/issues/620)) ([c5f0f8d](https://github.com/oxabl-project/oxabl/commit/c5f0f8d6b232b74b1b83e1242b1cac310f39b779))
+
+
+### Performance Improvements
+
+* **ast:** keep names and expressions in per-program pools ([#632](https://github.com/oxabl-project/oxabl/issues/632)) ([e6fbebd](https://github.com/oxabl-project/oxabl/commit/e6fbebd1ec47740059c1557fd5e3118a4818df6a))
+* **bench:** measure the first subtypes request after the workspace pass ([#617](https://github.com/oxabl-project/oxabl/issues/617)) ([efc7a6f](https://github.com/oxabl-project/oxabl/commit/efc7a6f400d0321f43b521602ced610a1198a263))
+* **daemon:** keep the subtype index and build it in the background after the first request ([#622](https://github.com/oxabl-project/oxabl/issues/622)) ([57c62aa](https://github.com/oxabl-project/oxabl/commit/57c62aa199dc7781021a9d279fb60bd9102c182d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 5.0.0 to 6.0.0
+    * oxabl_ast bumped from 7.0.0 to 8.0.0
+    * oxabl_common bumped from 1.6.0 to 2.0.0
+    * oxabl_daemon_protocol bumped from 0.4.1 to 0.5.0
+    * oxabl_index bumped from 7.0.0 to 8.0.0
+    * oxabl_pipeline bumped from 5.0.0 to 6.0.0
+    * oxabl_semantic bumped from 7.0.0 to 8.0.0
+    * oxabl_workspace bumped from 3.8.0 to 4.0.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.6.2 to 0.7.0
+    * oxabl_common bumped from 1.6.0 to 2.0.0
+    * oxabl_pipeline bumped from 5.0.0 to 6.0.0
+
 ## [0.10.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.9.0...oxabl_daemon-v0.10.0) (2026-11-27)
 
 

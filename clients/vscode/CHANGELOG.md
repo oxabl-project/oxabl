@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.14.0...oxabl_vscode-v0.15.0) (2026-11-27)
+
+
+### Features
+
+* **lsp:** complete the members of a class after obj: ([#620](https://github.com/oxabl-project/oxabl/issues/620)) ([c5f0f8d](https://github.com/oxabl-project/oxabl/commit/c5f0f8d6b232b74b1b83e1242b1cac310f39b779))
+* **lsp:** show a parameter include as one entry in signature help, hints and hover ([#619](https://github.com/oxabl-project/oxabl/issues/619)) ([d278cc6](https://github.com/oxabl-project/oxabl/commit/d278cc6e2aaa0d40943ef7ac562e5e015cee0d70))
+
+
+### Performance Improvements
+
+* **daemon:** keep the subtype index and build it in the background after the first request ([#622](https://github.com/oxabl-project/oxabl/issues/622)) ([57c62aa](https://github.com/oxabl-project/oxabl/commit/57c62aa199dc7781021a9d279fb60bd9102c182d))
+
 ## [0.14.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.13.0...oxabl_vscode-v0.14.0) (2026-11-27)
 
 

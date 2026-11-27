@@ -1,5 +1,37 @@
 # Changelog
 
+## [8.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v7.0.0...oxabl_index-v8.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ast:** Identifier.name is a NameId, expression fields are ExprId or ExprList, and the analysis entry points take the program's AstPools.
+
+### Features
+
+* **lsp:** complete the members of a class after obj: ([#620](https://github.com/oxabl-project/oxabl/issues/620)) ([c5f0f8d](https://github.com/oxabl-project/oxabl/commit/c5f0f8d6b232b74b1b83e1242b1cac310f39b779))
+
+
+### Performance Improvements
+
+* **ast:** keep names and expressions in per-program pools ([#632](https://github.com/oxabl-project/oxabl/issues/632)) ([e6fbebd](https://github.com/oxabl-project/oxabl/commit/e6fbebd1ec47740059c1557fd5e3118a4818df6a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 7.0.0 to 8.0.0
+    * oxabl_common bumped from 1.6.0 to 2.0.0
+    * oxabl_lexer bumped from 3.0.0 to 4.0.0
+    * oxabl_parser bumped from 6.0.0 to 7.0.0
+    * oxabl_preprocessor bumped from 0.10.0 to 0.11.0
+    * oxabl_schema bumped from 0.6.2 to 0.7.0
+    * oxabl_semantic bumped from 7.0.0 to 8.0.0
+    * oxabl_workspace bumped from 3.8.0 to 4.0.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.6.2 to 0.7.0
+
 ## [7.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v6.0.1...oxabl_index-v7.0.0) (2026-11-27)
 
 
