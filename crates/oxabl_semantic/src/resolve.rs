@@ -1762,7 +1762,9 @@ struct ResolveWalker<'a> {
 struct LazyWalkerState {
     synth_sequences: FxHashMap<OxablAtom, SymbolId>,
     /// Per-scope cached buffer sources and temp-table field index for bare
-    /// field resolution. Buffer record sources are fixed after `declare_pass`.
+    /// field resolution. A scope's entry is built on its first bare-field
+    /// lookup. The one later change of a buffer's source, `link_inherited_record`,
+    /// runs before any lookup in its block scope.
     bare_fields: FxHashMap<ScopeId, ScopeBareFields>,
 }
 
@@ -6048,6 +6050,12 @@ impl<'a> ResolveWalker<'a> {
         if let InheritedLookup::Member(member) =
             self.lookup_inherited(class, &atom, &namespaces, id)
         {
+            debug_assert!(
+                self.lazy
+                    .as_ref()
+                    .is_none_or(|lazy| !lazy.bare_fields.contains_key(&block)),
+                "link_inherited_record changes a buffer source after the bare-field cache of its scope was built"
+            );
             self.symbols.get_mut(implicit).table_id = self.symbols.get(member).table_id;
         }
     }
