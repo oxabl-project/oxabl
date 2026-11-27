@@ -17,5 +17,6 @@ serde = { version = "1", optional = true, features = ["derive"] }
 # the AST (statements/expressions) is intentionally left underived.
 serde = ["dep:serde"]
 
-# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+# Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
+# (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.
 [lints]

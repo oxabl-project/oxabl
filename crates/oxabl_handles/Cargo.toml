@@ -16,5 +16,6 @@ smallvec = { version = "1", features = ["union"] }
 [dev-dependencies]
 oxabl_parser = { path = "../oxabl_parser", version = "6.0.0" }
 
-# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+# Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
+# (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.
 [lints]

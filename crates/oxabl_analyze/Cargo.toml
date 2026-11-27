@@ -28,5 +28,6 @@ serde_json = "1"
 oxabl_index = { path = "../oxabl_index", version = "7.0.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.6.2", features = ["test-support"] }
 
-# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+# Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
+# (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.
 [lints]

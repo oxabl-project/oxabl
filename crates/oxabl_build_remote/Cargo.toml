@@ -12,5 +12,6 @@ base64 = "0.22"
 oxabl-cache-client.workspace = true
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 
-# Migrating to [lints] workspace = true via `cargo xtask tigerstyle`.
+# Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
+# (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.
 [lints]
