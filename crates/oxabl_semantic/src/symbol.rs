@@ -17,8 +17,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::{
-    CallParam, IndexName, IndexedFileId, MemberParam, NamespaceId, ResolvedType, ScopeId,
-    UnresolvedReason,
+    CallParam, ImportContext, IndexName, IndexedFileId, MemberParam, NamespaceId, ResolvedType,
+    ScopeId, UnresolvedReason,
 };
 
 /// Dense arena index for a symbol.
@@ -465,6 +465,10 @@ pub struct SymbolTable {
     /// which is the same answer an empty map gives, so no consumer can tell the
     /// difference.
     side: Option<Box<SymbolSideMaps>>,
+    /// The `USING` imports of the analysed file, when it has any and an index
+    /// was attached: the names its class header and its members are written
+    /// under. A plain field, so that recording them allocates nothing.
+    imports: Option<Arc<ImportContext>>,
     /// How temp-tables, and buffers for them, reach their fields. Boxed and
     /// created on first write, like [`Self::side`], so a file with no
     /// temp-table pays one word.
@@ -593,6 +597,12 @@ struct SymbolSideMaps {
     /// may be a class — `NEW x(...)` or a `name:` member access — and the walk
     /// could neither attribute it to a class nor rule it out.
     unattributed_unmodelled_uses: Vec<VirtualSpan>,
+    /// The statements of the `CONSTRUCTOR STATIC` declarations. A constructor
+    /// has no symbol, so the flag of a routine has no place on one.
+    static_constructors: Vec<NodeId>,
+    /// The name each synthesized class symbol was asked of the index under,
+    /// with the spelling the source used, which a file path derives from.
+    indexed_class_names: FxHashMap<SymbolId, IndexName>,
     /// The navigation record, kept only when the context asks for it
     /// ([`AnalysisContext::record_sites`](crate::AnalysisContext::record_sites)).
     navigation: Navigation,
@@ -1006,6 +1016,18 @@ impl SymbolTable {
             .map_or(&[], |side| side.class_sites.as_slice())
     }
 
+    /// Record that the constructor statement `node` is `CONSTRUCTOR STATIC`.
+    pub(crate) fn record_static_constructor(&mut self, node: NodeId) {
+        self.side_mut().static_constructors.push(node);
+    }
+
+    /// Whether the constructor statement `node` is `CONSTRUCTOR STATIC`.
+    pub fn is_static_constructor(&self, node: NodeId) -> bool {
+        self.side
+            .as_deref()
+            .is_some_and(|side| side.static_constructors.contains(&node))
+    }
+
     /// Record a place in an unmodelled statement that may name a class and was
     /// neither attributed to one nor ruled out.
     pub fn record_unattributed_unmodelled_use(&mut self, site: VirtualSpan) {
@@ -1044,6 +1066,26 @@ impl SymbolTable {
         self.side
             .as_deref()
             .is_some_and(|side| side.navigation.maybe_member_calls.contains(&node))
+    }
+
+    pub(crate) fn record_imports(&mut self, imports: Arc<ImportContext>) {
+        self.imports = Some(imports);
+    }
+
+    /// The `USING` imports of the analysed file. `None` when it has none, or
+    /// when no index was attached.
+    pub fn imports(&self) -> Option<&Arc<ImportContext>> {
+        self.imports.as_ref()
+    }
+
+    pub(crate) fn record_indexed_class_name(&mut self, sym: SymbolId, name: IndexName) {
+        self.side_mut().indexed_class_names.insert(sym, name);
+    }
+
+    /// The qualified name under which the synthesized class symbol `sym` was
+    /// found in the index. `None` for a class this file declares.
+    pub fn indexed_class_name(&self, sym: SymbolId) -> Option<&IndexName> {
+        self.side.as_deref()?.indexed_class_names.get(&sym)
     }
 
     pub(crate) fn record_class_file(&mut self, sym: SymbolId, file: IndexedFileId) {

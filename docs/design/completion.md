@@ -60,7 +60,7 @@ document highlights.
 | Crate | What it does for completion |
 | --- | --- |
 | `oxabl_lsp` | The capability, the request and resolve handlers, the gate that drops replaced requests, and the rendering of items, ranges and edits in the position encoding. It does no analysis. |
-| `oxabl_daemon` | The bases of each document (`completion` module), the background refresh, the class listing of the include paths, and `compute_completion` and `compute_resolve` on a worker thread. It is the only crate that knows salsa, but completion holds no salsa handle (see "No snapshot"). |
+| `oxabl_daemon` | The bases of each document (`completion` module), the background refresh, the answers about classes that each base keeps (`ClassMemo`), the class listing of the include paths, and `compute_completion` and `compute_resolve` on a worker thread. It is the only crate that knows salsa, but completion holds no salsa handle (see "No snapshot"). |
 | `oxabl_pipeline` | The engine (`completion` module): the context finder, the collectors, keyword tables, keyword case, matching, ranking and the limit. It works on a base and the current text, with no salsa. |
 | `oxabl_semantic` | The span of each scope, and the class source with `class_surface`, the members a receiver reaches. |
 | `oxabl_workspace` | `FileSystem::list_dir`, to list the entries of a directory on the include path. |
@@ -221,6 +221,7 @@ its use.
 | Data | Kept | Ends |
 | --- | --- | --- |
 | The newest base of each open document and include context | `oxabl_daemon::completion::Bases` | Document closed, configuration or schema changed, include context changed |
+| What the requests of a base learned about other classes (`ClassMemo`: the descriptor and the members of each class the walk of a surface read, also a miss) | The `classes` of each `Base` | Any watched file created, changed or deleted, or a change of the configuration or schema (the base keeps no answer of an older epoch). An edit of a class in an open buffer is not read until it is saved and the client sends `workspace/didChangeWatchedFiles`: this needs the file watchers that the server registers, so a client that does not register them shows the old class until the base is replaced (an edit of the document) |
 | The class listing of the include paths | One per session (`ClassListing`) | A watched `.cls` file created or deleted, a change of `oxabl.toml` or of the include paths, or 60 seconds for directories outside the watched folders |
 | The bases that resolve may read | The two newest bases of each document, by base id | When a newer base replaces them |
 | The directory listings of `RUN` and `{` | `Listings` in `oxabl_daemon::completion`, at most 256 directories | A watched file created, changed or deleted in the directory (`workspace/didChangeWatchedFiles`), a change of the configuration or schema, or 3 seconds. A listing found older than that is freed and read again, never used |
@@ -379,17 +380,21 @@ The names that are valid in an expression at the cursor:
   an include is not seen, and the function is then missing).
 - A name the cursor cannot see (declared after it, or in the text a stale base
   changed) does not hide a name of an outer scope that it can see.
-- In a static method or a static property accessor, only the static members of
-  the class are offered.
+- In a static method, a static property accessor or a static constructor, only
+  the static members of the class are offered.
 - In a class body: the members that the class inherits, from the class source
-  (role `ThisObject`). Until step 5 there are none, and every list in a class
-  has `isIncomplete: true`.
+  (`class_surface` with role `ThisObject`, and with role `TypeName` for the
+  static ones; a static routine reads only the second). They come after the
+  names of every scope, and a name that the body declares hides the inherited
+  one. Every list in a class has `isIncomplete: true` until #154.
 - Built-in functions (the `Function` entries of the keyword documentation
   index, which name each function once by its full name, with the title as the
   detail) and user functions, and `THIS-OBJECT`, `SUPER` (when the class names
   a parent) and `NEW` where they are valid.
 - A name keeps the spelling of its declaration: the label is the text of its
-  name in the analysed text, not the folded name of the symbol table.
+  name in the analysed text, not the folded name of the symbol table. A word
+  that is a statement and a name in scope (`THIS-OBJECT` at a statement start)
+  is one item, the statement.
 - The label and kind identify a name. With several places of the cursor (an
   include that the root reads twice), a name is offered only when each place
   has a name with the same label (without case) and kind.
@@ -500,11 +505,44 @@ of the receiver. Role, access and static rules are the ones of
 name gives its members as static properties.
 
 - One item for each member name. A method with several overloads is one
-  item; its detail gives the first overload and the number of others.
+  item; its detail gives the first overload (`METHOD [STATIC] <return type or
+  VOID> (<modes and types of the parameters>)`) and ` (+N overloads)`. A
+  parameter has its mode and its type, with no name: the index keeps no
+  parameter name, and resolve shows the declarations with their names.
+  An override is one declaration with the method it overrides, also when it
+  spells a parameter type another way (`Object` under `USING Progress.Lang.*`
+  and `Progress.Lang.Object`): the walk compares the class names that the
+  imports of each declaring file give. A name that does not resolve keeps both
+  declarations.
 - `isIncomplete: true` when the surface is not complete: an ancestor that was
   not read, a level whose member list is not whole (`members_complete =
   false`), a cycle in the inheritance, and, until #154, every class, because
   each class inherits the members of `Progress.Lang.Object`.
+- A receiver whose class oxabl can type always gives a list, also an empty
+  one. Every member of the surface is in the list whatever the word after the
+  colon: the client filters them, and the items that match the word come
+  first. This differs from the other contexts, which keep only the items that
+  match. The reason is that a member list is short, and the client filters it
+  as the person types.
+- A name that the context finder reads as a receiver can be a keyword that is
+  part of a dotted name or follows a `:` (`app.Color:`, `oUtil:Message:`). A
+  keyword alone (`DO:`, `ELSE:`) is a block colon and gives `null`.
+- `THIS-OBJECT:` and `SUPER:` in a static method, a static property accessor
+  or a static constructor give `null`: the compiler refuses them there.
+- The type name of a parent, written in a subclass, also gives the `PROTECTED`
+  static members. An inherited `PACKAGE-PROTECTED` member is never offered: the
+  index does not model packages, and the list is incomplete, so an omission is
+  safe and a wrong member is not.
+- The walk of the supertypes reads at most `MAX_SUPERTYPES` (64) distinct
+  classes. It reads each class once, so a class that many types name costs one
+  read. A hierarchy with more classes, and an inheritance cycle, give an
+  incomplete list.
+- A receiver reaches the private members of its class only when the cursor is
+  in the body of that class: a value of the class of the file (`oOther:`) and
+  its type name give them, as the compiler does.
+- A member of a class of the analysed file keeps the spelling of its
+  declaration in the analysed text. A member of a class of the workspace has
+  the spelling of its declaring file.
 
 ### The class source
 
@@ -527,11 +565,15 @@ pub trait ClassSource {
 }
 
 /// The members `reach` gives for `class`, own and inherited, nearest first.
+/// `inside` says that the cursor is in the body of `class` (a class of the
+/// analysed file): its private members are then reachable through an instance
+/// or the type name. `ThisObject` and `Super` are inside by their nature.
 pub fn class_surface(
     semantic: &Semantic,
     source: &dyn ClassSource,
     class: ClassRef,
-    reach: Reach,
+    reach: MemberReach,
+    inside: bool,
 ) -> ClassSurface;
 
 pub enum ClassRef {
@@ -541,7 +583,9 @@ pub enum ClassRef {
     Named(IndexName),
 }
 
-pub enum Reach { Instance, TypeName, ThisObject, Super }
+/// Named `MemberReach`, because `coercion::Reach` is the name of the class
+/// lattice's reach.
+pub enum MemberReach { Instance, TypeName, ThisObject, Super }
 
 pub struct ClassSurface {
     pub members: Vec<SurfaceMember>,
@@ -559,6 +603,9 @@ pub struct SurfaceMember {
     pub declared_in: String,
     /// One entry per overload for a method, one entry for any other member.
     pub signatures: Vec<MemberSignature>,
+    /// Whether the declaring class is an enum: a static property is then an
+    /// enum member.
+    pub declared_in_enum: bool,
     /// Where the documentation of `completionItem/resolve` comes from.
     pub origin: MemberOrigin,
 }
@@ -566,17 +613,32 @@ pub struct SurfaceMember {
 pub struct MemberSignature {
     pub ty: MemberType,
     pub params: Option<Arc<[MemberParam]>>,
+    /// The class `ty` names, when the analysis resolved it (a member of a
+    /// class of the analysed file).
+    pub class: Option<ClassRef>,
 }
 
 pub enum MemberOrigin {
+    /// A class of the analysed file; the anchor of the overload set.
     Local(SymbolId),
-    Workspace(IndexedFileId),
-    Builtin(&'static MemberDoc),
+    /// A class file of the workspace and the imports its types are written
+    /// under. The id of the file is valid in one run of the index only, so
+    /// nothing keeps it.
+    Workspace { file: IndexedFileId, imports: Arc<ImportContext> },
+    // `Builtin(&'static MemberDoc)` comes with #154.
 }
+
+/// The class a property or a called method evaluates to, for a chain; `None`
+/// when its declarations do not all name one class oxabl knows.
+pub fn member_class(source: &dyn ClassSource, member: &SurfaceMember, call: bool)
+    -> Option<ClassRef>;
 ```
 
-`WorkspaceIndex` already answers `class` and `class_members`. The daemon adds
-`classes_in` from the class listing. `class_surface` walks `INHERITS` and
+`WorkspaceIndex` already answers `class` and `class_members`.
+`WorkspaceClasses` is the `ClassSource` over it; its `classes_in` answers an
+empty, incomplete list until the class listing of the daemon (step 6) answers
+it. The type hierarchy's own trait, which reads the class files of a
+workspace, is `oxabl_index::hierarchy::ClassFiles`, so the two names differ. `class_surface` walks `INHERITS` and
 `IMPLEMENTS` with `lookup_supertype` and the imports of each declaring file,
 with a visited set, as `walk_member_surface` and `inherited.rs` do, and
 applies the access rules of `class-members.md`. It does not change the
@@ -928,7 +990,7 @@ set, `detail`. It never changes the label, the inserted text or the edits.
 | --- | --- |
 | A symbol of the unit | The hover of its declaration: `Navigation::hover` at its name in the base the item came from |
 | A schema table or field | `schema_hover::table_markdown` and `field_markdown` |
-| A workspace class member | Each overload's signature and the class that declares it, as the hover of an inherited member |
+| A workspace class member | Each overload's declaration, with its parameter names, and the class that declares it, as the hover of an inherited member. The file is found again by the name of the class |
 | A built-in class member (#154) | The `MemberDoc` title, summary and link |
 | A keyword or built-in function | The title and the link of `keyword_docs.rs`, as hover |
 | A program or include file | Its path relative to its include path entry |
@@ -936,7 +998,9 @@ set, `detail`. It never changes the label, the inserted text or the edits.
 `data` names what resolve reads: `{ "doc": n }` for a keyword or built-in
 function, `{ "base", "symbol" }` for a symbol of the unit,
 `{ "base", "table" }` and `{ "base", "table", "field" }` for the schema of the
-base, and `{ "path", "entry" }` for a program or include file. A table id
+base, `{ "base", "class", "kind", "member" }` for a member of a workspace
+class (the declaring class, and a code for the kind of member), and
+`{ "path", "entry" }` for a program or include file. A table id
 is valid only in the schema it came from, so a table or field resolves
 against the schema of its base. When the base is no longer kept, a symbol,
 table or field item resolves with no documentation. A keyword and a path do
@@ -989,7 +1053,7 @@ It is measured in two ways:
   `request_fresh/<context>` and `request_stale/<context>` (`define` and
   `expression`) are the whole request of the daemon: `wants_base`, then the
   answer. Each must stay under
-  20 ms in a release build. Each later step adds its contexts (`obj:`).
+  20 ms in a release build. Each later step adds its contexts.
 
   | Context | Fresh | Stale |
   | --- | --- | --- |
@@ -1002,6 +1066,21 @@ It is measured in two ways:
   | `run`: after `RUN `, 721 procedures and 40 programs | 0.2 ms | 0.7 ms |
   | `run_large`: after `RUN ` in a small file, with an include path entry of 20,000 programs named three times; no listing cache | 8.7 ms | |
   | `run_large_word`: the same after `RUN prog1` | 8.7 ms | |
+
+  The `members` benches use their own fixture: three classes of 120 members
+  each (a property, a data member and a method in two overloads), each class
+  inheriting the one before. `instance` is `oUtil:` in a procedure over the
+  second, `this_object` is `THIS-OBJECT:` in the third, and `inherited_names`
+  is `Util` at a statement start in a method of the third. `cold` makes the
+  request with a run that has read no class file, as a request does with no
+  memo; `memoized` shares a `ClassMemo`; `memoized_stale` adds a line above the
+  cursor since the base.
+
+  | Context | Cold | Memoized | Memoized, stale |
+  | --- | --- | --- | --- |
+  | `instance`: `oUtil:`, 240 members of two levels | 2.6 ms | 0.57 ms | 0.61 ms |
+  | `this_object`: `THIS-OBJECT:`, 360 members of three levels | 3.0 ms | 0.87 ms | 1.3 ms |
+  | `inherited_names`: `Util` in a class body | 4.3 ms | 1.7 ms | 2.2 ms |
 
   Measured on a quiet machine, release build (wall time of criterion; the
   `run_large` rows are bound by the directory listing, not by lexing). Before a

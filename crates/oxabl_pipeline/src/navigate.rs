@@ -38,6 +38,7 @@ use oxabl_workspace::is_include_fragment;
 
 use crate::{Expansion, LintPipeline, OutlineKind, OutlineSymbol, outline};
 
+mod folding;
 pub(crate) mod hover;
 mod semantic;
 mod signature;
@@ -179,6 +180,9 @@ pub struct Navigation<'s, 'a> {
     /// The methods of the expanded unit: the folded name at each name's
     /// span, and the name spans of each folded name.
     methods: OnceCell<Methods>,
+    /// What the grouping of the includes of a parameter list keeps, built on the
+    /// first signature that needs it.
+    folding_cache: folding::FoldingCache,
 }
 
 /// See [`Navigation::methods`].
@@ -314,6 +318,7 @@ impl<'a> LintPipeline<'a> {
             declarations: OnceCell::new(),
             run_sites: OnceCell::new(),
             methods: OnceCell::new(),
+            folding_cache: folding::FoldingCache::default(),
         })
     }
 }
@@ -664,10 +669,22 @@ impl Navigation<'_, '_> {
 
     /// The include whose `{...}` reference in `file` holds `offset`.
     fn include_at(&self, file: &Path, offset: u32) -> Option<Target> {
+        self.include_holding(file, offset, 0)
+    }
+
+    /// As [`include_at`](Self::include_at), but a cursor directly before the
+    /// `{` is outside the reference.
+    pub(super) fn include_inside(&self, file: &Path, offset: u32) -> Option<Target> {
+        self.include_holding(file, offset, 1)
+    }
+
+    /// The include whose reference holds `offset`, with the first `skip` bytes
+    /// of the reference left out.
+    fn include_holding(&self, file: &Path, offset: u32, skip: u32) -> Option<Target> {
         let expansions = self.expanded.include_expansions();
         expansions.iter().find_map(|expansion| {
             let site = expansion.site?;
-            if offset < site.start || offset >= site.end {
+            if offset < site.start + skip || offset >= site.end {
                 return None;
             }
             let parent = match expansion.parent {

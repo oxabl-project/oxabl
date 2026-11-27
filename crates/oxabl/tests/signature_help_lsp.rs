@@ -1014,7 +1014,7 @@ fn the_setting_turns_the_parameter_hints_off_and_on() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_procedure_with_an_include_before_its_parameters_gives_no_signature_and_no_hint() {
+fn a_procedure_with_an_include_that_declares_no_parameter_gives_no_signature_and_no_hint() {
     let mut ws = Workspace::new();
     ws.write(
         "lib_inc.p",
@@ -1023,8 +1023,7 @@ fn a_procedure_with_an_include_before_its_parameters_gives_no_signature_and_no_h
     );
     ws.write(
         "hp_params.i",
-        "DEFINE INPUT PARAMETER a AS CHARACTER NO-UNDO.\n\
-         DEFINE OUTPUT PARAMETER b AS INTEGER NO-UNDO.\n",
+        "DEFINE VARIABLE cLocal AS CHARACTER NO-UNDO.\n",
     );
     let mut session = hint_session(&ws, Value::Null);
     let case = ws.open(

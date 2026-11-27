@@ -28,6 +28,7 @@ use oxabl_workspace::is_include_fragment;
 
 mod like;
 
+use super::folding::{Entry, Folding, Loaded};
 use super::{Navigation, Parsed, Target, search};
 use crate::effects::{Elsewhere, Routine};
 use crate::keyword_docs::{DocKind, FUNCTION_ABBREVIATIONS, KEYWORD_DOCS, KeywordDoc};
@@ -337,7 +338,8 @@ impl Navigation<'_, '_> {
             return None;
         }
         let parsed = self.parsed();
-        let source = Source::new(&self.expanded.text, &parsed.tokens);
+        let folding = self.folding();
+        let source = Source::new(&self.expanded.text, &parsed.tokens).folded(&folding);
         let found = find_declaration(&parsed.program.statements, symbol.name_span)?;
         let mut out = source.declaration(&found)?;
         if found.field.is_none()
@@ -532,25 +534,38 @@ impl Navigation<'_, '_> {
     }
 
     /// Each declaration of member `name` in the class file `file`.
-    fn member_hover(&self, file: IndexedFileId, kind: SymbolKind, name: &str) -> Option<String> {
+    pub(crate) fn member_hover(
+        &self,
+        file: IndexedFileId,
+        kind: SymbolKind,
+        name: &str,
+    ) -> Option<String> {
         let path = self.path_of(file)?;
         let text = self.run.file_system().read(&path).ok()?;
-        let parsed = Parsed::of(&text);
-        let source = Source::new(&text, &parsed.tokens);
-        let class =
-            parsed
-                .program
-                .statements
-                .iter()
-                .find_map(|statement| match &statement.kind {
-                    StatementKind::Class { name, body, .. }
-                    | StatementKind::Interface { name, body, .. } => Some((name, body)),
-                    _ => None,
-                })?;
+        let loaded = Loaded::new(text.clone(), Parsed::of(&text));
+        // A parameter list that holds an include shows it as one entry, when
+        // the file's expansion is whole.
+        let expand = loaded
+            .class_scan()
+            .is_some_and(|scan| scan.includes.in_parameters);
+        let view = loaded
+            .view(self, &path, expand)
+            .or_else(|| loaded.view(self, &path, false))?;
+        let source = view.source();
+        let class = view
+            .statements
+            .iter()
+            .find_map(|statement| match &statement.kind {
+                StatementKind::Class { name, body, .. }
+                | StatementKind::Interface { name, body, .. } => Some((name, body)),
+                _ => None,
+            })?;
         let (class_name, body) = class;
         let lines: Vec<String> = body
             .iter()
-            .filter(|member| member_named(member, kind, name))
+            .filter(|member| {
+                member_named(member, kind, name) && view.written_here(member.span.start)
+            })
             .filter_map(|member| {
                 let mut text = source.declaration(&Declaration {
                     statement: member,
@@ -587,13 +602,29 @@ impl Navigation<'_, '_> {
             return None;
         };
         let text = self.run.file_system().read(path).ok()?;
-        let parsed = Parsed::of(&text);
-        let source = Source::new(&text, &parsed.tokens);
-        let found = find_declaration(
-            &parsed.program.statements,
+        let loaded = Loaded::new(text.clone(), Parsed::of(&text));
+        let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
+        let written = find_declaration(
+            &loaded.parsed.program.statements,
             VirtualSpan::new(span.start, span.end),
         )?;
-        let signature = source.declaration(&found)?;
+        // An include in the procedure shows as one entry of its parameters,
+        // when the file's expansion is whole.
+        let expand = !raw
+            .includes_in(
+                written.statement.span.start,
+                written.statement.span.end,
+                &[],
+            )
+            .is_empty();
+        let signature = expand
+            .then(|| {
+                let view = loaded.view(self, path, true)?;
+                let found = find_declaration(view.statements, view.locate(*span)?)?;
+                view.source().declaration(&found)
+            })
+            .flatten()
+            .or_else(|| raw.declaration(&written))?;
         Some(format!(
             "{signature}\n\nIn {}.",
             inline(&self.shown_path(path))
@@ -948,15 +979,106 @@ pub(crate) fn doc_markdown(doc: &KeywordDoc) -> String {
     )
 }
 
+/// Whether byte `at` lies in one of `ranges`, which are in order with none
+/// inside another.
+fn skipped(ranges: &[(u32, u32)], at: u32) -> bool {
+    let next = ranges.partition_point(|&(start, _)| start <= at);
+    next > 0 && at < ranges[next - 1].1
+}
+
 /// A parsed text, for rendering the declarations in it.
 pub(super) struct Source<'t> {
     text: &'t str,
     tokens: &'t [Token],
+    /// How the includes of a parameter list group. `None` lists every
+    /// parameter as the parser read it.
+    folding: Option<&'t Folding<'t>>,
 }
 
 impl<'t> Source<'t> {
     pub(super) fn new(text: &'t str, tokens: &'t [Token]) -> Self {
-        Source { text, tokens }
+        Source {
+            text,
+            tokens,
+            folding: None,
+        }
+    }
+
+    pub(super) fn folded(self, folding: &'t Folding<'t>) -> Self {
+        Source {
+            folding: Some(folding),
+            ..self
+        }
+    }
+
+    /// The parameters of one declaration as it writes them: each include as
+    /// one entry. `None` when the declaration is not known whole.
+    pub(super) fn entries<'a>(&self, parameters: Vec<&'a Statement>) -> Option<Vec<Entry<'a>>> {
+        match self.folding {
+            Some(folding) => folding.entries(parameters),
+            None => Some(parameters.into_iter().map(Entry::Param).collect()),
+        }
+    }
+
+    /// As [`entries`](Self::entries) for a declaration that is not known
+    /// whole: each include as written, with no count.
+    pub(super) fn entries_as_written<'a>(
+        &self,
+        parameters: Vec<&'a Statement>,
+    ) -> Option<Vec<Entry<'a>>> {
+        match self.folding {
+            Some(folding) => folding.entries_as_written(parameters),
+            None => Some(parameters.into_iter().map(Entry::Param).collect()),
+        }
+    }
+
+    /// An entry as a signature writes it.
+    pub(super) fn entry_text(&self, entry: &Entry) -> Option<String> {
+        match entry {
+            Entry::Param(statement) => self.parameter(statement),
+            Entry::Include(group) => Some(group.label()),
+        }
+    }
+
+    /// The bytes of the parenthesised parameter list of a method or
+    /// constructor, from `(` to `)`.
+    pub(super) fn parameter_list(&self, member: &Statement) -> Option<(u32, u32)> {
+        let mut depth = 0u32;
+        let mut open = None;
+        for (_, token) in self.tokens_in(member.span.start, member.span.end) {
+            match token.kind {
+                Kind::LeftParen => {
+                    if depth == 0 {
+                        open = Some(token.start as u32);
+                    }
+                    depth += 1;
+                }
+                Kind::RightParen => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0
+                        && let Some(open) = open
+                    {
+                        return Some((open, token.end as u32));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The `{...}` and `{N}` references that start in `from..to`, outside the
+    /// `skip` ranges (in order, none inside another).
+    pub(super) fn includes_in(&self, from: u32, to: u32, skip: &[(u32, u32)]) -> Vec<Span> {
+        debug_assert!(skip.windows(2).all(|pair| pair[0].1 <= pair[1].0));
+        self.tokens_in(from, to)
+            .filter(|(_, t)| matches!(t.kind, Kind::IncludeReference | Kind::IncludeArgReference))
+            .filter(|(_, t)| !skipped(skip, t.start as u32))
+            .map(|(_, t)| Span {
+                start: t.start as u32,
+                end: t.end as u32,
+            })
+            .collect()
     }
 
     fn token_text(&self, token: &Token) -> &'t str {
@@ -971,7 +1093,8 @@ impl<'t> Source<'t> {
 
     /// Whether a token in `from..to`, outside the `skip` ranges, may expand to
     /// other text: a `{&name}` reference, `&IF`, and when `includes` is set an
-    /// include. The text then shows only part of what the compiler reads.
+    /// include. The text then shows only part of what the compiler reads. The
+    /// `skip` ranges are in order, none inside another.
     pub(super) fn may_expand(
         &self,
         from: u32,
@@ -979,13 +1102,13 @@ impl<'t> Source<'t> {
         skip: &[(u32, u32)],
         includes: bool,
     ) -> bool {
+        debug_assert!(skip.windows(2).all(|pair| pair[0].1 <= pair[1].0));
         self.tokens_in(from, to).any(|(_, t)| {
             let expands = t.kind == Kind::PreprocIf
                 || (includes
                     && matches!(t.kind, Kind::IncludeReference | Kind::IncludeArgReference))
                 || self.token_text(t).starts_with("{&");
-            let start = t.start as u32;
-            expands && !skip.iter().any(|&(a, b)| a <= start && start < b)
+            expands && !skipped(skip, t.start as u32)
         })
     }
 
@@ -1296,9 +1419,15 @@ impl<'t> Source<'t> {
             }
             _ => return None,
         };
-        let parameters: Vec<String> = parameters
-            .into_iter()
-            .filter_map(|p| self.parameter(p))
+        // The parameters of an include that is not known whole are not what
+        // every compile declares, so the include shows as written.
+        let entries = self
+            .entries(parameters.clone())
+            .or_else(|| self.entries_as_written(parameters))?;
+        let parameters: Vec<String> = entries
+            .iter()
+            .filter(|entry| !matches!(entry, Entry::Include(group) if group.count() == 0))
+            .filter_map(|entry| self.entry_text(entry))
             .collect();
         let tail = self.prototype_tail(statement);
         let is_method = matches!(statement.kind, StatementKind::Method { .. });

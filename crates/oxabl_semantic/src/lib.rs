@@ -34,6 +34,7 @@ mod resolve;
 mod scope;
 mod sequence;
 mod signature;
+mod surface;
 mod symbol;
 mod types;
 
@@ -65,6 +66,11 @@ pub use sequence::{SequenceOperand, sequence_operand};
 pub use signature::{
     CallParam, CallParamKind, MemberParam, MemberParamShape, Param, ParamMode, ParamShape,
     ProgramSignatures, Signature, call_param_of, member_params,
+};
+pub use surface::{
+    ClassList, ClassListing, ClassRef, ClassSource, ClassSurface, MAX_SUPERTYPES, MemberOrigin,
+    MemberReach, MemberSignature, SurfaceMember, WorkspaceClasses, class_surface, member_class,
+    resolve_named,
 };
 pub use symbol::{
     ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags,

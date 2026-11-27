@@ -66,6 +66,7 @@ fn ask(fs: &dyn FileSystem, name: &str, marked: &str) -> Option<CompletionList> 
         fragment: false,
         stale: false,
         tokens: None,
+        classes: None,
     };
     let request = CompletionRequest {
         text: &text,

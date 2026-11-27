@@ -193,7 +193,14 @@ pub fn all(context: &Context, tests: &Tests) -> Vec<Job> {
             vec![
                 step(
                     "cargo clippy",
-                    Command::cargo(&["clippy", "--workspace", "--", "-D", "warnings"]),
+                    Command::cargo(&[
+                        "clippy",
+                        "--workspace",
+                        "--all-targets",
+                        "--",
+                        "-D",
+                        "warnings",
+                    ]),
                 )
                 .needing(CLIPPY),
             ],

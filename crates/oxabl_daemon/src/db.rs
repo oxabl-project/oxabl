@@ -103,7 +103,7 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use oxabl_analyze::CollectedDiagnostics;
-use oxabl_index::hierarchy::{ClassFile, ClassSource, LookupMemo, SubtypeIndex};
+use oxabl_index::hierarchy::{ClassFile, ClassFiles, LookupMemo, SubtypeIndex};
 use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, IncludeContext, index_file_at, program_signatures_at};
 use oxabl_pipeline::{
@@ -1919,7 +1919,7 @@ impl<'a> HierarchyUnit<'a> {
     }
 }
 
-impl ClassSource for HierarchyUnit<'_> {
+impl ClassFiles for HierarchyUnit<'_> {
     fn path_of(&self, file: IndexedFileId) -> Option<PathBuf> {
         HierarchyUnit::path_of(self, file)
     }

@@ -65,8 +65,13 @@ you also get, with no setup:
   procedure file, no `PROCEDURE` in a method), the words after `DEFINE`, and
   the snippets where their body is valid. The names in scope come too: the
   variables, parameters, buffers and functions that are defined before the
-  cursor, the members of the class, and the built-in functions, with the type
-  that fits an assignment first. After `FIND FIRST` or `FOR EACH` come the
+  cursor, the members of the class and the members it inherits from classes of
+  the workspace, and the built-in functions, with the type that fits an
+  assignment first. After `obj:`, `THIS-OBJECT:`, `SUPER:`, `NEW Cls():`,
+  `CAST(x, Cls):`, a class name or a chain (`obj:Child:`) come the members that
+  the receiver reaches: the public ones, and the private and protected ones of
+  the class you are in; a class name gives only the `STATIC` ones. The members
+  of the built-in classes (`Progress.Lang.*`) do not come yet. After `FIND FIRST` or `FOR EACH` come the
   buffers, temp-tables and tables of the schema; after `Customer.` its fields;
   in a `WHERE` the fields of the statement's records first. After `RUN` come
   the internal procedures and the programs on the include path, after `{` the
@@ -334,10 +339,17 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   turn on `oxabl.inlayHints.parameters`. A call gets hints only when exactly
   one declaration is known, and an argument that already says the name of its
   parameter gets none (the same name, `cName` for `pcName`, or a name that is
-  the end of the other). After you edit a function in one file, the hints of
-  a call in another open file can show the old parameter names until that
-  file changes again. The signature help follows VS Code's
-  `editor.parameterHints.enabled`.
+  the end of the other). A parameter list that starts with an include
+  (`SetData({inc/std-params.i}, INPUT pcDocNum AS CHARACTER)`) shows the
+  include as one entry with the count of its parameters, `{inc/std-params.i}
+  (2 parameters)`, in the signature and in the hover. The arguments for the
+  include get one hint, on the first of them, that names the include. A
+  declaration whose include holds a `{&name}` reference or an `&IF`, or did
+  not arrive, shows no signature, and the other methods of its class keep
+  theirs. Its hover shows the include with no count. After you edit a
+  function in one file, the hints of a call in another open file can show the
+  old parameter names until that file changes again. The signature help
+  follows VS Code's `editor.parameterHints.enabled`.
 - **ABL Schema view.** The Explorer has an **ABL Schema** view of the `.df`
   files that `[workspace.schema]` in `oxabl.toml` names, with no database
   connection: each file is a database, with its tables, their fields and
