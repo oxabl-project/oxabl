@@ -625,9 +625,8 @@ impl<'a> Parser<'a> {
         crate::count_parse(self.tokens);
         // Every top-level statement ends at a period, so the capped period
         // count sizes the list without reallocating large statements as it
-        // grows. Nested statements make it an overestimate, and the program
-        // keeps the capacity: at most `PRESIZED_STATEMENTS` statements for a
-        // file with one top-level statement, such as a class.
+        // grows. Nested statements make it an overestimate; the slack is
+        // released below.
         let estimate = self.tokens[self.current.min(self.tokens.len())..]
             .iter()
             .filter(|t| t.kind == Kind::Period)
@@ -679,6 +678,11 @@ impl<'a> Parser<'a> {
         // parse_statement calls. This preserves the aggregate error-reporting
         // contract even though block bodies now recover instead of bubbling.
         debug_assert_stmt_sibling_order(&statements);
+        // A file with one top-level statement, such as a class, would keep the
+        // capacity of `PRESIZED_STATEMENTS` statements. The expression and name
+        // pools keep theirs: their shrink costs more than most parses gain,
+        // because most programs are dropped at once.
+        statements.shrink_to_fit();
         let comments = self.collect_comments();
         let pools = AstPools {
             names: std::mem::take(&mut self.names).finish(),

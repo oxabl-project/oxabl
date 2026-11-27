@@ -136,12 +136,17 @@ compares the bytes that the returned `Program` keeps:
 | Stage | Allocations | Bytes | Kept |
 | --- | --- | --- | --- |
 | lex | 1 | 1,241,136 | |
-| parse | 893 | 1,829,634 | 1,187,218 |
+| parse | 894 | 1,877,634 | 1,186,066 |
 
 The kept bytes include the capacity that the vectors of the program do not use
-(275,570 bytes here): the parser sizes the pools from the number of tokens and
+(274,418 bytes here): the parser sizes the pools from the number of tokens and
 does not shrink them, and a shrink of the expression pool alone costs 4% of the
-instructions of this parse.
+instructions of this parse. The statement list is shrunk: it costs a few
+hundred instructions, and a file with one top-level statement, such as a class,
+would otherwise keep the capacity of 64 statements. The counter counts the
+shrink, a `realloc`, as one more allocation and its new size as bytes
+requested, so the bytes of the `check` benches below read about 5% higher for
+it; their peak reads lower.
 
 The counts are the same on each run of one toolchain. The test fails when a
 number is more than 0.5% above its budget. It also fails when a number is more
@@ -556,19 +561,19 @@ names and the expressions of a program in its pools (`AstPools`).
 
 | Bench | Allocations | Bytes requested | Peak |
 | --- | --- | --- | --- |
-| `check/file` | 9,974 | 9.5 MB | 3.8 MB |
-| `check/workspace` | 247,142 | 174.2 MB | 1.6 MB |
-| `check/workspace_include_findings` | 572,910 | 286.3 MB | 1.7 MB |
-| `format/file_end_to_end` | 8,529 | 5.3 MB | 3.4 MB |
-| `producers/scan` | 30,453 | 25.5 MB | 0.2 MB |
-| `navigation/definitions` | 5,361 | 8.8 MB | 3.8 MB |
-| `navigation/links` | 2,958 | 2.4 MB | 1.2 MB |
+| `check/file` | 9,976 | 9.6 MB | 3.8 MB |
+| `check/workspace` | 247,975 | 182.2 MB | 1.5 MB |
+| `check/workspace_include_findings` | 573,746 | 302.6 MB | 1.6 MB |
+| `format/file_end_to_end` | 8,530 | 5.3 MB | 3.4 MB |
+| `producers/scan` | 30,853 | 26.8 MB | 0.2 MB |
+| `navigation/definitions` | 5,363 | 8.9 MB | 3.8 MB |
+| `navigation/links` | 2,965 | 2.5 MB | 1.2 MB |
 | `workspace_symbols/query` | 5,395 | 0.6 MB | 0.5 MB |
-| `daemon_cycle/features_on_one_revision` | 19,821 | 28.2 MB | 5.4 MB |
+| `daemon_cycle/features_on_one_revision` | 19,822 | 28.2 MB | 5.4 MB |
 | `lexer/large_mixed/lsp_bench` | 1 | 1.2 MB | 1.2 MB |
 | `lexer/large_mixed/1mb` | 1 | 10.1 MB | 10.1 MB |
-| `parser/large_mixed/lsp_bench` | 893 | 1.8 MB | 1.2 MB |
-| `parser/large_mixed/1mb` | 12,030 | 14.4 MB | 10.8 MB |
+| `parser/large_mixed/lsp_bench` | 894 | 1.9 MB | 1.2 MB |
+| `parser/large_mixed/1mb` | 12,031 | 16.8 MB | 10.7 MB |
 | `semantic/large/lsp_bench/declare` | 140 | 0.19 MB | 0.11 MB |
 | `semantic/large/lsp_bench/resolve` | 12 | 0.35 MB | 0.34 MB |
 | `semantic/large/nested_blocks/declare` | 5,211 | 1.6 MB | 1.0 MB |
