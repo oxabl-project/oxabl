@@ -140,14 +140,16 @@ pub(crate) fn of_request<'p>(text: &str, cursor: u32, prior: Option<Prior<'p>>) 
             prior: None,
         };
     };
-    let (prefix, suffix) = common_ends(prior.text.as_bytes(), text.as_bytes());
-    if prefix == prior.text.len() && prefix == text.len() {
+    // A request on the text of its base is the common case: test that with
+    // one compare (none for the base's own slice) before a scan of both ends.
+    if std::ptr::eq(prior.text, text) || prior.text == text {
         return TokenStream {
             prefix: prior.tokens,
             tail: Vec::new(),
             prior: Some((prior.text, TextDiff::Same)),
         };
     }
+    let (prefix, suffix) = common_ends(prior.text.as_bytes(), text.as_bytes());
     // The bytes that a request reads after the cursor, and the bytes that the
     // edit changed: all of them are lexed.
     let bytes = text.as_bytes();
