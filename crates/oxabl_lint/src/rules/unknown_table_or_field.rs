@@ -433,7 +433,8 @@ impl Visitor<'_> {
             ExpressionKind::CanFind { where_clause, .. } => {
                 self.walk_opt_expr(*where_clause);
             }
-            ExpressionKind::PreprocIf(pif) => {
+            ExpressionKind::PreprocIf(id) => {
+                let pif = self.ctx.pools.preproc_if(*id);
                 self.walk_expression(pif.condition);
                 self.walk_expression(pif.then_branch);
                 for (c, br) in &pif.elseif_branches {

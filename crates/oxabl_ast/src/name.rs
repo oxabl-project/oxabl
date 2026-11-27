@@ -10,7 +10,8 @@ use std::hash::{Hash, Hasher};
 use std::num::NonZeroU32;
 use std::ops::Index;
 
-use rustc_hash::{FxHashMap, FxHasher};
+use hashbrown::HashTable;
+use rustc_hash::FxHasher;
 
 /// Compact 4-byte handle into a [`NamePool`].
 ///
@@ -162,13 +163,13 @@ impl Index<NameId> for NamePool {
 /// Deduplicating builder for [`NamePool`], used while parsing a file and
 /// discarded via [`NameInterner::finish`] so the retained AST carries no hash
 /// table.
+///
+/// The table stores only the [`NameId`]; a probe hashes the text once and
+/// compares against the pool, so a collision needs no side list.
 #[derive(Debug, Default)]
 pub struct NameInterner {
     pool: NamePool,
-    /// Primary map from 64-bit FxHash to the first [`NameId`] with that hash.
-    buckets: FxHashMap<u64, NameId>,
-    /// Rare hash-collision overflow list.
-    overflow: Vec<(u64, NameId)>,
+    table: HashTable<NameId>,
 }
 
 impl NameInterner {
@@ -181,8 +182,7 @@ impl NameInterner {
     pub fn with_capacity(name_count: usize, byte_len: usize) -> Self {
         Self {
             pool: NamePool::with_capacity(name_count, byte_len),
-            buckets: FxHashMap::with_capacity_and_hasher(name_count, Default::default()),
-            overflow: Vec::new(),
+            table: HashTable::with_capacity(name_count),
         }
     }
 
@@ -190,21 +190,14 @@ impl NameInterner {
     /// already present or storing it once.
     pub fn intern(&mut self, text: &str) -> NameId {
         let hash = hash_str(text);
-        if let Some(&existing) = self.buckets.get(&hash) {
-            if self.pool.get(existing) == text {
-                return existing;
-            }
-            for &(ov_hash, ov_id) in &self.overflow {
-                if ov_hash == hash && self.pool.get(ov_id) == text {
-                    return ov_id;
-                }
-            }
-            let id = self.pool.push(text);
-            self.overflow.push((hash, id));
-            return id;
+        let pool = &self.pool;
+        if let Some(&existing) = self.table.find(hash, |&id| pool.get(id) == text) {
+            return existing;
         }
         let id = self.pool.push(text);
-        self.buckets.insert(hash, id);
+        let pool = &self.pool;
+        self.table
+            .insert_unique(hash, id, |&id| hash_str(pool.get(id)));
         id
     }
 
@@ -254,6 +247,18 @@ mod tests {
         assert_eq!(pool.get(c), "customer");
         assert_eq!(pool.get(empty), "");
         assert_eq!(&pool[a], "Customer");
+    }
+
+    #[test]
+    fn interner_keeps_every_name_through_table_growth() {
+        let mut interner = NameInterner::new();
+        let names: Vec<String> = (0..5000).map(|n| format!("name-{n}")).collect();
+        let ids: Vec<NameId> = names.iter().map(|n| interner.intern(n)).collect();
+        for (name, id) in names.iter().zip(&ids) {
+            assert_eq!(interner.intern(name), *id);
+            assert_eq!(interner.get(*id), name);
+        }
+        assert_eq!(interner.finish().len(), names.len());
     }
 
     fn pool_of(names: &[&str]) -> (NamePool, Vec<NameId>) {

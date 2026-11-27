@@ -8,7 +8,7 @@
 //! 8-byte [`ExprList`] slices.
 
 use crate::{
-    ExprId, ExprList, FindType, Literal, LockType, NameId, NodeId, PreprocIf, Span, TypeArguments,
+    ExprId, ExprList, FindType, Literal, LockType, NameId, NodeId, PreprocIfId, Span, TypeArgsId,
 };
 
 /// A named identifier with its source location and interned [`NameId`].
@@ -24,7 +24,7 @@ pub struct Identifier {
 const _: () = assert!(std::mem::size_of::<Identifier>() <= 12);
 
 /// An ABL expression node.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpressionKind {
     /// A literal value (integer, decimal, string, boolean, or unknown `?`).
     Literal(Literal),
@@ -95,13 +95,13 @@ pub enum ExpressionKind {
     PreprocReference(NameId),
     /// Mid-expression preprocessor conditional.
     /// The else_branch is semantically required (parser enforces this).
-    PreprocIf(Box<PreprocIf<ExprId>>),
+    PreprocIf(PreprocIfId),
     /// Object instantiation: `NEW ClassName(args)` or `NEW package.Class(args)`
     New {
         /// The class name, possibly dotted (e.g., "app.Widget"), interned.
         class_name: NameId,
         /// The type arguments of a generic class, as in `NEW List<pkg.Thing>()`.
-        type_arguments: Option<Box<TypeArguments>>,
+        type_arguments: Option<TypeArgsId>,
         arguments: ExprList,
     },
     /// CAN-FIND record phrase: `CAN-FIND([FIRST|LAST] table [WHERE expr] [lock] [NO-ERROR])`
@@ -122,11 +122,16 @@ const _: () = assert!(std::mem::size_of::<ExpressionKind>() <= 32);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Expression>() <= 48);
 
+// A node without drop glue makes the pool's drop a free of one buffer, with no
+// walk over the nodes.
+const _: () = assert!(!std::mem::needs_drop::<ExpressionKind>());
+const _: () = assert!(!std::mem::needs_drop::<Expression>());
+
 /// An ABL expression node with parser-assigned identity.
 ///
 /// Wraps an [`ExpressionKind`] with a stable [`NodeId`] for semantic side tables.
 /// See `docs/design/ast-invariants.md` §NodeId invariants.
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone, Copy, Eq)]
 pub struct Expression {
     pub id: NodeId,
     pub kind: ExpressionKind,

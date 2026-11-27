@@ -11,7 +11,7 @@ use std::fmt;
 use std::num::NonZeroU32;
 use std::ops::{Index, IndexMut};
 
-use crate::{Expression, Identifier, NameId, NamePool};
+use crate::{Expression, Identifier, NameId, NamePool, PreprocIf, TypeArguments};
 
 /// Compact 4-byte handle into an [`ExprPool`].
 ///
@@ -82,8 +82,60 @@ impl ExprList {
     }
 }
 
+/// Defines a 4-byte handle into one of the side pools of an [`ExprPool`].
+///
+/// The payloads own a `Vec`, so they live beside the nodes and keep
+/// [`Expression`] free of drop glue.
+macro_rules! side_id {
+    ($(#[$doc:meta])* $name:ident, $pool:literal) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub struct $name(NonZeroU32);
+
+        impl $name {
+            #[inline]
+            pub(crate) fn from_index(index: usize) -> Self {
+                let raw = u32::try_from(index)
+                    .ok()
+                    .and_then(|n| n.checked_add(1))
+                    .and_then(NonZeroU32::new);
+                match raw {
+                    Some(nz) => $name(nz),
+                    None => panic!(concat!($pool, " capacity exceeded (index {})"), index),
+                }
+            }
+
+            /// Zero-based index inside the owning pool.
+            #[inline]
+            pub const fn index(self) -> usize {
+                (self.0.get() - 1) as usize
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, concat!(stringify!($name), "({})"), self.index())
+            }
+        }
+    };
+}
+
+side_id! {
+    /// Handle to the [`PreprocIf`] of a mid-expression `&IF` in an [`ExprPool`].
+    PreprocIfId, "ExprPool preproc-if"
+}
+
+side_id! {
+    /// Handle to the [`TypeArguments`] of a generic `NEW` in an [`ExprPool`].
+    TypeArgsId, "ExprPool type-argument"
+}
+
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<ExprId>() == 4);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Option<TypeArgsId>>() == 4);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<PreprocIfId>() == 4);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Option<ExprId>>() == 4);
 #[cfg(target_pointer_width = "64")]
@@ -95,6 +147,8 @@ const _: () = assert!(std::mem::size_of::<ExprList>() == 8);
 pub struct ExprPool {
     nodes: Vec<Expression>,
     lists: Vec<ExprId>,
+    preproc_ifs: Vec<PreprocIf<ExprId>>,
+    type_args: Vec<TypeArguments>,
 }
 
 impl ExprPool {
@@ -103,6 +157,8 @@ impl ExprPool {
         Self {
             nodes: Vec::new(),
             lists: Vec::new(),
+            preproc_ifs: Vec::new(),
+            type_args: Vec::new(),
         }
     }
 
@@ -112,6 +168,8 @@ impl ExprPool {
         Self {
             nodes: Vec::with_capacity(node_cap),
             lists: Vec::with_capacity(list_cap),
+            preproc_ifs: Vec::new(),
+            type_args: Vec::new(),
         }
     }
 
@@ -135,6 +193,46 @@ impl ExprPool {
             .unwrap_or_else(|_| panic!("ExprList length exceeds u32::MAX"));
         self.lists.extend_from_slice(items);
         ExprList { start, len }
+    }
+
+    /// Store the conditional of a mid-expression `&IF`.
+    #[inline]
+    pub fn push_preproc_if(&mut self, preproc: PreprocIf<ExprId>) -> PreprocIfId {
+        let id = PreprocIfId::from_index(self.preproc_ifs.len());
+        self.preproc_ifs.push(preproc);
+        id
+    }
+
+    /// Look up a stored `&IF`. Panics if `id` does not belong to this pool.
+    #[inline]
+    pub fn preproc_if(&self, id: PreprocIfId) -> &PreprocIf<ExprId> {
+        match self.preproc_ifs.get(id.index()) {
+            Some(preproc) => preproc,
+            None => panic!(
+                "invalid {id:?} for ExprPool of {} preproc-ifs",
+                self.preproc_ifs.len()
+            ),
+        }
+    }
+
+    /// Store the type arguments of a generic `NEW`.
+    #[inline]
+    pub fn push_type_args(&mut self, arguments: TypeArguments) -> TypeArgsId {
+        let id = TypeArgsId::from_index(self.type_args.len());
+        self.type_args.push(arguments);
+        id
+    }
+
+    /// Look up stored type arguments. Panics if `id` does not belong to this pool.
+    #[inline]
+    pub fn type_args(&self, id: TypeArgsId) -> &TypeArguments {
+        match self.type_args.get(id.index()) {
+            Some(arguments) => arguments,
+            None => panic!(
+                "invalid {id:?} for ExprPool of {} type-argument lists",
+                self.type_args.len()
+            ),
+        }
     }
 
     /// Look up `id`, returning `None` if out of bounds or [`ExprId::DUMMY`].
@@ -258,6 +356,18 @@ impl AstPools {
     pub fn exprs(&self, list: ExprList) -> &[ExprId] {
         self.exprs.list(list)
     }
+
+    /// Resolve a [`PreprocIfId`] to its mid-expression `&IF`.
+    #[inline]
+    pub fn preproc_if(&self, id: PreprocIfId) -> &PreprocIf<ExprId> {
+        self.exprs.preproc_if(id)
+    }
+
+    /// Resolve a [`TypeArgsId`] to its type arguments.
+    #[inline]
+    pub fn type_args(&self, id: TypeArgsId) -> &TypeArguments {
+        self.exprs.type_args(id)
+    }
 }
 
 #[cfg(test)]
@@ -326,6 +436,43 @@ mod tests {
     fn index_panics_on_dummy() {
         let (pool, _) = pool_of(1);
         let _ = &pool[ExprId::DUMMY];
+    }
+
+    #[test]
+    fn side_pools_read_back_what_was_pushed() {
+        let (mut pool, ids) = pool_of(2);
+        let first = pool.push_preproc_if(PreprocIf {
+            condition: ids[0],
+            then_branch: ids[1],
+            elseif_branches: vec![(ids[1], ids[0])],
+            else_branch: Some(ids[0]),
+        });
+        let second = pool.push_preproc_if(PreprocIf {
+            condition: ids[1],
+            then_branch: ids[0],
+            elseif_branches: Vec::new(),
+            else_branch: None,
+        });
+        assert_eq!(pool.preproc_if(first).then_branch, ids[1]);
+        assert_eq!(pool.preproc_if(first).elseif_branches.len(), 1);
+        assert_eq!(pool.preproc_if(second).condition, ids[1]);
+        assert_eq!(pool.preproc_if(second).else_branch, None);
+
+        let args = pool.push_type_args(TypeArguments::default());
+        assert!(pool.type_args(args).0.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid PreprocIfId(0) for ExprPool of 0 preproc-ifs")]
+    fn preproc_if_panics_on_a_foreign_handle() {
+        let (mut other, ids) = pool_of(1);
+        let id = other.push_preproc_if(PreprocIf {
+            condition: ids[0],
+            then_branch: ids[0],
+            elseif_branches: Vec::new(),
+            else_branch: None,
+        });
+        let _ = ExprPool::new().preproc_if(id);
     }
 
     #[test]

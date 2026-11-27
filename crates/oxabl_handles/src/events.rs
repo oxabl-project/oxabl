@@ -739,7 +739,8 @@ fn scan<'a>(e: ExprId, pools: &'a AstPools, src: &str, out: &mut Effects<'a>) {
             scan(*index, pools, src, out);
         }
         EK::FieldAccess { qualifier, .. } => scan(*qualifier, pools, src, out),
-        EK::PreprocIf(p) => {
+        EK::PreprocIf(id) => {
+            let p = pools.preproc_if(*id);
             scan(p.then_branch, pools, src, out);
             for &(_, b) in &p.elseif_branches {
                 scan(b, pools, src, out);

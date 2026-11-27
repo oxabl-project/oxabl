@@ -2613,6 +2613,7 @@ dependencies = [
 name = "oxabl_ast"
 version = "8.0.0"
 dependencies = [
+ "hashbrown 0.17.1",
  "rust_decimal",
  "rustc-hash",
  "serde",

@@ -136,7 +136,7 @@ compares the bytes that the returned `Program` keeps:
 | Stage | Allocations | Bytes | Kept |
 | --- | --- | --- | --- |
 | lex | 1 | 310,284 | |
-| parse | 891 | 1,792,194 | 1,186,642 |
+| parse | 891 | 1,767,618 | 1,186,642 |
 
 The kept bytes include the capacity that the vectors of the program do not use
 (274,418 bytes here): the parser sizes the pools from the number of tokens and
@@ -185,7 +185,7 @@ A `const` assertion holds the size of each type that a file has many of:
 `Token` (12 bytes), `NameId` (4), `ExprId` (4), `ExprList`
 (8), `Identifier` (12), `Literal` (32), `Expression` (48), `Statement` (192),
 `Scope` (48), `BindingMap` (144) and `Symbol` (64). A type that grows does not
-compile. To see the sizes of the
+compile. `Expression` is also `Copy` and has no drop glue. To see the sizes of the
 variants:
 
 ```sh

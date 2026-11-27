@@ -870,7 +870,8 @@ mod paths {
                         sub(w);
                     }
                 }
-                ExpressionKind::PreprocIf(p) => {
+                ExpressionKind::PreprocIf(id) => {
+                    let p = pools.preproc_if(*id);
                     sub(&p.condition);
                     sub(&p.then_branch);
                     for (c, b) in &p.elseif_branches {
