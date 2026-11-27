@@ -1,0 +1,8 @@
+# Full TigerStyle clippy configuration for migrated crate (see docs/TIGER_STYLE.md).
+too-many-lines-threshold = 70
+too-many-arguments-threshold = 5
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+disallowed-methods = [
+    { path = "std::sync::mpsc::channel", reason = "unbounded: use sync_channel with a stated capacity" },
+]

@@ -57,7 +57,11 @@ impl FileSet {
         if let Some(&id) = self.path_to_id.get(&path) {
             return id;
         }
-        let id = FileId::new(self.id_to_path.len() as u32);
+        // `FileId` is a `u32`: a table past `u32::MAX` paths is not a real workspace.
+        let Ok(index) = u32::try_from(self.id_to_path.len()) else {
+            panic!("more than u32::MAX files");
+        };
+        let id = FileId::new(index);
         self.id_to_path.push(path.clone());
         self.path_to_id.insert(path, id);
         id

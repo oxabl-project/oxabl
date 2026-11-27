@@ -11,12 +11,10 @@ use oxabl_style::StyleGuide;
 
 /// Object-property key set of a `serde_json::Value::Object`.
 fn object_keys(value: &serde_json::Value) -> BTreeSet<String> {
-    value
-        .as_object()
-        .expect("expected a JSON object")
-        .keys()
-        .cloned()
-        .collect()
+    let Some(object) = value.as_object() else {
+        panic!("expected a JSON object");
+    };
+    object.keys().cloned().collect()
 }
 
 #[test]

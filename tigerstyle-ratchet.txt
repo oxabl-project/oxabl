@@ -40,8 +40,6 @@ oxabl_codegen clippy::expect_used 42
 oxabl_codegen clippy::let_underscore_must_use 8
 oxabl_codegen clippy::too_many_lines 10
 oxabl_codegen clippy::unwrap_used 8
-oxabl_common clippy::cast_possible_truncation 1
-oxabl_common clippy::expect_used 1
 oxabl_daemon clippy::cast_possible_truncation 12
 oxabl_daemon clippy::cast_possible_wrap 1
 oxabl_daemon clippy::disallowed_methods 2
@@ -124,8 +122,3 @@ oxabl_semantic clippy::expect_used 2
 oxabl_semantic clippy::too_many_arguments 18
 oxabl_semantic clippy::too_many_lines 14
 oxabl_semantic unsafe_code 2
-oxabl_style clippy::expect_used 2
-oxabl_style clippy::too_many_lines 1
-oxabl_wasm clippy::expect_used 2
-oxabl_workspace clippy::cast_possible_truncation 1
-oxabl_workspace clippy::expect_used 1

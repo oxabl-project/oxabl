@@ -243,8 +243,11 @@ fn analyze_over(
         .map(|diagnostic| diagnostic_to_wire(diagnostic, &source_map))
         .collect();
 
-    serde_json::to_string(&AnalyzeResponse { diagnostics })
-        .expect("the browser diagnostic wire shape is always serializable")
+    // The wire type holds strings and numbers only, so serialization cannot fail.
+    match serde_json::to_string(&AnalyzeResponse { diagnostics }) {
+        Ok(json) => json,
+        Err(error) => panic!("the browser diagnostic wire shape must serialize: {error}"),
+    }
 }
 
 /// Format one ABL file through the shared [`FormatPipeline`], using the same safe
@@ -284,7 +287,11 @@ pub fn format_source(source: &str) -> String {
         },
     };
 
-    serde_json::to_string(&result).expect("the browser format wire shape is always serializable")
+    // The wire type holds strings and booleans only, so serialization cannot fail.
+    match serde_json::to_string(&result) {
+        Ok(json) => json,
+        Err(error) => panic!("the browser format wire shape must serialize: {error}"),
+    }
 }
 
 #[cfg(test)]
@@ -404,7 +411,8 @@ mod tests {
             .unwrap_or_else(|| panic!("expected an unused-variable diagnostic, got {response}"));
 
         let map = SourceMap::new(source);
-        let start = source.find("unused").expect("fixture names the variable") as u32;
+        let start = u32::try_from(source.find("unused").expect("fixture names the variable"))
+            .expect("fixture offset fits in u32");
         let expected = position::resolve_offset(&map, start);
 
         assert_eq!(diagnostic["start"]["byte"], expected.byte);
@@ -429,7 +437,8 @@ mod tests {
     fn diagnostic_help_reaches_the_wire() {
         let source = "DEFINE VARIABLE unused AS INTEGER NO-UNDO.\n";
         let map = SourceMap::new(source);
-        let start = source.find("unused").expect("fixture names the variable") as u32;
+        let start = u32::try_from(source.find("unused").expect("fixture names the variable"))
+            .expect("fixture offset fits in u32");
         let collected = CollectedDiagnostic {
             diagnostic: Diagnostic::warning(
                 "LINT9999",
@@ -550,8 +559,8 @@ mod tests {
                         d["code"].as_str().unwrap(),
                         d["severity"].as_str().unwrap(),
                         d["source"].as_str().unwrap(),
-                        d["start"]["byte"].as_u64().unwrap() as u32,
-                        d["end"]["byte"].as_u64().unwrap() as u32,
+                        u32::try_from(d["start"]["byte"].as_u64().unwrap()).unwrap(),
+                        u32::try_from(d["end"]["byte"].as_u64().unwrap()).unwrap(),
                     )
                 })
                 .collect()

@@ -85,10 +85,10 @@ impl<T> Observed<T> {
         let mut compute = Some(compute);
         let mut value = None;
         let observed = fs.observe(&mut || value = compute.take().map(|compute| compute()));
-        Observed {
-            value: value.expect("observe runs the computation exactly once"),
-            observed,
-        }
+        let Some(value) = value else {
+            panic!("observe must run the computation exactly once");
+        };
+        Observed { value, observed }
     }
 
     /// The value, with what it observed added to the analysis that runs on

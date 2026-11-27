@@ -147,7 +147,11 @@ impl<F: FileSystem + ?Sized> CachedFileSystem<F> {
     }
 
     fn shard(&self, hash: u64) -> &RwLock<Shard> {
-        &self.shards[(hash as usize) % SHARDS]
+        let index = hash % (SHARDS as u64);
+        let Ok(index) = usize::try_from(index) else {
+            unreachable!("an index below SHARDS fits in usize");
+        };
+        &self.shards[index]
     }
 
     fn shard_of(&self, key: &(impl Hash + ?Sized)) -> &RwLock<Shard> {

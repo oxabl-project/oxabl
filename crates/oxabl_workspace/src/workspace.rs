@@ -232,7 +232,7 @@ include_paths = [{}]
     #[test]
     fn from_path_discovers_files_on_disk() {
         let tmp = std::env::temp_dir().join("oxabl_workspace_test_discover");
-        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::remove_dir_all(&tmp).ok();
         std::fs::create_dir_all(tmp.join("src/sub")).unwrap();
         std::fs::create_dir_all(tmp.join("procs")).unwrap();
 
@@ -269,13 +269,13 @@ directories = ["src/", "procs/"]
         assert!(ws.file_set.id(&tmp.join("procs/LEGACY.V")).is_some());
 
         // Clean up
-        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
     fn from_path_skips_nonexistent_source_dir() {
         let tmp = std::env::temp_dir().join("oxabl_workspace_test_skip");
-        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::remove_dir_all(&tmp).ok();
         std::fs::create_dir_all(tmp.join("src")).unwrap();
 
         std::fs::write(tmp.join("src/a.p"), "").unwrap();
@@ -294,6 +294,6 @@ directories = ["src/", "nonexistent/"]
         let ws = Workspace::from_path(&tmp).unwrap();
         assert_eq!(ws.file_set.len(), 1);
 
-        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

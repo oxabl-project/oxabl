@@ -146,7 +146,7 @@ mod tests {
                 state ^= state << 13;
                 state ^= state >> 7;
                 state ^= state << 17;
-                (state >> 24) as u8
+                (state >> 24).to_le_bytes()[0]
             })
             .collect()
     }
