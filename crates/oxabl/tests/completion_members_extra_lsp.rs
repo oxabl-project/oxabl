@@ -291,3 +291,187 @@ fn a_class_file_that_changed_shows_after_its_watched_change_and_not_before() {
         .list()
         .contains(METHOD, &["Polish"]);
 }
+
+/// X12.
+#[test]
+fn this_object_and_super_in_a_static_routine_give_null() {
+    for receiver in ["THIS-OBJECT:|", "SUPER:|", "THIS-OBJECT:Tag:|"] {
+        for trigger in [Some(":"), None] {
+            let mut ws = files().start();
+            let source = gadget("METHOD PUBLIC STATIC", receiver);
+            let cursor = ws.open_marked("lib/app/Gadget.cls", &source);
+            let answer = ws.complete_at("lib/app/Gadget.cls", cursor, trigger);
+            assert!(
+                matches!(answer, completion::Answer::Null),
+                "{receiver:?}: {}",
+                answer.summary()
+            );
+        }
+    }
+    // The same receivers in an instance method still give the members.
+    let mut ws = files().start();
+    let answer = ws.complete(
+        "lib/app/Gadget.cls",
+        &gadget("METHOD PUBLIC", "THIS-OBJECT:|"),
+    );
+    answer.list().contains(METHOD, &["Describe", "Run"]);
+    let answer = ws.complete("lib/app/Gadget.cls", &gadget("METHOD PUBLIC", "SUPER:|"));
+    answer.list().contains(METHOD, &["Describe"]);
+}
+
+/// X13.
+#[test]
+fn an_inheritance_cycle_still_answers_with_the_members_of_both_classes() {
+    let mut ws = files()
+        .file(
+            "lib/app/LoopA.cls",
+            "CLASS app.LoopA INHERITS app.LoopB:
+    METHOD PUBLIC VOID FromA():
+    END METHOD.
+END CLASS.
+",
+        )
+        .file(
+            "lib/app/LoopB.cls",
+            "CLASS app.LoopB INHERITS app.LoopA:
+    METHOD PUBLIC VOID FromB():
+    END METHOD.
+END CLASS.
+",
+        )
+        .start();
+    let answer = ws.complete("main.p", "DEFINE VARIABLE oA AS app.LoopA NO-UNDO.\noA:|");
+    let list = answer.list();
+    list.contains(METHOD, &["FromA", "FromB"]);
+    assert!(list.incomplete, "{}", list.summary());
+}
+
+/// X14.
+#[test]
+fn a_chain_longer_than_the_bound_gives_the_near_members_and_an_incomplete_list() {
+    const LENGTH: usize = 80;
+    let mut files = files();
+    for level in 0..LENGTH {
+        let parent = if level + 1 < LENGTH {
+            format!(" INHERITS app.Deep{}", level + 1)
+        } else {
+            String::new()
+        };
+        files = files.file(
+            &format!("lib/app/Deep{level}.cls"),
+            &format!(
+                "CLASS app.Deep{level}{parent}:
+    METHOD PUBLIC VOID Level{level}():
+    END METHOD.
+END CLASS.
+"
+            ),
+        );
+    }
+    let mut ws = files.start();
+    let answer = ws.complete("main.p", "DEFINE VARIABLE oD AS app.Deep0 NO-UNDO.\noD:|");
+    let list = answer.list();
+    list.contains(METHOD, &["Level0", "Level1", "Level40"]);
+    list.lacks(&[&format!("Level{}", LENGTH - 1)]);
+    assert!(list.incomplete, "{}", list.summary());
+}
+
+const BASE: &str = "CLASS app.Base:
+    DEFINE PUBLIC STATIC VARIABLE sPub AS INTEGER NO-UNDO.
+    DEFINE PROTECTED STATIC VARIABLE sProt AS INTEGER NO-UNDO.
+    DEFINE PRIVATE STATIC VARIABLE sPriv AS INTEGER NO-UNDO.
+    DEFINE PROTECTED VARIABLE vProt AS INTEGER NO-UNDO.
+    DEFINE PACKAGE-PROTECTED VARIABLE vPkgProt AS INTEGER NO-UNDO.
+    DEFINE PACKAGE-PRIVATE VARIABLE vPkgPriv AS INTEGER NO-UNDO.
+    METHOD PUBLIC VOID mObj(INPUT p AS Progress.Lang.Object):
+    END METHOD.
+    METHOD PUBLIC VOID mPart(INPUT p AS app.Part):
+    END METHOD.
+    METHOD PUBLIC VOID mMore(INPUT p AS CHARACTER):
+    END METHOD.
+END CLASS.
+";
+
+const PART: &str = "CLASS app.Part:
+END CLASS.
+";
+
+const KID: &str = "USING Progress.Lang.*.
+USING app.*.
+CLASS app.Kid INHERITS app.Base:
+    METHOD OVERRIDE PUBLIC VOID mObj(INPUT p AS Object):
+    END METHOD.
+    METHOD OVERRIDE PUBLIC VOID mPart(INPUT p AS Part):
+    END METHOD.
+    METHOD PUBLIC VOID mMore(INPUT p AS INTEGER):
+    END METHOD.
+    METHOD PUBLIC VOID Run():
+        THIS-OBJECT:|
+    END METHOD.
+END CLASS.
+";
+
+fn hierarchy_files() -> Files {
+    files()
+        .file("lib/app/Base.cls", BASE)
+        .file("lib/app/Part.cls", PART)
+        .file(
+            "lib/app/Kid.cls",
+            KID.replace("THIS-OBJECT:|", "RETURN.").as_str(),
+        )
+}
+
+/// X15.
+#[test]
+fn an_override_that_spells_a_parameter_type_another_way_is_one_method() {
+    let mut ws = hierarchy_files().start();
+    // Through a value, and through `THIS-OBJECT` in the class of the file.
+    let answer = ws.complete("main.p", "DEFINE VARIABLE oK AS app.Kid NO-UNDO.\noK:|");
+    let outside = answer.list();
+    let answer = ws.complete("lib/app/Kid.cls", KID);
+    let inside = answer.list();
+    for list in [outside, inside] {
+        assert_eq!(
+            detail_of(list, METHOD, "mObj"),
+            "METHOD VOID (INPUT Object)"
+        );
+        assert_eq!(detail_of(list, METHOD, "mPart"), "METHOD VOID (INPUT Part)");
+        // A real overload is still one.
+        assert_eq!(
+            detail_of(list, METHOD, "mMore"),
+            "METHOD VOID (INPUT INTEGER) (+1 overload)"
+        );
+    }
+}
+
+/// X16.
+#[test]
+fn a_package_protected_member_of_a_parent_is_not_offered() {
+    let mut ws = hierarchy_files().start();
+    let source = "CLASS far.Far INHERITS app.Base:
+    METHOD PUBLIC VOID Run():
+        THIS-OBJECT:|
+    END METHOD.
+END CLASS.
+";
+    let answer = ws.complete("lib/far/Far.cls", source);
+    let list = answer.list();
+    list.contains(PROPERTY, &["vProt"]);
+    list.lacks(&["vPkgProt", "vPkgPriv"]);
+}
+
+/// X17.
+#[test]
+fn the_type_name_of_a_parent_in_a_subclass_gives_its_protected_static_members() {
+    let mut ws = hierarchy_files().start();
+    let source = KID.replace("THIS-OBJECT:|", "app.Base:|");
+    let answer = ws.complete("lib/app/Kid.cls", &source);
+    let list = answer.list();
+    list.contains(PROPERTY, &["sPub", "sProt"]);
+    list.lacks(&["sPriv", "vProt"]);
+    // A class that is no subclass gets the public ones only.
+    let answer = ws.complete("main.p", "app.Base:|");
+    let list = answer.list();
+    list.contains(PROPERTY, &["sPub"]);
+    list.lacks(&["sProt", "sPriv"]);
+}

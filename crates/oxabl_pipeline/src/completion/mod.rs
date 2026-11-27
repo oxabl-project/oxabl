@@ -30,7 +30,7 @@ use oxabl_semantic::{ScopeId, ScopeKind};
 use oxabl_style::KeywordCase;
 use oxabl_workspace::{DirEntry, FileSystem};
 
-pub use members::{ClassMemo, member_documentation};
+pub use members::{ClassMemo, MemoView, member_documentation};
 pub use oxabl_lexer::Token;
 pub use tokens::Prior;
 
@@ -113,7 +113,7 @@ pub struct CompletionBase<'b, 's, 'a> {
     /// The answers about other classes that earlier requests of this base
     /// read, so a request parses no class file again. `None`: each request
     /// asks the index.
-    pub classes: Option<&'b ClassMemo>,
+    pub classes: Option<MemoView<'b>>,
 }
 
 impl CompletionBase<'_, '_, '_> {

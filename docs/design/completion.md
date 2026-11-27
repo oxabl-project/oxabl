@@ -221,7 +221,7 @@ its use.
 | Data | Kept | Ends |
 | --- | --- | --- |
 | The newest base of each open document and include context | `oxabl_daemon::completion::Bases` | Document closed, configuration or schema changed, include context changed |
-| What the requests of a base learned about other classes (`ClassMemo`: the descriptor and the members of each class the walk of a surface read, also a miss) | The `classes` of each `Base` | Any watched file created, changed or deleted, or a change of the configuration or schema (the base keeps no answer of an older epoch). An edit of a class in an open buffer that is not saved shows after its save |
+| What the requests of a base learned about other classes (`ClassMemo`: the descriptor and the members of each class the walk of a surface read, also a miss) | The `classes` of each `Base` | Any watched file created, changed or deleted, or a change of the configuration or schema (the base keeps no answer of an older epoch). An edit of a class in an open buffer is not read until it is saved and the client sends `workspace/didChangeWatchedFiles`: this needs the file watchers that the server registers, so a client that does not register them shows the old class until the base is replaced (an edit of the document) |
 | The class listing of the include paths | One per session (`ClassListing`) | A watched `.cls` file created or deleted, a change of `oxabl.toml` or of the include paths, or 60 seconds for directories outside the watched folders |
 | The bases that resolve may read | The two newest bases of each document, by base id | When a newer base replaces them |
 | The directory listings of `RUN` and `{` | `Listings` in `oxabl_daemon::completion`, at most 256 directories | A watched file created, changed or deleted in the directory (`workspace/didChangeWatchedFiles`), a change of the configuration or schema, or 3 seconds. A listing found older than that is freed and read again, never used |
@@ -509,6 +509,11 @@ name gives its members as static properties.
   VOID> (<modes and types of the parameters>)`) and ` (+N overloads)`. A
   parameter has its mode and its type, with no name: the index keeps no
   parameter name, and resolve shows the declarations with their names.
+  An override is one declaration with the method it overrides, also when it
+  spells a parameter type another way (`Object` under `USING Progress.Lang.*`
+  and `Progress.Lang.Object`): the walk compares the class names that the
+  imports of each declaring file give. A name that does not resolve keeps both
+  declarations.
 - `isIncomplete: true` when the surface is not complete: an ancestor that was
   not read, a level whose member list is not whole (`members_complete =
   false`), a cycle in the inheritance, and, until #154, every class, because
@@ -517,11 +522,19 @@ name gives its members as static properties.
   one. Every member of the surface is in the list whatever the word after the
   colon: the client filters them, and the items that match the word come
   first. This differs from the other contexts, which keep only the items that
-  match. A member list is short, and a person who types `oUtil:Gr` expects the
-  members of `oUtil`, not the words of the file.
+  match. The reason is that a member list is short, and the client filters it
+  as the person types.
 - A name that the context finder reads as a receiver can be a keyword that is
   part of a dotted name or follows a `:` (`app.Color:`, `oUtil:Message:`). A
   keyword alone (`DO:`, `ELSE:`) is a block colon and gives `null`.
+- `THIS-OBJECT:` and `SUPER:` in a static method or a static property
+  accessor give `null`: the compiler refuses them there.
+- The type name of a parent, written in a subclass, also gives the `PROTECTED`
+  static members. An inherited `PACKAGE-PROTECTED` member is never offered: the
+  index does not model packages, and the list is incomplete, so an omission is
+  safe and a wrong member is not.
+- The walk of the supertypes reads at most `MAX_SUPERTYPES` (64) classes. A
+  longer chain, and an inheritance cycle, give an incomplete list.
 - A receiver reaches the private members of its class only when the cursor is
   in the body of that class: a value of the class of the file (`oOther:`) and
   its type name give them, as the compiler does.

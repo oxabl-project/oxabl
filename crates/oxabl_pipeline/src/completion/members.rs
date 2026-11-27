@@ -13,26 +13,39 @@ use oxabl_lexer::Kind;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_semantic::{
     ClassDescriptor, ClassList, ClassRef, ClassSource, ClassSurface, IndexAnswer, IndexName,
-    MemberDescriptor, MemberOrigin, MemberParam, MemberParamShape, MemberReach, MemberType,
-    NamespaceId, ParamMode, ResolvedType, ScopeId, ScopeKind, Semantic, SurfaceMember, SymbolId,
-    SymbolKind, SymbolTable, class_surface, member_class, resolve_named,
+    MAX_SUPERTYPES, MemberDescriptor, MemberOrigin, MemberParam, MemberParamShape, MemberReach,
+    MemberType, NamespaceId, ParamMode, ResolvedType, ScopeId, ScopeKind, Semantic, SurfaceMember,
+    SymbolId, SymbolKind, SymbolTable, WorkspaceClasses, class_surface, member_class,
+    resolve_named,
 };
 use std::collections::HashMap;
 
 use super::context::is_word_byte;
+use super::names::in_static_routine;
 use super::rank::{fit, nearness};
 use super::{Candidate, CompletionBase, Engine, ItemData, ItemKind, MemberData, base};
 use crate::navigate::Navigation;
 
 /// The answers of a class source that the requests of one base share, so a
 /// request reads no class file that an earlier request read. The daemon keeps
-/// one for each base and clears it when a file changes.
+/// one for each base.
+///
+/// The memo holds the epoch its answers are of: the count of changes of files
+/// on disk that the daemon saw. A request reads through a [`MemoView`] of the
+/// epoch it saw, and an answer of an older epoch is never stored, so a request
+/// that read a class file before a change cannot leave its answer behind.
 ///
 /// A name is kept under the spelling the source wrote: a path derives from
 /// that spelling, so two spellings of one name are two questions.
 #[derive(Default)]
 pub struct ClassMemo {
-    entries: Mutex<HashMap<OxablAtom, Entry>>,
+    state: Mutex<MemoState>,
+}
+
+#[derive(Default)]
+struct MemoState {
+    epoch: u64,
+    entries: HashMap<OxablAtom, Entry>,
 }
 
 #[derive(Default, Clone)]
@@ -41,22 +54,54 @@ struct Entry {
     members: Option<IndexAnswer<Arc<[MemberDescriptor]>>>,
 }
 
+/// A [`ClassMemo`] as one request sees it.
+#[derive(Clone, Copy)]
+pub struct MemoView<'a> {
+    memo: &'a ClassMemo,
+    epoch: u64,
+}
+
 impl ClassMemo {
-    /// Forget every answer: a class file changed.
-    pub fn clear(&self) {
-        self.lock().clear();
+    /// The memo for a request that saw `epoch`. A newer epoch than the memo's
+    /// drops every answer: a class file changed.
+    pub fn at(&self, epoch: u64) -> MemoView<'_> {
+        let mut state = self.lock();
+        if epoch > state.epoch {
+            state.entries.clear();
+            state.epoch = epoch;
+        }
+        MemoView { memo: self, epoch }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<OxablAtom, Entry>> {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self) -> std::sync::MutexGuard<'_, MemoState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
-/// A [`ClassSource`] over the workspace index of a run, with the answers kept
-/// in a [`ClassMemo`] when the base has one.
+impl MemoView<'_> {
+    fn get<T>(&self, name: &IndexName, pick: impl FnOnce(&Entry) -> Option<T>) -> Option<T> {
+        pick(self.memo.lock().entries.get(name.as_written_atom())?)
+    }
+
+    /// Keep an answer, unless a newer epoch began while it was read.
+    fn keep(&self, name: &IndexName, store: impl FnOnce(&mut Entry)) {
+        let mut state = self.memo.lock();
+        if state.epoch == self.epoch {
+            store(
+                state
+                    .entries
+                    .entry(name.as_written_atom().clone())
+                    .or_default(),
+            );
+        }
+    }
+}
+
+/// A [`ClassSource`] over a class source of a run, with the answers kept in a
+/// [`ClassMemo`] when the base has one.
 struct MemoSource<'a> {
-    index: &'a dyn oxabl_semantic::WorkspaceIndex,
-    memo: Option<&'a ClassMemo>,
+    index: &'a dyn ClassSource,
+    memo: Option<MemoView<'a>>,
 }
 
 impl ClassSource for MemoSource<'_> {
@@ -64,18 +109,11 @@ impl ClassSource for MemoSource<'_> {
         let Some(memo) = self.memo else {
             return self.index.class(name);
         };
-        if let Some(answer) = memo
-            .lock()
-            .get(name.as_written_atom())
-            .and_then(|e| e.class.clone())
-        {
+        if let Some(answer) = memo.get(name, |e| e.class.clone()) {
             return answer;
         }
         let answer = self.index.class(name);
-        memo.lock()
-            .entry(name.as_written_atom().clone())
-            .or_default()
-            .class = Some(answer.clone());
+        memo.keep(name, |e| e.class = Some(answer.clone()));
         answer
     }
 
@@ -83,18 +121,11 @@ impl ClassSource for MemoSource<'_> {
         let Some(memo) = self.memo else {
             return self.index.class_members(name);
         };
-        if let Some(answer) = memo
-            .lock()
-            .get(name.as_written_atom())
-            .and_then(|e| e.members.clone())
-        {
+        if let Some(answer) = memo.get(name, |e| e.members.clone()) {
             return answer;
         }
         let answer = self.index.class_members(name);
-        memo.lock()
-            .entry(name.as_written_atom().clone())
-            .or_default()
-            .members = Some(answer.clone());
+        memo.keep(name, |e| e.members = Some(answer.clone()));
         answer
     }
 
@@ -137,7 +168,7 @@ impl Engine<'_, '_, '_, '_> {
         let semantic = &base.navigation.model.semantic;
         base.navigation.run.with_run_index(|index| {
             let source = MemoSource {
-                index,
+                index: &WorkspaceClasses(index),
                 memo: base.classes,
             };
             let typing = Typing {
@@ -176,7 +207,7 @@ impl Engine<'_, '_, '_, '_> {
         };
         base.navigation.run.with_run_index(|index| {
             let source = MemoSource {
-                index,
+                index: &WorkspaceClasses(index),
                 memo: base.classes,
             };
             let mut surfaces: Vec<ClassSurface> = Vec::new();
@@ -336,6 +367,10 @@ impl Typing<'_, '_, '_, '_> {
     fn receiver(&self, end: usize) -> Option<Typed> {
         match self.kind(end) {
             Kind::ThisObject => {
+                // A static routine has no instance: the compiler refuses it.
+                if in_static_routine(self.base, self.scope) {
+                    return None;
+                }
                 let class = self.current?;
                 Some(Typed {
                     class: ClassRef::Local(class),
@@ -367,6 +402,9 @@ impl Typing<'_, '_, '_, '_> {
         }
         let name = self.span(start, end);
         if start == end && name.eq_ignore_ascii_case("super") {
+            if in_static_routine(self.base, self.scope) {
+                return None;
+            }
             let class = self.current?;
             self.symbols()
                 .supertypes(class)
@@ -459,11 +497,49 @@ impl Typing<'_, '_, '_, '_> {
                 resolve_named(self.source, &imports, raw)?
             }
         };
+        let inside = self.is_current(&class);
+        let reach = if !inside && self.inherits_from(&class) {
+            MemberReach::ParentTypeName
+        } else {
+            MemberReach::TypeName
+        };
         Some(Typed {
-            inside: self.is_current(&class),
+            inside,
             class,
-            reach: MemberReach::TypeName,
+            reach,
         })
+    }
+
+    /// Whether the class of the body is a subclass of `class`, by the
+    /// `INHERITS` chain that the index reads. A chain that is cut gives
+    /// false: the list then has fewer members, never a wrong one.
+    fn inherits_from(&self, class: &ClassRef) -> bool {
+        let (Some(current), ClassRef::Named(wanted)) = (self.current, class) else {
+            return false;
+        };
+        let symbols = self.symbols();
+        let written = |n: &oxabl_semantic::SupertypeRef| n.name.as_written().to_string();
+        let mut raw = symbols
+            .supertypes(current)
+            .and_then(|supers| supers.inherits.as_ref().map(written));
+        let mut imports = symbols.imports().cloned().unwrap_or_default();
+        for _ in 0..MAX_SUPERTYPES {
+            let Some(next) = raw.take() else {
+                return false;
+            };
+            let Some(ClassRef::Named(name)) = resolve_named(self.source, &imports, &next) else {
+                return false;
+            };
+            if name == *wanted {
+                return true;
+            }
+            let IndexAnswer::Found(parent) = self.source.class(&name) else {
+                return false;
+            };
+            raw = parent.inherits.as_ref().map(|n| n.as_written().to_string());
+            imports = Arc::clone(&parent.imports);
+        }
+        false
     }
 
     /// A type name from the tokens `from..=to`: a dotted name, nothing else.
@@ -681,4 +757,69 @@ pub fn member_documentation(
                 _ => None,
             })?;
     navigation.member_hover(file, kind, name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A source that answers once the file changed: the epoch of the memo
+    /// moves while the request reads.
+    struct ChangesWhileReading<'a>(&'a ClassMemo);
+
+    impl ClassSource for ChangesWhileReading<'_> {
+        fn class(&self, _name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
+            self.0.at(1);
+            IndexAnswer::NotFound
+        }
+
+        fn class_members(&self, _name: &IndexName) -> IndexAnswer<Arc<[MemberDescriptor]>> {
+            self.0.at(1);
+            IndexAnswer::NotFound
+        }
+
+        fn classes_in(&self, _package: &str) -> ClassList {
+            ClassList::default()
+        }
+    }
+
+    #[test]
+    fn an_answer_read_before_a_file_change_is_not_kept() {
+        let memo = ClassMemo::default();
+        let name = IndexName::new("app.Old");
+        let source = ChangesWhileReading(&memo);
+        let through = MemoSource {
+            index: &source,
+            memo: Some(memo.at(0)),
+        };
+        through.class(&name);
+        through.class_members(&name);
+        // A request of the new epoch finds nothing of the old read.
+        let fresh = memo.at(1);
+        assert!(fresh.get(&name, |e| e.class.clone()).is_none());
+        assert!(fresh.get(&name, |e| e.members.clone()).is_none());
+        // An answer of the new epoch is kept.
+        let fresh_source = MemoSource {
+            index: &NoClass,
+            memo: Some(fresh),
+        };
+        fresh_source.class(&name);
+        assert!(fresh.get(&name, |e| e.class.clone()).is_some());
+    }
+
+    struct NoClass;
+
+    impl ClassSource for NoClass {
+        fn class(&self, _name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
+            IndexAnswer::NotFound
+        }
+
+        fn class_members(&self, _name: &IndexName) -> IndexAnswer<Arc<[MemberDescriptor]>> {
+            IndexAnswer::NotFound
+        }
+
+        fn classes_in(&self, _package: &str) -> ClassList {
+            ClassList::default()
+        }
+    }
 }

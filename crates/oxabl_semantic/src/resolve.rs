@@ -391,17 +391,11 @@ impl<'a> Walker<'a> {
                 is_shared,
                 is_new_global_shared,
                 is_static,
-                access,
                 ..
             } => {
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared)
                     | flag_if(*is_static, SymbolFlags::STATIC);
-                let sym = self.declare_variable(stmt, scope, name, type_source, *extent, flags);
-                if let (Some(sym), Some(access)) = (sym, *access)
-                    && self.tree.get(scope).kind() == ScopeKind::Class
-                {
-                    self.symbols.record_member_access(sym, access);
-                }
+                self.declare_variable(stmt, scope, name, type_source, *extent, flags);
             }
 
             // ---- Parameters (DEFINE [IN|OUT|IN-OUT] PARAMETER ...) --------
@@ -988,7 +982,7 @@ impl<'a> Walker<'a> {
         type_source: &TypeSource,
         extent: Option<u32>,
         flags: SymbolFlags,
-    ) -> Option<SymbolId> {
+    ) {
         // BLOB / CLOB rejection per plan §Type system.
         if let TypeSource::Explicit(dt) = type_source
             && matches!(dt, DataType::Blob | DataType::Clob)
@@ -1040,7 +1034,6 @@ impl<'a> Walker<'a> {
         {
             self.symbols.record_block_defined(id, block_scope);
         }
-        sym
     }
 
     /// Declare the variables that `name AS type` / `name LIKE field` frame
@@ -2076,7 +2069,12 @@ impl<'a> ResolveWalker<'a> {
         let imports = ImportContext::from_statements(program);
         if !imports.is_empty() {
             let imports = Arc::new(imports);
-            self.symbols.record_imports(Arc::clone(&imports));
+            // The table keeps them for the surface walk, which needs an index.
+            // A run with no index has no reader: keeping the last reference
+            // would also move the free of the context into the table's drop.
+            if self.ctx.index_loaded {
+                self.symbols.record_imports(Arc::clone(&imports));
+            }
             self.cross_file_mut().imports = imports;
         }
     }

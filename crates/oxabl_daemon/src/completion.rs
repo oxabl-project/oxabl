@@ -71,8 +71,6 @@ pub struct Base {
     /// What the requests of this base learned about other classes, so none
     /// reads a class file that an earlier one read.
     classes: ClassMemo,
-    /// The [`Bases::class_epoch`] the answers in `classes` are of.
-    classes_epoch: AtomicU64,
 }
 
 impl Base {
@@ -377,17 +375,14 @@ pub fn compute_completion(
     let list = with_base(&base, |navigation| {
         let fragment = query.key.root.is_none() && oxabl_workspace::is_include_fragment(&document);
         // Answers about classes that a file change made wrong are dropped.
-        let epoch = bases.class_epoch.load(Ordering::SeqCst);
-        if base.classes_epoch.swap(epoch, Ordering::SeqCst) != epoch {
-            base.classes.clear();
-        }
+        let classes = base.classes.at(bases.class_epoch.load(Ordering::SeqCst));
         let completion = CompletionBase {
             navigation,
             text: &base.text,
             fragment,
             stale,
             tokens: Some(base.tokens()),
-            classes: Some(&base.classes),
+            classes: Some(classes),
         };
         complete(&request(query, &document, listing), Some(&completion))
     })
@@ -457,7 +452,6 @@ fn make_own_base(
         generation,
         tokens: OnceLock::new(),
         classes: ClassMemo::default(),
-        classes_epoch: AtomicU64::new(0),
     })
 }
 
@@ -618,7 +612,6 @@ fn make_context_base(
         generation,
         tokens: OnceLock::new(),
         classes: ClassMemo::default(),
-        classes_epoch: AtomicU64::new(0),
     })
 }
 

@@ -12,11 +12,12 @@ use std::sync::Arc;
 use oxabl_ast::{AccessModifier, NodeId};
 use rustc_hash::FxHashSet;
 
+use crate::index::ImportCandidate;
 use crate::resolve::{SupertypeLookup, lookup_supertype_in};
 use crate::{
     ClassDescriptor, ClassKind, ImportContext, IndexAnswer, IndexName, IndexedFileId,
-    MemberDescriptor, MemberParam, MemberType, NamespaceId, ResolvedType, ScopeKind, Semantic,
-    SymbolFlags, SymbolId, SymbolKind, SymbolTable, WorkspaceIndex,
+    MemberDescriptor, MemberParam, MemberParamShape, MemberType, NamespaceId, ResolvedType,
+    ScopeKind, Semantic, SymbolFlags, SymbolId, SymbolKind, SymbolTable, WorkspaceIndex,
 };
 
 /// Classes and their own members, by qualified name. The workspace index is
@@ -100,6 +101,9 @@ pub enum MemberReach {
     Instance,
     /// The type name: static members.
     TypeName,
+    /// The type name of a class that the class of the body inherits from:
+    /// its static members, the `PROTECTED` ones included.
+    ParentTypeName,
     /// `THIS-OBJECT` in the class body: instance members, the own private ones
     /// included.
     ThisObject,
@@ -117,7 +121,10 @@ pub struct SurfaceMember {
     /// `Function` for a method, `Property`, `Variable` (a data member),
     /// `Event`, `TempTable`, `Buffer`, `Dataset` or `DataSource`.
     pub kind: SymbolKind,
-    /// The access of the nearest declaration.
+    /// The access of the nearest declaration. For a data member of a class of
+    /// the analysed file it is `Private` whatever it wrote: the symbol table
+    /// keeps no access for a data member, and the own level is always
+    /// reachable.
     pub access: AccessModifier,
     pub is_static: bool,
     /// The nearest class that declares it, qualified.
@@ -178,6 +185,9 @@ struct Declared {
     is_static: bool,
     signature: MemberSignature,
     origin: MemberOrigin,
+    /// The imports of the file that declares it, for the names of its
+    /// parameter types.
+    imports: Arc<ImportContext>,
 }
 
 /// One class of the walk and the members it declares itself.
@@ -217,6 +227,10 @@ impl Header {
     }
 }
 
+/// The most supertypes the walk reads for one surface. A longer chain is not
+/// one oxabl lists: the surface is then incomplete.
+pub const MAX_SUPERTYPES: usize = 64;
+
 /// The members `reach` gives for `class`, own and inherited, nearest first.
 ///
 /// `inside` says that the cursor is in the body of `class` (a class of the
@@ -231,6 +245,7 @@ pub fn class_surface(
     inside: bool,
 ) -> ClassSurface {
     let inside = inside || matches!(reach, MemberReach::ThisObject | MemberReach::Super);
+    debug_assert!(!(inside && reach == MemberReach::ParentTypeName));
     let symbols = &semantic.symbols;
     let mut surface = ClassSurface {
         members: Vec::new(),
@@ -286,7 +301,13 @@ pub fn class_surface(
         }
     }
 
+    let mut read = 0usize;
     while let Some((raw, imports, superclass)) = queue.pop_front() {
+        read += 1;
+        if read > MAX_SUPERTYPES {
+            surface.complete = false;
+            break;
+        }
         let unread = |surface: &mut ClassSurface| {
             if superclass || needs_interfaces {
                 surface.complete = false;
@@ -342,7 +363,7 @@ pub fn class_surface(
         surface.complete = false;
     }
 
-    surface.members = reachable(levels, reach, inside);
+    surface.members = reachable(source, levels, reach, inside);
     surface
 }
 
@@ -430,6 +451,7 @@ fn local_level(symbols: &SymbolTable, tree: &crate::ScopeTree, class: SymbolId) 
         is_enum: false,
         members: Vec::new(),
     };
+    let imports = symbols.imports().cloned().unwrap_or_default();
     let Some(scope) = tree.child(symbol.declared_in, symbol.declaration, kind) else {
         return level;
     };
@@ -457,9 +479,12 @@ fn local_level(symbols: &SymbolTable, tree: &crate::ScopeTree, class: SymbolId) 
                     .method_overloads(anchor)
                     .map_or_else(|| vec![anchor], <[SymbolId]>::to_vec);
                 for overload in overloads {
-                    level
-                        .members
-                        .push(local_declared(symbols, overload, anchor));
+                    level.members.push(local_declared(
+                        symbols,
+                        overload,
+                        anchor,
+                        Arc::clone(&imports),
+                    ));
                 }
             }
             SymbolKind::Property
@@ -468,14 +493,24 @@ fn local_level(symbols: &SymbolTable, tree: &crate::ScopeTree, class: SymbolId) 
             | SymbolKind::TempTable
             | SymbolKind::Buffer
             | SymbolKind::Dataset
-            | SymbolKind::DataSource => level.members.push(local_declared(symbols, anchor, anchor)),
+            | SymbolKind::DataSource => level.members.push(local_declared(
+                symbols,
+                anchor,
+                anchor,
+                Arc::clone(&imports),
+            )),
             _ => {}
         }
     }
     level
 }
 
-fn local_declared(symbols: &SymbolTable, sym: SymbolId, anchor: SymbolId) -> Declared {
+fn local_declared(
+    symbols: &SymbolTable,
+    sym: SymbolId,
+    anchor: SymbolId,
+    imports: Arc<ImportContext>,
+) -> Declared {
     let symbol = symbols.get(sym);
     let flags = symbol.flags;
     let access = if flags.contains(SymbolFlags::PRIVATE) {
@@ -491,10 +526,9 @@ fn local_declared(symbols: &SymbolTable, sym: SymbolId, anchor: SymbolId) -> Dec
     } else if flags.contains(SymbolFlags::PUBLIC) {
         AccessModifier::Public
     } else {
-        // A data member that writes no access is private, as in ABL.
-        symbols
-            .member_access(sym)
-            .unwrap_or(AccessModifier::Private)
+        // A data member keeps no access in the symbol table. The own level
+        // of a surface is always reachable, so no reader depends on it.
+        AccessModifier::Private
     };
     let (ty, class) = match &symbol.data_type {
         None => (MemberType::Untyped, None),
@@ -526,6 +560,7 @@ fn local_declared(symbols: &SymbolTable, sym: SymbolId, anchor: SymbolId) -> Dec
             class,
         },
         origin: MemberOrigin::Local(anchor),
+        imports,
     }
 }
 
@@ -560,6 +595,7 @@ fn named_level(
                     file: descriptor.file,
                     imports: Arc::clone(&descriptor.imports),
                 },
+                imports: Arc::clone(&descriptor.imports),
             })
             .collect(),
     };
@@ -567,33 +603,85 @@ fn named_level(
 }
 
 /// Whether a member declared with `access` on level `depth` is reachable.
-fn is_reachable(access: AccessModifier, depth: usize, inside: bool) -> bool {
+/// `subclass` is the type name of a parent, read from inside a subclass.
+fn is_reachable(access: AccessModifier, depth: usize, inside: bool, subclass: bool) -> bool {
     match (inside, depth) {
         // The own members of the class the cursor is in.
         (true, 0) => true,
-        // What a subclass inherits.
-        (true, _) => matches!(
-            access,
-            AccessModifier::Public | AccessModifier::Protected | AccessModifier::PackageProtected
-        ),
-        (false, _) => access == AccessModifier::Public,
+        // What a subclass inherits. The index does not model packages, so a
+        // `PACKAGE-PROTECTED` member is left out, not guessed.
+        (true, _) => matches!(access, AccessModifier::Public | AccessModifier::Protected),
+        (false, _) => {
+            access == AccessModifier::Public || (subclass && access == AccessModifier::Protected)
+        }
     }
+}
+
+/// The parameters of a method with each class name resolved, so that two
+/// spellings of one type compare equal. `None` when a name does not resolve.
+fn canonical_params(
+    source: &dyn ClassSource,
+    imports: &ImportContext,
+    params: &[MemberParam],
+) -> Option<Vec<MemberParam>> {
+    params
+        .iter()
+        .map(|param| match &param.shape {
+            MemberParamShape::Value(MemberType::Named(raw)) => {
+                let name = canonical_class(source, imports, raw.as_written())?;
+                Some(MemberParam {
+                    mode: param.mode,
+                    shape: MemberParamShape::Value(MemberType::Named(name)),
+                })
+            }
+            _ => Some(param.clone()),
+        })
+        .collect()
+}
+
+/// The class the name `raw` means in a file with `imports`: a class of the
+/// source, or a built-in one. `None` when no candidate is a class.
+fn canonical_class(
+    source: &dyn ClassSource,
+    imports: &ImportContext,
+    raw: &str,
+) -> Option<IndexName> {
+    for candidate in imports.candidates(raw) {
+        let ImportCandidate::Name(name) = candidate else {
+            return None;
+        };
+        if !matches!(source.class(&name), IndexAnswer::NotFound)
+            || crate::builtin_class(name.as_written()).is_some()
+        {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// The members of `levels` that `reach` reaches, one entry for each name (a
 /// method gathers its overloads from every level).
-fn reachable(levels: Vec<Level>, reach: MemberReach, inside: bool) -> Vec<SurfaceMember> {
+fn reachable(
+    source: &dyn ClassSource,
+    levels: Vec<Level>,
+    reach: MemberReach,
+    inside: bool,
+) -> Vec<SurfaceMember> {
     let mut out: Vec<SurfaceMember> = Vec::new();
+    // The imports of the declaring file of each signature of each entry.
+    let mut declared_under: Vec<Vec<Arc<ImportContext>>> = Vec::new();
     // Where each folded name is in `out`; a method and a value of one name are
     // two entries.
     let mut at: rustc_hash::FxHashMap<(bool, String), usize> = rustc_hash::FxHashMap::default();
     // `Super` skips the own level, so the first level it holds is a parent.
     let first_depth = usize::from(reach == MemberReach::Super);
+    let statik = matches!(reach, MemberReach::TypeName | MemberReach::ParentTypeName);
+    let subclass = reach == MemberReach::ParentTypeName;
     for (depth, level) in levels.into_iter().enumerate() {
         let depth = depth + first_depth;
         for declared in level.members {
-            if declared.is_static != (reach == MemberReach::TypeName)
-                || !is_reachable(declared.access, depth, inside)
+            if declared.is_static != statik
+                || !is_reachable(declared.access, depth, inside, subclass)
             {
                 continue;
             }
@@ -602,20 +690,32 @@ fn reachable(levels: Vec<Level>, reach: MemberReach, inside: bool) -> Vec<Surfac
                 Some(&found) if is_method => {
                     let member = &mut out[found];
                     // A declaration with the parameter list of a nearer one is
-                    // the method it overrides or implements.
-                    let same = declared.signature.params.is_some()
-                        && member
-                            .signatures
-                            .iter()
-                            .any(|s| s.params == declared.signature.params);
+                    // the method it overrides or implements. The lists are
+                    // compared with the class names resolved, each under the
+                    // imports of the file that wrote it; a name that does not
+                    // resolve keeps both.
+                    let same = declared.signature.params.as_deref().is_some_and(|params| {
+                        let Some(new) = canonical_params(source, &declared.imports, params) else {
+                            return false;
+                        };
+                        member.signatures.iter().zip(&declared_under[found]).any(
+                            |(signature, imports)| {
+                                signature.params.as_deref().is_some_and(|old| {
+                                    canonical_params(source, imports, old).as_ref() == Some(&new)
+                                })
+                            },
+                        )
+                    });
                     if !same {
                         member.signatures.push(declared.signature);
+                        declared_under[found].push(declared.imports);
                     }
                 }
                 // The nearest declaration of anything else wins.
                 Some(_) => {}
                 None => {
                     at.insert((is_method, declared.folded), out.len());
+                    declared_under.push(vec![declared.imports]);
                     out.push(SurfaceMember {
                         name: declared.name,
                         kind: declared.kind,

@@ -157,7 +157,7 @@ The role decides which members are reachable:
 | --- | --- |
 | The receiver class is the class of the analysed file (`THIS-OBJECT`, or a value of that class) | All own members; `PUBLIC` and `PROTECTED` inherited members |
 | `Super` | `PUBLIC` and `PROTECTED` members of the parent and its supertypes, never the own members |
-| `Instance` or `TypeName` of any other class | `PUBLIC` members only |
+| `Instance` or `TypeName` of any other class | `PUBLIC` members only; for the type name of a parent written in a subclass, also the `PROTECTED` static members |
 
 `PACKAGE-PRIVATE` and `PACKAGE-PROTECTED` members of another class are not
 reachable from outside it: the index does not model packages. A member that

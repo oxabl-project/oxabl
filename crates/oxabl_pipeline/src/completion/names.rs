@@ -444,7 +444,7 @@ fn inherited_wanted(wanted: Wanted, member: &SurfaceMember) -> bool {
 }
 
 /// Whether `scope` is in a static method or property accessor.
-fn in_static_routine(base: &CompletionBase<'_, '_, '_>, scope: ScopeId) -> bool {
+pub(super) fn in_static_routine(base: &CompletionBase<'_, '_, '_>, scope: ScopeId) -> bool {
     let semantic = &base.navigation.model.semantic;
     let tree = &semantic.scope_tree;
     let Some(routine) = tree.ancestors(scope).find(|id| {

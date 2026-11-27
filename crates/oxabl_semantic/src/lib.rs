@@ -68,8 +68,9 @@ pub use signature::{
     ProgramSignatures, Signature, call_param_of, member_params,
 };
 pub use surface::{
-    ClassList, ClassListing, ClassRef, ClassSource, ClassSurface, MemberOrigin, MemberReach,
-    MemberSignature, SurfaceMember, WorkspaceClasses, class_surface, member_class, resolve_named,
+    ClassList, ClassListing, ClassRef, ClassSource, ClassSurface, MAX_SUPERTYPES, MemberOrigin,
+    MemberReach, MemberSignature, SurfaceMember, WorkspaceClasses, class_surface, member_class,
+    resolve_named,
 };
 pub use symbol::{
     ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags,

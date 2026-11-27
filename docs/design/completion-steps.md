@@ -240,11 +240,10 @@ drops what the bases kept. The type is `MemberReach`, not `Reach`
 (`coercion::Reach` exists), and `class_surface` takes a fifth argument,
 `inside`, for the access to the private members of the class the cursor is in.
 The trait of the type hierarchy that was also named `ClassSource` is now
-`oxabl_index::hierarchy::ClassFiles`. A data member of a class of the analysed
-file keeps its access modifier in `SymbolTable::member_access`, and the
-imports of the file and the name of each synthesized class symbol are kept in
-the symbol table (`imports`, `indexed_class_name`), because the surface walk
-needs them after the resolve pass ended. A list of members has every member of
+`oxabl_index::hierarchy::ClassFiles`. The imports of the file and the name of
+each synthesized class symbol are kept in the symbol table (`imports`,
+`indexed_class_name`), because the surface walk needs them after the resolve
+pass ended. A list of members has every member of
 the surface, and the items that match the word come first. The context finder
 reads a keyword that touches a `.` or a `:` on its left (`app.Color:`) as a
 receiver. At a statement start, a word that is a statement and a name in scope
