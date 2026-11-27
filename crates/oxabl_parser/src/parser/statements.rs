@@ -236,6 +236,7 @@ impl Parser<'_> {
     }
 
     fn parse_statement_inner(&mut self) -> ParseResult<Statement> {
+        // Skip empty statements
         if self.check(Kind::Period) {
             self.advance();
             return Ok(self.stmt(StatementKind::Empty));
@@ -249,8 +250,9 @@ impl Parser<'_> {
         if self.is_receiverless_method_call() {
             return self.parse_expression_statement();
         }
-        // CATCH / FINALLY must run before block-label detection because both are in
-        // can_be_identifier(), and `FINALLY: FOR EACH ...` would otherwise look labeled.
+        // CATCH / FINALLY blocks — must be checked before the block-label heuristic because
+        // FINALLY and CATCH are in can_be_identifier(), and `FINALLY: FOR EACH ...` would
+        // otherwise be mis-parsed as a labeled FOR EACH block.
         if self.check(Kind::Catch) {
             return self.parse_catch_block();
         }
@@ -258,6 +260,8 @@ impl Parser<'_> {
             return self.parse_finally_block();
         }
         // Implicit widget method call: :method-name(args) [IN FRAME frame-name].
+        // A bare colon at position 0 indicates a method call on the currently focused
+        // widget (set by a prior CHOOSE or selection-list interaction).
         if self.check(Kind::Colon) {
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
@@ -282,8 +286,12 @@ impl Parser<'_> {
 
     /// Block label (`LABEL: DO: ...`) or numeric-prefixed label (`1TO99: DO: ...`).
     fn try_parse_block_label(&mut self) -> ParseResult<Option<Statement>> {
-        // Check the colon first: it fails for the vast majority of statements,
-        // avoiding the more expensive `can_be_identifier` call.
+        // Block label: `LABEL: DO: ...` or `LABEL: REPEAT: ...`
+        // An identifier (or identifier-like keyword) followed by a colon where
+        // the token after the colon is a block-starting keyword.
+        // Check the colon first: it fails for the vast majority of statements
+        // (e.g. `ASSIGN x = ...` where position +1 is the variable name, not
+        // a colon), avoiding the more expensive `can_be_identifier` call.
         if self.check_at(1, Kind::Colon)
             && Self::can_be_identifier(self.peek().kind)
             && self.block_keyword_follows_label_colon()
@@ -297,8 +305,9 @@ impl Parser<'_> {
                 body: Box::new(body),
             })));
         }
-        // Numeric-prefixed block label: `1TO99-MILLIONS: DO:` splits into
-        // IntegerLiteral + Identifier + Colon.
+        // Numeric-prefixed block label: `1TO99-MILLIONS: DO:` — ABL allows labels that
+        // start with a digit.  The lexer splits this into IntegerLiteral + Identifier + Colon.
+        // Detect and discard the label so the inner block statement parses normally.
         if self.check(Kind::IntegerLiteral)
             && Self::can_be_identifier(self.peek_at(1).kind)
             && self.check_at(2, Kind::Colon)
@@ -327,33 +336,61 @@ impl Parser<'_> {
     /// Dispatch control-flow, event, procedure, assignment, and database statements.
     fn dispatch_control_and_db_statement(&mut self) -> Option<ParseResult<Statement>> {
         match self.peek().kind {
+            // DO blocks
             Kind::Do => Some(self.parse_do_statement()),
+            // IF statement
             Kind::KwIf => Some(self.parse_if_statement()),
+            // Repeat block
             Kind::Repeat => Some(self.parse_repeat_statement()),
+            // LEAVE [label].
             Kind::Leave => Some(self.parse_leave_or_next_statement(true)),
+            // NEXT [label].
             Kind::Next => Some(self.parse_leave_or_next_statement(false)),
+            // QUIT — exits the entire program; no label.
             Kind::Quit => Some(self.parse_quit_statement()),
+            // STOP — raises the STOP condition; no operands. Unreserved, so a variable
+            // named `stop` still falls through to the expression path.
             Kind::Stop if self.check_at(1, Kind::Period) => {
                 self.advance();
                 self.advance();
                 Some(Ok(self.stmt(StatementKind::Empty)))
             }
+            // Bare END [qualifier]. — an orphaned block terminator appearing at the top-level
+            // parse loop. This most commonly occurs when a preprocessor-defined method/procedure
+            // body (e.g. `{&methodType} name {&returnType} (...):`) is incorrectly skipped as a
+            // preprop expression statement, leaving the closing END visible at the top level.
+            // Silently consume END [PROCEDURE|FUNCTION|METHOD|CLASS|INTERFACE|CONSTRUCTOR|DESTRUCTOR]
+            // followed by an optional period.
             Kind::End => Some(self.parse_orphaned_end_statement()),
+            // UNDO [label] [, LEAVE/RETRY/NEXT/RETURN [label]].
             Kind::Undo => Some(self.parse_undo_statement()),
+            // Return
             Kind::KwReturn => Some(self.parse_return_statement()),
+            // FOR EACH
             Kind::KwFor => Some(self.parse_for_each()),
+            // FIND statement
             Kind::Find => Some(self.parse_find_statement()),
+            // CASE statement
             Kind::Case => Some(self.parse_case_statement()),
+            // RUN statement
             Kind::Run => Some(self.parse_run_statement()),
+            // Event system statements
             Kind::Publish => Some(self.parse_publish_statement()),
             Kind::Subscribe => Some(self.parse_subscribe_statement()),
             Kind::Unsubscribe => Some(self.parse_unsubscribe_statement()),
-            // ON in block headers is consumed by DO/FOR/REPEAT; any ON here is a trigger.
+            // ON triggers
+            // NOTE: ON in block headers (DO ON ERROR UNDO) is consumed inside
+            // parse_do_statement/parse_for_each/parse_repeat_statement.
+            // Any ON reaching here is always a trigger statement.
             Kind::On => Some(self.parse_on_statement()),
+            // TRIGGER PROCEDURE
             Kind::Trigger => Some(self.parse_trigger_procedure()),
+            // PROCEDURE statement
             Kind::Procedure => Some(self.parse_procedure()),
             Kind::Throw => Some(self.parse_throw_statement()),
+            // ASSIGN statement
             Kind::Assign => Some(self.parse_assign_statement()),
+            // Database manipulation statements
             Kind::Create => Some(self.parse_create_statement()),
             Kind::Delete => Some(self.parse_delete_statement()),
             Kind::Release => Some(self.parse_release_statement()),
@@ -367,31 +404,68 @@ impl Parser<'_> {
     /// Dispatch modelled I/O, stream, and UI statements.
     fn dispatch_io_and_ui_statement(&mut self) -> Option<ParseResult<Statement>> {
         match self.peek().kind {
+            // DISPLAY statement
             Kind::Display => Some(self.parse_display_statement()),
+            // MESSAGE statement
             Kind::Message => Some(self.parse_message_statement()),
+            // EXPORT / IMPORT — head-parsed; options stay a skipped tail.
             Kind::Export | Kind::Import => Some(self.parse_export_import_statement()),
+            // Stream I/O statements: INPUT/OUTPUT/INPUT-OUTPUT
+            // Disambiguate from parameter direction or function call via lookahead
             Kind::Input | Kind::Output | Kind::InputOutput => self.try_dispatch_stream_io(),
+            // EMPTY TEMP-TABLE tt-name [NO-ERROR].
+            //
+            // Still unmodelled, but the table name is preserved as the statement's
+            // single table candidate (#130). This is the one #130 form whose grammar
+            // the parser walks token by token, so it names the table exactly instead
+            // of harvesting the statement lexically — `NO-ERROR` and the `TEMP-TABLE`
+            // keyword are roles it already knows, not candidates.
             Kind::Empty => Some(self.parse_empty_temp_table()),
+            // COPY-LOB: complex LOB manipulation statement — skip to next statement period.
+            // Uses skip_to_statement_end() (not skip_to_period()) to avoid stopping at
+            // '.' field-access separators inside expressions like doc_data.body_text.
             Kind::CopyLob => Some(self.parse_copy_lob_statement()),
+            // PUT [STREAM s] [UNFORMATTED] expr ... — head-parsed; options stay a skipped tail.
             Kind::Put => Some(self.parse_put_statement()),
+            // FORM ... — head-parsed; the frame phrase stays a skipped tail.
             Kind::Form => Some(self.parse_form_statement()),
+            // VIEW / HIDE / ENABLE / DISABLE — head-parsed widget lists; frames and
+            // options stay a skipped tail. DISABLE TRIGGERS is a different statement.
             Kind::View | Kind::Hide | Kind::Enable => Some(self.parse_widget_list_statement()),
             Kind::Disable if self.peek_nth_non_comment(2).kind != Kind::Triggers => {
                 Some(self.parse_widget_list_statement())
             }
+            // UPDATE / SET — head-parsed; the frame phrase and EDITING block stay a
+            // skipped tail.
             Kind::Update | Kind::Set => Some(self.parse_update_set_statement()),
+            // PROMPT-FOR — head-parsed; the frame phrase and EDITING block stay a
+            // skipped tail.
             Kind::PromptFor => Some(self.parse_prompt_for_statement()),
+            // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
+            // OPEN QUERY q FOR EACH tt ... — split out of the bulk arm below so that
+            // only the query shape is marked as a table candidate (#130). The bulk arm
+            // matches a bare OPEN, and marking every shape routed through it would
+            // widen table lookup past the three forms this issue owns.
+            // `peek_nth_non_comment(2)` rather than a raw offset: a comment between
+            // OPEN and QUERY is legal ABL, and missing the marker there would put the
+            // false positive this issue removes straight back.
             Kind::Open => Some(self.parse_open_statement()),
+            // WAIT-FOR events OF widgets [OR ...] — head-parsed; options stay a skipped tail.
             Kind::WaitFor => Some(self.parse_wait_for_statement()),
+            // APPLY event [TO widget] — head-parsed; options stay a skipped tail.
             Kind::Apply => Some(self.parse_apply_statement()),
+            // PAUSE / DOWN / UP — head-parsed; options stay a skipped tail.
             Kind::Pause => Some(self.parse_pause_statement()),
             Kind::Down | Kind::Up => Some(self.parse_down_up_statement()),
+            // CLEAR / COLOR / GET / CLOSE / ACCUMULATE — head-parsed. One test here
+            // keeps the dispatch cost of every other statement down.
             Kind::Clear
             | Kind::Color
             | Kind::Get
             | Kind::Close
             | Kind::Accumulate
             | Kind::Accum => Some(self.parse_clear_color_get_close_accumulate()),
+            // REPOSITION query-name TO ... — head-parsed; the operands are modelled.
             Kind::Reposition if Self::can_be_identifier(self.peek_at(1).kind) => {
                 Some(self.parse_reposition_statement())
             }
@@ -402,17 +476,36 @@ impl Parser<'_> {
     /// Dispatch OS, system, embedded-SQL, and unmodelled skipped statements.
     fn dispatch_skipped_statement(&mut self) -> Option<ParseResult<Statement>> {
         match self.peek().kind {
+            // DOS / UNIX / VMS statements: launch the OS command interpreter.
+            // Use skip_to_statement_end() so that field-access periods inside VALUE(db.field)
+            // are not mistaken for the statement-terminating period.
+            // VMS is not a reserved keyword so it lexes as Kind::Identifier.
             Kind::Dos | Kind::Unix => {
                 self.advance();
                 let (_, hi) = self.skip_to_statement_end();
                 Some(Ok(self.skipped_stmt(hi)))
             }
+            // COMPILE VALUE(path) [OPTIONS ...] [SAVE] [NO-ERROR]. — compile an ABL program.
+            //
+            // Skipped with **no** harvested names: the operand is a file path and the
+            // trailing words are grammar keywords, so nothing in the statement is a
+            // symbol reference. Harvesting them suppressed the count-gated rules for
+            // any real variable whose name happened to collide — `save`, or a path
+            // segment. The return value is still consumed, so the `#[must_use]`
+            // discipline on the skip helpers is intact.
             Kind::Compile => Some(self.parse_compile_statement()),
+            // PROCESS EVENTS. — flush the ABL event queue.
+            // SYSTEM-DIALOG PRINTER-SETUP [UPDATE var]. — OS print-setup dialog.
             Kind::Process | Kind::SystemDialog => {
                 self.advance();
                 let (_, hi) = self.skip_to_period();
                 Some(Ok(self.skipped_stmt(hi)))
             }
+            // PAGE / DISABLE / ENABLE / ACCUMULATE / DOWN / OPEN / APPLY / STATUS /
+            // CLEAR / HIDE — skip to end.
+            // Uses skip_to_statement_end() (not skip_to_period()) so that field-access dots
+            // like 'order.company' in WHERE clauses are not mistaken for statement terminators.
+            // The OS-* file statements and BELL have path or literal operands, not symbols.
             Kind::Bell
             | Kind::OsDelete
             | Kind::OsCreateDir
@@ -423,10 +516,15 @@ impl Parser<'_> {
                 let (_, hi) = self.skip_to_statement_end();
                 Some(Ok(self.skipped_stmt_value_operands(hi)))
             }
+            // RAW-TRANSFER [BUFFER|FIELD] source TO [BUFFER|FIELD] target [NO-ERROR].
+            // UNDERLINE [STREAM s] field ... [frame-phrase].
+            // Unmodelled; their record and field operands are harvested.
             Kind::RawTransfer | Kind::Underline if !self.check_at(1, Kind::Equals) => {
                 let (_, hi) = self.skip_to_statement_end();
                 Some(Ok(self.skipped_stmt(hi)))
             }
+            // CHOOSE {ROW | FIELD} field ... — a UI statement that waits for the
+            // user. CHOOSE is also a name: only a word after it makes the statement.
             Kind::Choose
                 if matches!(
                     self.peek_nth_non_comment(2).kind,
@@ -436,23 +534,33 @@ impl Parser<'_> {
                 let (_, hi) = self.skip_to_statement_end();
                 Some(Ok(self.skipped_stmt(hi)))
             }
+            // CALL routine [argument] ... — Host Language Call; a name must follow, so
+            // a variable called `call` still reads as an assignment target.
             Kind::Call if Self::is_word_kind(self.peek_at(1).kind) => {
                 let (_, hi) = self.skip_to_statement_end();
                 Some(Ok(self.skipped_stmt(hi)))
             }
+            // BLOCK-LEVEL / ROUTINE-LEVEL ON ERROR UNDO, THROW. — error propagation directives.
             Kind::BlockLevel
             | Kind::RoutineLevel
+            // SEEK INPUT|OUTPUT|stream TO expr|END. — stream positioning, skip to statement end.
             | Kind::Seek
             | Kind::Disable
             | Kind::OsDir
             | Kind::Page
             | Kind::Status
+            // FORMAT/FORM expr. — standalone field display-format spec (e.g. after DEFINE PARAMETER).
             | Kind::Format
+            // CONNECT/DISCONNECT — database connection management statements.
             | Kind::Connect
             | Kind::Disconnect
+            // READKEY [PAUSE n]. — reads next keypress from keyboard.
             | Kind::Readkey
+            // GET-KEY-VALUE section "s" key "k" value var. — Windows registry read.
             | Kind::GetKeyValue
+            // NEXT-PROMPT field [WITH FRAME name]. — legacy UI cursor hint.
             | Kind::NextPrompt
+            // Embedded SQL: SELECT ... FROM ... / INSERT INTO ... — embedded SQL in ABL.
             | Kind::Select
             | Kind::Insert => {
                 let (_, hi) = self.skip_to_statement_end();
@@ -465,29 +573,41 @@ impl Parser<'_> {
     /// Dispatch preprocessor, OO-ABL, definition, include, and identifier-keyword statements.
     fn dispatch_decl_and_preproc_statement(&mut self) -> Option<ParseResult<Statement>> {
         match self.peek().kind {
+            // Preprocessor statements
             Kind::PreprocIf => Some(self.parse_preproc_if_statement()),
             Kind::PreprocScopedDefine | Kind::PreprocGlobalDefine => {
                 Some(self.parse_preproc_define())
             }
             Kind::PreprocUndefine => Some(self.parse_preproc_undefine()),
             Kind::PreprocMessage => Some(self.parse_preproc_message()),
-            // Stray preprocessor block-boundary tokens left after preprocessing.
+            // Stray preprocessor block-boundary tokens left after preprocessing
+            // (e.g. &ENDIF at the end of a file wrapped in &IF DEFINED(...) &THEN).
+            // Consume silently — they have no semantic meaning to the parser.
             Kind::PreprocEndif | Kind::PreprocElse | Kind::PreprocElseif => {
                 self.advance();
                 Some(Ok(self.stmt(StatementKind::Empty)))
             }
+            // OO-ABL statements
             Kind::Class => Some(self.parse_class()),
             Kind::Interface => Some(self.parse_interface()),
             Kind::Using => Some(self.parse_using()),
             Kind::Method => Some(self.parse_method()),
             Kind::Constructor => Some(self.parse_constructor()),
             Kind::Destructor => Some(self.parse_destructor()),
+            // ENUM class-name: DEFINE ENUM ... END ENUM. — ABL enumeration type
             Kind::KwEnum => Some(self.parse_enum_statement()),
+            // Check for traditional define statement
+            // def var name as type [no-undo] [initial value] [extent n].
             Kind::Define => Some(self.parse_define_statement()),
+            // VAR statement: positive lookahead for data type keyword, LIKE, or class name (Identifier)
             Kind::Variable if self.starts_var_statement() => Some(self.parse_var_statement()),
+            // FUNCTION definition: negative lookahead (not an assignment)
             Kind::Function if !self.check_at(1, Kind::Equals) => Some(self.parse_function()),
+            // Include file references: {file.i}, {file.i args}
             Kind::IncludeReference => Some(self.parse_include_reference_statement()),
-            // `{5}:font = 8.` falls through to expression/assignment parsing.
+            // Include positional argument references: {0}, {1}, {2}
+            // But if followed by ':' (member access) or '=' (assignment), fall through to
+            // expression/assignment parsing so that e.g. `{5}:font = 8.` is handled correctly.
             Kind::IncludeArgReference
                 if !matches!(self.peek_at(1).kind, Kind::Colon | Kind::Equals) =>
             {
@@ -548,20 +668,25 @@ impl Parser<'_> {
     /// `UNDO [label] [, LEAVE/RETRY/NEXT/RETURN/THROW ...].`.
     fn parse_undo_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume UNDO
+        // consume optional block label
         if Self::can_be_identifier(self.peek().kind)
             && !self.check(Kind::Comma)
             && !self.check(Kind::Period)
         {
             self.advance();
         }
+        // consume optional action
         let mut kind = StatementKind::Empty;
         if self.check(Kind::Comma) {
             self.advance();
             if self.check(Kind::KwReturn) {
                 self.advance();
+                // UNDO, RETURN NO-APPLY. has no value; the flow builder reads it
+                // from the tokens.
                 if self.check(Kind::NoApply) {
                     self.advance();
                 }
+                // RETURN may have a value expression (e.g. UNDO, RETURN false.)
                 let is_error = self.eat_error_modifier();
                 kind = match (is_error, self.parse_optional_value()) {
                     (true, Some(value)) => StatementKind::Throw(value),
@@ -570,11 +695,13 @@ impl Parser<'_> {
                 };
             } else if matches!(self.peek().kind, Kind::Leave | Kind::Retry | Kind::Next) {
                 self.advance();
+                // consume optional label
                 if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Period) {
                     self.advance();
                 }
             } else if self.check(Kind::Throw) {
                 self.advance();
+                // the thrown expression (e.g. NEW Progress.Lang.AppError(...))
                 if let Some(value) = self.parse_optional_value() {
                     kind = StatementKind::Throw(value);
                 }
@@ -643,9 +770,11 @@ impl Parser<'_> {
     /// `EMPTY [TEMP-TABLE] tt-name [NO-ERROR].`, preserving the table name (#130).
     fn parse_empty_temp_table(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume EMPTY
+        // Optionally consume TEMP-TABLE or the table name directly
         if self.check(Kind::TempTable) {
             self.advance();
         }
+        // Consume the table name
         let mut names = Vec::new();
         if Self::can_be_identifier(self.peek().kind) {
             let tok = self.advance().clone();
@@ -654,6 +783,7 @@ impl Parser<'_> {
                 span: tok_span(&tok),
             });
         }
+        // Optional NO-ERROR
         if self.check(Kind::NoError) {
             self.advance();
         }
@@ -675,6 +805,7 @@ impl Parser<'_> {
     /// `ENUM class-name: DEFINE ENUM ... END ENUM.` — skipped to `END [ENUM].`.
     fn parse_enum_statement(&mut self) -> ParseResult<Statement> {
         self.synchronize();
+        // Skip until `END [ENUM].`; the lexer makes `END ENUM` as two tokens.
         while !self.at_end() {
             if self.check(Kind::End) {
                 self.advance();
@@ -709,6 +840,8 @@ impl Parser<'_> {
     /// Unreserved statement keywords that lex as `Kind::Identifier`: `VMS`, `LOAD`,
     /// `UNLOAD`, `USE`.
     fn try_dispatch_identifier_statement(&mut self) -> Option<ParseResult<Statement>> {
+        // LOAD "key" [BASE-KEY "root"]. / UNLOAD "key". / USE "key". — Windows registry access.
+        // These are not dedicated lexer kinds; detect by identifier name.
         let tok = self.peek();
         let text = &self.source[tok.start..tok.end];
         if text.eq_ignore_ascii_case("vms") {
@@ -728,6 +861,9 @@ impl Parser<'_> {
 
     /// Consume an optional `IN FRAME/BROWSE name` qualifier.
     fn skip_in_frame_or_browse(&mut self) {
+        // Consume optional "IN FRAME/BROWSE framename" qualifier between target and '='
+        // e.g. widget:attribute IN FRAME ftab1 = value NO-ERROR.
+        // e.g. field:screen-value IN BROWSE bname = value.
         if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse) {
             self.advance(); // consume IN
             self.advance(); // consume FRAME or BROWSE
@@ -737,6 +873,7 @@ impl Parser<'_> {
 
     /// An assignment, or an expression evaluated for its effect (a call).
     fn parse_expression_statement(&mut self) -> ParseResult<Statement> {
+        // Parse left-hand assignment, stop before comparison operators
         let left = self.parse_additive()?;
         self.skip_in_frame_or_browse();
 
@@ -758,10 +895,18 @@ impl Parser<'_> {
         if self.check(Kind::Equals) {
             self.advance();
             let value = self.parse_assignment_value()?;
+            // Consume optional IN FRAME/BROWSE qualifier on the value side
+            // e.g. handle = widget:attr IN FRAME fname.
             self.skip_in_frame_or_browse();
+            // ADM2 xp-property path: consecutive accessor assignments without a
+            // leading ASSIGN keyword (gated off when xp-assign is defined).
+            //   ghProp:BUFFER-FIELD('a':U):BUFFER-VALUE = 'x':U
+            //   ghProp:BUFFER-FIELD('b':U):BUFFER-VALUE = 'y':U.
+            // Collect multi-pair into Assign; single pair stays Assignment.
             if self.looks_like_bare_assign_pair_ahead() {
                 return self.parse_bare_multi_assign(left, value);
             }
+            // Consume optional NO-ERROR trailing clause (e.g. x = func() NO-ERROR.)
             self.parse_no_error();
             self.expect_period("Expected '.' to end statement")?;
             return Ok(self.stmt(StatementKind::Assignment {
@@ -770,6 +915,7 @@ impl Parser<'_> {
             }));
         }
 
+        // not an assignment, continue parsing as full expression
         let expr = self.finish_expression(left)?;
         self.finish_expression_statement(expr)
     }
@@ -789,6 +935,8 @@ impl Parser<'_> {
             let target = self.parse_additive()?;
             self.skip_in_frame_or_browse();
             if !self.check(Kind::Equals) {
+                // Lookahead said `=` was ahead; if tokens moved under us,
+                // stop collecting rather than erroring mid-statement.
                 break;
             }
             self.advance(); // '='
@@ -811,14 +959,34 @@ impl Parser<'_> {
     /// Terminate an expression statement, handling trailing `NO-ERROR` and implicit
     /// output / preprocessor-macro continuations.
     fn finish_expression_statement(&mut self, expr: ExprId) -> ParseResult<Statement> {
+        // Consume optional NO-ERROR trailing clause (e.g. handle:method() NO-ERROR.)
         self.parse_no_error();
+        // Fast path: statement ends with period (vast majority of cases).
         if self.check(Kind::Period) {
             self.advance();
             return Ok(self.stmt(StatementKind::ExpressionStatement(expr)));
         }
 
+        // Unified continuation logic for implicit output / preprop macro invocations.
+        //
+        // ABL allows implicit output via juxtaposed expressions — multiple string
+        // literals, field references, function calls, and format keywords (skip,
+        // space, format, etc.) placed side-by-side with no commas.  This is the
+        // dominant pattern in web-facing ABL files (WebSpeed's {&OUT} macro, bare
+        // string output, function calls like get-copy() followed by display items).
+        //
+        // Also handles preprop macros with trailing arguments:
+        //   {&out} "<h1>" smessage "</h1>".
+        //
+        // When a standalone preprop macro like {&leave-logic} expands to a complete
+        // statement at compile time (including its own period), the next token will
+        // be a statement boundary — we return without consuming.
+        //
+        // Safety: relies on the negative guard (can_start_statement) to prevent
+        // absorbing new statements as continuation tokens.
         if !self.at_end() {
             let next = self.peek().kind;
+            // Negative guard: if the next token starts a new statement, don't absorb it.
             let next_is_new_statement = can_start_statement(next)
                 || matches!(
                     next,
@@ -843,7 +1011,8 @@ impl Parser<'_> {
                 let tail = self.skip_tail_to_statement_end();
                 return Ok(self.stmt_with_tail(StatementKind::ExpressionStatement(expr), tail));
             }
-            // Next token is a new statement — treat current expression as already terminated.
+            // Next token is a new statement — treat current expression as
+            // already-terminated (preprop macro expanded its own period).
             return Ok(self.stmt(StatementKind::ExpressionStatement(expr)));
         }
 
@@ -851,20 +1020,30 @@ impl Parser<'_> {
         Ok(self.stmt(StatementKind::ExpressionStatement(expr)))
     }
 
-    // Parse DEFINE statements (VARIABLE, PARAMETER, TEMP-TABLE, BUFFER, DATASET, etc.).
+    // parse define variable as type [no-undo] [initial]
     fn parse_define_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DEFINE
 
+        // Skip optional preprocessor/include-arg references that may appear as modifiers
+        // e.g., `DEF {&ns} VAR` or `DEF {1} SHARED TEMP-TABLE`
         while self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
             self.advance();
         }
 
+        // parse INPUT/OUTPUT/RETURN parameters
         if matches!(
             self.peek().kind,
             Kind::Input | Kind::Output | Kind::InputOutput | Kind::KwReturn
         ) {
             return self.parse_define_parameter();
         }
+        // DEFINE PARAMETER BUFFER b FOR [TEMP-TABLE] tt.
+        //
+        // Buffer parameters carry no direction in ABL — the buffer binds to the
+        // caller's, so INPUT/OUTPUT would be meaningless — which is why this
+        // spelling never reaches the direction-led dispatch above. Recorded as
+        // `Input`, matching what the `DEFINE INPUT PARAMETER BUFFER` path
+        // already produces; nothing downstream distinguishes them.
         if self.check(Kind::Parameter) && self.peek_at(1).kind == Kind::Buffer {
             return self.parse_define_buffer_parameter();
         }
@@ -874,12 +1053,13 @@ impl Parser<'_> {
             let access = modifiers.access.unwrap_or(AccessModifier::Public);
             return self.parse_define_property(access, modifiers.is_static);
         }
+        // DEFINE EVENT
         if self.check(Kind::Event) {
             let access = modifiers.access.unwrap_or(AccessModifier::Public);
             return self.parse_define_event(access, modifiers.is_static, modifiers.is_abstract);
         }
 
-        // SERIALIZABLE / NON-SERIALIZABLE (dataset-specific, before DATASET keyword).
+        // Parse SERIALIZABLE / NON-SERIALIZABLE (dataset-specific, before DATASET keyword)
         let serializable = self.check(Kind::Serializable) && {
             self.advance();
             true
@@ -888,6 +1068,7 @@ impl Parser<'_> {
             self.advance();
             true
         };
+        // DEFINE DATASET
         if self.check(Kind::Dataset) {
             let serial = DatasetSerialFlags {
                 serializable,
@@ -895,28 +1076,42 @@ impl Parser<'_> {
             };
             return self.parse_define_dataset(modifiers, serial);
         }
+        // DEFINE DATA-SOURCE
         if self.check(Kind::DataSource) {
             return self.parse_define_data_source(modifiers.access, modifiers.is_static);
         }
+        // Any other member keeps its access modifier and STATIC.
+        // DEFINE TEMP-TABLE
+        // DEFINE WORKFILE / WORK-TABLE — legacy synonyms for DEFINE TEMP-TABLE.
         if matches!(
             self.peek().kind,
             Kind::TempTable | Kind::Workfile | Kind::WorkTable
         ) {
             return self.parse_define_temp_table(modifiers);
         }
+        // DEFINE BUFFER
         if self.check(Kind::Buffer) {
             return self.parse_define_buffer(modifiers);
         }
+        // DEFINE STREAM
         if self.check(Kind::Stream) {
             return self.parse_define_stream();
         }
+        // DEFINE FRAME
         if self.check(Kind::Frame) {
             return self.parse_define_frame();
         }
+        // DEFINE QUERY — skip to statement end (may contain table.field references).
+        // Marked as a table candidate (#130): the FOR clause names the temp-tables
+        // or tables the query is defined over, and a table used only here would
+        // otherwise look unread.
         if self.check(Kind::Query) {
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_table_stmt(hi));
         }
+        // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
+        // etc. that are not separately handled. The widget name is declared; the
+        // rest of the statement is a skipped tail.
         if self.check(Kind::Identifier) || Self::is_widget_type_kind(self.peek().kind) {
             return self.parse_define_widget();
         }
@@ -929,6 +1124,7 @@ impl Parser<'_> {
         self.advance(); // consume BUFFER
         let name = self.parse_identifier()?;
         self.expect_kind(Kind::KwFor, "Expected FOR after buffer parameter name")?;
+        // FOR TEMP-TABLE tt is the explicit spelling of FOR tt.
         if self.check(Kind::TempTable) {
             self.advance();
         }
@@ -960,6 +1156,10 @@ impl Parser<'_> {
 
     /// Parse optional `[NEW [GLOBAL]] SHARED`, access, `STATIC`, `ABSTRACT`, and `OVERRIDE`.
     fn parse_define_modifiers(&mut self) -> DefineModifiers {
+        // Parse optional NEW [GLOBAL] SHARED / SHARED. These three modes are
+        // mutually exclusive by construction (see ast-invariants.md §12): the
+        // GLOBAL form sets `is_new_global_shared`, plain NEW sets
+        // `is_new_shared`, and the SHARED-only consumer form sets `is_shared`.
         let mut is_new_shared = false;
         let mut is_new_global_shared = false;
         if self.check(Kind::New) && matches!(self.peek_at(1).kind, Kind::Shared | Kind::Global) {
@@ -981,21 +1181,28 @@ impl Parser<'_> {
             false
         };
 
+        // OVERRIDE restates an inherited property and may sit on either side of
+        // the access modifier or of ABSTRACT; like ABSTRACT, it is not recorded.
         self.skip_define_override();
+        // OO-ABL: DEFINE [access] [STATIC] PROPERTY/DATASET/DATA-SOURCE ...
+        // Check for access modifier before PROPERTY/VARIABLE/TEMP-TABLE
         let access = self.parse_access_modifier();
         self.skip_define_override();
 
+        // Check for STATIC after access modifier (or before it — both orders valid)
         let is_static = if self.check(Kind::KwStatic) {
             self.advance();
             true
         } else {
             false
         };
+        // If STATIC came before access modifier, check for access modifier again
         let access = if access.is_none() {
             self.parse_access_modifier().or(access)
         } else {
             access
         };
+        // Check for ABSTRACT (used by DEFINE EVENT)
         let is_abstract = if self.check(Kind::Abstract) {
             self.advance();
             true
@@ -1004,6 +1211,10 @@ impl Parser<'_> {
         };
         self.skip_define_override();
 
+        // Skip preprocessor/include-arg references that expand to modifiers at
+        // compile time (e.g. `DEF SHARED {2} {3} TEMP-TABLE`).  The first skip
+        // loop above handles refs before SHARED; this one handles refs between
+        // SHARED/access/STATIC and the keyword (VARIABLE, TEMP-TABLE, etc.).
         while self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
             self.advance();
         }
@@ -1032,6 +1243,7 @@ impl Parser<'_> {
 
     /// `DEFINE [modifiers] VARIABLE name AS type | LIKE field [options].`.
     fn parse_define_variable(&mut self, modifiers: DefineModifiers) -> ParseResult<Statement> {
+        // DEFINE VARIABLE / DEFINE VAR
         if self.check(Kind::Variable) {
             self.advance(); // consume VARIABLE or VAR
         } else {
@@ -1043,12 +1255,13 @@ impl Parser<'_> {
             });
         }
 
+        // Name (use parse_identifier so compound preprop names like {&pre}inc_whse-time work)
         let name = self.parse_identifier().map_err(|_| ParseError {
             message: "Expected variable name after DEFINE VARIABLE".to_string(),
             span: self.current_span(),
         })?;
 
-        // Optional INIT/INITIAL appearing before AS/LIKE (legacy style).
+        // Consume optional INIT/INITIAL value appearing before AS/LIKE (some legacy code style)
         if self.check(Kind::Initial) {
             self.advance();
             if !matches!(
@@ -1059,12 +1272,18 @@ impl Parser<'_> {
             }
         }
 
+        // parse optional no-undo, initial, and extent
         let mut no_undo = false;
+        // Some coding styles write NO-UNDO before AS/LIKE; consume it here so
+        // parse_type_source() sees the type-source keyword next.
         if self.check(Kind::NoUndo) {
             self.advance();
             no_undo = true;
         }
 
+        // parse type source (AS type | LIKE field), with an `EXTENT` right
+        // after the type. `0` is a dynamic extent, as is a size the parser
+        // cannot read.
         let (type_source, type_extent) = self.parse_type_source_with_extent()?;
         let mut extent = type_extent.map(|e| match e {
             oxabl_ast::ParameterExtent::Fixed(n) => n,
@@ -1111,6 +1330,7 @@ impl Parser<'_> {
                 }
                 Kind::Initial => {
                     self.advance();
+                    // Array initial syntax: INITIAL [val1, val2, ...]
                     if self.check(Kind::LeftBracket) {
                         self.skip_bracketed_initial();
                     } else {
@@ -1119,6 +1339,7 @@ impl Parser<'_> {
                 }
                 Kind::Extent => {
                     self.advance();
+                    // Extent can be followed by number, preprocessor reference, or nothing (dynamic)
                     if self.check(Kind::IntegerLiteral) {
                         let ext_token = self.advance().clone();
                         *extent = Some(
@@ -1127,12 +1348,14 @@ impl Parser<'_> {
                                 .unwrap_or(0),
                         );
                     } else if self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
+                        // e.g. EXTENT {&DEPTH_MAX} — treat as dynamic extent
                         self.advance();
                         *extent = Some(0);
                     }
                 }
                 Kind::Decimals => {
                     self.advance();
+                    // Consume optional integer argument
                     if self.check(Kind::IntegerLiteral) {
                         self.advance();
                     }
@@ -1144,7 +1367,12 @@ impl Parser<'_> {
                     self.advance();
                     self.skip_format_value();
                 }
+                // UI display options (VIEW-AS, SIZE) — when we hit VIEW-AS or SIZE, the
+                // remaining variable options are entirely UI-related.  Skip to the statement
+                // end using the field-access-aware helper so that dots inside numeric
+                // size specs (e.g. 24.4 or .62) are not mistaken for the terminator.
                 Kind::ViewAs | Kind::Size => {
+                    // AppBuilder-style declarations put NO-UNDO after the UI options.
                     let (lo, hi) = self.skip_to_statement_end();
                     *no_undo |= self
                         .tokens
@@ -1266,6 +1494,7 @@ impl Parser<'_> {
     }
 
     fn parse_define_parameter(&mut self) -> ParseResult<Statement> {
+        // Parse direction (INPUT, OUTPUT, INPUT-OUTPUT, or RETURN)
         let direction = match self.peek().kind {
             Kind::Input => {
                 self.advance();
@@ -1286,17 +1515,24 @@ impl Parser<'_> {
             _ => unreachable!("parse_define_parameter called without INPUT/OUTPUT/RETURN token"),
         };
 
+        // Expect PARAMETER keyword
         self.expect_kind(Kind::Parameter, "Expected PARAMETER after INPUT/OUTPUT")?;
 
+        // Dispatch on parameter type
         let param_type = match self.peek().kind {
+            // TABLE FOR tt-name [APPEND] [BIND] [BY-VALUE]
             Kind::Table => self.parse_define_handle_parameter(HandleParamKind::Table, true)?,
+            // TABLE-HANDLE handle [APPEND] [BIND] [BY-VALUE]
             Kind::TableHandle => {
                 self.parse_define_handle_parameter(HandleParamKind::TableHandle, false)?
             }
+            // DATASET FOR ds-name [APPEND] [BIND] [BY-VALUE]
             Kind::Dataset => self.parse_define_handle_parameter(HandleParamKind::Dataset, true)?,
+            // DATASET-HANDLE handle [APPEND] [BIND] [BY-VALUE]
             Kind::DatasetHandle => {
                 self.parse_define_handle_parameter(HandleParamKind::DatasetHandle, false)?
             }
+            // BUFFER buf FOR table
             Kind::Buffer => {
                 self.advance();
                 let name = self.parse_identifier()?;
@@ -1307,6 +1543,7 @@ impl Parser<'_> {
                 let target = self.parse_record_name()?;
                 ParameterType::Buffer { name, target }
             }
+            // Standard: name [INIT value] [NO-UNDO] AS type [NO-UNDO] or LIKE field [NO-UNDO]
             _ => self.parse_define_variable_parameter()?,
         };
 
@@ -1344,10 +1581,12 @@ impl Parser<'_> {
     /// Standard variable parameter: `name [INIT v] [NO-UNDO] AS type | LIKE field [opts]`.
     fn parse_define_variable_parameter(&mut self) -> ParseResult<ParameterType> {
         let name = self.parse_identifier()?;
+        // Consume optional INIT value before AS/LIKE (some code specifies INIT first)
         if self.check(Kind::Initial) {
             self.advance();
             self.parse_expression_dropped();
         }
+        // NO-UNDO may appear before AS/LIKE (e.g. DEF INPUT PARAM p NO-UNDO LIKE t.f)
         let mut no_undo = self.check(Kind::NoUndo);
         if no_undo {
             self.advance();
@@ -1361,6 +1600,7 @@ impl Parser<'_> {
                 }
                 Kind::Decimals => {
                     self.advance();
+                    // Consume optional integer argument
                     if self.check(Kind::IntegerLiteral) {
                         self.advance();
                     }
@@ -1371,6 +1611,7 @@ impl Parser<'_> {
                 }
                 Kind::Initial => {
                     self.advance();
+                    // Consume the initial value expression
                     self.parse_expression_dropped();
                 }
                 Kind::Extent => extent = self.parse_extent_clause(),
@@ -1487,29 +1728,34 @@ impl Parser<'_> {
         self.advance(); // consume TEMP-TABLE, WORKFILE or WORK-TABLE
 
         let name = self.parse_identifier()?;
+        // Optional NO-UNDO
         let no_undo = if self.check(Kind::NoUndo) {
             self.advance();
             true
         } else {
             is_workfile
         };
+        // Parse XML/serialize options (NAMESPACE-URI, SERIALIZE-NAME, etc.)
         let xml_options = self.parse_xml_serialize_options();
         let (like_table, validate, use_indexes) = self.parse_temp_table_like_clause()?;
 
         let mut fields = Vec::new();
         let mut indexes = Vec::new();
+        // Parse FIELD and INDEX definitions until period
         while !self.check(Kind::Period) && !self.at_end() {
             if self.check(Kind::Field) {
                 fields.push(self.parse_temp_table_field()?);
             } else if self.check(Kind::Index) {
                 indexes.push(self.parse_temp_table_index()?);
             } else if can_start_statement(self.peek().kind) {
+                // A statement-starting keyword means we likely missed a period
                 return Err(ParseError {
                     message: "Expected '.' to end DEFINE TEMP-TABLE (found statement keyword)"
                         .to_string(),
                     span: tok_span(self.peek()),
                 });
             } else {
+                // Skip unknown tokens in temp-table definition (forward-compatibility)
                 let lo = self.current;
                 self.advance();
                 self.note_dropped(lo);
@@ -1539,11 +1785,13 @@ impl Parser<'_> {
     fn parse_temp_table_like_clause(
         &mut self,
     ) -> ParseResult<(Option<Identifier>, bool, Vec<UseIndex>)> {
+        // Optional LIKE / LIKE-SEQUENTIAL clause
         if !self.check(Kind::Like) && !self.check(Kind::LikeSequential) {
             return Ok((None, false, Vec::new()));
         }
         self.advance(); // consume LIKE or LIKE-SEQUENTIAL
         let like_table = Some(self.parse_record_name()?);
+        // Optional VALIDATE
         let validate = if self.check(Kind::Validate) {
             self.advance();
             true
@@ -1551,6 +1799,7 @@ impl Parser<'_> {
             false
         };
         let mut use_indexes = Vec::new();
+        // Optional USE-INDEX clauses
         while self.check(Kind::UseIndex) {
             self.advance(); // consume USE-INDEX
             let idx_name = self.parse_identifier()?;
@@ -1588,6 +1837,7 @@ impl Parser<'_> {
             }
         }
 
+        // Parse type source: AS type or LIKE field [VALIDATE]
         let (type_source, validate) = if self.check(Kind::Like) {
             self.advance();
             let source = self.parse_qualified_identifier()?;
@@ -1622,11 +1872,13 @@ impl Parser<'_> {
         &mut self,
         mut extent: Option<u32>,
     ) -> ParseResult<(Option<ExprList>, Option<u32>)> {
+        // Parse optional field options
         let mut initial_value = None;
         loop {
             match self.peek().kind {
                 Kind::Initial => {
                     self.advance();
+                    // Handle array initial syntax: INITIAL [val1, val2, ...]
                     if self.check(Kind::LeftBracket) {
                         self.advance(); // consume [
                         let mut values: SmallVec<[ExprId; 8]> = SmallVec::new();
@@ -1640,6 +1892,7 @@ impl Parser<'_> {
                         self.expect_kind(Kind::RightBracket, "Expected ']' after initial values")?;
                         initial_value = Some(self.push_expr_list(&values));
                     } else {
+                        // Scalar initial value
                         let value = self.parse_expression()?;
                         initial_value = Some(self.push_expr_list(&[value]));
                     }
@@ -1657,12 +1910,15 @@ impl Parser<'_> {
                 }
                 Kind::Decimals => {
                     self.advance();
+                    // Consume optional integer argument
                     if self.check(Kind::IntegerLiteral) {
                         self.advance();
                     }
                 }
+                // Skip known field options we don't store in the AST
                 Kind::Format | Kind::Form | Kind::Label | Kind::ColumnLabel => {
                     self.advance();
+                    // Skip the value (usually a string literal)
                     if self.check(Kind::StringLiteral) {
                         self.advance();
                     }
@@ -1681,9 +1937,12 @@ impl Parser<'_> {
         let mut is_primary = false;
         let mut is_unique = false;
         let mut is_word_index = false;
+        // Optional IS or AS prefix (both valid, or neither)
         if self.check(Kind::Is) || self.check(Kind::KwAs) {
             self.advance();
         }
+        // Parse flags in any order: PRIMARY, UNIQUE, WORD-INDEX.
+        // IS and AS may appear between flags (e.g. "AS UNIQUE IS PRIMARY").
         loop {
             match self.peek().kind {
                 Kind::Primary => {
@@ -1698,6 +1957,7 @@ impl Parser<'_> {
                     self.advance();
                     is_word_index = true;
                 }
+                // IS/AS can precede each flag: "AS UNIQUE IS PRIMARY"
                 Kind::Is | Kind::KwAs => {
                     self.advance();
                 }
@@ -1705,6 +1965,7 @@ impl Parser<'_> {
             }
         }
 
+        // Parse index fields with optional ASC/DESC direction
         let mut index_fields = Vec::new();
         while Self::can_be_identifier(self.peek().kind)
             && !self.check(Kind::Field)
@@ -1771,8 +2032,10 @@ impl Parser<'_> {
             self.parse_record_name().map(BufferTarget::Table)?
         };
 
+        // Parse XML/serialize options (NAMESPACE-URI, SERIALIZE-NAME, etc.)
         let xml_options = self.parse_xml_serialize_options();
 
+        // Parse optional modifiers
         let mut preselect = false;
         let mut label = None;
 
@@ -1786,11 +2049,13 @@ impl Parser<'_> {
                     self.advance();
                     if self.check(Kind::StringLiteral) {
                         let token = self.advance().clone();
+                        // Strip quotes from string literal
                         let raw = &self.source[token.start..token.end];
                         label = Some(raw[1..raw.len() - 1].to_string());
                     }
                 }
                 _ => {
+                    // Skip remaining unknown tokens for forward-compatibility
                     self.advance();
                     if self.check(Kind::StringLiteral) {
                         self.advance();
@@ -1824,8 +2089,10 @@ impl Parser<'_> {
         self.advance(); // consume DATASET
 
         let name = self.parse_identifier()?;
+        // Parse XML/serialize options
         let xml_options = self.parse_xml_serialize_options();
 
+        // Optional REFERENCE-ONLY
         let reference_only = if self.check(Kind::ReferenceOnly) {
             self.advance();
             true
@@ -1833,6 +2100,7 @@ impl Parser<'_> {
             false
         };
 
+        // Expect FOR followed by comma-separated buffer names
         self.expect_kind(Kind::KwFor, "Expected FOR after dataset name")?;
         let mut buffers = vec![self.parse_identifier()?];
         while self.check(Kind::Comma) {
@@ -1840,6 +2108,7 @@ impl Parser<'_> {
             buffers.push(self.parse_identifier()?);
         }
 
+        // Parse DATA-RELATION and PARENT-ID-RELATION clauses
         let mut data_relations = Vec::new();
         let mut parent_id_relations = Vec::new();
 
@@ -1855,6 +2124,7 @@ impl Parser<'_> {
                     span: tok_span(self.peek()),
                 });
             } else {
+                // Skip unknown tokens for forward-compatibility
                 let lo = self.current;
                 self.advance();
                 self.note_dropped(lo);
@@ -1884,17 +2154,21 @@ impl Parser<'_> {
     fn parse_data_relation(&mut self) -> ParseResult<DataRelation> {
         self.advance(); // consume DATA-RELATION
 
+        // Optional relation name (if next token is not FOR)
         let name = if !self.check(Kind::KwFor) && Self::can_be_identifier(self.peek().kind) {
             Some(self.parse_identifier()?)
         } else {
             None
         };
 
+        // FOR parent, child
         self.expect_kind(Kind::KwFor, "Expected FOR in DATA-RELATION")?;
         let parent_buffer = self.parse_identifier()?;
         self.expect_kind(Kind::Comma, "Expected ',' between parent and child buffers")?;
         let child_buffer = self.parse_identifier()?;
 
+        // Flags (REPOSITION, NESTED, etc.) and RELATION-FIELDS may appear in any order.
+        // Parse them all in a unified loop.
         let mut reposition = false;
         let mut nested = false;
         let mut foreign_key_hidden = false;
@@ -1919,6 +2193,7 @@ impl Parser<'_> {
                 Kind::Nested => {
                     self.advance();
                     nested = true;
+                    // FOREIGN-KEY-HIDDEN can only follow NESTED
                     if self.check(Kind::ForeignKeyHidden) {
                         self.advance();
                         foreign_key_hidden = true;
@@ -1958,12 +2233,14 @@ impl Parser<'_> {
         self.expect_kind(Kind::LeftParen, "Expected '(' after RELATION-FIELDS")?;
         loop {
             let parent_field = self.parse_identifier()?;
+            // Optional table.field qualifier (e.g. ttMethod.id)
             if self.check(Kind::Period) && self.is_field_access_ahead() {
                 self.advance();
                 self.advance();
             }
             self.expect_kind(Kind::Comma, "Expected ',' between field pair")?;
             let child_field = self.parse_identifier()?;
+            // Optional table.field qualifier
             if self.check(Kind::Period) && self.is_field_access_ahead() {
                 self.advance();
                 self.advance();
@@ -2221,7 +2498,8 @@ impl Parser<'_> {
         let mut by = None;
         let mut while_condition = None;
 
-        // `DO [FOR b1, b2] [TRANSACTION]`, in either order.
+        // `DO [FOR b1, b2] [TRANSACTION]`, in either order: strongly scoped
+        // buffers and the TRANSACTION keyword.
         let mut transaction = false;
         loop {
             if self.check(Kind::Transaction) {
@@ -2243,7 +2521,9 @@ impl Parser<'_> {
             by = counting.by;
         }
 
-        // WHILE, TRANSACTION and the ON phrases, in any order.
+        // WHILE, TRANSACTION and the ON phrases, in any order:
+        // DO ON ERROR UNDO, LEAVE TRANSACTION WHILE i < 3:
+        // The counting loop may also follow WHILE: DO WHILE more i = 1 TO 10:
         let mut on_actions: SmallVec<[ExprId; 8]> = SmallVec::new();
         loop {
             let before = self.current;
@@ -2271,6 +2551,7 @@ impl Parser<'_> {
 
         self.skip_with_clause_until_block_open();
 
+        // Accept either ':' or '.' to open the DO body (legacy ABL uses '.')
         if self.check(Kind::Period) {
             self.advance(); // consume '.' as body-start
         } else {
@@ -2294,10 +2575,13 @@ impl Parser<'_> {
 
     /// Consume an optional `STOP-AFTER expr` clause on a `DO` header.
     fn skip_do_stop_after(&mut self) {
+        // DO STOP-AFTER expr: — consume STOP-AFTER and its duration argument
+        // STOP-AFTER is an identifier token (not a reserved keyword)
         if self.check(Kind::Identifier) {
             let tok = self.peek().clone();
             if self.source[tok.start..tok.end].eq_ignore_ascii_case("stop-after") {
                 self.advance();
+                // Consume the duration expression (may be integer literal or identifier)
                 if !self.check(Kind::Colon) && !self.at_end() {
                     self.parse_expression_dropped();
                 }
@@ -2307,6 +2591,9 @@ impl Parser<'_> {
 
     /// Skip an optional `WITH ...` frame phrase before a `:` or `.` block opener.
     fn skip_with_clause_until_block_open(&mut self) {
+        // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
+        // The WITH clause can contain many frame options; consume everything until the
+        // ':' or '.' that opens the block body.
         if self.check(Kind::With) {
             self.advance(); // consume WITH
             while !self.at_end() && !self.check(Kind::Colon) && !self.check(Kind::Period) {
@@ -2571,7 +2858,11 @@ impl Parser<'_> {
             }
         }
 
+        // Optional block label before the colon (LABEL: REPEAT)
+        // Already handled at statement dispatch level; nothing extra needed here.
+        // Optional counting loop: REPEAT var = expr TO expr [BY expr]
         let counted = self.skip_repeat_counting_loop();
+        // Optional WHILE, which the counting loop may also follow
         let while_condition = if self.check(Kind::KwWhile) {
             self.advance();
             let condition = self.parse_expression()?;
@@ -2584,15 +2875,20 @@ impl Parser<'_> {
         };
 
         let mut on_actions = self.parse_block_on_phrases();
+        // Optional TRANSACTION keyword (e.g. REPEAT TRANSACTION:), which the ON
+        // phrases may also follow.
         if self.check(Kind::Transaction) {
             self.advance();
             on_actions.extend(self.parse_block_on_phrases());
         }
 
+        // Optional PRESELECT EACH/FIRST/LAST table [lock] [WHERE cond] [lock]
+        // Multiple tables may be comma-joined: PRESELECT EACH t1 NO-LOCK, EACH t2 NO-LOCK
         while self.check(Kind::Preselect) {
             self.skip_repeat_preselect_clause();
         }
 
+        // Expect colon (or period for legacy code)
         if self.check(Kind::Period) {
             self.advance();
         } else {
@@ -2613,31 +2909,40 @@ impl Parser<'_> {
     fn skip_repeat_preselect_clause(&mut self) {
         let preselect_start = self.current;
         self.advance(); // consume PRESELECT
+        // Inner loop: handle comma-joined table entries
         loop {
+            // optional qualifier (EACH/FIRST/LAST)
             if matches!(self.peek().kind, Kind::Each | Kind::First | Kind::Last) {
                 self.advance();
             }
+            // table/buffer name
             if Self::can_be_identifier(self.peek().kind) {
                 self.advance();
             }
+            // optional OF parent-table (buffer join: EACH child OF parent)
             if self.check(Kind::Of) {
                 self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
                     self.advance();
                 }
             }
+            // lock type may appear before WHERE
             self.parse_lock_type();
+            // optional WHERE clause
             if self.check(Kind::KwWhere) {
                 self.advance();
                 self.parse_expression_dropped();
             }
+            // lock type may also appear after WHERE
             self.parse_lock_type();
+            // optional USE-INDEX clause
             while self.check(Kind::UseIndex) {
                 self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
                     self.advance();
                 }
             }
+            // Comma-joined next table entry (EACH/FIRST/LAST follows the comma)?
             if self.check(Kind::Comma)
                 && matches!(self.peek_at(1).kind, Kind::Each | Kind::First | Kind::Last)
             {
@@ -2646,6 +2951,7 @@ impl Parser<'_> {
             }
             break;
         }
+        // optional BREAK BY / BY field [BY field ...] — applies to the whole PRESELECT
         if self.check(Kind::KwBreak) {
             self.advance();
         }
@@ -2792,6 +3098,8 @@ impl Parser<'_> {
 
     fn parse_for_each(&mut self) -> ParseResult<Statement> {
         self.advance(); // Consume FOR
+        // FOR EACH / FOR FIRST / FOR LAST / FOR NEXT / FOR PREV are all valid.
+        // Qualifier may also be omitted: FOR table WHERE ... is valid ABL.
         if matches!(
             self.peek().kind,
             Kind::Each | Kind::First | Kind::Last | Kind::Next | Kind::Prev
@@ -2799,9 +3107,16 @@ impl Parser<'_> {
             self.advance();
         }
 
+        // Parse buffer name — may be a preprocessor reference {&find-orders}, a positional
+        // include argument {1}, a compound name like {&web}order-line (preprop + adjacent
+        // identifier), or a database-qualified name like dictdb._field (db.table dotted form).
+        // parse_qualified_identifier → parse_identifier handles all of these: bare identifiers,
+        // preprop refs, adjacent preprop+identifier compounds, and hyphenated names.
         let buffer = self.parse_qualified_identifier()?;
+        // optional FIELDS / EXCEPT phrase
         self.skip_fields_phrase();
 
+        // optional OF clause
         let of_relation = if self.check(Kind::Of) {
             self.advance();
             Some(self.parse_identifier()?)
@@ -2810,7 +3125,9 @@ impl Parser<'_> {
         };
         self.skip_fields_phrase();
 
+        // Lock type may appear before or after WHERE (ABL is flexible)
         let lock_type_pre = self.parse_lock_type();
+        // USE-INDEX may also come before WHERE
         let used_index_early = self.check(Kind::UseIndex);
         self.skip_use_index_clauses();
         let lock_type_pre = if lock_type_pre != LockType::ShareLock {
@@ -2822,18 +3139,24 @@ impl Parser<'_> {
 
         let where_clause = self.parse_for_each_where(used_index_early)?;
 
+        // Trailing lock type (canonical position); prefer the explicit one
         let lock_type_post = self.parse_lock_type();
         let lock_type = if lock_type_pre != LockType::ShareLock {
             lock_type_pre
         } else {
             lock_type_post
         };
+        // Optional USE-INDEX clause on first table
         self.skip_use_index_clauses();
+        // Re-check lock type after USE-INDEX (ABL allows lock after use-index)
         self.parse_lock_type();
+        // Optional NO-WAIT on first table
         if self.check(Kind::NoWait) {
             self.advance();
         }
 
+        // Everything from here to the block opener is skipped or parsed and
+        // dropped: the joined tables and the BY, WHILE and WITH clauses.
         let header_tail_start = self.current;
         self.skip_for_each_joins();
         let mut on_actions: SmallVec<[ExprId; 8]> = SmallVec::new();
@@ -2861,12 +3184,14 @@ impl Parser<'_> {
     fn skip_use_index_clauses(&mut self) {
         while self.check(Kind::UseIndex) {
             self.advance();
+            // Use parse_identifier() so compound names like {&preproc}-key-name are handled
             self.parse_identifier().ok();
         }
     }
 
     /// Optional explicit or implicit `WHERE` clause on `FOR EACH`.
     fn parse_for_each_where(&mut self, used_index_early: bool) -> ParseResult<Option<ExprId>> {
+        // optional WHERE clause — skip if WHERE is immediately followed by ':' / '.' / sort clause
         if self.check(Kind::KwWhere) {
             self.advance();
             if matches!(
@@ -2895,6 +3220,8 @@ impl Parser<'_> {
             && !used_index_early
             && Self::can_be_identifier(self.peek().kind);
         if implicit_where {
+            // Implicit WHERE: table name came from a preprocessor macro that included WHERE.
+            // The expression parser stops naturally at lock types and clause keywords.
             Ok(self.parse_expression().ok())
         } else {
             Ok(None)
@@ -2903,35 +3230,44 @@ impl Parser<'_> {
 
     /// Skip comma-joined table phrases of `FOR EACH t1 ..., EACH t2 ...`.
     fn skip_for_each_joins(&mut self) {
+        // ABL JOIN: FOR EACH t1 ..., FIRST/EACH/LAST t2 WHERE ... [, ...]
+        // Consume additional joined table phrases separated by commas.
         while self.check(Kind::Comma) {
             self.advance(); // consume ','
+            // Optional qualifier (EACH, FIRST, LAST, NEXT, PREV) for joined table
             if matches!(
                 self.peek().kind,
                 Kind::Each | Kind::First | Kind::Last | Kind::Next | Kind::Prev
             ) {
                 self.advance();
             }
+            // table/buffer name
             if Self::can_be_identifier(self.peek().kind) {
                 self.advance();
             }
             self.skip_fields_phrase();
+            // optional OF clause (may appear before or after lock type)
             if self.check(Kind::Of) {
                 self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
                     self.advance();
                 }
             }
+            // optional lock before WHERE
             self.parse_lock_type();
+            // optional OF clause after lock type (ABL allows: table NO-LOCK OF related)
             if self.check(Kind::Of) {
                 self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
                     self.advance();
                 }
             }
+            // optional WHERE clause
             if self.check(Kind::KwWhere) {
                 self.advance();
                 self.parse_expression_dropped();
             }
+            // trailing lock, USE-INDEX, NO-WAIT
             self.parse_lock_type();
             while self.check(Kind::UseIndex) {
                 self.advance();
@@ -2947,14 +3283,19 @@ impl Parser<'_> {
 
     /// Consume `BREAK`/`GROUP`, `BY`, `WHILE`, `TRANSACTION`, `ON`, and `WITH` on `FOR EACH`.
     fn parse_for_each_trailing_clauses(&mut self, on_actions: &mut SmallVec<[ExprId; 8]>) {
+        // Handle optional BREAK, GROUP, BY, TRANSACTION, WHILE and ON clauses in any order.
+        // ABL allows these interleaved, e.g. TRANSACTION BY field: or BY field TRANSACTION:
+        // GROUP BY is a less common sort grouping clause that behaves like BREAK BY.
         loop {
             if self.check(Kind::KwBreak) || self.check(Kind::Group) {
                 self.advance();
             } else if self.check(Kind::By) {
                 self.advance();
+                // consume the sort field expression (stops at ':' or '.')
                 if !self.check(Kind::Colon) && !self.check(Kind::Period) {
                     self.parse_expression_dropped();
                 }
+                // Optional DESCENDING / ASCENDING
                 if self.check(Kind::Descending) || self.check(Kind::Ascending) {
                     self.advance();
                 }
@@ -2969,15 +3310,23 @@ impl Parser<'_> {
                 break;
             }
         }
+        // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
+        // The WITH clause can contain many frame options; consume everything until the
+        // ':' or '.' that opens the block body.
         self.skip_with_clause_until_block_open();
     }
 
     /// Consume the `:` or `.` opening a `FOR EACH` body (skipping unexpanded preproc tokens).
     fn consume_for_each_opener(&mut self) -> ParseResult<()> {
+        // ABL accepts either ':' or '.' to start the FOR EACH body.
+        // Some code uses 'FOR EACH table WHERE cond NO-LOCK.' with a period.
+        // Also handle cases where a preprocessor reference expands to include the WHERE clause —
+        // in unexpanded source, unrecognized tokens may appear before ':'; skip them.
         if self.check(Kind::Period) || self.check(Kind::Colon) {
             self.advance();
             return Ok(());
         }
+        // Skip unrecognized tokens (e.g. condition from {&preproc} expansion) until ':' or '.'
         while !self.at_end() && !self.check(Kind::Colon) && !self.check(Kind::Period) {
             self.advance();
         }
@@ -2994,9 +3343,12 @@ impl Parser<'_> {
     fn parse_find_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // Consume FIND
 
+        // parse optional find type
         let find_type = self.parse_find_type();
 
-        // Buffer/table name — may be db.table or compound `b-{&preproc}`.
+        // parse buffer/table name — may be database-qualified (dictdb._file) or a compound
+        // like b-{&preproc} (identifier + adjacent Preprop).
+        // Use parse_qualified_identifier to handle db.table dotted forms on the same line.
         let mut buffer = self.parse_qualified_identifier()?;
         if self.check(Kind::Preprop) && self.peek().start == buffer.span.end as usize {
             let pp = self.advance().clone();
@@ -3009,6 +3361,7 @@ impl Parser<'_> {
             buffer.name = self.names.intern(&combined);
         }
 
+        // Optional OF clause: FIND customer OF order — shorthand for related-record find
         if self.check(Kind::Of) {
             self.advance();
             if Self::can_be_identifier(self.peek().kind) {
@@ -3016,13 +3369,19 @@ impl Parser<'_> {
             }
         }
 
+        // parse optional key-value (FIND customer <key> syntax,
+        // equivalent to find customer where customer.primary-index field eq 1)
+        // Key value is present if next token is NOT a clause keyword, lock type, or terminator.
         let key_value = if !self.is_find_clause_start() {
             Some(self.parse_expression()?)
         } else {
             None
         };
 
+        // In ABL, lock type may appear before or after the WHERE clause.
+        // Parse an optional leading lock type, then WHERE, then trailing lock type.
         let lock_type_before = self.parse_lock_type();
+        // USE-INDEX may also come before WHERE
         self.skip_use_index_clauses();
         let lock_type_before = if lock_type_before != LockType::ShareLock {
             self.parse_lock_type();
@@ -3031,6 +3390,7 @@ impl Parser<'_> {
             self.parse_lock_type()
         };
 
+        // parse optional where clause
         let where_clause = if self.check(Kind::KwWhere) {
             self.advance();
             Some(self.parse_expression()?)
@@ -3038,6 +3398,7 @@ impl Parser<'_> {
             None
         };
 
+        // parse trailing lock type (the canonical position); use the first one found
         let lock_type_after = self.parse_lock_type();
         let lock_type = if lock_type_before != LockType::ShareLock {
             lock_type_before
@@ -3045,7 +3406,9 @@ impl Parser<'_> {
             lock_type_after
         };
 
+        // parse optional USE-INDEX clause
         self.skip_use_index_clauses();
+        // lock type may also appear after USE-INDEX
         let lock_type_post = self.parse_lock_type();
         let lock_type = if lock_type != LockType::ShareLock {
             lock_type
@@ -3053,10 +3416,13 @@ impl Parser<'_> {
             lock_type_post
         };
 
+        // parse optional NO-WAIT (can appear before or after NO-ERROR)
         if self.check(Kind::NoWait) {
             self.advance();
         }
+        // parse optional no error
         let no_error = self.parse_no_error();
+        // parse optional NO-WAIT after NO-ERROR
         if self.check(Kind::NoWait) {
             self.advance();
         }
@@ -3104,6 +3470,7 @@ impl Parser<'_> {
     fn parse_case_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CASE
         let expression = self.parse_expression()?;
+        // ABL requires ':' as block opener; some code uses '.' — accept either
         if self.check(Kind::Period) {
             self.advance();
         } else {
@@ -3117,6 +3484,7 @@ impl Parser<'_> {
             self.expect_kind(Kind::Then, "Expected THEN after WHEN value")?;
             let empty_before_end = self.check(Kind::End);
 
+            // parse statements until next WHEN, OTHERWISE, or END
             let mut body = Vec::new();
             while !self.check(Kind::When)
                 && !self.check(Kind::Otherwise)
@@ -3134,6 +3502,7 @@ impl Parser<'_> {
 
             when_branches.push(WhenBranch { values, body });
             if empty_before_end {
+                // An empty last branch ends the CASE; END belongs to the enclosing block.
                 return Ok(self.stmt(StatementKind::Case {
                     expression,
                     when_branches,
@@ -3150,6 +3519,7 @@ impl Parser<'_> {
                 self.parse_block_statement_recovering(&mut body);
             }
             if empty_before_end {
+                // As for an empty WHEN branch, END belongs to the enclosing block.
                 return Ok(self.stmt(StatementKind::Case {
                     expression,
                     when_branches,
@@ -3175,16 +3545,26 @@ impl Parser<'_> {
 
     /// Values after `WHEN` in a `CASE` branch (handles both `OR WHEN` and logical `OR`).
     fn parse_case_when_values(&mut self) -> ParseResult<ExprList> {
+        // Parse the WHEN condition expression.
+        // Use parse_expression() to allow logical OR within the condition
+        // (e.g. WHEN expr1 OR expr2 THEN).
+        // When OR is followed immediately by WHEN (WHEN "a" OR WHEN "b"),
+        // treat it as a multi-value pattern instead.
         let mut values: SmallVec<[ExprId; 8]> = SmallVec::new();
         values.push(self.parse_and()?);
+        // handle WHEN "a" OR WHEN "b" syntax:
+        // only treat OR as a WHEN-separator when the next non-comment token after OR is WHEN
         while self.check(Kind::Or) && self.peek_nth_non_comment(2).kind == Kind::When {
             self.advance(); // consume OR
+            // skip any inline comments between OR and WHEN
             while self.check(Kind::Comment) {
                 self.advance();
             }
             self.advance(); // consume WHEN
             values.push(self.parse_and()?);
         }
+        // If OR remains (logical OR within the WHEN expression), consume the rest
+        // of the condition to avoid leaving it unconsumed before THEN
         while self.check(Kind::Or) {
             self.advance(); // consume OR
             let rhs = self.parse_and()?;
@@ -3192,6 +3572,7 @@ impl Parser<'_> {
                 let lo = self.exprs.get(prev).span.start;
                 let hi = self.prev_end();
                 let combined = self.spanned_expr(lo, hi, ExpressionKind::Or(prev, rhs));
+                // Combine into a logical OR expression using the AST Or variant
                 if let Some(last) = values.last_mut() {
                     *last = combined;
                 }
@@ -3207,12 +3588,17 @@ impl Parser<'_> {
 
         let mut is_prototype = false;
         let mut is_external = false;
+        // Skip optional EXTERNAL "dll-name" clause. Its options may come in any order:
+        // CDECL | PASCAL | STDCALL, ORDINAL n, PERSISTENT, THREAD-SAFE
+        // e.g. PROCEDURE foo EXTERNAL "mylib.dll" CDECL ORDINAL 5:
+        // The DLL name may also be a preprocessor reference: EXTERNAL {&DLL_NAME}
         if self.check(Kind::External) {
             is_prototype = true;
             is_external = true;
             self.skip_procedure_external_clause();
         }
 
+        // Skip optional access modifier: PROCEDURE name PRIVATE: (or PUBLIC/PROTECTED)
         if matches!(
             self.peek().kind,
             Kind::Private | Kind::Public | Kind::Protected
@@ -3220,6 +3606,13 @@ impl Parser<'_> {
             self.advance();
         }
 
+        // Optional super-procedure / external-procedure reference:
+        //   PROCEDURE name IN SUPER:
+        //   PROCEDURE name IN THIS-PROCEDURE:
+        //   PROCEDURE name IN hProc.
+        //   PROCEDURE name IN {&HANDLE}:
+        // Target is elided from the AST (same as EXTERNAL) — name + body remain.
+        // ADM2 prototype includes (smrtprto.i, qryprto.i, …) rely on this form (#65).
         if self.check(Kind::KwIn) {
             is_prototype = true;
             if self.consume_procedure_in_clause()? {
@@ -3232,6 +3625,7 @@ impl Parser<'_> {
             }
         }
 
+        // Accept both ':' and '.' as the body opener (legacy ABL uses '.')
         if self.check(Kind::Colon) || self.check(Kind::Period) {
             self.advance();
         } else {
@@ -3241,16 +3635,20 @@ impl Parser<'_> {
             });
         }
 
+        // parse body until END
         let mut body = Vec::new();
         while !self.check(Kind::End) && !self.at_end() {
             self.parse_block_statement_recovering(&mut body);
         }
 
+        // Recover a missing END rather than discarding the whole PROCEDURE.
         if self.check(Kind::End) {
             self.advance();
+            // END PROCEDURE or just END. both are valid.
             if self.check(Kind::Procedure) {
                 self.advance();
             }
+            // Period is required but may be missing in legacy code — optional.
             if self.check(Kind::Period) {
                 self.advance();
             }
@@ -3273,6 +3671,7 @@ impl Parser<'_> {
     /// Procedure name in a `PROCEDURE` header, including quoted, dotted version, and
     /// `Dataset.Fill`-style suffixed names.
     fn parse_procedure_declared_name(&mut self) -> ParseResult<Identifier> {
+        // Procedure names can be quoted strings: PROCEDURE "checkout":
         let mut name = if self.check(Kind::StringLiteral) {
             let tok = self.advance().clone();
             Identifier {
@@ -3285,10 +3684,16 @@ impl Parser<'_> {
             self.parse_declared_name(true)?
         };
 
+        // Dotted version-number procedure names: e.g. config_18.4.2_extra lexes as
+        // Identifier("config_18") + DecimalLiteral(".4") + DecimalLiteral(".2") + Identifier("_extra").
+        // The name is the source text through the last of these tokens.
         let mut dotted = false;
+        // Every token must touch the one before it, so the name holds no
+        // whitespace or comment.
         while self.check(Kind::DecimalLiteral) && self.peek().start == self.prev_end() as usize {
             self.advance();
             dotted = true;
+            // An underscore/alpha-led segment directly following (e.g. "_data") is a separate Identifier.
             if self.check(Kind::Identifier) && self.peek().start == self.prev_end() as usize {
                 self.advance();
             }
@@ -3301,6 +3706,9 @@ impl Parser<'_> {
             name.span.end = end;
         }
 
+        // Dotted method-name suffix: e.g. "Procedure Dataset.Fill:" where Dataset is a keyword.
+        // Only consume if the next token is a plain identifier or can_be_identifier, and it's on
+        // the same line. Block keywords like END/WHEN/THEN must not be consumed here.
         if self.check(Kind::Period) {
             let period_end = self.token_at(self.current).end;
             if let Some(next_tok) = self.tokens.get(self.current + 1) {
@@ -3323,6 +3731,7 @@ impl Parser<'_> {
     /// Skip `EXTERNAL "dll-name" [CDECL|PASCAL|STDCALL|PERSISTENT|THREAD-SAFE|ORDINAL n]...`.
     fn skip_procedure_external_clause(&mut self) {
         self.advance(); // consume EXTERNAL
+        // DLL name: string literal or preprocessor/include reference
         if self.check(Kind::StringLiteral)
             || self.check(Kind::Preprop)
             || self.check(Kind::IncludeReference)
@@ -3370,6 +3779,9 @@ impl Parser<'_> {
                 span: self.current_span(),
             });
         }
+        // Period-only form is a header/prototype with no body — do not treat
+        // '.' as a legacy body opener (that would swallow following statements
+        // until END). Colon form continues to body-until-END below.
         if self.check(Kind::Period) {
             self.advance();
             return Ok(true);
@@ -3382,6 +3794,7 @@ impl Parser<'_> {
         self.advance(); // consume RUN
 
         let target = self.parse_run_target()?;
+        // parse optional arguments
         let mut arguments = if self.check(Kind::LeftParen) {
             self.parse_run_stmt_arguments(true)?
         } else {
@@ -3390,13 +3803,18 @@ impl Parser<'_> {
 
         let mut mods = self.parse_run_modifiers()?;
 
+        // parse optional argument list that appears after modifiers
+        // (ABL allows: RUN proc IN handle (args). as well as RUN proc (args) IN handle.)
         if arguments.is_empty() && self.check(Kind::LeftParen) {
             arguments = self.parse_run_stmt_arguments(false)?;
         }
 
         self.skip_run_trailing_modifiers(&mut mods.persistent);
+        // parse optional NO-ERROR
         let no_error = self.parse_no_error();
 
+        // Skip any trailing content before the period (e.g. lock-code.lock-rule or extra ')')
+        // and consume the terminating period.
         let mut tail = None;
         if !self.check(Kind::Period) && !self.at_end() {
             tail = self.skip_tail_to_statement_end();
@@ -3422,6 +3840,7 @@ impl Parser<'_> {
 
     /// Target of a `RUN` statement: `VALUE(expr)`, string literal, or bare procedure path.
     fn parse_run_target(&mut self) -> ParseResult<RunTarget> {
+        // Parse target: VALUE(expr), string literal, or procedure name
         if self.check(Kind::Value) {
             self.advance();
             self.expect_kind(Kind::LeftParen, "Expected '(' after VALUE")?;
@@ -3430,17 +3849,25 @@ impl Parser<'_> {
             return Ok(RunTarget::Dynamic(expr));
         }
         if self.check(Kind::StringLiteral) {
+            // String literal target: RUN "my-proc.p".
             let token = self.advance().clone();
+            // Take the name from the lexer's parsed payload rather than
+            // re-slicing between the quotes: an ABL literal may carry a
+            // translation/width suffix (`RUN "my-proc.p":U.`), whose bytes fall
+            // inside the token extent, so a raw slice would yield `my-proc.p":`.
             let name = match token.text(self.source) {
                 Some(text) => text.to_string(),
                 None => self.source[token.start + 1..token.end - 1].to_string(),
             };
+            // The span keeps the quotes (and any suffix) the name drops, so a
+            // diagnostic underlines the literal exactly as it was written.
             return Ok(RunTarget::Literal {
                 id: self.node_id(),
                 name,
                 name_span: tok_span(&token),
             });
         }
+        // Procedure name (may contain hyphens, dots for .p/.w/.r/.i/.cls files)
         let (name, name_span) = self.parse_procedure_name()?;
         Ok(RunTarget::Literal {
             id: self.node_id(),
@@ -3470,6 +3897,7 @@ impl Parser<'_> {
                     }
                     _ => ParameterDirection::Input,
                 };
+                // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE keyword
                 if matches!(
                     self.peek().kind,
                     Kind::Table | Kind::TableHandle | Kind::Dataset | Kind::DatasetHandle
@@ -3478,6 +3906,7 @@ impl Parser<'_> {
                 }
 
                 let expression = self.parse_expression()?;
+                // Consume optional IN FRAME/BROWSE qualifier (e.g. field:handle IN FRAME f)
                 if allow_in_frame {
                     self.skip_in_frame_or_browse();
                 }
@@ -3489,6 +3918,7 @@ impl Parser<'_> {
                     direction,
                     expression,
                 });
+                // Consume optional passing modifiers (BIND, BY-VALUE, BY-REFERENCE, APPEND)
                 while matches!(
                     self.peek().kind,
                     Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
@@ -3499,12 +3929,13 @@ impl Parser<'_> {
                 if self.check(Kind::Comma) {
                     self.advance();
                 } else if last_was_include && !self.check(Kind::RightParen) {
-                    // Include ref expands to an argument plus trailing comma.
+                    // An include reference (e.g. {inc/list-out.i &COMMA}) expands to an
+                    // argument plus a trailing comma — allow any next token to follow.
                 } else if matches!(
                     self.peek().kind,
                     Kind::Input | Kind::Output | Kind::InputOutput | Kind::IncludeReference
                 ) {
-                    // Bare direction keyword or include ref follows without a comma.
+                    // A bare direction keyword or include ref may follow without a comma.
                 } else {
                     break;
                 }
@@ -3516,6 +3947,8 @@ impl Parser<'_> {
 
     /// Optional `IN`, `ON [SERVER]`, `PERSISTENT [SET]`, `ASYNCHRONOUS [...]`, `SET` on `RUN`.
     fn parse_run_modifiers(&mut self) -> ParseResult<RunModifiers> {
+        // Parse optional modifiers in a flexible loop — ABL allows these in varying orders:
+        // IN handle, ON [SERVER] name, PERSISTENT [SET handle], ASYNCHRONOUS [...], SET handle
         let mut mods = RunModifiers {
             in_handle: None,
             persistent: false,
@@ -3529,6 +3962,7 @@ impl Parser<'_> {
                 self.advance();
                 mods.in_handle = Some(self.parse_run_in_handle()?);
             } else if self.check(Kind::On) && Self::can_be_identifier(self.peek_at(1).kind) {
+                // ON SERVER name — or ON handle (AppServer targeting)
                 self.advance();
                 let next_is_server = self.check(Kind::Server);
                 self.advance();
@@ -3560,6 +3994,7 @@ impl Parser<'_> {
                     mods.event_procedure = Some(self.parse_expression()?);
                 }
             } else if self.check(Kind::Set) {
+                // Standalone SET handle (e.g. RUN VALUE(...) SET hHandle ...)
                 self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
                     self.advance();
@@ -3573,6 +4008,7 @@ impl Parser<'_> {
 
     /// Skip `ON [SERVER]`, `SET`, and `PERSISTENT [SET]` appearing after the `RUN` arg list.
     fn skip_run_trailing_modifiers(&mut self, persistent: &mut bool) {
+        // Handle any remaining modifiers after the arg list
         loop {
             if self.check(Kind::On) && Self::can_be_identifier(self.peek_at(1).kind) {
                 self.advance();
@@ -4061,6 +4497,7 @@ impl Parser<'_> {
         while let Some(t) = self.tokens.get(i) {
             match t.kind {
                 Kind::Eof => break,
+                // A period joins a qualified name when a name follows it directly.
                 Kind::Period
                     if !self
                         .tokens
@@ -4088,7 +4525,10 @@ impl Parser<'_> {
         None
     }
 
-    /// `ACCUMULATE expression (aggregate-option... [BY break-group]...)`.
+    /// `ACCUMULATE expression (aggregate-option... [BY break-group]...)`. The
+    /// expression must be one name, or end right before the parenthesis: a name
+    /// followed by `(` would otherwise read as a call. Any other shape leaves the
+    /// statement skipped.
     fn parse_accumulate_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume ACCUMULATE
         let start = self.current;
@@ -4211,7 +4651,8 @@ impl Parser<'_> {
     /// `COPY-LOB [FROM] [FILE | OBJECT] source [STARTING AT n] [FOR n] TO
     /// [FILE | OBJECT] target [OVERLAY AT n [TRIM] | APPEND]
     /// [NO-CONVERT | CONVERT [TARGET CODEPAGE cp] [SOURCE CODEPAGE cp]]
-    /// [NO-ERROR]`.
+    /// [NO-ERROR]`. A source or target that does not parse leaves the statement
+    /// skipped.
     fn parse_copy_lob_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume COPY-LOB
         if self.check(Kind::From) {
@@ -4262,6 +4703,7 @@ impl Parser<'_> {
         options: &mut SmallVec<[ExprId; 8]>,
     ) {
         let source_stop = |k: Kind| matches!(k, Kind::To | Kind::KwFor);
+        // `STARTING AT n` and `FOR n`.
         loop {
             if head.is_some()
                 && self.peek_text_eq_ignore_ascii_case("starting")
@@ -4303,6 +4745,7 @@ impl Parser<'_> {
                 self.advance();
             } else if self.peek_text_eq_ignore_ascii_case("convert") {
                 self.advance();
+                // `TARGET CODEPAGE cp` and `SOURCE CODEPAGE cp`, in either order.
                 while (self.peek_text_eq_ignore_ascii_case("target")
                     || self.peek_text_eq_ignore_ascii_case("source"))
                     && self.peek_nth_non_comment(2).kind != Kind::Period
@@ -4447,6 +4890,12 @@ impl Parser<'_> {
     }
 
     /// The items of a FORM, UPDATE or SET list, each with its format options.
+    /// The list ends at the first token that does not start an item. With
+    /// `targets`, only fields, variables and records are items (constants and
+    /// `^` are passed over) and the expressions of the format options are the
+    /// second result; without, they are items too. A `name AS type` /
+    /// `name LIKE field` item goes to `fields`, or ends the list when there is
+    /// none.
     fn parse_frame_items(
         &mut self,
         targets: bool,
@@ -4518,6 +4967,7 @@ impl Parser<'_> {
         let Some(item) = self.parse_head_item(|_| false) else {
             return false;
         };
+        // `name AS type` and `name LIKE field` declare a frame-only variable.
         if self.check(Kind::KwAs) || self.check(Kind::Like) {
             let (Some(fields), ExpressionKind::Identifier(name)) =
                 (fields, &self.exprs.get(item).kind)
@@ -4563,6 +5013,8 @@ impl Parser<'_> {
                     if self.starts_format_literal() {
                         self.skip_format_value();
                     } else if let Some(e) = self.parse_head_item(|_| false) {
+                        // A non-literal FORMAT/LABEL value is an expression
+                        // (`LABEL v-name`); keep it as an option.
                         dest.push(e);
                     } else {
                         self.current = option;
@@ -4570,6 +5022,8 @@ impl Parser<'_> {
                     }
                 }
                 Kind::ViewAs => {
+                    // `VIEW-AS <widget-type>`, whose own options such as
+                    // `SIZE n BY n` the loop takes on the next pass.
                     let option = self.current;
                     self.advance();
                     if !Self::is_widget_type_kind(self.peek().kind) {
@@ -4645,6 +5099,7 @@ impl Parser<'_> {
     fn parse_frame_at_option(&mut self, dest: &mut SmallVec<[ExprId; 8]>) -> bool {
         let next = self.peek_nth_non_comment(2).kind;
         if matches!(next, Kind::Row | Kind::Column) {
+            // `AT [ROW n] [COLUMN n]`.
             let option = self.current;
             self.advance();
             if !self.consume_at_offset() {
@@ -4657,6 +5112,8 @@ impl Parser<'_> {
             // `AT X x Y y` and `AT v-col` are not modelled.
             return false;
         }
+        // `AT n` or `AT <expression>`: a non-literal
+        // expression is kept as an option.
         let at = self.current;
         self.advance();
         match self.parse_head_item(|_| false) {
@@ -4887,6 +5344,7 @@ impl Parser<'_> {
     fn parse_display_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume DISPLAY
 
+        // Optional STREAM clause: DISPLAY STREAM stream-name ...
         let stream_name = if self.check(Kind::Stream) {
             self.advance();
             Some(self.parse_stream_name()?)
@@ -4897,6 +5355,7 @@ impl Parser<'_> {
         let items = self.parse_display_items()?;
 
         let mut except = Vec::new();
+        // Parse optional EXCEPT clause
         if self.check(Kind::Except) {
             self.advance();
             while !self.check(Kind::With) && !self.check(Kind::Period) && !self.at_end() {
@@ -4905,7 +5364,9 @@ impl Parser<'_> {
         }
 
         let mut frame = None;
+        // Parse optional FRAME clause (may appear without WITH)
         if self.check(Kind::Frame) || self.check(Kind::With) {
+            // Parse optional WITH FRAME clause
             if self.check(Kind::With) {
                 self.advance();
             }
@@ -4913,6 +5374,10 @@ impl Parser<'_> {
                 self.advance();
                 frame = Some(self.parse_identifier()?);
             }
+            // Use skip_to_statement_end() to avoid stopping at field-access dots
+            // inside expressions (e.g. title "..." + table.field + "...").
+            // Skip all WITH options to statement end (handles field-access dots in
+            // expressions like `title "prefix" + table.field + "suffix"`).
             let tail = self.skip_tail_to_statement_end();
             return Ok(self.stmt_with_tail(
                 StatementKind::Display {
@@ -4944,6 +5409,7 @@ impl Parser<'_> {
             && !self.check(Kind::Period)
             && !self.at_end()
         {
+            // Standalone SKIP [n] or SPACE [n] directives between display items
             if self.check(Kind::Skip) || self.check(Kind::Space) {
                 self.advance();
                 if self.check(Kind::IntegerLiteral) {
@@ -4951,13 +5417,18 @@ impl Parser<'_> {
                 }
                 continue;
             }
+            // NO-ATTR-SPACE — display-level option that may appear anywhere in the item list
             if self.check(Kind::NoAttrSpace) {
                 self.advance();
                 continue;
             }
+            // WHEN condition item — condition preceding the display item (pre-WHEN form)
+            // Also handles WHEN cond WITH/FRAME/. where there is no following display item.
             if self.check(Kind::When) {
                 self.advance();
                 self.parse_expression_dropped();
+                // If we're now at a statement terminator, the WHEN was trailing; restart loop
+                // so the outer while condition can exit cleanly.
                 if self.check(Kind::With)
                     || self.check(Kind::Except)
                     || self.check(Kind::Frame)
@@ -4979,6 +5450,8 @@ impl Parser<'_> {
 
     /// Consume per-item display options (`FORMAT`, `WHEN`, `AT`, `VIEW-AS`, etc.).
     fn parse_display_item_options(&mut self) -> ParseResult<Option<ExprId>> {
+        // Skip per-item display options (FORMAT, WHEN, AT, VIEW-AS, etc.)
+        // These can appear in any order after the item expression.
         let mut when_condition = None;
         loop {
             if self.check(Kind::Format)
@@ -4989,18 +5462,24 @@ impl Parser<'_> {
                 self.advance();
                 self.skip_format_value();
             } else if self.check(Kind::When) {
+                // Post-item WHEN condition (can appear after FORMAT or AT options)
                 self.advance();
                 when_condition = Some(self.parse_expression()?);
             } else if self.check(Kind::At) {
+                // AT column-number or @ column-reference
                 self.advance();
                 if !self.check(Kind::Period) && !self.check(Kind::With) {
                     self.parse_expression_dropped();
                 }
             } else if self.check(Kind::ViewAs) {
+                // VIEW-AS widget-type [SIZE[CHARS] n BY m] — consume widget descriptor
                 self.advance();
+                // Consume widget type (text, editor, fill-in, etc.)
+                // TEXT is a keyword but valid as widget type here.
                 if Self::can_be_identifier(self.peek().kind) || self.check(Kind::Text) {
                     self.advance();
                 }
+                // Consume optional SIZE [SIZE-CHARS / CHARS] n BY m
                 while matches!(
                     self.peek().kind,
                     Kind::IntegerLiteral | Kind::DecimalLiteral | Kind::By
@@ -5015,11 +5494,14 @@ impl Parser<'_> {
             } else if self.check(Kind::NoLabels) || self.check(Kind::NoAttrSpace) {
                 self.advance();
             } else if self.check(Kind::Skip) || self.check(Kind::Space) {
+                // SKIP [n] or SPACE [n]
                 self.advance();
                 if self.check(Kind::IntegerLiteral) {
                     self.advance();
                 }
             } else if self.check(Kind::Colon) || self.check(Kind::To) {
+                // COLON n — column position specifier
+                // TO n — ending column specifier
                 self.advance();
                 if self.check(Kind::IntegerLiteral) || self.check(Kind::DecimalLiteral) {
                     self.advance();
@@ -5036,14 +5518,17 @@ impl Parser<'_> {
         self.advance(); // consume MESSAGE
 
         let mut items: SmallVec<[ExprId; 8]> = SmallVec::new();
+        // Parse message items until VIEW-AS, SET, UPDATE, or period
         while !self.check(Kind::ViewAs)
             && !self.check(Kind::Set)
             && !self.check(Kind::Update)
             && !self.check(Kind::Period)
             && !self.at_end()
         {
+            // Recognize SKIP / SKIP(n) as formatting directives — don't treat as identifiers
             if self.check(Kind::Skip) {
                 self.advance();
+                // SKIP(n) — consume the parenthesized integer
                 if self.check(Kind::LeftParen) {
                     self.advance();
                     if self.check(Kind::IntegerLiteral) {
@@ -5058,8 +5543,10 @@ impl Parser<'_> {
             items.push(self.parse_expression()?);
         }
 
+        // Parse optional VIEW-AS ALERT-BOX clause — skip over without failing
         if self.check(Kind::ViewAs) {
             self.advance();
+            // Skip tokens until we hit SET, UPDATE, or period
             while !self.check(Kind::Set)
                 && !self.check(Kind::Update)
                 && !self.check(Kind::Period)
@@ -5071,6 +5558,7 @@ impl Parser<'_> {
 
         let mut set_targets = Vec::new();
         let mut fields = Vec::new();
+        // Parse optional SET or UPDATE variable list
         if self.check(Kind::Set) || self.check(Kind::Update) {
             self.parse_message_set_or_update(&mut set_targets, &mut fields)?;
         }
@@ -5092,7 +5580,9 @@ impl Parser<'_> {
         fields: &mut Vec<FrameField>,
     ) -> ParseResult<()> {
         self.advance(); // consume SET or UPDATE
+        // Parse variable names until period or another clause
         while !self.check(Kind::Period) && !self.at_end() {
+            // Skip FORMAT "string" if present after a variable
             if self.check(Kind::Format) || self.check(Kind::Form) {
                 self.advance();
                 if self.check(Kind::StringLiteral) {
@@ -5100,6 +5590,7 @@ impl Parser<'_> {
                 }
                 continue;
             }
+            // Skip field modifiers: AUTO-RETURN, NO-ECHO, etc.
             if self.check(Kind::AutoReturn) {
                 self.advance();
                 continue;
@@ -5115,6 +5606,7 @@ impl Parser<'_> {
             }
             let name = self.parse_identifier()?;
             let after_name = self.current;
+            // `name AS type` / `name LIKE field` declares the field.
             if self.check(Kind::KwAs) || self.check(Kind::Like) {
                 match self.parse_type_source() {
                     Ok(type_source) => fields.push(FrameField { name, type_source }),
@@ -5370,18 +5862,24 @@ impl Parser<'_> {
     // END [FUNCTION].
     fn parse_function(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume FUNCTION (identifier)
+        // Parse function name
         let name = self.parse_identifier()?;
 
+        // RETURNS / RETURN is optional in ABL function declarations
         if self.check(Kind::Returns) || self.check(Kind::KwReturn) {
             self.advance();
         }
+        // Parse return type
         let return_type = self.parse_data_type()?;
+        // Consume optional EXTENT [n] on the return type (e.g. "CHARACTER EXTENT 5")
         if self.check(Kind::Extent) {
             self.advance();
             if self.check(Kind::IntegerLiteral) {
                 self.advance();
             }
         }
+        // Optional access modifier between return type and parameter list
+        // (e.g., `function name char private (input p as char):`)
         if matches!(
             self.peek().kind,
             Kind::Public
@@ -5394,6 +5892,12 @@ impl Parser<'_> {
             self.advance();
         }
 
+        // Optional parameter list in parentheses. Signature params become
+        // DefineParameter statements prepended onto the function body so the
+        // semantic declare pass binds them into ScopeKind::Function (#68).
+        // Prototypes (FORWARD / IN … / MAP TO …) keep them apart from the body,
+        // which stays empty, so prototype-only symbols do not collide with a
+        // later definition.
         let signature_params = if self.check(Kind::LeftParen) {
             self.parse_parenthesized_params()?
         } else {
@@ -5412,6 +5916,7 @@ impl Parser<'_> {
             ));
         }
 
+        // Accept either ':' or '.' to open the function body (legacy ABL uses '.')
         if self.check(Kind::Colon) || self.check(Kind::Period) {
             self.advance();
         } else {
@@ -5421,6 +5926,7 @@ impl Parser<'_> {
             });
         }
 
+        // Parse body until END; prepend signature params so they bind in-scope.
         let mut body = signature_params;
         while !self.check(Kind::End) && !self.at_end() {
             self.parse_block_statement_recovering(&mut body);
@@ -5445,10 +5951,13 @@ impl Parser<'_> {
     fn try_parse_function_prototype_tail(
         &mut self,
     ) -> ParseResult<Option<Option<Box<SkippedTail>>>> {
+        // FORWARD declaration: FUNCTION name [RETURNS] type [(params)] FORWARD.
+        // FORWARD is an identifier token (not a reserved keyword).
         let is_forward =
             self.check(Kind::Identifier) && self.peek_text_eq_ignore_ascii_case("forward");
         if is_forward {
             self.advance();
+            // FORWARD declarations may end with '.' or ':' (legacy ABL uses ':')
             if self.check(Kind::Period) || self.check(Kind::Colon) {
                 self.advance();
             } else {
@@ -5459,10 +5968,13 @@ impl Parser<'_> {
             }
             return Ok(Some(None));
         }
+        // IN super|this-procedure|handle — external function reference (forward declaration)
+        // e.g. "function name returns type (params) in super."
         if self.check(Kind::KwIn) {
             let tail = self.skip_tail_to_statement_end();
             return Ok(Some(tail));
         }
+        // MAP TO name IN handle — external function mapping (class context)
         if self.check(Kind::Map) {
             while !self.check(Kind::Period) && !self.at_end() {
                 self.advance();
@@ -5649,6 +6161,10 @@ impl Parser<'_> {
     }
 
     /// Parse a RUN target name, returning it alongside its own byte extent.
+    ///
+    /// ABL procedure names can contain hyphens (e.g., `calculate-total`) and may have
+    /// file extensions (e.g., `my-proc.p`). The name ends at the first whitespace or
+    /// comment, so a period followed by whitespace is the statement terminator.
     fn parse_procedure_name(&mut self) -> ParseResult<(String, Span)> {
         let (valid, numeric_start) = self.can_start_procedure_name();
         if !valid {
@@ -5667,6 +6183,8 @@ impl Parser<'_> {
             self.advance();
         }
         if self.check(Kind::Slash) {
+            // Absolute path (or the `/` after leading dots): consume the `/` and
+            // the first path segment.
             self.advance();
             if self.at_segment_start() && self.procedure_name_touches(0) {
                 self.advance();
@@ -5698,6 +6216,9 @@ impl Parser<'_> {
 
     /// Whether the current token can start a `RUN` procedure path, and whether it is numeric.
     fn can_start_procedure_name(&self) -> (bool, bool) {
+        // Procedure names are file paths and can start with any word-like token,
+        // including reserved keywords (e.g., `do/limit.p`, `for/something.p`),
+        // a digit (`3rd/x.p`), a `/` (`RUN /opt/app/batch.p`) or `./` / `../`.
         let first = self.peek().kind;
         let leading_dot = first == Kind::Period
             && matches!(self.peek_at(1).kind, Kind::Period | Kind::Slash)
@@ -5720,6 +6241,9 @@ impl Parser<'_> {
 
     /// Whether token at `offset` directly touches the token before it (no gap or comment).
     fn procedure_name_touches(&self, offset: usize) -> bool {
+        // A name never holds whitespace or a comment, so every later token
+        // must touch the one before it. The check stops the target at
+        // `PERSISTENT`, `ON`, `(`, a comment or the next statement.
         let tok = self.peek_at(offset);
         let before = if offset == 0 {
             self.prev_end() as usize
@@ -5731,6 +6255,16 @@ impl Parser<'_> {
 
     /// Consume `/component` and `.ext` continuations touching the current `RUN` path.
     fn consume_procedure_name_tail(&mut self) {
+        // Further path components (`orders/calc_total.p`, `a.b/c.p`) and dotted
+        // extensions or method names (`my-proc.p`, `Dataset.Fill`, `a/b.c.p`). A
+        // component may start with a digit (`rpt/170summary.p`), which lexes as
+        // an IntegerLiteral followed by an Identifier.
+        //
+        // The period and the word after it must both touch their neighbours: a
+        // statement-terminating period is followed by whitespace, and `RUN` is
+        // usable as an identifier, so `RUN write-header. RUN build-list.` must
+        // not fold the next statement into the target. Block-terminating keywords
+        // like END, WHEN, THEN are excluded even when adjacent.
         loop {
             if self.check(Kind::Slash)
                 && self.procedure_name_touches(0)
@@ -5805,6 +6339,9 @@ impl Parser<'_> {
         };
         let span = tok_span(&token);
 
+        // Include references don't require a period terminator since they are
+        // preprocessor constructs that expand to arbitrary code. But consume
+        // a period if present (common in ABL: `{file.i}.`)
         if self.check(Kind::Period) {
             self.advance();
         }
@@ -6019,6 +6556,9 @@ impl Parser<'_> {
         let access = self
             .parse_access_modifier()
             .unwrap_or(AccessModifier::Public);
+        // Parse optional STATIC, ABSTRACT, OVERRIDE, FINAL flags and access modifiers (in any order).
+        // ABL allows: METHOD OVERRIDE PROTECTED INTEGER name(...) as well as
+        //             METHOD PUBLIC STATIC VOID name(...)
         let mut is_static = false;
         let mut is_abstract = false;
         let mut is_override = false;
@@ -6044,6 +6584,14 @@ impl Parser<'_> {
                         | Kind::IncludeArgReference
                 )
             {
+                // `METHOD PUBLIC FINAL ...`: no subclass may override it.
+                // Re-parse access modifier that appears after qualifier flags
+                // (e.g. "METHOD OVERRIDE PROTECTED")
+                // Preprocessor reference standing in for an access modifier —
+                // e.g. `METHOD {&method-access-type} JsonObject foo(...):`
+                // where `{&method-access-type}` resolves to PUBLIC or PRIVATE.
+                // We don't know the value at parse time; `access` stays at its
+                // default (Public).
                 self.advance();
             } else {
                 break;
@@ -6058,10 +6606,17 @@ impl Parser<'_> {
     }
 
     /// Parse a METHOD definition.
+    ///
+    /// ```text
+    /// `METHOD [access] [STATIC] [ABSTRACT] [OVERRIDE] [FINAL] (VOID | return-type) name (params):`
+    ///     body
+    /// END METHOD.
+    /// ```
     fn parse_method(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume METHOD
         let mods = self.parse_method_modifiers();
 
+        // Parse return type: VOID or a data type
         let return_type = if self.check(Kind::Void) {
             self.advance();
             None
@@ -6073,11 +6628,17 @@ impl Parser<'_> {
         } else {
             None
         };
+        // Parse method name
         let name = self.parse_declared_name(false)?;
+        // Parse parameter list
         let parameters = self.parse_parenthesized_params()?;
 
+        // FORWARD declaration: METHOD … FORWARD. — declares the method with
+        // no body (class-header forward declaration). FORWARD is an identifier
+        // token, not a reserved keyword.
         let is_forward =
             self.check(Kind::Identifier) && self.peek_text_eq_ignore_ascii_case("forward");
+        // Abstract methods have no body — just a period
         let body = if mods.is_abstract {
             self.expect_period("Expected '.' after abstract method signature")?;
             Vec::new()
@@ -6086,9 +6647,11 @@ impl Parser<'_> {
             self.expect_period("Expected '.' after METHOD FORWARD")?;
             Vec::new()
         } else if self.in_interface && self.check(Kind::Period) {
+            // In an interface a signature ends at its period and has no body.
             self.advance();
             Vec::new()
         } else {
+            // Non-abstract: expect ':' or '.' to open the body (legacy ABL uses '.')
             if self.check(Kind::Colon) || self.check(Kind::Period) {
                 self.advance();
             } else {
@@ -6114,6 +6677,17 @@ impl Parser<'_> {
     }
 
     /// Parse a DEFINE PROPERTY statement.
+    ///
+    /// Called after `DEFINE [access] [STATIC] PROPERTY` has been partially consumed.
+    /// The access modifier and static flag are passed in.
+    ///
+    /// ```text
+    /// `DEFINE [access] [STATIC] PROPERTY name AS type [NO-UNDO]`
+    ///     GET.                    -- auto-getter
+    ///     GET: body END GET.      -- computed getter
+    ///     SET.                    -- auto-setter
+    ///     SET: body END SET.      -- computed setter
+    /// ```
     fn parse_define_property(
         &mut self,
         access: AccessModifier,
@@ -6146,6 +6720,7 @@ impl Parser<'_> {
 
     /// Consume `NO-UNDO` and `INITIAL [expr]` options on `DEFINE PROPERTY`.
     fn parse_property_options(&mut self) -> bool {
+        // Consume NO-UNDO and INITIAL [n] in any order (properties can have both)
         let mut no_undo = false;
         loop {
             if self.check(Kind::NoUndo) {
@@ -6153,6 +6728,7 @@ impl Parser<'_> {
                 no_undo = true;
             } else if self.check(Kind::Initial) {
                 self.advance();
+                // INITIAL can be followed by a value expression or nothing
                 if !matches!(
                     self.peek().kind,
                     Kind::NoUndo
@@ -6176,6 +6752,7 @@ impl Parser<'_> {
 
     /// Skip an access modifier directly preceding `accessor` (`GET` or `SET`).
     fn skip_accessor_modifier(&mut self, accessor: Kind) {
+        // Parse GET accessor (with optional leading access modifier, e.g. "protected get.")
         if matches!(
             self.peek().kind,
             Kind::Public
@@ -6197,6 +6774,7 @@ impl Parser<'_> {
             return Ok((None, None));
         }
         self.advance(); // consume GET
+        // Optional parameter list: GET() or GET(INPUT p AS TYPE)
         if self.check(Kind::LeftParen) {
             let mut depth = 1usize;
             self.advance(); // consume '('
@@ -6233,6 +6811,7 @@ impl Parser<'_> {
 
     /// Optional `[access] SET [(params)] (. | : body END [SET].)` clause on `DEFINE PROPERTY`.
     fn parse_property_setter(&mut self) -> ParseResult<PropertySetter> {
+        // Parse SET accessor (with optional leading access modifier, e.g. "private set.")
         self.skip_accessor_modifier(Kind::Set);
         let set_start = self.current_span().start;
         if !self.check(Kind::Set) {
@@ -6243,6 +6822,7 @@ impl Parser<'_> {
             });
         }
         self.advance(); // consume SET
+        // Optional parameter list: SET (INPUT p AS TYPE)
         let parameters = if self.check(Kind::LeftParen) {
             self.parse_parenthesized_params()?
         } else {
@@ -6447,6 +7027,8 @@ impl Parser<'_> {
             }
         }
 
+        // Preserve the optional source clause: `FROM ASSEMBLY` is semantically
+        // different from a workspace lookup through `PROPATH`.
         let source = if self.check(Kind::From) {
             self.parse_using_source()?
         } else {
@@ -7391,13 +7973,21 @@ impl Parser<'_> {
     }
 
     /// Parse INPUT/OUTPUT/INPUT-OUTPUT stream I/O statement.
+    ///
+    /// All three directions share this function:
+    /// 1. Advance past direction keyword
+    /// 2. Optional STREAM stream-name
+    /// 3. Dispatch on operation: FROM / TO / THROUGH / CLOSE
     fn parse_stream_io(&mut self, direction: StreamDirection) -> ParseResult<Statement> {
         self.advance(); // consume INPUT / OUTPUT / INPUT-OUTPUT
 
+        // Optional STREAM stream-name (or a preprocessor reference expanding to a stream name)
+        // e.g. OUTPUT STREAM s-log TO ...  or  OUTPUT {&stream} TO ...
         let stream_name = if self.check(Kind::Stream) {
             self.advance();
             Some(self.parse_stream_name()?)
         } else if self.check(Kind::Preprop) || self.check(Kind::IncludeReference) {
+            // {&stream} used directly as stream name — consume and treat like a named stream
             let tok = self.advance().clone();
             Some(Identifier {
                 span: tok_span(&tok),
@@ -7407,6 +7997,7 @@ impl Parser<'_> {
             None
         };
 
+        // Dispatch on operation
         let operation = if self.check(Kind::From) {
             self.parse_stream_from(direction)?
         } else if self.check(Kind::To) {
@@ -7427,6 +8018,9 @@ impl Parser<'_> {
             });
         };
 
+        // Skip optional trailing clauses: NO-ECHO, CONVERT TARGET "...", PAGE-SIZE n, etc.
+        // Use skip_to_statement_end to avoid stopping at field-access dots
+        // inside VALUE() arguments (e.g. VALUE(warehouse.remote-host-name)).
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(
             StatementKind::StreamIo {
@@ -7475,6 +8069,8 @@ impl Parser<'_> {
             });
         }
         self.advance(); // consume TO
+        // Unix/absolute paths start with '/' (e.g. /usr/tmp/log.txt) — not parseable
+        // as an expression. Consume greedily until period and return an empty IO statement.
         if self.check(Kind::Slash) {
             return Ok(None);
         }
@@ -7495,10 +8091,16 @@ impl Parser<'_> {
         stream_name: Option<Identifier>,
     ) -> ParseResult<Statement> {
         self.advance(); // consume THROUGH/THRU
+        // The THROUGH target may be a raw OS command (e.g. "date +%Z") that
+        // contains tokens invalid in ABL expressions (%, etc.). Try to parse
+        // as an expression; if it fails, skip to the statement end and use an
+        // Unknown placeholder so the rest of the file can still be parsed.
         let target_start = self.current;
         let (target, tail) = match self.parse_expression() {
             Ok(expr) => (expr, self.skip_tail_to_statement_end()),
             Err(_) => {
+                // The failed expression may have consumed tokens before it
+                // gave up, so the tail starts where it did.
                 let (_, hi) = self.skip_to_statement_end();
                 let tail = self.skipped_tail((target_start, hi));
                 let span = self.current_span();
@@ -8375,6 +8977,7 @@ impl Parser<'_> {
         self.expect_kind(Kind::KwFor, "Expected FOR after TRIGGER PROCEDURE")?;
 
         let event = self.parse_trigger_procedure_event()?;
+        // ASSIGN has two mutually exclusive forms
         if event == DbTriggerEvent::Assign {
             return self.parse_trigger_procedure_assign();
         }
@@ -8383,6 +8986,7 @@ impl Parser<'_> {
         let target = self.parse_dotted_name()?;
 
         let mut referencing = TriggerReferencing::default();
+        // Write and replication-write triggers support NEW/OLD BUFFER clauses.
         if matches!(
             event,
             DbTriggerEvent::Write
@@ -8418,6 +9022,7 @@ impl Parser<'_> {
 
     /// Event keyword of `TRIGGER PROCEDURE FOR <event>`, including `REPLICATION-*`.
     fn parse_trigger_procedure_event(&mut self) -> ParseResult<DbTriggerEvent> {
+        // Parse event kind — also check for REPLICATION-* events
         if self.peek().kind == Kind::Identifier {
             if self.peek_text_eq_ignore_ascii_case("replication-create") {
                 self.advance();
@@ -8439,6 +9044,7 @@ impl Parser<'_> {
     /// `TRIGGER PROCEDURE FOR ASSIGN`.
     fn parse_trigger_procedure_assign(&mut self) -> ParseResult<Statement> {
         if self.check(Kind::Of) {
+            // OF table.field form
             self.advance();
             let target = self.parse_dotted_name()?;
             self.expect_period("Expected '.' after TRIGGER PROCEDURE")?;
@@ -8450,6 +9056,7 @@ impl Parser<'_> {
                 old_value_param: None,
             }));
         }
+        // NEW VALUE form
         self.expect_kind(Kind::New, "Expected NEW or OF after ASSIGN")?;
         if self.check(Kind::Value) {
             self.advance();
@@ -8465,6 +9072,7 @@ impl Parser<'_> {
             None
         };
         self.expect_period("Expected '.' after TRIGGER PROCEDURE")?;
+        // Use a placeholder target for the NEW VALUE form
         let target = Identifier {
             name: self.names.intern(""),
             span: self.current_span(),
