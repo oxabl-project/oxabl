@@ -8,7 +8,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use oxabl_lexer::{Kind, TokenValue, tokenize};
+use oxabl_lexer::{Kind, tokenize};
 
 struct Counting;
 
@@ -78,14 +78,7 @@ fn a_lex_does_not_allocate_for_each_literal() {
         tokens
             .iter()
             .filter(|t| t.kind == kind)
-            .map(|t| {
-                assert!(
-                    matches!(t.value, TokenValue::Text { .. }),
-                    "{kind:?} has the value {:?}",
-                    t.value
-                );
-                t.text(&text).expect("the text is in the source")
-            })
+            .map(|t| t.text(&text).expect("the text is in the source"))
             .collect::<Vec<_>>()
     };
     let strings = texts(Kind::StringLiteral);

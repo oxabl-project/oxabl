@@ -615,11 +615,11 @@ fn procedure_names(source: &str, out: &mut FxHashSet<Box<str>>) {
         // The lexer reads the abbreviations as plain words.
         let keyword = pair[0].kind == Kind::Procedure
             || (pair[0].kind == Kind::Identifier
-                && is_procedure_abbreviation(&source[pair[0].start..pair[0].end]));
+                && is_procedure_abbreviation(pair[0].slice(source)));
         if !keyword {
             continue;
         }
-        let word = source[pair[1].start..pair[1].end].trim_matches(['"', '\'']);
+        let word = pair[1].slice(source).trim_matches(['"', '\'']);
         if word.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
             out.insert(IndexName::new(word).as_str().into());
         }
@@ -703,7 +703,7 @@ fn new_shared_said_at(source: &str) -> impl Iterator<Item = usize> {
 fn tokens_through(source: &str, last: usize) -> Vec<Token> {
     let mut tokens = Vec::new();
     for mut token in oxabl_lexer::Lexer::new(source) {
-        let stop = token.kind == Kind::Define && token.start > last;
+        let stop = token.kind == Kind::Define && token.start as usize > last;
         if stop {
             token.kind = Kind::Eof;
         }

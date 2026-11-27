@@ -163,19 +163,19 @@ pub fn database_hints(
 /// `span` from its first to its last token that is not a comment: the main
 /// block's span holds the file's leading comments and trailing lines.
 fn trim(tokens: &[Token], span: Span) -> Span {
-    let first = tokens.partition_point(|t| (t.start as u32) < span.start);
-    let last = tokens.partition_point(|t| (t.end as u32) <= span.end);
+    let first = tokens.partition_point(|t| t.start < span.start);
+    let last = tokens.partition_point(|t| t.end <= span.end);
     let mut inside = tokens[first..last.max(first)]
         .iter()
         .filter(|t| !matches!(t.kind, Kind::Comment | Kind::Eof));
     match (inside.next(), inside.next_back()) {
         (Some(a), Some(b)) => Span {
-            start: a.start as u32,
-            end: b.end as u32,
+            start: a.start,
+            end: b.end,
         },
         (Some(a), None) => Span {
-            start: a.start as u32,
-            end: a.end as u32,
+            start: a.start,
+            end: a.end,
         },
         _ => span,
     }

@@ -93,7 +93,7 @@ impl Engine<'_, '_, '_, '_> {
                 target: Some(token),
             } => {
                 let token = &self.tokens[*token];
-                let name = &self.request.text[token.start..token.end];
+                let name = token.slice(self.request.text);
                 tree.resolve_name(scope, NamespaceId::Values, name)
                     .and_then(|sym| symbols.get(sym).data_type.clone())
                     .filter(known)
@@ -188,7 +188,7 @@ impl Engine<'_, '_, '_, '_> {
     /// the statement at the cursor: its definition, or a `FORWARD`.
     fn declared_before(&self, name: &str) -> bool {
         let text = self.request.text;
-        let window = self.found.window_start as usize;
+        let window = self.found.window_start;
         let count = self.tokens.len();
         for i in 0..count.saturating_sub(1) {
             let next = &self.tokens[i + 1];
@@ -196,7 +196,7 @@ impl Engine<'_, '_, '_, '_> {
                 break;
             }
             if self.tokens[i].kind == oxabl_lexer::Kind::Function
-                && text[next.start..next.end].eq_ignore_ascii_case(name)
+                && next.slice(text).eq_ignore_ascii_case(name)
             {
                 return true;
             }

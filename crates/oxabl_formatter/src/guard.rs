@@ -27,31 +27,12 @@
 //! because comments are trivia. U2's no-loss/no-duplication invariant carries
 //! that guarantee instead.
 
-use oxabl_lexer::{Kind, Token, TokenValue, tokenize};
+use oxabl_lexer::{Kind, Token, tokenize};
 
-struct Tok<'a> {
-    kind: Kind,
-    text: &'a str,
-    value: Value<'a>,
-}
-
-/// The value of a token, with the text of a [`TokenValue::Text`] read from
-/// its source, because the two sources place it at different offsets.
-enum Value<'a> {
-    /// `None` is a text that could not be read. It equals nothing, so the
-    /// guard fails closed.
-    Text(Option<&'a str>),
-    Other(&'a TokenValue),
-}
-
-impl PartialEq for Value<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Value::Text(Some(a)), Value::Text(Some(b))) => a == b,
-            (Value::Other(a), Value::Other(b)) => a == b,
-            _ => false,
-        }
-    }
+/// Compare two text payloads read from their sources; unreadable `None` equals
+/// nothing so the guard fails closed.
+fn texts_equal(a: Option<&str>, b: Option<&str>) -> bool {
+    matches!((a, b), (Some(a), Some(b)) if a == b)
 }
 
 fn is_literal(kind: Kind) -> bool {
@@ -109,12 +90,13 @@ fn literal_tab_columns(src: &str, toks: &[Token]) -> Vec<u8> {
     let bytes = src.as_bytes();
     let mut out = Vec::new();
     for t in toks.iter().filter(|t| t.kind == Kind::StringLiteral) {
-        for (i, _) in bytes[t.start..t.end]
+        let start = t.start as usize;
+        for (i, _) in bytes[t.range()]
             .iter()
             .enumerate()
             .filter(|(_, b)| **b == b'\t')
         {
-            let at = t.start + i;
+            let at = start + i;
             let line_start = bytes[..at]
                 .iter()
                 .rposition(|b| *b == b'\n')
@@ -125,31 +107,31 @@ fn literal_tab_columns(src: &str, toks: &[Token]) -> Vec<u8> {
     out
 }
 
-/// Build the comparison stream from `src` and a pre-computed token slice,
-/// dropping trivia. Borrows the tokens rather than owning them so the caller can
-/// share one tokenization of the input across the printer and this guard.
-fn stream_from<'a>(src: &'a str, toks: &'a [Token]) -> Vec<Tok<'a>> {
+/// Filter trivia from a pre-computed token slice.
+fn stream_from(toks: &[Token]) -> Vec<Token> {
     toks.iter()
+        .copied()
         .filter(|t| t.kind != Kind::Comment && t.kind != Kind::Eof)
-        .map(|t| Tok {
-            kind: t.kind,
-            text: &src[t.start..t.end],
-            value: match t.value {
-                TokenValue::Text { .. } => Value::Text(t.text(src)),
-                ref other => Value::Other(other),
-            },
-        })
         .collect()
 }
 
-fn tokens_equal(a: &Tok, b: &Tok) -> bool {
+fn tokens_equal(src_a: &str, a: Token, src_b: &str, b: Token) -> bool {
     if a.kind != b.kind {
         return false;
     }
     if is_literal(a.kind) {
-        a.value == b.value
+        match a.kind {
+            Kind::StringLiteral | Kind::DateLiteral => texts_equal(a.text(src_a), b.text(src_b)),
+            Kind::IntegerLiteral | Kind::BigIntLiteral => {
+                a.slice(src_a) == b.slice(src_b) || a.integer_value(src_a) == b.integer_value(src_b)
+            }
+            Kind::DecimalLiteral => {
+                a.slice(src_a) == b.slice(src_b) || a.decimal_value(src_a) == b.decimal_value(src_b)
+            }
+            _ => true,
+        }
     } else if is_text_compared(a.kind) {
-        a.text == b.text
+        a.slice(src_a) == b.slice(src_b)
     } else {
         // Keyword / operator / punctuation: same kind is enough.
         true
@@ -182,18 +164,20 @@ pub(crate) fn preserves_with_input_tokens(
     }
     let candidate_tokens = tokenize(candidate);
     compare(
-        &stream_from(input, input_tokens),
-        &stream_from(candidate, &candidate_tokens),
+        input,
+        &stream_from(input_tokens),
+        candidate,
+        &stream_from(&candidate_tokens),
     ) && literal_tab_columns(input, input_tokens)
         == literal_tab_columns(candidate, &candidate_tokens)
 }
 
 /// Kind-aware comparison of two non-trivia token streams under the KTD4 rules.
-fn compare(a: &[Tok], b: &[Tok]) -> bool {
+fn compare(src_a: &str, a: &[Token], src_b: &str, b: &[Token]) -> bool {
     let (mut i, mut j) = (0, 0);
     let mut prev_end = false;
     while i < a.len() && j < b.len() {
-        if tokens_equal(&a[i], &b[j]) {
+        if tokens_equal(src_a, a[i], src_b, b[j]) {
             prev_end = a[i].kind == Kind::End;
             i += 1;
             j += 1;
@@ -227,10 +211,10 @@ mod tests {
 
     #[test]
     fn an_unreadable_text_equals_nothing() {
-        assert!(Value::Text(None) != Value::Text(None));
-        assert!(Value::Text(Some("a")) == Value::Text(Some("a")));
-        assert!(Value::Text(Some("a")) != Value::Text(Some("b")));
-        assert!(Value::Text(Some("a")) != Value::Text(None));
+        assert!(!texts_equal(None, None));
+        assert!(texts_equal(Some("a"), Some("a")));
+        assert!(!texts_equal(Some("a"), Some("b")));
+        assert!(!texts_equal(Some("a"), None));
     }
 
     #[test]

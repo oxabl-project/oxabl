@@ -496,13 +496,13 @@ impl<'a> Walker<'a> {
         let mut tokens = self
             .tokens_in(span)
             .iter()
-            .filter(|t| t.kind != Kind::Comment && t.start >= from as usize);
+            .filter(|t| t.kind != Kind::Comment && t.start >= from);
         tokens.find(|t| t.kind == Kind::Extent)?;
         Some(
             tokens
                 .next()
                 .filter(|t| t.kind == Kind::IntegerLiteral)
-                .and_then(|t| self.source[t.start..t.end].parse().ok())
+                .and_then(|t| t.slice(self.source).parse().ok())
                 .unwrap_or(0),
         )
     }
@@ -673,10 +673,8 @@ impl<'a> Walker<'a> {
     /// The tokens of `span`, comments included. Tokens are in source order, so
     /// the range is two binary searches.
     fn tokens_in(&self, span: Span) -> &'a [Token] {
-        let lo = self
-            .tokens
-            .partition_point(|t| t.start < span.start as usize);
-        let n = self.tokens[lo..].partition_point(|t| t.start < span.end as usize);
+        let lo = self.tokens.partition_point(|t| t.start < span.start);
+        let n = self.tokens[lo..].partition_point(|t| t.start < span.end);
         &self.tokens[lo..lo + n]
     }
 
@@ -721,7 +719,7 @@ impl<'a> Walker<'a> {
         let selection = token_span(name);
         self.make(
             OutlineKind::Query,
-            &self.source[name.start..name.end],
+            name.slice(self.source),
             None,
             span,
             Some(selection),
@@ -736,18 +734,18 @@ impl<'a> Walker<'a> {
             return None;
         }
         let first = tokens.next_if(|t| !matches!(t.kind, Kind::Period | Kind::Colon))?;
-        let mut name = self.source[first.start..first.end].to_string();
+        let mut name = first.slice(self.source).to_string();
         let mut end = first.end;
         while let Some(token) = tokens.next_if(|t| t.start == end && t.kind != Kind::Colon) {
-            name.push_str(&self.source[token.start..token.end]);
+            name.push_str(token.slice(self.source));
             end = token.end;
         }
         let flags = tokens
-            .next_if(|t| self.source[t.start..t.end].eq_ignore_ascii_case("flags"))
+            .next_if(|t| t.slice(self.source).eq_ignore_ascii_case("flags"))
             .map(|_| "FLAGS".to_string());
         let selection = Span {
-            start: first.start as u32,
-            end: end as u32,
+            start: first.start,
+            end,
         };
         let symbol = self.make(OutlineKind::Enum, &name, flags, span, Some(selection))?;
 
@@ -782,12 +780,12 @@ impl<'a> Walker<'a> {
                     }
                 }
                 let member_span = Span {
-                    start: name.start as u32,
-                    end: last.end as u32,
+                    start: name.start,
+                    end: last.end,
                 };
                 let member = self.make(
                     OutlineKind::EnumMember,
-                    &self.source[name.start..name.end],
+                    name.slice(self.source),
                     None,
                     member_span,
                     Some(token_span(name)),
@@ -856,13 +854,11 @@ impl<'a> Walker<'a> {
             start: on.end,
             end: action_start.min(span.end),
         };
-        let mut tokens = self
-            .significant(phrase)
-            .filter(|t| t.start >= on.end as usize);
+        let mut tokens = self.significant(phrase).filter(|t| t.start >= on.end);
         let Some(first) = tokens.next() else {
             return self.make(OutlineKind::Trigger, "ON", None, span, Some(on));
         };
-        let mut name = self.source[first.start..first.end].to_string();
+        let mut name = first.slice(self.source).to_string();
         let mut end = first.end;
         // The name is cut to `TRIGGER_NAME_MAX` characters, so a long phrase is not joined whole.
         // Joined bytes are at least joined characters.
@@ -875,11 +871,11 @@ impl<'a> Walker<'a> {
         }
         let last = self
             .significant(phrase)
-            .rfind(|t| t.start >= on.end as usize)
+            .rfind(|t| t.start >= on.end)
             .unwrap_or(first);
         let selection = Span {
-            start: first.start as u32,
-            end: last.end as u32,
+            start: first.start,
+            end: last.end,
         };
         let name = truncate_chars(&name, TRIGGER_NAME_MAX);
         self.make(OutlineKind::Trigger, &name, None, span, Some(selection))
@@ -915,24 +911,22 @@ impl<'a> Walker<'a> {
         let Some(event) = tokens.next() else {
             return self.make(OutlineKind::Trigger, "", detail, span, None);
         };
-        let target_end = target.span.end as usize;
-        let phrase_end = if !self.name(target).is_empty()
-            && target_end > event.end
-            && target_end <= span.end as usize
-        {
-            target_end
-        } else {
-            event.end
-        };
-        let mut name = self.source[event.start..event.end].to_string();
+        let target_end = target.span.end;
+        let phrase_end =
+            if !self.name(target).is_empty() && target_end > event.end && target_end <= span.end {
+                target_end
+            } else {
+                event.end
+            };
+        let mut name = event.slice(self.source).to_string();
         let mut end = event.end;
         for token in tokens.take_while(|t| t.end <= phrase_end) {
             join_token(self.source, &mut name, end, token);
             end = token.end;
         }
         let selection = Span {
-            start: event.start as u32,
-            end: end as u32,
+            start: event.start,
+            end,
         };
         self.make(OutlineKind::Trigger, &name, detail, span, Some(selection))
     }
@@ -1071,17 +1065,17 @@ fn push_child(parent: &mut OutlineSymbol, child: OutlineSymbol) {
 
 fn token_span(token: &Token) -> Span {
     Span {
-        start: token.start as u32,
-        end: token.end as u32,
+        start: token.start,
+        end: token.end,
     }
 }
 
 /// Appends `token` to `name`, after a space when the source has a gap before it.
-fn join_token(source: &str, name: &mut String, previous_end: usize, token: &Token) {
+fn join_token(source: &str, name: &mut String, previous_end: u32, token: &Token) {
     if token.start > previous_end {
         name.push(' ');
     }
-    name.push_str(&source[token.start..token.end]);
+    name.push_str(token.slice(source));
 }
 
 fn contains(outer: Span, inner: Span) -> bool {

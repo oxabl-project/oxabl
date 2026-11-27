@@ -322,7 +322,7 @@ impl Typing<'_, '_, '_, '_> {
 
     fn text(&self, token: usize) -> &str {
         let token = &self.engine.tokens[token];
-        &self.engine.request.text[token.start..token.end]
+        token.slice(self.engine.request.text)
     }
 
     fn kind(&self, token: usize) -> Kind {
@@ -360,7 +360,7 @@ impl Typing<'_, '_, '_, '_> {
     /// The text of tokens `from..=to`.
     fn span(&self, from: usize, to: usize) -> &str {
         let tokens = self.engine.tokens;
-        &self.engine.request.text[tokens[from].start..tokens[to].end]
+        &self.engine.request.text[tokens[from].start as usize..tokens[to].end as usize]
     }
 
     /// The class and role of the receiver whose last token is `end`.

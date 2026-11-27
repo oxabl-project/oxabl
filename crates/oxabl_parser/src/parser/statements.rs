@@ -18,11 +18,10 @@ use oxabl_ast::{
     TempTableIndex, TriggerAssignParam, TriggerReferencing, TypeSource, UnknownLiteral, UseIndex,
     UsingSource, WhenBranch, WidgetQualifier, WidgetRef, WidgetTrigger, XmlSerializeOptions,
 };
-use oxabl_lexer::TokenValue;
 use oxabl_lexer::{Kind, is_callable_kind};
 use smallvec::SmallVec;
 
-use super::{ParseError, ParseResult, Parser, Program, span_u32, tok_span};
+use super::{ParseError, ParseResult, Parser, Program, tok_span};
 
 /// Returns true if the given Kind can start a new top-level statement.
 ///
@@ -154,7 +153,7 @@ impl Parser<'_> {
     // unrelated edits and every statement returned is copied once more.
     #[inline(always)]
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
-        let lo = span_u32(self.peek().start);
+        let lo = self.peek().start;
         // Anchor the unmodelled-form harvest range on this statement's first
         // token. A bare store, deliberately: this is the parser's hottest
         // funnel, and save/restore around the call measured ~1.5% on the
@@ -296,8 +295,8 @@ impl Parser<'_> {
             && Self::can_be_identifier(self.peek().kind)
             && self.block_keyword_follows_label_colon()
         {
-            let token = self.advance().clone();
-            let name = self.source[token.start..token.end].to_string();
+            let token = *self.advance();
+            let name = token.slice(self.source).to_string();
             self.advance(); // consume ':'
             let body = self.nested(Self::parse_statement)?;
             return Ok(Some(self.stmt(StatementKind::Label {
@@ -316,12 +315,12 @@ impl Parser<'_> {
                 Kind::Do | Kind::Repeat | Kind::KwFor
             )
         {
-            let num_tok = self.advance().clone();
-            let ident_tok = self.advance().clone();
+            let num_tok = *self.advance();
+            let ident_tok = *self.advance();
             let name = format!(
                 "{}{}",
-                &self.source[num_tok.start..num_tok.end],
-                &self.source[ident_tok.start..ident_tok.end]
+                num_tok.slice(self.source),
+                ident_tok.slice(self.source)
             );
             self.advance(); // consume ':'
             let body = self.nested(Self::parse_statement)?;
@@ -622,8 +621,8 @@ impl Parser<'_> {
     fn parse_leave_or_next_statement(&mut self, is_leave: bool) -> ParseResult<Statement> {
         self.advance();
         let label = if Self::can_be_identifier(self.peek().kind) {
-            let token = self.advance().clone();
-            Some(self.source[token.start..token.end].to_string())
+            let token = *self.advance();
+            Some(token.slice(self.source).to_string())
         } else {
             None
         };
@@ -777,9 +776,9 @@ impl Parser<'_> {
         // Consume the table name
         let mut names = Vec::new();
         if Self::can_be_identifier(self.peek().kind) {
-            let tok = self.advance().clone();
+            let tok = *self.advance();
             names.push(Identifier {
-                name: self.names.intern(&self.source[tok.start..tok.end]),
+                name: self.names.intern(tok.slice(self.source)),
                 span: tok_span(&tok),
             });
         }
@@ -843,7 +842,7 @@ impl Parser<'_> {
         // LOAD "key" [BASE-KEY "root"]. / UNLOAD "key". / USE "key". — Windows registry access.
         // These are not dedicated lexer kinds; detect by identifier name.
         let tok = self.peek();
-        let text = &self.source[tok.start..tok.end];
+        let text = tok.slice(self.source);
         if text.eq_ignore_ascii_case("vms") {
             self.advance();
             let (_, hi) = self.skip_to_statement_end();
@@ -1341,12 +1340,8 @@ impl Parser<'_> {
                     self.advance();
                     // Extent can be followed by number, preprocessor reference, or nothing (dynamic)
                     if self.check(Kind::IntegerLiteral) {
-                        let ext_token = self.advance().clone();
-                        *extent = Some(
-                            self.source[ext_token.start..ext_token.end]
-                                .parse::<u32>()
-                                .unwrap_or(0),
-                        );
+                        let ext_token = *self.advance();
+                        *extent = Some(ext_token.slice(self.source).parse::<u32>().unwrap_or(0));
                     } else if self.check(Kind::Preprop) || self.check(Kind::IncludeArgReference) {
                         // e.g. EXTENT {&DEPTH_MAX} — treat as dynamic extent
                         self.advance();
@@ -1448,12 +1443,10 @@ impl Parser<'_> {
                 span: self.current_span(),
             });
         }
-        let name_token = self.advance().clone();
+        let name_token = *self.advance();
         let name = Identifier {
             span: tok_span(&name_token),
-            name: self
-                .names
-                .intern(&self.source[name_token.start..name_token.end]),
+            name: self.names.intern(name_token.slice(self.source)),
         };
 
         let initial_value = if self.check(Kind::Equals) {
@@ -1464,7 +1457,7 @@ impl Parser<'_> {
         };
 
         let span = Span {
-            start: span_u32(name_token.start),
+            start: name_token.start,
             end: self.prev_end(),
         };
         Ok((name, initial_value, span))
@@ -1702,8 +1695,8 @@ impl Parser<'_> {
     /// Parse a string literal as an Identifier (for XML/serialize option values).
     fn parse_string_as_identifier(&mut self) -> ParseResult<Identifier> {
         if self.check(Kind::StringLiteral) {
-            let token = self.advance().clone();
-            let raw = &self.source[token.start..token.end];
+            let token = *self.advance();
+            let raw = token.slice(self.source);
             // Strip quotes from string literal
             let text = if raw.len() >= 2 {
                 &raw[1..raw.len() - 1]
@@ -1829,11 +1822,8 @@ impl Parser<'_> {
         if self.check(Kind::Extent) {
             self.advance();
             if self.check(Kind::IntegerLiteral) {
-                let ext_token = self.advance().clone();
-                pre_extent = self.source[ext_token.start..ext_token.end]
-                    .parse::<u32>()
-                    .ok()
-                    .or(Some(0));
+                let ext_token = *self.advance();
+                pre_extent = ext_token.slice(self.source).parse::<u32>().ok().or(Some(0));
             }
         }
 
@@ -1900,12 +1890,8 @@ impl Parser<'_> {
                 Kind::Extent => {
                     self.advance();
                     if self.check(Kind::IntegerLiteral) {
-                        let ext_token = self.advance().clone();
-                        extent = Some(
-                            self.source[ext_token.start..ext_token.end]
-                                .parse::<u32>()
-                                .unwrap_or(0),
-                        );
+                        let ext_token = *self.advance();
+                        extent = Some(ext_token.slice(self.source).parse::<u32>().unwrap_or(0));
                     }
                 }
                 Kind::Decimals => {
@@ -2006,14 +1992,10 @@ impl Parser<'_> {
         let mut name = self.parse_identifier()?;
         // Handle compound names like b-{&preproc} where identifier prefix ends with hyphen
         // and a preprocessor reference follows adjacently (e.g. b-{&line-buffer}).
-        if self.check(Kind::Preprop) && self.peek().start == name.span.end as usize {
-            let pp = self.advance().clone();
-            name.span.end = span_u32(pp.end);
-            let combined = format!(
-                "{}{}",
-                self.names.get(name.name),
-                &self.source[pp.start..pp.end]
-            );
+        if self.check(Kind::Preprop) && self.peek().start == name.span.end {
+            let pp = *self.advance();
+            name.span.end = pp.end;
+            let combined = format!("{}{}", self.names.get(name.name), pp.slice(self.source));
             name.name = self.names.intern(&combined);
         }
         self.expect_kind(Kind::KwFor, "Expected FOR after buffer name")?;
@@ -2023,10 +2005,10 @@ impl Parser<'_> {
             self.advance();
             self.parse_identifier().map(BufferTarget::TempTable)?
         } else if self.check(Kind::Preprop) {
-            let pp = self.advance().clone();
+            let pp = *self.advance();
             BufferTarget::Table(Identifier {
                 span: tok_span(&pp),
-                name: self.names.intern(&self.source[pp.start..pp.end]),
+                name: self.names.intern(pp.slice(self.source)),
             })
         } else {
             self.parse_record_name().map(BufferTarget::Table)?
@@ -2048,9 +2030,9 @@ impl Parser<'_> {
                 Kind::Label => {
                     self.advance();
                     if self.check(Kind::StringLiteral) {
-                        let token = self.advance().clone();
+                        let token = *self.advance();
                         // Strip quotes from string literal
-                        let raw = &self.source[token.start..token.end];
+                        let raw = token.slice(self.source);
                         label = Some(raw[1..raw.len() - 1].to_string());
                     }
                 }
@@ -2180,7 +2162,9 @@ impl Parser<'_> {
             let tok = self.peek();
             let is_relation_field = self.check(Kind::RelationFields)
                 || (self.check(Kind::Identifier)
-                    && self.source[tok.start..tok.end].eq_ignore_ascii_case("relation-field"));
+                    && tok
+                        .slice(self.source)
+                        .eq_ignore_ascii_case("relation-field"));
             if is_relation_field {
                 self.parse_relation_fields(&mut relation_fields)?;
                 continue;
@@ -2578,8 +2562,8 @@ impl Parser<'_> {
         // DO STOP-AFTER expr: — consume STOP-AFTER and its duration argument
         // STOP-AFTER is an identifier token (not a reserved keyword)
         if self.check(Kind::Identifier) {
-            let tok = self.peek().clone();
-            if self.source[tok.start..tok.end].eq_ignore_ascii_case("stop-after") {
+            let tok = *self.peek();
+            if tok.slice(self.source).eq_ignore_ascii_case("stop-after") {
                 self.advance();
                 // Consume the duration expression (may be integer literal or identifier)
                 if !self.check(Kind::Colon) && !self.at_end() {
@@ -2614,7 +2598,7 @@ impl Parser<'_> {
         }
         // peek ahead to see if this is 'var = start to end'
         let saved_pos = self.current;
-        let potential_var = self.advance().clone();
+        let potential_var = *self.advance();
         let var_start = potential_var.start;
         let mut var_end = potential_var.end;
 
@@ -2641,10 +2625,10 @@ impl Parser<'_> {
 
         let var_name = Identifier {
             span: Span {
-                start: span_u32(var_start),
-                end: span_u32(var_end),
+                start: var_start,
+                end: var_end,
             },
-            name: self.names.intern(&self.source[var_start..var_end]),
+            name: self.names.intern(self.slice(var_start, var_end)),
         };
 
         self.advance(); // consume =
@@ -2762,7 +2746,7 @@ impl Parser<'_> {
         // leading content. Stamp `lo..prev_end` here, mirroring the funnel. The
         // `parse_statement` arm already carries a correct span; re-stamping it
         // with the identical `lo`/`hi` is a harmless no-op.
-        let then_lo = span_u32(self.peek().start);
+        let then_lo = self.peek().start;
         let mut then_branch = if self.check(Kind::Do) {
             self.parse_do_statement()?
         } else if self.check(Kind::End) {
@@ -2816,7 +2800,7 @@ impl Parser<'_> {
             // Same span-stamping rationale as the THEN branch above: the DO and
             // ELSE-IF arms bypass the `parse_statement` funnel, so stamp their
             // real span here to avoid a `Span::DUMMY` (0..0) branch.
-            let else_lo = span_u32(self.peek().start);
+            let else_lo = self.peek().start;
             let mut else_stmt = if self.check(Kind::Do) {
                 self.parse_do_statement()?
             } else if self.check(Kind::KwIf) {
@@ -2968,7 +2952,7 @@ impl Parser<'_> {
     fn eat_error_modifier(&mut self) -> bool {
         let tok = self.peek();
         let is_error = Self::can_be_identifier(tok.kind)
-            && self.source[tok.start..tok.end].eq_ignore_ascii_case("error");
+            && tok.slice(self.source).eq_ignore_ascii_case("error");
         if is_error {
             self.advance();
         }
@@ -3350,14 +3334,10 @@ impl Parser<'_> {
         // like b-{&preproc} (identifier + adjacent Preprop).
         // Use parse_qualified_identifier to handle db.table dotted forms on the same line.
         let mut buffer = self.parse_qualified_identifier()?;
-        if self.check(Kind::Preprop) && self.peek().start == buffer.span.end as usize {
-            let pp = self.advance().clone();
-            buffer.span.end = span_u32(pp.end);
-            let combined = format!(
-                "{}{}",
-                self.names.get(buffer.name),
-                &self.source[pp.start..pp.end]
-            );
+        if self.check(Kind::Preprop) && self.peek().start == buffer.span.end {
+            let pp = *self.advance();
+            buffer.span.end = pp.end;
+            let combined = format!("{}{}", self.names.get(buffer.name), pp.slice(self.source));
             buffer.name = self.names.intern(&combined);
         }
 
@@ -3673,12 +3653,10 @@ impl Parser<'_> {
     fn parse_procedure_declared_name(&mut self) -> ParseResult<Identifier> {
         // Procedure names can be quoted strings: PROCEDURE "checkout":
         let mut name = if self.check(Kind::StringLiteral) {
-            let tok = self.advance().clone();
+            let tok = *self.advance();
             Identifier {
                 span: tok_span(&tok),
-                name: self
-                    .names
-                    .intern(self.source[tok.start..tok.end].trim_matches('"')),
+                name: self.names.intern(tok.slice(self.source).trim_matches('"')),
             }
         } else {
             self.parse_declared_name(true)?
@@ -3690,11 +3668,11 @@ impl Parser<'_> {
         let mut dotted = false;
         // Every token must touch the one before it, so the name holds no
         // whitespace or comment.
-        while self.check(Kind::DecimalLiteral) && self.peek().start == self.prev_end() as usize {
+        while self.check(Kind::DecimalLiteral) && self.peek().start == self.prev_end() {
             self.advance();
             dotted = true;
             // An underscore/alpha-led segment directly following (e.g. "_data") is a separate Identifier.
-            if self.check(Kind::Identifier) && self.peek().start == self.prev_end() as usize {
+            if self.check(Kind::Identifier) && self.peek().start == self.prev_end() {
                 self.advance();
             }
         }
@@ -3714,14 +3692,14 @@ impl Parser<'_> {
             if let Some(next_tok) = self.tokens.get(self.current + 1) {
                 let nk = next_tok.kind;
                 if (nk == Kind::Identifier || Self::can_be_identifier(nk))
-                    && !self.source[period_end..next_tok.start].contains('\n')
+                    && !self.slice(period_end, next_tok.start).contains('\n')
                 {
                     self.advance(); // consume '.'
-                    let seg = self.advance().clone();
-                    let suffix = &self.source[seg.start..seg.end];
+                    let seg = *self.advance();
+                    let suffix = seg.slice(self.source);
                     let combined = format!("{}.{}", self.names.get(name.name), suffix);
                     name.name = self.names.intern(&combined);
-                    name.span.end = span_u32(seg.end);
+                    name.span.end = seg.end;
                 }
             }
         }
@@ -3850,14 +3828,14 @@ impl Parser<'_> {
         }
         if self.check(Kind::StringLiteral) {
             // String literal target: RUN "my-proc.p".
-            let token = self.advance().clone();
+            let token = *self.advance();
             // Take the name from the lexer's parsed payload rather than
             // re-slicing between the quotes: an ABL literal may carry a
             // translation/width suffix (`RUN "my-proc.p":U.`), whose bytes fall
             // inside the token extent, so a raw slice would yield `my-proc.p":`.
             let name = match token.text(self.source) {
                 Some(text) => text.to_string(),
-                None => self.source[token.start + 1..token.end - 1].to_string(),
+                None => self.slice(token.start + 1, token.end - 1).to_string(),
             };
             // The span keeps the quotes (and any suffix) the name drops, so a
             // diagnostic underlines the literal exactly as it was written.
@@ -4055,7 +4033,7 @@ impl Parser<'_> {
                 let colon_end = self.token_at(self.current).end;
                 let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
                     Self::can_be_identifier(t.kind)
-                        && !self.source[colon_end..t.start].contains('\n')
+                        && !self.slice(colon_end, t.start).contains('\n')
                 });
                 if next_is_member {
                     self.advance(); // consume ':'
@@ -4422,7 +4400,7 @@ impl Parser<'_> {
             let direction = keyword.kind == Kind::Identifier
                 && ["forward", "backward"]
                     .iter()
-                    .any(|w| self.source[keyword.start..keyword.end].eq_ignore_ascii_case(w));
+                    .any(|w| keyword.slice(self.source).eq_ignore_ascii_case(w));
             if matches!(
                 keyword.kind,
                 Kind::To | Kind::Row | Kind::Rowid | Kind::Recid
@@ -4589,7 +4567,7 @@ impl Parser<'_> {
             let word = p.peek();
             word.kind == Kind::Display
                 || (word.kind == Kind::Identifier
-                    && p.source[word.start..word.end].eq_ignore_ascii_case("prompt"))
+                    && word.slice(p.source).eq_ignore_ascii_case("prompt"))
         };
         if !usage(self) {
             let (_, hi) = self.skip_to_statement_end();
@@ -4645,7 +4623,7 @@ impl Parser<'_> {
     /// Whether the current token's source text matches `text` ASCII case-insensitively.
     fn peek_text_eq_ignore_ascii_case(&self, text: &str) -> bool {
         let t = self.peek();
-        self.source[t.start..t.end].eq_ignore_ascii_case(text)
+        t.slice(self.source).eq_ignore_ascii_case(text)
     }
 
     /// `COPY-LOB [FROM] [FILE | OBJECT] source [STARTING AT n] [FOR n] TO
@@ -4786,7 +4764,7 @@ impl Parser<'_> {
             }
             Kind::Color => {
                 let prompt = next.kind == Kind::Identifier
-                    && self.source[next.start..next.end].eq_ignore_ascii_case("prompt");
+                    && next.slice(self.source).eq_ignore_ascii_case("prompt");
                 if matches!(next.kind, Kind::Display | Kind::Stream) || prompt {
                     return self.parse_color_statement();
                 }
@@ -4801,7 +4779,8 @@ impl Parser<'_> {
             }
             Kind::Close => {
                 let stored = next.kind == Kind::Identifier
-                    && self.source[next.start..next.end]
+                    && next
+                        .slice(self.source)
                         .get(..11)
                         .is_some_and(|w| w.eq_ignore_ascii_case("stored-proc"));
                 if next.kind == Kind::Query || stored {
@@ -5681,7 +5660,7 @@ impl Parser<'_> {
             // This pattern appears in old character-UI code where the value is set
             // by a prior CHOOSE/UPDATE widget interaction.
             if self.check(Kind::Period) {
-                let offset = span_u32(self.peek().start);
+                let offset = self.peek().start;
                 let span = Span {
                     start: offset,
                     end: offset,
@@ -5775,13 +5754,13 @@ impl Parser<'_> {
 
     /// Consume `ident (',' ident)+` and emit a synthetic character string literal.
     fn parse_unquoted_comma_ident_list(&mut self) -> ExprId {
-        let start = span_u32(self.peek().start);
+        let start = self.peek().start;
         self.advance(); // first identifier
         while self.check(Kind::Comma) && self.can_continue_comma_list_at(1) {
             self.advance(); // ','
             self.advance(); // identifier
         }
-        let end = span_u32(self.token_at(self.current - 1).end);
+        let end = self.token_at(self.current - 1).end;
         let value = self
             .names
             .intern(&self.source[start as usize..end as usize]);
@@ -6063,7 +6042,7 @@ impl Parser<'_> {
             }
         }
         let end = self.token_at(self.current - 1).end;
-        let error_type = self.source[start..end].to_string();
+        let error_type = self.slice(start, end).to_string();
 
         self.expect_kind(Kind::Colon, "Expected ':' after CATCH type")?;
 
@@ -6199,19 +6178,16 @@ impl Parser<'_> {
         self.consume_touching_words();
         self.consume_procedure_name_tail();
 
-        let end = self.prev_end() as usize;
-        let span = Span {
-            start: span_u32(start),
-            end: span_u32(end),
-        };
+        let end = self.prev_end();
+        let span = Span { start, end };
         // A bare number is no program name.
-        if numeric_start && self.source[start..end].bytes().all(|b| b.is_ascii_digit()) {
+        if numeric_start && self.slice(start, end).bytes().all(|b| b.is_ascii_digit()) {
             return Err(ParseError {
                 message: "Expected procedure name after RUN".to_string(),
                 span,
             });
         }
-        Ok((self.source[start..end].to_string(), span))
+        Ok((self.slice(start, end).to_string(), span))
     }
 
     /// Whether the current token can start a `RUN` procedure path, and whether it is numeric.
@@ -6226,7 +6202,7 @@ impl Parser<'_> {
         let backslash_after_dot = first == Kind::Period
             && self.peek_at(1).kind == Kind::Identifier
             && self.peek_at(1).start == self.peek().end
-            && self.source[self.peek_at(1).start..].starts_with('\\');
+            && self.source[self.peek_at(1).start as usize..].starts_with('\\');
         let numeric_start = matches!(
             first,
             Kind::IntegerLiteral | Kind::DecimalLiteral | Kind::DateLiteral
@@ -6246,7 +6222,7 @@ impl Parser<'_> {
         // `PERSISTENT`, `ON`, `(`, a comment or the next statement.
         let tok = self.peek_at(offset);
         let before = if offset == 0 {
-            self.prev_end() as usize
+            self.prev_end()
         } else {
             self.peek_at(offset - 1).end
         };
@@ -6307,8 +6283,7 @@ impl Parser<'_> {
     /// Consume word tokens that touch the previous one: the rest of a component
     /// the lexer split in two, like `170summary`.
     fn consume_touching_words(&mut self) {
-        while Self::is_word_kind(self.peek().kind) && self.peek().start == self.prev_end() as usize
-        {
+        while Self::is_word_kind(self.peek().kind) && self.peek().start == self.prev_end() {
             self.advance();
         }
     }
@@ -6330,10 +6305,11 @@ impl Parser<'_> {
 
     /// Parse an include file reference as a statement: {file.i} or {file.i args}
     fn parse_include_reference_statement(&mut self) -> ParseResult<Statement> {
-        let token = self.advance().clone();
+        let token = *self.advance();
         let path_and_args = match token.text(self.source) {
             Some(text) => text.to_string(),
-            None => self.source[token.start + 1..token.end - 1]
+            None => self
+                .slice(token.start + 1, token.end - 1)
                 .trim()
                 .to_string(),
         };
@@ -6354,16 +6330,13 @@ impl Parser<'_> {
 
     /// Parse an include positional argument reference as a statement: {0}, {1}, {2}
     fn parse_include_arg_reference_statement(&mut self) -> ParseResult<Statement> {
-        let token = self.advance().clone();
+        let token = *self.advance();
         let span = tok_span(&token);
-        let index = match &token.value {
-            TokenValue::Integer(i) => *i as i64,
-            _ => {
-                return Err(ParseError {
-                    message: "Expected integer index in include argument reference".to_string(),
-                    span,
-                });
-            }
+        let Some(index) = token.include_arg_index(self.source).map(i64::from) else {
+            return Err(ParseError {
+                message: "Expected integer index in include argument reference".to_string(),
+                span,
+            });
         };
 
         if self.check(Kind::Period) {
@@ -6984,8 +6957,8 @@ impl Parser<'_> {
             });
         }
 
-        let first_token = self.advance().clone();
-        let mut type_name = self.source[first_token.start..first_token.end].to_string();
+        let first_token = *self.advance();
+        let mut type_name = first_token.slice(self.source).to_string();
         // Tracks the end of the name itself, so the recorded span stops before
         // any `FROM PROPATH` clause and the statement terminator.
         let mut name_end = first_token.end;
@@ -7002,7 +6975,7 @@ impl Parser<'_> {
             // from "LabelFinder.\nclass" (class on next line = statement terminator).
             let period_end = self.token_at(self.current).end;
             let next_token_start = self.peek_at(1).start;
-            let same_line = !self.source[period_end..next_token_start].contains('\n');
+            let same_line = !self.slice(period_end, next_token_start).contains('\n');
             let is_name_segment = same_line
                 && Self::can_be_identifier(next_kind)
                 && !matches!(
@@ -7011,14 +6984,14 @@ impl Parser<'_> {
                 );
             if is_name_segment {
                 self.advance(); // consume .
-                let seg = self.advance().clone();
+                let seg = *self.advance();
                 type_name.push('.');
-                type_name.push_str(&self.source[seg.start..seg.end]);
+                type_name.push_str(seg.slice(self.source));
                 name_end = seg.end;
                 short_start = seg.start;
             } else if next_kind == Kind::Star {
                 self.advance(); // consume .
-                let star = self.advance().clone(); // consume *
+                let star = *self.advance(); // consume *
                 type_name.push_str(".*");
                 name_end = star.end;
                 break; // wildcard is always last
@@ -7046,8 +7019,8 @@ impl Parser<'_> {
             id,
             type_name,
             name_span: Span {
-                start: span_u32(first_token.start),
-                end: span_u32(name_end),
+                start: first_token.start,
+                end: name_end,
             },
             source,
         }))
@@ -7056,8 +7029,8 @@ impl Parser<'_> {
     /// Optional `FROM PROPATH | ASSEMBLY` clause on a `USING` statement.
     fn parse_using_source(&mut self) -> ParseResult<UsingSource> {
         self.advance(); // consume FROM
-        let source_token = self.advance().clone();
-        let spelling = &self.source[source_token.start..source_token.end];
+        let source_token = *self.advance();
+        let spelling = source_token.slice(self.source);
         if source_token.kind == Kind::Propath {
             Ok(UsingSource::Propath)
         } else if spelling.eq_ignore_ascii_case("assembly") {
@@ -7168,7 +7141,7 @@ impl Parser<'_> {
         // A tail that runs to the end of the text fails there, far from its
         // cause: the error is placed at the `CREATE` keyword.
         let eof = self.tokens.last().map_or(0, |token| token.start);
-        if error.span.start as usize >= eof {
+        if error.span.start >= eof {
             let create = self.token_at(resume.saturating_sub(1));
             error.span = tok_span(create);
         }
@@ -7261,10 +7234,10 @@ impl Parser<'_> {
                 self.advance(); // consume ASSIGN
                 self.parse_create_assignments(&mut assignments)?;
             } else if self.check(Kind::BufferName) {
-                let token = self.advance().clone();
+                let token = *self.advance();
                 let attribute = Identifier {
                     span: tok_span(&token),
-                    name: self.names.intern(&self.source[token.start..token.end]),
+                    name: self.names.intern(token.slice(self.source)),
                 };
                 let value = self.parse_expression()?;
                 assignments.push(CreateAssignment { attribute, value });
@@ -7311,10 +7284,10 @@ impl Parser<'_> {
             || self.check(Kind::KwIn)
             || self.at_end())
         {
-            let token = self.advance().clone();
+            let token = *self.advance();
             let attribute = Identifier {
                 span: tok_span(&token),
-                name: self.names.intern(&self.source[token.start..token.end]),
+                name: self.names.intern(token.slice(self.source)),
             };
             self.expect_kind(Kind::Equals, "Expected '=' after CREATE ASSIGN attribute")?;
             let value = self.parse_expression()?;
@@ -7894,7 +7867,7 @@ impl Parser<'_> {
     fn is_identifier_text_at(&self, offset: usize, text: &str) -> bool {
         let token = self.peek_at(offset);
         (token.kind == Kind::Identifier || Self::can_be_identifier(token.kind))
-            && self.source[token.start..token.end].eq_ignore_ascii_case(text)
+            && token.slice(self.source).eq_ignore_ascii_case(text)
     }
 
     // ── Stream / Frame parsing ───────────────────────────────────────
@@ -7916,14 +7889,14 @@ impl Parser<'_> {
         let name = self.parse_identifier()?;
 
         // Record start of unparsed content
-        let raw_start = span_u32(self.peek().start);
+        let raw_start = self.peek().start;
         let body = self.current;
 
         // Skip frame phrase content.  Use skip_to_statement_end() so that field-access dots
         // inside VALIDATE expressions (e.g. t-cost-area.company) are not mistaken for
         // the terminating period.
         let tail = self.skip_tail_to_statement_end();
-        let raw_end = span_u32(self.token_at(self.current - 1).start);
+        let raw_end = self.token_at(self.current - 1).start;
         let raw_span = Span {
             start: raw_start,
             end: raw_end,
@@ -7988,10 +7961,10 @@ impl Parser<'_> {
             Some(self.parse_stream_name()?)
         } else if self.check(Kind::Preprop) || self.check(Kind::IncludeReference) {
             // {&stream} used directly as stream name — consume and treat like a named stream
-            let tok = self.advance().clone();
+            let tok = *self.advance();
             Some(Identifier {
                 span: tok_span(&tok),
-                name: self.names.intern(&self.source[tok.start..tok.end]),
+                name: self.names.intern(tok.slice(self.source)),
             })
         } else {
             None
@@ -8167,17 +8140,14 @@ impl Parser<'_> {
             self.advance();
         }
         FileName {
-            span: Span {
-                start: span_u32(start),
-                end: span_u32(end),
-            },
-            name: self.source[start..end].to_string(),
+            span: Span { start, end },
+            name: self.slice(start, end).to_string(),
         }
     }
 
     /// Byte end of the run of touching tokens that form a bare file name at the
     /// cursor. Does not move the cursor.
-    fn file_name_run_end(&self) -> usize {
+    fn file_name_run_end(&self) -> u32 {
         let mut end = self.peek().end;
         let mut i = self.current + 1;
         while let Some(tok) = self.tokens.get(i) {
@@ -8313,23 +8283,21 @@ impl Parser<'_> {
                 span: self.current_span(),
             });
         }
-        let name_tok = self.advance().clone();
+        let name_tok = *self.advance();
         let name = Identifier {
             span: tok_span(&name_tok),
-            name: self
-                .names
-                .intern(&self.source[name_tok.start..name_tok.end]),
+            name: self.names.intern(name_tok.slice(self.source)),
         };
 
         // Collect value span: everything from current position until PreprocEnd or Eof.
         let value_span = if self.check(Kind::PreprocEnd) || self.at_end() {
             None
         } else {
-            let start = span_u32(self.peek().start);
+            let start = self.peek().start;
             let mut end = start;
             while !self.check(Kind::PreprocEnd) && !self.at_end() {
                 let tok = self.advance();
-                end = span_u32(tok.end);
+                end = tok.end;
             }
             Some(Span { start, end })
         };
@@ -8568,7 +8536,7 @@ impl Parser<'_> {
 
         // DO...END block
         if self.check(Kind::Do) {
-            let lo = span_u32(self.peek().start);
+            let lo = self.peek().start;
             let mut block = self.parse_do_statement()?;
             block.span = Span {
                 start: lo,
@@ -8647,12 +8615,12 @@ impl Parser<'_> {
     /// Parse a single event name identifier, including reserved keywords
     /// that serve as event names in ON trigger context.
     fn parse_event_name_identifier(&mut self) -> ParseResult<Identifier> {
-        let token = self.peek().clone();
+        let token = *self.peek();
         let kind = token.kind;
 
         if kind == Kind::StringLiteral {
             // String literal event name (e.g., "WEB-NOTIFY")
-            let name = self.names.intern(&self.source[token.start..token.end]);
+            let name = self.names.intern(token.slice(self.source));
             let ident = Identifier {
                 name,
                 span: tok_span(&token),
@@ -8676,7 +8644,7 @@ impl Parser<'_> {
                 | Kind::KwReturn
         ) {
             // Reserved keywords that are also valid event names
-            let name = self.names.intern(&self.source[token.start..token.end]);
+            let name = self.names.intern(token.slice(self.source));
             let ident = Identifier {
                 name,
                 span: tok_span(&token),
@@ -8739,14 +8707,14 @@ impl Parser<'_> {
     /// Parse any token as an identifier, even reserved keywords.
     /// Used for key labels and key functions where any keyword is valid.
     fn parse_any_keyword_as_identifier(&mut self) -> ParseResult<Identifier> {
-        let token = self.peek().clone();
+        let token = *self.peek();
         if token.kind == Kind::Eof {
             return Err(ParseError {
                 message: "Expected identifier".to_string(),
                 span: self.current_span(),
             });
         }
-        let name = self.names.intern(&self.source[token.start..token.end]);
+        let name = self.names.intern(token.slice(self.source));
         let ident = Identifier {
             name,
             span: tok_span(&token),
@@ -8799,7 +8767,9 @@ impl Parser<'_> {
         // A bare word before `(` is a qualifier, as in `@x.export FILE(...)`.
         let qualifier = if self.is_annotation_word(self.peek())
             && self.check_at(1, Kind::LeftParen)
-            && !self.source[self.prev_end() as usize..self.peek().start].contains('\n')
+            && !self
+                .slice(self.prev_end(), self.peek().start)
+                .contains('\n')
         {
             Some(self.parse_annotation_name("Expected annotation qualifier")?)
         } else {
@@ -8834,7 +8804,7 @@ impl Parser<'_> {
     /// A token that can be part of an annotation name. The lexer gives both `@`
     /// and the word `at` the kind `At`, so the source text decides.
     fn is_annotation_word(&self, token: &oxabl_lexer::Token) -> bool {
-        Self::is_word_kind(token.kind) && !self.source[token.start..token.end].starts_with('@')
+        Self::is_word_kind(token.kind) && !token.slice(self.source).starts_with('@')
     }
 
     /// Parse a dotted annotation or attribute name. Segments must be directly
@@ -8846,7 +8816,7 @@ impl Parser<'_> {
                 span: self.current_span(),
             });
         }
-        let first = self.advance().clone();
+        let first = *self.advance();
         let start = first.start;
         let mut end = first.end;
         while let (Some(dot), Some(next)) = (
@@ -8864,10 +8834,7 @@ impl Parser<'_> {
             end = self.advance().end;
         }
         Ok(Identifier {
-            span: Span {
-                start: span_u32(start),
-                end: span_u32(end),
-            },
+            span: Span { start, end },
             name: self.intern_ident(start, end),
         })
     }
@@ -8876,7 +8843,7 @@ impl Parser<'_> {
     fn parse_annotation_attribute(&mut self) -> ParseResult<AnnotationAttribute> {
         let name = self.parse_annotation_name("Expected annotation attribute name")?;
         self.expect_kind(Kind::Equals, "Expected '=' after annotation attribute name")?;
-        let token = self.peek().clone();
+        let token = *self.peek();
         let value = match (token.kind, token.text(self.source)) {
             (Kind::StringLiteral, Some(text)) => AnnotationValue::String(text.to_string()),
             (Kind::Eof | Kind::Invalid | Kind::Comma | Kind::RightParen | Kind::Period, _) => {
@@ -8885,7 +8852,7 @@ impl Parser<'_> {
                     span: self.current_span(),
                 });
             }
-            _ => AnnotationValue::Bare(self.source[token.start..token.end].to_string()),
+            _ => AnnotationValue::Bare(token.slice(self.source).to_string()),
         };
         self.advance();
         Ok(AnnotationAttribute { name, value })
@@ -8898,16 +8865,16 @@ impl Parser<'_> {
         let mut name = self.parse_identifier()?;
         let mut combined: Option<String> = None;
         while self.check(Kind::Period)
-            && self.tokens[self.current].start == name.span.end as usize
+            && self.tokens[self.current].start == name.span.end
             && self.peek_at(1).start == self.tokens[self.current].end
             && Self::can_be_identifier(self.peek_at(1).kind)
         {
             self.advance(); // consume '.'
-            let next = self.advance().clone();
+            let next = *self.advance();
             let buf = combined.get_or_insert_with(|| self.names.get(name.name).to_string());
             buf.push('.');
-            buf.push_str(&self.source[next.start..next.end]);
-            name.span.end = span_u32(next.end);
+            buf.push_str(next.slice(self.source));
+            name.span.end = next.end;
         }
         if let Some(buf) = combined {
             name.name = self.names.intern(&buf);
@@ -8949,7 +8916,7 @@ impl Parser<'_> {
             let period_end = self.token_at(self.current).end;
             let next_tok = self.peek_at(1);
             let next_kind = next_tok.kind;
-            let same_line = !self.source[period_end..next_tok.start].contains('\n');
+            let same_line = !self.slice(period_end, next_tok.start).contains('\n');
             if same_line && (next_kind == Kind::Identifier || Self::can_be_identifier(next_kind)) {
                 self.advance(); // consume period
                 let second = self.parse_identifier()?;

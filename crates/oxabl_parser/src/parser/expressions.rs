@@ -8,10 +8,10 @@ use oxabl_ast::{
     ExprId, ExprList, Expression, ExpressionKind, FindType, Identifier, Literal, Span,
     UnknownLiteral,
 };
-use oxabl_lexer::{Kind, TokenValue};
+use oxabl_lexer::Kind;
 use smallvec::SmallVec;
 
-use super::{ParseError, ParseResult, Parser, span_u32, tok_span};
+use super::{ParseError, ParseResult, Parser, tok_span};
 use crate::literal::token_to_literal;
 
 impl Parser<'_> {
@@ -28,7 +28,7 @@ impl Parser<'_> {
 
         // Prefix form: capture `lo` from the IF token before advancing so the
         // span covers the leading IF (R1.1 full-extent rule).
-        let lo = span_u32(self.peek().start);
+        let lo = self.peek().start;
         self.advance(); // consume IF
         let condition = self.parse_or()?; // condition can use OR/AND/comparison
 
@@ -209,7 +209,7 @@ impl Parser<'_> {
     pub fn parse_unary(&mut self) -> ParseResult<ExprId> {
         if self.check(Kind::Minus) {
             // Prefix form: `lo` is the `-` token, captured before advancing.
-            let lo = span_u32(self.peek().start);
+            let lo = self.peek().start;
             self.advance();
             let expr = self.nested(Self::parse_unary)?;
             let hi = self.prev_end();
@@ -222,7 +222,7 @@ impl Parser<'_> {
         }
         if self.check(Kind::Not) {
             // Prefix form: `lo` is the `NOT` token, captured before advancing.
-            let lo = span_u32(self.peek().start);
+            let lo = self.peek().start;
             self.advance();
             let expr = self.nested(Self::parse_unary)?;
             let hi = self.prev_end();
@@ -244,8 +244,8 @@ impl Parser<'_> {
                 if let Some(next) = self.tokens.get(self.current + 1)
                     && next.start == colon_end
                     && matches!(next.kind, Kind::Identifier)
-                    && (self.source[next.start..next.end].eq_ignore_ascii_case("u")
-                        || self.source[next.start..next.end].eq_ignore_ascii_case("t"))
+                    && (next.slice(self.source).eq_ignore_ascii_case("u")
+                        || next.slice(self.source).eq_ignore_ascii_case("t"))
                 {
                     // consume ':'
                     self.advance();
@@ -265,7 +265,7 @@ impl Parser<'_> {
                 // DoubleColon (::) is ABL's dynamic buffer field access operator.
                 let colon_end = self.token_at(self.current).end;
                 let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    !self.source[colon_end..t.start].contains('\n')
+                    !self.slice(colon_end, t.start).contains('\n')
                         && self.is_member_name(self.current + 1, colon_end)
                 });
                 if !next_is_member {
@@ -308,7 +308,7 @@ impl Parser<'_> {
             });
         }
 
-        let token = self.advance().clone();
+        let token = *self.advance();
         let member = Identifier {
             span: tok_span(&token),
             name: self.intern_ident(token.start, token.end),
@@ -376,7 +376,7 @@ impl Parser<'_> {
         // Empty argument (successive commas like func(1,, "x")) — use Unknown literal
         // Empty argument (successive commas like obj:method(1,, "x")) — Unknown
         if self.check(Kind::Comma) || self.check(Kind::RightParen) {
-            let pos = span_u32(self.peek().start);
+            let pos = self.peek().start;
             return Ok(self.spanned_expr(
                 pos,
                 pos,
@@ -503,7 +503,7 @@ impl Parser<'_> {
             });
         }
 
-        let token = self.advance().clone();
+        let token = *self.advance();
         let field = Identifier {
             span: tok_span(&token),
             name: self.intern_ident(token.start, token.end),
@@ -521,7 +521,7 @@ impl Parser<'_> {
     /// parens (U3), and every leaf/primary form is stamped uniformly regardless
     /// of which branch produced it.
     pub fn parse_primary(&mut self) -> ParseResult<ExprId> {
-        let lo = span_u32(self.peek().start);
+        let lo = self.peek().start;
         let expr = self.parse_primary_inner()?;
         let hi = self.prev_end().max(lo);
         self.exprs.get_mut(expr).span = Span { start: lo, end: hi };
@@ -637,14 +637,14 @@ impl Parser<'_> {
 
     fn parse_implicit_widget_member(&mut self) -> ExprId {
         // consume ':'
-        let colon_token = self.advance().clone();
+        let colon_token = *self.advance();
         if Self::can_be_identifier(self.peek().kind) {
-            let attr_token = self.advance().clone();
-            let prefixed = format!(":{}", &self.source[attr_token.start..attr_token.end]);
+            let attr_token = *self.advance();
+            let prefixed = format!(":{}", attr_token.slice(self.source));
             let ident = Identifier {
                 span: Span {
-                    start: span_u32(colon_token.start),
-                    end: span_u32(attr_token.end),
+                    start: colon_token.start,
+                    end: attr_token.end,
                 },
                 name: self.intern(&prefixed),
             };
@@ -658,13 +658,13 @@ impl Parser<'_> {
 
     fn parse_implicit_buffer_field(&mut self) -> ExprId {
         // consume '.'
-        let period_token = self.advance().clone();
-        let field_token = self.advance().clone();
-        let prefixed = format!(".{}", &self.source[field_token.start..field_token.end]);
+        let period_token = *self.advance();
+        let field_token = *self.advance();
+        let prefixed = format!(".{}", field_token.slice(self.source));
         let ident = Identifier {
             span: Span {
-                start: span_u32(period_token.start),
-                end: span_u32(field_token.end),
+                start: period_token.start,
+                end: field_token.end,
             },
             name: self.intern(&prefixed),
         };
@@ -673,7 +673,7 @@ impl Parser<'_> {
 
     /// Extend a compound identifier end offset across directly-adjacent
     /// preprocessor/identifier/hyphen-word segments.
-    fn extend_adjacent_compound_end(&mut self, mut end: usize, allow_include_arg: bool) -> usize {
+    fn extend_adjacent_compound_end(&mut self, mut end: u32, allow_include_arg: bool) -> u32 {
         // Extend with directly-adjacent parts (identifiers, preprops, or
         // hyphen-separated word suffixes like `{&preproc}-control`).
         loop {
@@ -709,11 +709,11 @@ impl Parser<'_> {
     }
 
     fn parse_preprop_primary(&mut self) -> ParseResult<ExprId> {
-        let first = self.advance().clone();
+        let first = *self.advance();
         let compound_end = self.extend_adjacent_compound_end(first.end, false);
         // Bare {&name} with no adjacent parts → PreprocReference
         if compound_end == first.end {
-            let raw = &self.source[first.start..first.end];
+            let raw = first.slice(self.source);
             let stripped = raw
                 .strip_prefix("{&")
                 .and_then(|s| s.strip_suffix('}'))
@@ -724,10 +724,10 @@ impl Parser<'_> {
         // Compound → Identifier using raw source text
         let identifier = Identifier {
             span: Span {
-                start: span_u32(first.start),
-                end: span_u32(compound_end),
+                start: first.start,
+                end: compound_end,
             },
-            name: self.intern(&self.source[first.start..compound_end]),
+            name: self.intern(self.slice(first.start, compound_end)),
         };
         if self.check(Kind::LeftParen) {
             return self.parse_function_call(identifier);
@@ -749,7 +749,7 @@ impl Parser<'_> {
 
     fn parse_literal_primary(&mut self) -> ParseResult<ExprId> {
         let source = self.source;
-        let token = self.advance().clone();
+        let token = *self.advance();
         let literal =
             token_to_literal(&token, source, &mut self.names).ok_or_else(|| ParseError {
                 message: "Failed to convert token to literal".to_string(),
@@ -759,10 +759,10 @@ impl Parser<'_> {
     }
 
     fn parse_include_ref_primary(&mut self) -> ExprId {
-        let token = self.advance().clone();
+        let token = *self.advance();
         let text = match token.text(self.source) {
             Some(text) => text,
-            None => self.source[token.start + 1..token.end - 1].trim(),
+            None => self.slice(token.start + 1, token.end - 1).trim(),
         };
         let path_and_args = self.intern(text);
         self.expr(ExpressionKind::IncludeReference {
@@ -772,11 +772,8 @@ impl Parser<'_> {
     }
 
     fn parse_include_arg_primary(&mut self) -> ExprId {
-        let token = self.advance().clone();
-        let index = match &token.value {
-            TokenValue::Integer(i) => i64::from(*i),
-            _ => 0,
-        };
+        let token = *self.advance();
+        let index = i64::from(token.include_arg_index(self.source).unwrap_or(0));
         self.expr(ExpressionKind::IncludeArgReference {
             index,
             span: tok_span(&token),
@@ -785,12 +782,12 @@ impl Parser<'_> {
 
     fn parse_new_primary(&mut self) -> ParseResult<ExprId> {
         // consume NEW
-        let new_token = self.advance().clone();
+        let new_token = *self.advance();
         // `NEW(buffer)` is the record-buffer test; a class name never starts with '('.
         if self.check(Kind::LeftParen) {
             let name = Identifier {
                 span: tok_span(&new_token),
-                name: self.intern(&self.source[new_token.start..new_token.end]),
+                name: self.intern(new_token.slice(self.source)),
             };
             return self.parse_function_call(name);
         }
@@ -820,7 +817,7 @@ impl Parser<'_> {
             self.advance();
         }
         let end = self.token_at(self.current - 1).end;
-        let class_name = self.intern(&self.source[start..end]);
+        let class_name = self.intern(self.slice(start, end));
 
         // Optional generic type args — `NEW List<String>(...)`.
         let type_arguments = self.parse_generic_type_args();
@@ -830,7 +827,7 @@ impl Parser<'_> {
         // not an OO object constructor. Model it as `NEW(record)`, the shape
         // `AVAILABLE record` has.
         if !self.check(Kind::LeftParen) {
-            let (lo, hi) = (span_u32(start), span_u32(end));
+            let (lo, hi) = (start, end);
             let record = self.spanned_expr(
                 lo,
                 hi,
@@ -841,7 +838,7 @@ impl Parser<'_> {
             );
             let name = Identifier {
                 span: tok_span(&new_token),
-                name: self.intern(&self.source[new_token.start..new_token.end]),
+                name: self.intern(new_token.slice(self.source)),
             };
             let arguments = self.push_expr_list(&[record]);
             return Ok(self.expr(ExpressionKind::FunctionCall { name, arguments }));
@@ -913,10 +910,10 @@ impl Parser<'_> {
     }
 
     fn parse_dynamic_new_primary(&mut self) -> ParseResult<ExprId> {
-        let token = self.advance().clone();
+        let token = *self.advance();
         let name = Identifier {
             span: tok_span(&token),
-            name: self.intern(&self.source[token.start..token.end]),
+            name: self.intern(token.slice(self.source)),
         };
         // `DYNAMIC-NEW cls (args)`: a name before `(` is the class operand,
         // not a function call, so it is taken as a plain identifier.
@@ -948,10 +945,10 @@ impl Parser<'_> {
     }
 
     fn parse_dynamic_function_primary(&mut self) -> ParseResult<ExprId> {
-        let token = self.advance().clone();
+        let token = *self.advance();
         let name = Identifier {
             span: tok_span(&token),
-            name: self.intern(&self.source[token.start..token.end]),
+            name: self.intern(token.slice(self.source)),
         };
         self.expect_kind(Kind::LeftParen, "Expected '(' after DYNAMIC-FUNCTION")?;
         let mut arguments: SmallVec<[ExprId; 8]> = SmallVec::new();
@@ -1073,20 +1070,20 @@ impl Parser<'_> {
     }
 
     fn parse_locked_primary(&mut self) -> ParseResult<ExprId> {
-        let token = self.advance().clone();
+        let token = *self.advance();
         let name = Identifier {
             span: tok_span(&token),
-            name: self.intern(&self.source[token.start..token.end]),
+            name: self.intern(token.slice(self.source)),
         };
         if self.check(Kind::LeftParen) {
             return self.parse_function_call(name);
         }
         // Bare form: LOCKED table — parse the table name as the sole argument
-        let arg_token = self.advance().clone();
+        let arg_token = *self.advance();
         let arg_span = tok_span(&arg_token);
         let arg_name = Identifier {
             span: arg_span,
-            name: self.intern(&self.source[arg_token.start..arg_token.end]),
+            name: self.intern(arg_token.slice(self.source)),
         };
         let arg_expr = self.spanned_expr(
             arg_span.start,
@@ -1098,10 +1095,10 @@ impl Parser<'_> {
     }
 
     fn parse_record_predicate_primary(&mut self) -> ParseResult<ExprId> {
-        let token = self.advance().clone();
+        let token = *self.advance();
         let name = Identifier {
             span: tok_span(&token),
-            name: self.intern(&self.source[token.start..token.end]),
+            name: self.intern(token.slice(self.source)),
         };
         // Parenthesized form: AVAILABLE(table) / AMBIGUOUS(table)
         if self.check(Kind::LeftParen) {
@@ -1127,7 +1124,7 @@ impl Parser<'_> {
         // consume TEMP-TABLE or BUFFER
         let _kw_token = self.advance();
         // consume the table/buffer name
-        let name_token = self.advance().clone();
+        let name_token = *self.advance();
 
         // Extend with directly-adjacent Preprop or identifier parts so that
         // compound names like `dataset ds{&mainTable}` or `buffer b-{&tbl}`
@@ -1140,19 +1137,19 @@ impl Parser<'_> {
         // as a single atom always fails LINT0001 (#58 item C).
         let identifier = Identifier {
             span: Span {
-                start: span_u32(name_token.start),
-                end: span_u32(end),
+                start: name_token.start,
+                end,
             },
-            name: self.intern(&self.source[name_token.start..end]),
+            name: self.intern(self.slice(name_token.start, end)),
         };
         self.expr(ExpressionKind::Identifier(identifier))
     }
 
     fn parse_accum_primary(&mut self) -> ParseResult<ExprId> {
-        let token = self.advance().clone();
+        let token = *self.advance();
         let name = Identifier {
             span: tok_span(&token),
-            name: self.intern(&self.source[token.start..token.end]),
+            name: self.intern(token.slice(self.source)),
         };
         if self.check(Kind::LeftParen) {
             return self.parse_function_call(name);
@@ -1222,15 +1219,15 @@ impl Parser<'_> {
     }
 
     fn parse_identifier_or_call_primary(&mut self) -> ParseResult<ExprId> {
-        let token = self.advance().clone();
+        let token = *self.advance();
 
         // identifier{&suffix} compound: e.g. b-{&line-buffer} (direct adjacency only).
         // Also handles adjacent hyphen-word: e.g. b-{&preproc}-suffix.
         let end = self.extend_adjacent_compound_end(token.end, false);
         let identifier = Identifier {
             span: Span {
-                start: span_u32(token.start),
-                end: span_u32(end),
+                start: token.start,
+                end,
             },
             name: self.intern_ident(token.start, end),
         };

@@ -47,7 +47,7 @@ fn count_parse(tokens: &[oxabl_lexer::Token]) {
     use std::sync::atomic::Ordering::Relaxed;
     PARSES.fetch_add(1, Relaxed);
     if let (Some(first), Some(last)) = (tokens.first(), tokens.last()) {
-        PARSED_BYTES.fetch_add(last.end.saturating_sub(first.start), Relaxed);
+        PARSED_BYTES.fetch_add(last.end.saturating_sub(first.start) as usize, Relaxed);
     }
 }
 

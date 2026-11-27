@@ -20,9 +20,10 @@ fn tab_stops(src: &str) -> Vec<usize> {
         if t.kind != Kind::StringLiteral {
             continue;
         }
-        for (i, b) in src[t.start..t.end].bytes().enumerate() {
+        let start = t.start as usize;
+        for (i, b) in t.slice(src).bytes().enumerate() {
             if b == b'\t' {
-                let at = t.start + i;
+                let at = start + i;
                 let line_start = src[..at].rfind('\n').map_or(0, |p| p + 1);
                 out.push((at - line_start) % 8);
             }

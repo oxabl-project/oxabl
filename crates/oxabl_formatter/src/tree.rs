@@ -247,7 +247,7 @@ pub(crate) fn property_accessors(stmt: &Statement, toks: &[Token]) -> Vec<Access
         .collect();
     bodies.sort_by_key(|s| s.start);
 
-    let (lo, hi) = (stmt.span.start as usize, stmt.span.end as usize);
+    let (lo, hi) = (stmt.span.start, stmt.span.end);
     let from = toks.partition_point(|t| t.start < lo);
     let mut code: Vec<&Token> = Vec::new();
     let mut b = 0;
@@ -255,10 +255,10 @@ pub(crate) fn property_accessors(stmt: &Statement, toks: &[Token]) -> Vec<Access
         if matches!(t.kind, Kind::Comment | Kind::Eof) {
             continue;
         }
-        while b < bodies.len() && (bodies[b].end as usize) <= t.start {
+        while b < bodies.len() && bodies[b].end <= t.start {
             b += 1;
         }
-        if b < bodies.len() && (bodies[b].start as usize) <= t.start {
+        if b < bodies.len() && bodies[b].start <= t.start {
             continue;
         }
         code.push(t);
@@ -296,9 +296,9 @@ pub(crate) fn property_accessors(stmt: &Statement, toks: &[Token]) -> Vec<Access
                     _ => t.start,
                 };
                 out.push(Accessor {
-                    head,
-                    colon: colon.start,
-                    end: code[k].start,
+                    head: head as usize,
+                    colon: colon.start as usize,
+                    end: code[k].start as usize,
                 });
                 i = k + 1;
                 continue;

@@ -32,7 +32,7 @@ impl Case {
                         .iter_to(before)
                         .rev()
                         .filter(|token| is_keyword(token.kind))
-                        .find_map(|token| written_case(&text[token.start..token.end]))
+                        .find_map(|token| written_case(token.slice(text)))
                 })
                 .unwrap_or(Case::Upper),
         }

@@ -47,14 +47,16 @@ pub fn declared_name(source: &str) -> Declared {
         .into_iter()
         .filter(|token| token.kind != Kind::Comment)
         .collect();
-    let text = |token: &Token| &source[token.start..token.end];
+    let text = |token: &Token| token.slice(source);
     let mut depth = 0usize;
     // Inside the line of an `&UNDEFINE` or `&MESSAGE`, which have no end token.
     let mut in_line_directive = false;
     for (at, token) in tokens.iter().enumerate() {
         let before = at.checked_sub(1).map(|before| &tokens[before]);
         let after_line_directive = in_line_directive
-            && before.is_some_and(|before| source[before.end..token.start].contains('\n'));
+            && before.is_some_and(|before| {
+                source[before.end as usize..token.start as usize].contains('\n')
+            });
         if after_line_directive {
             in_line_directive = false;
         }

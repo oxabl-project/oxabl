@@ -92,7 +92,7 @@ pub fn class_name_span(text: &str, name: &str) -> Option<Span> {
         .into_iter()
         .filter(|token| token.kind != oxabl_lexer::Kind::Comment)
         .collect();
-    let word = |at: usize| &head[tokens[at].start..tokens[at].end];
+    let word = |at: usize| tokens[at].slice(head);
     let at = tokens.iter().position(|token| {
         matches!(
             token.kind,
@@ -112,7 +112,7 @@ pub fn class_name_span(text: &str, name: &str) -> Option<Span> {
     if !starts_statement || hidden {
         return None;
     }
-    let first = tokens.get(at + 1)?.start;
+    let first = tokens.get(at + 1)?.start as usize;
     let written = head.get(first..first + name.len())?;
     let continues = head[first + name.len()..]
         .chars()

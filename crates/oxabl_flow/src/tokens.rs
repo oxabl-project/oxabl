@@ -25,8 +25,8 @@ pub(crate) struct Src<'s> {
 #[derive(Clone, Copy)]
 struct Token {
     kind: Kind,
-    start: usize,
-    end: usize,
+    start: u32,
+    end: u32,
 }
 
 /// The significant (non-comment) tokens of a span.
@@ -41,7 +41,7 @@ impl<'s> Toks<'s> {
         let text = slice(src.text, span);
         let significant = |t: &LexToken| !matches!(t.kind, Kind::Comment | Kind::Eof);
         if let Some(range) = token_range(src.tokens, span) {
-            let base = span.start as usize;
+            let base = span.start;
             let toks = src.tokens[range]
                 .iter()
                 .filter(|t| significant(t))
@@ -77,7 +77,7 @@ impl<'s> Toks<'s> {
     fn text(&self, i: usize) -> &'s str {
         self.toks
             .get(i)
-            .and_then(|t| self.text.get(t.start..t.end))
+            .and_then(|t| self.text.get(t.start as usize..t.end as usize))
             .unwrap_or("")
     }
 
@@ -202,7 +202,7 @@ impl<'s> Toks<'s> {
 /// crosses either end of it (lexing the span alone gives the same tokens).
 /// `None` without tokens.
 fn token_range(tokens: &[LexToken], span: Span) -> Option<std::ops::Range<usize>> {
-    let (start, end) = (span.start as usize, span.end as usize);
+    let (start, end) = (span.start, span.end);
     if tokens.is_empty() || start > end {
         return None;
     }

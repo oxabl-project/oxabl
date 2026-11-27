@@ -58,12 +58,15 @@ pub(crate) fn header(source: &str, span: Span) -> Span {
         .take_while(|t| t.kind != Kind::Eof)
         .find(|t| {
             matches!(t.kind, Kind::Colon | Kind::Period)
-                && text[t.end..].chars().next().is_none_or(char::is_whitespace)
+                && text[t.end as usize..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace)
         });
     match colon {
         Some(t) => Span {
             start: span.start,
-            end: span.start + t.start as u32,
+            end: span.start + t.start,
         },
         None => span,
     }

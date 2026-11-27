@@ -22,7 +22,7 @@ fn token_texts(src: &str) -> Vec<String> {
     tokenize(src)
         .into_iter()
         .filter(|t| t.kind != Kind::Comment && t.kind != Kind::Eof)
-        .map(|t| src[t.start..t.end].to_string())
+        .map(|t| t.slice(src).to_string())
         .collect()
 }
 

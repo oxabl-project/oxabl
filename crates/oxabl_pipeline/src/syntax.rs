@@ -305,17 +305,15 @@ impl<'a> Builder<'a> {
     /// at or after `offset` on its line.
     fn code_follows(&self, offset: u32) -> bool {
         let line_end = self.line_end(offset);
-        let from = self
-            .tokens
-            .partition_point(|token| token.start < offset as usize);
+        let from = self.tokens.partition_point(|token| token.start < offset);
         self.tokens[from..]
             .iter()
-            .take_while(|token| token.start < line_end && token.kind != Kind::Eof)
+            .take_while(|token| (token.start as usize) < line_end && token.kind != Kind::Eof)
             .any(|token| {
                 // A `//` comment token holds its line break, so test its last
                 // byte, not its end.
                 token.kind != Kind::Comment
-                    || self.line_of(token.end.saturating_sub(1) as u32) != self.line_of(offset)
+                    || self.line_of(token.end.saturating_sub(1)) != self.line_of(offset)
             })
     }
 
@@ -327,8 +325,8 @@ impl<'a> Builder<'a> {
     fn tokens_in(&self, span: Span) -> &'a [Token] {
         let lo = self
             .tokens
-            .partition_point(|token| token.start < span.start as usize);
-        let n = self.tokens[lo..].partition_point(|token| token.start < span.end as usize);
+            .partition_point(|token| token.start < span.start);
+        let n = self.tokens[lo..].partition_point(|token| token.start < span.end);
         &self.tokens[lo..lo + n]
     }
 
@@ -377,7 +375,7 @@ impl<'a> Builder<'a> {
         // The start of the open branch of each open `&IF`, innermost last.
         let mut open: Vec<u32> = Vec::new();
         for token in self.tokens {
-            let start = token.start as u32;
+            let start = token.start;
             match token.kind {
                 Kind::PreprocIf => open.push(start),
                 Kind::PreprocElseif | Kind::PreprocElse => {
@@ -415,14 +413,14 @@ impl<'a> Builder<'a> {
         let Some(last) = tokens.iter().rposition(|token| token.kind != Kind::Comment) else {
             return span;
         };
-        let line_start = self.line_start(tokens[last].start as u32);
+        let line_start = self.line_start(tokens[last].start);
         if line_start <= span.start {
             return span;
         }
         let first_on_line = tokens[..=last]
             .iter()
             .rev()
-            .take_while(|token| token.start as u32 >= line_start)
+            .take_while(|token| token.start >= line_start)
             .filter(|token| token.kind != Kind::Comment)
             .last();
         if first_on_line.is_some_and(|token| token.kind == Kind::End) {
@@ -442,7 +440,7 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let span = token_span(token);
-            let Some(text) = self.source.get(token.start..token.end) else {
+            let Some(text) = self.source.get(token.range()) else {
                 continue;
             };
             if text.starts_with("/*") {
@@ -560,8 +558,8 @@ fn trim_trailing_space(source: &str, mut span: Span) -> Span {
 
 fn token_span(token: &Token) -> Span {
     Span {
-        start: token.start as u32,
-        end: token.end as u32,
+        start: token.start,
+        end: token.end,
     }
 }
 

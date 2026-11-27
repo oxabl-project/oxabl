@@ -2337,15 +2337,15 @@ fn when_values(
         let S::Assign { assignments } = &s.kind else {
             continue;
         };
-        let first = tokens.partition_point(|t| t.start < s.span.start as usize);
+        let first = tokens.partition_point(|t| t.start < s.span.start);
         for t in tokens[first..]
             .iter()
-            .take_while(|t| t.start < s.span.end as usize)
+            .take_while(|t| t.start < s.span.end)
             .filter(|t| t.kind == oxabl_lexer::Kind::When)
         {
             let pair = assignments
                 .iter()
-                .filter(|a| pools.expr(a.value).span.end as usize <= t.start)
+                .filter(|a| pools.expr(a.value).span.end <= t.start)
                 .max_by_key(|a| pools.expr(a.value).span.end);
             if let Some(a) = pair {
                 out.insert(pools.expr(a.value).id);
@@ -2367,7 +2367,7 @@ fn repeat_vars(
         if !matches!(s.kind, S::Repeat { .. }) {
             continue;
         }
-        let first = tokens.partition_point(|t| t.start < s.span.start as usize);
+        let first = tokens.partition_point(|t| t.start < s.span.start);
         if tokens.get(first).map(|t| t.kind) != Some(Kind::Repeat) {
             continue;
         }
@@ -2383,7 +2383,7 @@ fn repeat_vars(
                 Kind::RightParen => depth -= 1,
                 Kind::Equals if depth == 0 && i > 0 => {
                     if header[i..].iter().any(|t| t.kind == Kind::To) {
-                        let name = &source[header[i - 1].start..header[i - 1].end];
+                        let name = header[i - 1].slice(source);
                         out.insert(s.id, name.to_ascii_lowercase());
                     }
                     break;

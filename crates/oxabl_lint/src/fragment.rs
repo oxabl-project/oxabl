@@ -267,10 +267,10 @@ impl IncludeDependence {
             if skipped(i) || undefined == Some(i) {
                 continue;
             }
-            let text = &source[token.start..token.end];
+            let text = token.slice(source);
             match token.kind {
                 Kind::Eof => {
-                    out.finish(&mut cur, token.start);
+                    out.finish(&mut cur, token.start as usize);
                     break;
                 }
                 Kind::PreprocIf | Kind::PreprocElseif => {
@@ -301,7 +301,7 @@ impl IncludeDependence {
                 Kind::PreprocGlobalDefine | Kind::PreprocScopedDefine => {
                     // The line ends the statement that it interrupts.
                     if cur.start.is_some() {
-                        out.finish(&mut cur, token.start);
+                        out.finish(&mut cur, token.start as usize);
                         run = Run::Outside;
                         slot = SlotScan::Closed;
                     }
@@ -317,7 +317,7 @@ impl IncludeDependence {
                 // belongs to the directive.
                 Kind::PreprocUndefine => {
                     if let Some(name) = tokens.get(i + 1).filter(|_| !line_ends[i]) {
-                        let name = source[name.start..name.end].to_ascii_lowercase();
+                        let name = name.slice(source).to_ascii_lowercase();
                         local.retain(|n| *n != name);
                         undefined = Some(i + 1);
                     }
@@ -387,7 +387,7 @@ impl IncludeDependence {
             }
 
             if cur.start.is_none() {
-                cur.start = Some(token.start);
+                cur.start = Some(token.start as usize);
                 // An `&IF` that opens inside the statement is a reference.
                 cur.under_if = depth > 0;
             }
@@ -398,8 +398,8 @@ impl IncludeDependence {
             if argless_include {
                 cur.includes.push(Include {
                     site: Span {
-                        start: token.start as u32,
-                        end: token.end as u32,
+                        start: token.start,
+                        end: token.end,
                     },
                     in_run_target,
                 });
@@ -417,12 +417,12 @@ impl IncludeDependence {
             // A period or colon ends a statement only before whitespace or
             // the end of the text: in `customer.region` it is part of a name.
             let ends_statement = matches!(token.kind, Kind::Period | Kind::Colon)
-                && source[token.end..]
+                && source[token.end as usize..]
                     .chars()
                     .next()
                     .is_none_or(char::is_whitespace);
             if ends_statement {
-                out.finish(&mut cur, token.end);
+                out.finish(&mut cur, token.end as usize);
                 run = Run::Outside;
                 slot = SlotScan::Closed;
             }
@@ -556,12 +556,12 @@ fn significant_tokens(source: &str) -> (Vec<Token>, Vec<bool>) {
     let mut break_seen = false;
     for token in Lexer::new(source) {
         break_seen |= source
-            .get(prev_end..token.start)
+            .get(prev_end..token.start as usize)
             .is_some_and(|gap| gap.contains('\n'));
-        prev_end = token.end;
+        prev_end = token.end as usize;
         if token.kind == Kind::Comment {
             // A line comment takes its line break.
-            break_seen |= source[token.start..token.end].ends_with('\n');
+            break_seen |= token.slice(source).ends_with('\n');
             continue;
         }
         if let Some(last) = line_ends.last_mut() {
@@ -619,7 +619,7 @@ fn find_guard(source: &str, tokens: &[Token]) -> Option<Guard> {
     let mut then = tokens.iter().position(|t| t.kind == Kind::PreprocThen)?;
     let condition: String = tokens[1..then]
         .iter()
-        .map(|t| source[t.start..t.end].to_ascii_uppercase())
+        .map(|t| t.slice(source).to_ascii_uppercase())
         .collect();
     let name = condition
         .strip_prefix("NOTDEFINED(")
@@ -670,7 +670,7 @@ fn find_guard(source: &str, tokens: &[Token]) -> Option<Guard> {
         matches!(
             w[0].kind,
             Kind::PreprocGlobalDefine | Kind::PreprocScopedDefine
-        ) && source[w[1].start..w[1].end].eq_ignore_ascii_case(name)
+        ) && w[1].slice(source).eq_ignore_ascii_case(name)
     });
     defines.then_some(Guard { then, endif })
 }

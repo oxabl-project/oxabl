@@ -7,7 +7,7 @@
 //!   --summary  Only show the summary
 
 use oxabl_common::SourceMap;
-use oxabl_lexer::{Kind, Token, TokenValue, tokenize};
+use oxabl_lexer::{Kind, Token, tokenize};
 use std::collections::HashMap;
 use std::fs;
 
@@ -44,12 +44,16 @@ fn print_tokens(source: &str, source_map: &SourceMap, tokens: &[Token], errors_o
     }
 
     for (i, token) in tokens.iter().enumerate() {
-        let slice = &source[token.start..token.end];
+        let slice = token.slice(source);
         let is_numeric_kind = matches!(
             token.kind,
             Kind::IntegerLiteral | Kind::BigIntLiteral | Kind::DecimalLiteral
         );
-        let has_no_value = matches!(token.value, TokenValue::None);
+        let has_no_value = match token.kind {
+            Kind::IntegerLiteral | Kind::BigIntLiteral => token.integer_value(source).is_none(),
+            Kind::DecimalLiteral => token.decimal_value(source).is_none(),
+            _ => true,
+        };
         let looks_like_number = slice.chars().next().is_some_and(|c| c.is_ascii_digit());
         let is_suspicious = is_numeric_kind && has_no_value && !looks_like_number;
 
@@ -63,19 +67,29 @@ fn print_tokens(source: &str, source_map: &SourceMap, tokens: &[Token], errors_o
             slice.replace('\n', "\\n")
         };
         let flag = if is_suspicious { " <-- ISSUE" } else { "" };
-        let (line_number, column_number) = source_map.lookup(token.start);
+        let (line_number, column_number) = source_map.lookup(token.start as usize);
+
+        let value_display = match token.kind {
+            Kind::IntegerLiteral | Kind::BigIntLiteral => {
+                format!("{:?}", token.integer_value(source))
+            }
+            Kind::DecimalLiteral => format!("{:?}", token.decimal_value(source)),
+            Kind::StringLiteral | Kind::DateLiteral | Kind::IncludeReference => {
+                format!("Text({:?})", token.text(source))
+            }
+            Kind::IncludeArgReference => format!("{:?}", token.include_arg_index(source)),
+            Kind::KwTrue | Kind::KwFalse => format!("{:?}", token.boolean_value()),
+            _ => "None".to_string(),
+        };
 
         println!(
-            "{:5} | {:20} | {:5}:{:<5} | {:?} | {:?}{}",
+            "{:5} | {:20} | {:5}:{:<5} | {:?} | {}{}",
             i,
             format!("{:?}", token.kind),
             line_number,
             column_number,
             display_slice,
-            match token.value {
-                TokenValue::Text { .. } => format!("Text({:?})", token.text(source)),
-                ref other => format!("{other:?}"),
-            },
+            value_display,
             flag
         );
     }

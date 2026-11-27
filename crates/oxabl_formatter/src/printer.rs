@@ -120,13 +120,14 @@ struct AccessorLines {
 
 /// Is the token at `offset` the first code token on its line?
 fn leads_line(toks: &[Token], line_starts: &[usize], offset: usize) -> bool {
-    let at = toks.partition_point(|t| t.start < offset);
+    let at = toks.partition_point(|t| (t.start as usize) < offset);
     toks[..at]
         .iter()
         .rev()
         .find(|t| t.kind != Kind::Comment)
         .is_none_or(|t| {
-            line_index(line_starts, t.end.saturating_sub(1)) < line_index(line_starts, offset)
+            line_index(line_starts, (t.end as usize).saturating_sub(1))
+                < line_index(line_starts, offset)
         })
 }
 
@@ -186,13 +187,13 @@ fn collect(
     // A statement starts its own line when the token before it (comments aside)
     // ends on an earlier line, e.g. the `THEN` of a `WHEN` branch.
     let starts_own_line = |s: &Statement| {
-        let at = toks.partition_point(|t| t.start < s.span.start as usize);
+        let at = toks.partition_point(|t| t.start < s.span.start);
         toks[..at]
             .iter()
             .rev()
             .find(|t| t.kind != Kind::Comment)
             .is_some_and(|t| {
-                line_index(line_starts, t.end.saturating_sub(1))
+                line_index(line_starts, (t.end as usize).saturating_sub(1))
                     < line_index(line_starts, s.span.start as usize)
             })
     };
@@ -246,18 +247,16 @@ fn apply_end_type(content: &str, ty: &str, style: &StyleGuide) -> Option<String>
     let end_tok = &toks[end_idx];
     if let Some(nt) = toks.get(end_idx + 1) {
         // Already typed (e.g. `END PROCEDURE`) → nothing to do.
-        if content[nt.start..nt.end].eq_ignore_ascii_case(ty) {
+        if nt.slice(content).eq_ignore_ascii_case(ty) {
             return None;
         }
     }
     let ty = match style.keyword_case {
         oxabl_style::KeywordCase::Uppercase => ty.to_ascii_uppercase(),
         oxabl_style::KeywordCase::Lowercase => ty.to_ascii_lowercase(),
-        oxabl_style::KeywordCase::Preserve => {
-            keywords::case_like(ty, &content[end_tok.start..end_tok.end])
-        }
+        oxabl_style::KeywordCase::Preserve => keywords::case_like(ty, end_tok.slice(content)),
     };
-    let at = end_tok.end;
+    let at = end_tok.end as usize;
     let mut s = String::with_capacity(content.len() + ty.len() + 1);
     s.push_str(&content[..at]);
     s.push(' ');
@@ -326,12 +325,13 @@ pub(crate) fn print(
         if t.kind != Kind::StringLiteral {
             continue;
         }
-        for (i, _) in source.as_bytes()[t.start..t.end]
+        let start = t.start as usize;
+        for (i, _) in source.as_bytes()[t.range()]
             .iter()
             .enumerate()
             .filter(|(_, b)| **b == b'\t')
         {
-            let at = t.start + i;
+            let at = start + i;
             let li = line_index(&line_starts, at);
             tab_at[li] = tab_at[li].max(Some(at));
         }
@@ -366,11 +366,11 @@ pub(crate) fn print(
         if t.kind == Kind::Comment || t.end <= t.start {
             continue;
         }
-        if !src_bytes[t.start..t.end].contains(&b'\n') {
+        if !src_bytes[t.range()].contains(&b'\n') {
             continue;
         }
-        let sl = line_index(&line_starts, t.start);
-        let el = line_index(&line_starts, t.end - 1);
+        let sl = line_index(&line_starts, t.start as usize);
+        let el = line_index(&line_starts, (t.end as usize) - 1);
         for slot in protected[(sl + 1).min(n)..(el + 1).min(n)].iter_mut() {
             *slot = true;
         }
@@ -430,13 +430,13 @@ pub(crate) fn print(
     // its own, such as `ELSE /* x */` or `WHEN 1 THEN /* x */`: it rides on that
     // line and must not re-indent it.
     let code_before_on_line = |span_start: usize| {
-        let at = toks.partition_point(|t| t.start < span_start);
+        let at = toks.partition_point(|t| (t.start as usize) < span_start);
         toks[..at]
             .iter()
             .rev()
             .find(|t| t.kind != Kind::Comment)
             .is_some_and(|t| {
-                line_index(&line_starts, t.end.saturating_sub(1))
+                line_index(&line_starts, (t.end as usize).saturating_sub(1))
                     == line_index(&line_starts, span_start)
             })
     };
@@ -467,7 +467,7 @@ pub(crate) fn print(
             // statement's.
             let end = c.span.end as usize;
             let before_branch_head = head_depth.get(&id).filter(|_| {
-                let at = toks.partition_point(|t| t.start < end);
+                let at = toks.partition_point(|t| (t.start as usize) < end);
                 toks[at..]
                     .iter()
                     .find(|t| t.kind != Kind::Comment)
@@ -543,9 +543,9 @@ pub(crate) fn print(
             .partition_point(|c| (c.span.end as usize) <= a.head);
         for c in program.comments[..first].iter().rev() {
             let end = c.span.end as usize;
-            let at = toks.partition_point(|t| t.start < end);
+            let at = toks.partition_point(|t| (t.start as usize) < end);
             let next_code = toks[at..].iter().find(|t| t.kind != Kind::Comment);
-            if next_code.is_none_or(|t| t.start != a.head) {
+            if next_code.is_none_or(|t| t.start as usize != a.head) {
                 break;
             }
             set_comment(&mut indent, &mut anchor, c.span.start as usize, end, col);
@@ -587,21 +587,23 @@ pub(crate) fn print(
             if !keywords::is_transformable(t.kind) || is_name[ti] {
                 continue;
             }
-            let raw = &source[t.start..t.end];
+            let raw = t.slice(source);
             let new_text = keywords::transform_token(raw, t.kind, style);
             if new_text == raw {
                 continue;
             }
-            let li = line_index(&line_starts, t.start);
+            let start = t.start as usize;
+            let end = t.end as usize;
+            let li = line_index(&line_starts, start);
             let cs = content_starts[li];
-            if t.start < cs {
+            if start < cs {
                 continue;
             }
-            if new_text.len() != raw.len() && tab_at[li].is_some_and(|tab| t.start < tab) {
+            if new_text.len() != raw.len() && tab_at[li].is_some_and(|tab| start < tab) {
                 continue;
             }
-            let col = t.start - cs;
-            let len = t.end - t.start;
+            let col = start - cs;
+            let len = end - start;
             if col + len <= content[li].len() {
                 edits[li].push((col, len, new_text));
             }

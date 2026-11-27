@@ -3,40 +3,37 @@ use oxabl_ast::{
     BooleanLiteral, DateLiteral, DecimalLiteral, IntegerLiteral, Literal, NameInterner,
     StringLiteral, UnknownLiteral,
 };
-use oxabl_lexer::{Kind, Token, TokenValue};
+use oxabl_lexer::{Kind, Token};
 
 /// The literal of `token`, read from `source`, interning string/date text into `names`.
 pub fn token_to_literal(token: &Token, source: &str, names: &mut NameInterner) -> Option<Literal> {
     let span = tok_span(token);
-    match (&token.kind, &token.value) {
-        (Kind::IntegerLiteral, TokenValue::Integer(v)) => Some(Literal::Integer(IntegerLiteral {
-            span,
-            value: i64::from(*v),
-        })),
-        (Kind::BigIntLiteral, TokenValue::BigInt(v)) => {
-            Some(Literal::Integer(IntegerLiteral { span, value: *v }))
+    match token.kind {
+        Kind::IntegerLiteral | Kind::BigIntLiteral => {
+            let value = token.integer_value(source)?;
+            Some(Literal::Integer(IntegerLiteral { span, value }))
         }
-        (Kind::DecimalLiteral, TokenValue::Decimal(v)) => {
-            Some(Literal::Decimal(DecimalLiteral { span, value: *v }))
+        Kind::DecimalLiteral => {
+            let value = token.decimal_value(source)?;
+            Some(Literal::Decimal(DecimalLiteral { span, value }))
         }
-        (Kind::StringLiteral, TokenValue::Text { .. }) => {
+        Kind::StringLiteral => {
             let value = names.intern(token.text(source)?);
             Some(Literal::String(StringLiteral { span, value }))
         }
-        (Kind::DateLiteral, TokenValue::Text { .. }) => {
+        Kind::DateLiteral => {
             let text = names.intern(token.text(source)?);
             Some(Literal::Date(DateLiteral { span, text }))
         }
-        (Kind::Question, TokenValue::None) => Some(Literal::Unknown(UnknownLiteral { span })),
-        (Kind::KwTrue | Kind::KwFalse, TokenValue::Boolean(v)) => {
-            Some(Literal::Boolean(BooleanLiteral { span, value: *v }))
-        }
+        Kind::Question => Some(Literal::Unknown(UnknownLiteral { span })),
+        Kind::KwTrue => Some(Literal::Boolean(BooleanLiteral { span, value: true })),
+        Kind::KwFalse => Some(Literal::Boolean(BooleanLiteral { span, value: false })),
         // YES is an alias for TRUE in ABL
-        (Kind::Yes, _) => Some(Literal::Boolean(BooleanLiteral { span, value: true })),
+        Kind::Yes => Some(Literal::Boolean(BooleanLiteral { span, value: true })),
         // NO is an alias for FALSE in ABL. Bare `no` only reaches the parser
         // when the lexer's space-separated lock lookahead did not claim a
         // following LOCK, so this never shadows `NO LOCK`.
-        (Kind::No, _) => Some(Literal::Boolean(BooleanLiteral { span, value: false })),
+        Kind::No => Some(Literal::Boolean(BooleanLiteral { span, value: false })),
         _ => None,
     }
 }

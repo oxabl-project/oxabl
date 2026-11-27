@@ -653,7 +653,7 @@ fn include_before_header(tokens: &[Token], statements: &[Statement]) -> bool {
                 StatementKind::Class { .. } | StatementKind::Interface { .. }
             )
         })
-        .map_or(usize::MAX, |stmt| stmt.span.start as usize);
+        .map_or(u32::MAX, |stmt| stmt.span.start);
     tokens
         .iter()
         .take_while(|t| t.start < header)
@@ -787,7 +787,7 @@ fn members_readable(
 ) -> bool {
     !hides_members(body)
         && !references(class, tokens, source)
-            .any(|t| !values.is_some_and(|values| values.harmless(t.start)))
+            .any(|t| !values.is_some_and(|values| values.harmless(t.start as usize)))
 }
 
 /// The `{...}` references in the text of `stmt`.
@@ -796,12 +796,12 @@ fn references<'t>(
     tokens: &'t [Token],
     source: &'t str,
 ) -> impl Iterator<Item = &'t Token> {
-    let (start, end) = (stmt.span.start as usize, stmt.span.end as usize);
+    let (start, end) = (stmt.span.start, stmt.span.end);
     let from = tokens.partition_point(|t| t.start < start);
     tokens[from..]
         .iter()
         .take_while(move |t| t.start < end)
-        .filter(move |t| source[t.start..t.end].starts_with('{'))
+        .filter(move |t| t.slice(source).starts_with('{'))
 }
 
 /// Whether a `{...}` reference stands in the text of `stmt`.
@@ -859,7 +859,7 @@ fn declared_enums(
     source: &str,
     raw_spans: bool,
 ) -> Vec<ClassFacts> {
-    let text = |t: &Token| &source[t.start..t.end];
+    let text = |t: &Token| t.slice(source);
     let is_word = |t: &Token| text(t).starts_with(|c: char| c.is_alphabetic() || c == '_');
     let mut enums = Vec::new();
     let mut i = 0;
@@ -905,10 +905,10 @@ fn declared_enums(
                 i += 1;
             }
         }
-        let enum_span = match (u32::try_from(name_start), u32::try_from(name_end)) {
-            (Ok(start), Ok(end)) if raw_spans => Some(oxabl_ast::Span { start, end }),
-            _ => None,
-        };
+        let enum_span = raw_spans.then_some(oxabl_ast::Span {
+            start: name_start,
+            end: name_end,
+        });
         enums.push(ClassFacts {
             descriptor: Arc::new(ClassDescriptor {
                 name: IndexName::new(&name),
@@ -940,7 +940,7 @@ fn enum_members(
     source: &str,
     own_type: &IndexName,
 ) -> (Option<Vec<MemberDescriptor>>, usize) {
-    let text = |t: &Token| &source[t.start..t.end];
+    let text = |t: &Token| t.slice(source);
     let mut members = Vec::new();
     let mut i = 0;
     let mut ok = true;
@@ -1002,7 +1002,7 @@ fn declared_members(
 /// holds an include or preprocessor reference. The parser skips such a
 /// reference, so the statements of the list are not the whole list.
 fn list_hides_params(tokens: &[Token], source: &str, name_end: usize) -> bool {
-    let from = tokens.partition_point(|t| t.start < name_end);
+    let from = tokens.partition_point(|t| (t.start as usize) < name_end);
     let mut list = tokens[from..].iter().filter(|t| t.kind != Kind::Comment);
     if !list.next().is_some_and(|t| t.kind == Kind::LeftParen) {
         return false;
@@ -1028,7 +1028,7 @@ fn list_hides_params(tokens: &[Token], source: &str, name_end: usize) -> bool {
             | Kind::PreprocUndefine
             | Kind::Eof => return true,
             // `{&name}`, which the lexer can also give a keyword kind.
-            _ if source[token.start..token.end].starts_with('{') => return true,
+            _ if token.slice(source).starts_with('{') => return true,
             _ => {}
         }
     }

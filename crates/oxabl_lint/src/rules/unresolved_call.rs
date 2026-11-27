@@ -220,10 +220,10 @@ fn binds_port_type(calls: &FileCalls, tokens: &[Token]) -> bool {
         .iter()
         .filter(|site| site.kind == CallKind::Remote)
         .any(|site| {
-            let from = tokens.partition_point(|t| t.start < site.at.start as usize);
+            let from = tokens.partition_point(|t| t.start < site.at.start);
             let mut words = tokens[from..]
                 .iter()
-                .take_while(|t| t.end <= site.at.end as usize)
+                .take_while(|t| t.end <= site.at.end)
                 .map(|t| t.kind);
             let kinds: Vec<Kind> = words.by_ref().collect();
             kinds.contains(&Kind::Set) && !kinds.contains(&Kind::Persistent)

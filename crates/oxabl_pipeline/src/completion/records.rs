@@ -457,7 +457,7 @@ impl Engine<'_, '_, '_, '_> {
         let text = self.request.text;
         let from = self
             .tokens
-            .partition_point(|token| (token.start as u32) < self.found.window_start);
+            .partition_point(|token| token.start < self.found.window_start);
         let window: Vec<&Token> = self
             .tokens
             .iter_range(from, self.found.before)
@@ -563,7 +563,7 @@ impl Engine<'_, '_, '_, '_> {
         if !is_comparison(last.kind) {
             return None;
         }
-        let spelled = |token: &Token| &text[token.start..token.end];
+        let spelled = |token: &Token| token.slice(text);
         match before {
             [.., q, dot, f]
                 if q.kind == Kind::Identifier
@@ -581,7 +581,7 @@ impl Engine<'_, '_, '_, '_> {
                 {
                     from = db.start;
                 }
-                let record = self.record_named(&text[from..q.end])?;
+                let record = self.record_named(&text[from as usize..q.end as usize])?;
                 self.field_type(record, spelled(f), 0)
             }
             [.., f] if f.kind == Kind::Identifier => {
@@ -689,7 +689,7 @@ fn statement_records<'t>(text: &'t str, window: &[&Token]) -> Vec<&'t str> {
         {
             end = table.end;
         }
-        names.push(&text[name.start..end]);
+        names.push(&text[name.start as usize..end as usize]);
     }
     names
 }
