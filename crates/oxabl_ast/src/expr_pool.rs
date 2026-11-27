@@ -259,3 +259,99 @@ impl AstPools {
         self.exprs.list(list)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ExpressionKind, Literal, Span, UnknownLiteral};
+
+    fn expr() -> Expression {
+        Expression::new(ExpressionKind::Literal(Literal::Unknown(UnknownLiteral {
+            span: Span::DUMMY,
+        })))
+    }
+
+    fn pool_of(count: usize) -> (ExprPool, Vec<ExprId>) {
+        let mut pool = ExprPool::new();
+        let ids = (0..count).map(|_| pool.push(expr())).collect();
+        (pool, ids)
+    }
+
+    #[test]
+    fn try_get_gives_the_node_of_a_valid_handle() {
+        let (pool, ids) = pool_of(2);
+        assert_eq!(pool.try_get(ids[0]), Some(&expr()));
+        assert_eq!(pool.try_get(ids[1]), Some(&expr()));
+    }
+
+    #[test]
+    fn try_get_gives_none_for_dummy() {
+        let (pool, _) = pool_of(1);
+        assert_eq!(pool.try_get(ExprId::DUMMY), None);
+        assert_eq!(ExprPool::new().try_get(ExprId::DUMMY), None);
+    }
+
+    #[test]
+    fn try_get_gives_none_for_an_out_of_range_handle() {
+        let (pool, _) = pool_of(1);
+        let (_, other) = pool_of(3);
+        assert_eq!(pool.try_get(other[1]), None);
+        assert_eq!(pool.try_get(other[2]), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid ExprId(DUMMY) for ExprPool of length 1")]
+    fn get_panics_on_dummy() {
+        let (pool, _) = pool_of(1);
+        let _ = pool.get(ExprId::DUMMY);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid ExprId(2) for ExprPool of length 1")]
+    fn get_panics_on_an_out_of_range_handle() {
+        let (pool, _) = pool_of(1);
+        let (_, other) = pool_of(3);
+        let _ = pool.get(other[2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid ExprId(DUMMY) for ExprPool of length 1")]
+    fn get_mut_panics_on_dummy() {
+        let (mut pool, _) = pool_of(1);
+        let _ = pool.get_mut(ExprId::DUMMY);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid ExprId(DUMMY)")]
+    fn index_panics_on_dummy() {
+        let (pool, _) = pool_of(1);
+        let _ = &pool[ExprId::DUMMY];
+    }
+
+    #[test]
+    fn empty_list_reads_as_an_empty_slice() {
+        let (pool, _) = pool_of(2);
+        assert!(ExprList::EMPTY.is_empty());
+        assert_eq!(ExprList::EMPTY.len(), 0);
+        assert!(pool.list(ExprList::EMPTY).is_empty());
+        assert!(ExprPool::new().list(ExprList::EMPTY).is_empty());
+    }
+
+    #[test]
+    fn pushing_an_empty_list_gives_empty() {
+        let (mut pool, ids) = pool_of(2);
+        pool.push_list(&ids);
+        assert_eq!(pool.push_list(&[]), ExprList::EMPTY);
+    }
+
+    #[test]
+    fn a_pushed_list_reads_back_in_order() {
+        let (mut pool, ids) = pool_of(3);
+        let first = pool.push_list(&[ids[2], ids[0]]);
+        let second = pool.push_list(&[ids[1]]);
+        assert_eq!(pool.list(first), &[ids[2], ids[0]]);
+        assert_eq!(pool.list(second), &[ids[1]]);
+        assert_eq!(first.len(), 2);
+        assert!(!first.is_empty());
+    }
+}

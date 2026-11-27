@@ -255,4 +255,56 @@ mod tests {
         assert_eq!(pool.get(empty), "");
         assert_eq!(&pool[a], "Customer");
     }
+
+    fn pool_of(names: &[&str]) -> (NamePool, Vec<NameId>) {
+        let mut pool = NamePool::new();
+        let ids = names.iter().map(|n| pool.push(n)).collect();
+        (pool, ids)
+    }
+
+    #[test]
+    fn try_get_gives_the_text_of_a_valid_handle() {
+        let (pool, ids) = pool_of(&["a", "", "bc"]);
+        assert_eq!(pool.try_get(ids[0]), Some("a"));
+        assert_eq!(pool.try_get(ids[1]), Some(""));
+        assert_eq!(pool.try_get(ids[2]), Some("bc"));
+    }
+
+    #[test]
+    fn try_get_gives_none_for_dummy() {
+        let (pool, _) = pool_of(&["a"]);
+        assert_eq!(pool.try_get(NameId::DUMMY), None);
+        assert_eq!(NamePool::new().try_get(NameId::DUMMY), None);
+    }
+
+    #[test]
+    fn try_get_gives_none_for_an_out_of_range_handle() {
+        let (pool, _) = pool_of(&["a"]);
+        let (_, other) = pool_of(&["x", "y", "z"]);
+        assert_eq!(pool.try_get(other[1]), None);
+        assert_eq!(pool.try_get(other[2]), None);
+        assert_eq!(NamePool::new().try_get(other[0]), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid NameId(DUMMY) for NamePool of length 1")]
+    fn get_panics_on_dummy() {
+        let (pool, _) = pool_of(&["a"]);
+        let _ = pool.get(NameId::DUMMY);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid NameId(2) for NamePool of length 1")]
+    fn get_panics_on_an_out_of_range_handle() {
+        let (pool, _) = pool_of(&["a"]);
+        let (_, other) = pool_of(&["x", "y", "z"]);
+        let _ = pool.get(other[2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid NameId(DUMMY)")]
+    fn index_panics_on_dummy() {
+        let (pool, _) = pool_of(&["a"]);
+        let _ = &pool[NameId::DUMMY];
+    }
 }
