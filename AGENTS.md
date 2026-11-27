@@ -244,6 +244,8 @@ cargo bench -p oxabl_parser --bench parser_bench
 cargo bench -p oxabl_common --bench source_map_bench
 # The daemon's workspace pass after an edit (`edit_pass/leaf`, `edit_pass/shared_include`, `edit_pass/no_edit`), on one thread
 cargo bench -p oxabl_daemon --bench edit_pass_bench
+# The first and the next `typeHierarchy/subtypes` request on 400 subclasses of one class (`hierarchy/first_subtypes`, `hierarchy/next_subtypes`), on one thread
+cargo bench -p oxabl_daemon --bench hierarchy_bench
 ```
 
 **When the `/codspeed` skills are available, use them for benchmark work** — setup, optimization, and flamegraph analysis.

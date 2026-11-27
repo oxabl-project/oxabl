@@ -75,3 +75,7 @@ harness = false
 [[bench]]
 name = "edit_pass_bench"
 harness = false
+
+[[bench]]
+name = "hierarchy_bench"
+harness = false
