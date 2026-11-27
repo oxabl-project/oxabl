@@ -8,7 +8,7 @@ use oxabl_lexer::Kind;
 use oxabl_semantic::{ScopeId, ScopeKind};
 
 use super::CompletionBase;
-use super::tokens::TokenStream;
+use super::tokens::{TextDiff, TokenStream};
 
 /// The cursor and the window start of the current text, placed in a base.
 pub(crate) struct Mapped {
@@ -75,13 +75,14 @@ pub(crate) fn map(
     }
     let old = base.text.as_bytes();
     let new = text.as_bytes();
-    let (stale, prefix, suffix) = if let Some((prefix, suffix)) = tokens.diff() {
-        (true, prefix, suffix)
-    } else if base.tokens.is_some() || old == new {
-        (false, new.len(), 0)
-    } else {
-        let (prefix, suffix) = super::tokens::common_ends(old, new);
-        (true, prefix, suffix)
+    let (stale, prefix, suffix) = match tokens.diff_from(base.text) {
+        TextDiff::Same => (false, new.len(), 0),
+        TextDiff::Differs { prefix, suffix } => (true, prefix, suffix),
+        TextDiff::Unknown if old == new => (false, new.len(), 0),
+        TextDiff::Unknown => {
+            let (prefix, suffix) = super::tokens::common_ends(old, new);
+            (true, prefix, suffix)
+        }
     };
     let to_base = |at: u32| -> u32 {
         let at = at as usize;

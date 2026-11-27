@@ -21,14 +21,26 @@ pub struct Prior<'p> {
     pub tokens: &'p [Token],
 }
 
+/// How the text of a request differs from the text of an older analysis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextDiff {
+    /// The two texts are equal.
+    Same,
+    /// The texts share their first `prefix` bytes and their last `suffix`
+    /// bytes, which do not overlap.
+    Differs { prefix: usize, suffix: usize },
+    /// Not known: compare the texts.
+    Unknown,
+}
+
 /// Zero-copy view of a request's token stream: an unchanged prefix borrowed
 /// from `prior` followed by the freshly lexed tail.
 pub(crate) struct TokenStream<'p> {
     prefix: &'p [Token],
     tail: Vec<Token>,
-    /// `(common_prefix, common_suffix)` between `prior.text` and the request
-    /// text when they differ, reused by `base::map` so it does not rescan.
-    diff: Option<(usize, usize)>,
+    /// The text of the prior this stream was made from, and how the request
+    /// text differs from it, so `base::map` does not compare the texts again.
+    prior: Option<(&'p str, TextDiff)>,
 }
 
 impl<'p> TokenStream<'p> {
@@ -36,7 +48,7 @@ impl<'p> TokenStream<'p> {
         Self {
             prefix: tokens,
             tail: Vec::new(),
-            diff: None,
+            prior: None,
         }
     }
 
@@ -49,10 +61,14 @@ impl<'p> TokenStream<'p> {
         self.tail.last().or_else(|| self.prefix.last())
     }
 
-    /// Cached `(common_prefix, common_suffix)` if `of_request` already diffed
-    /// `prior.text` against the request text.
-    pub(crate) fn diff(&self) -> Option<(usize, usize)> {
-        self.diff
+    /// How the request text differs from `text`. Known only when this stream
+    /// was made from a prior whose text is `text` itself (the same slice, not
+    /// an equal one); otherwise [`TextDiff::Unknown`].
+    pub(crate) fn diff_from(&self, text: &str) -> TextDiff {
+        match self.prior {
+            Some((prior, diff)) if std::ptr::eq(prior, text) => diff,
+            _ => TextDiff::Unknown,
+        }
     }
 
     pub(crate) fn partition_point(&self, mut pred: impl FnMut(&Token) -> bool) -> usize {
@@ -121,12 +137,16 @@ pub(crate) fn of_request<'p>(text: &str, cursor: u32, prior: Option<Prior<'p>>) 
         return TokenStream {
             prefix: &[],
             tail: oxabl_lexer::tokenize(text),
-            diff: None,
+            prior: None,
         };
     };
     let (prefix, suffix) = common_ends(prior.text.as_bytes(), text.as_bytes());
     if prefix == prior.text.len() && prefix == text.len() {
-        return TokenStream::from_slice(prior.tokens);
+        return TokenStream {
+            prefix: prior.tokens,
+            tail: Vec::new(),
+            prior: Some((prior.text, TextDiff::Same)),
+        };
     }
     // The bytes that a request reads after the cursor, and the bytes that the
     // edit changed: all of them are lexed.
@@ -155,7 +175,7 @@ pub(crate) fn of_request<'p>(text: &str, cursor: u32, prior: Option<Prior<'p>>) 
     TokenStream {
         prefix: &prior.tokens[..keep],
         tail,
-        diff: Some((prefix, suffix)),
+        prior: Some((prior.text, TextDiff::Differs { prefix, suffix })),
     }
 }
 
@@ -314,5 +334,37 @@ mod tests {
         let stream = of_request(text, 3, Some(prior));
         assert!(stream.tail.is_empty());
         assert_eq!(stream.prefix.len(), tokens.len());
+    }
+
+    #[test]
+    fn the_difference_is_known_only_for_the_prior_text_itself() {
+        let old = "x = 1.\ny = 2.\n";
+        let tokens = oxabl_lexer::tokenize(old);
+        let prior = Prior {
+            text: old,
+            tokens: &tokens,
+        };
+        let same = of_request(old, 3, Some(prior));
+        assert_eq!(same.diff_from(old), TextDiff::Same);
+
+        let new = "x = 10.\ny = 2.\n";
+        let edited = of_request(new, 5, Some(prior));
+        assert_eq!(
+            edited.diff_from(old),
+            TextDiff::Differs {
+                prefix: 5,
+                suffix: 9
+            }
+        );
+
+        // An equal text in another place, and a stream of bare tokens, say
+        // nothing about a base: the caller must compare.
+        let copy = old.to_owned();
+        assert_eq!(same.diff_from(&copy), TextDiff::Unknown);
+        assert_eq!(edited.diff_from(new), TextDiff::Unknown);
+        assert_eq!(
+            TokenStream::from_slice(&tokens).diff_from(old),
+            TextDiff::Unknown
+        );
     }
 }
