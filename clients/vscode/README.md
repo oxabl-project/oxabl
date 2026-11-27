@@ -65,8 +65,13 @@ you also get, with no setup:
   procedure file, no `PROCEDURE` in a method), the words after `DEFINE`, and
   the snippets where their body is valid. The names in scope come too: the
   variables, parameters, buffers and functions that are defined before the
-  cursor, the members of the class, and the built-in functions, with the type
-  that fits an assignment first. After `FIND FIRST` or `FOR EACH` come the
+  cursor, the members of the class and the members it inherits from classes of
+  the workspace, and the built-in functions, with the type that fits an
+  assignment first. After `obj:`, `THIS-OBJECT:`, `SUPER:`, `NEW Cls():`,
+  `CAST(x, Cls):`, a class name or a chain (`obj:Child:`) come the members that
+  the receiver reaches: the public ones, and the private and protected ones of
+  the class you are in; a class name gives only the `STATIC` ones. The members
+  of the built-in classes (`Progress.Lang.*`) do not come yet. After `FIND FIRST` or `FOR EACH` come the
   buffers, temp-tables and tables of the schema; after `Customer.` its fields;
   in a `WHERE` the fields of the statement's records first. After `RUN` come
   the internal procedures and the programs on the include path, after `{` the

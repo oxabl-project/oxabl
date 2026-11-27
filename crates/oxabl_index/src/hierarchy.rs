@@ -294,7 +294,7 @@ pub struct SubtypeIndex {
 /// A name in a class header means what the file that writes it says, so each
 /// file has its own resolver: the search base of a class file depends on its
 /// package.
-pub trait ClassSource {
+pub trait ClassFiles {
     /// The class file the index minted `file` for.
     fn path_of(&self, file: IndexedFileId) -> Option<PathBuf>;
     /// The index that resolves the names the class file `path` writes.
@@ -828,7 +828,7 @@ struct Declared {
 
 fn declared_in_node(
     node: &ClassNode,
-    source: &dyn ClassSource,
+    source: &dyn ClassFiles,
     records: &RecordNames,
     name: &IndexName,
     wanted: &[&MemberDescriptor],
@@ -905,7 +905,7 @@ pub struct Overrides<'a> {
 /// class that declares it can lie outside the subtypes of `target`.
 pub fn overrides_below<'a>(
     index: &'a SubtypeIndex,
-    source: &dyn ClassSource,
+    source: &dyn ClassFiles,
     target: &SuperKey,
     implements: bool,
     wanted: &[&MemberDescriptor],
@@ -1075,7 +1075,7 @@ pub fn closure_records(index: &SubtypeIndex, class: &ClassNode) -> RecordNames {
 /// through `source`: a class or interface that cannot be read makes them not
 /// known.
 fn source_closure_records(
-    source: &dyn ClassSource,
+    source: &dyn ClassFiles,
     start_path: &Path,
     start: &ClassDescriptor,
     start_members: &[MemberDescriptor],
@@ -1140,7 +1140,7 @@ enum Examined {
 }
 
 struct SuperWalk<'a> {
-    source: &'a dyn ClassSource,
+    source: &'a dyn ClassFiles,
     name: IndexName,
     wanted: &'a [&'a MemberDescriptor],
     wanted_in: Declaring<'a>,
@@ -1250,7 +1250,7 @@ impl SuperWalk<'_> {
 /// others, one branch at a time). A supertype that does not resolve, or whose
 /// members oxabl cannot read, is a gap where a walk reaches it before a match.
 pub fn super_methods(
-    source: &dyn ClassSource,
+    source: &dyn ClassFiles,
     start_path: &Path,
     start: &ClassDescriptor,
     start_members: &[MemberDescriptor],

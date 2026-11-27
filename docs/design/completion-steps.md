@@ -209,7 +209,7 @@ Verify: `cargo test -p oxabl_pipeline -p oxabl_daemon` and the test file;
 clippy. Extend `completion_bench` with `FIND FIRST` and `Customer.`. Break:
 offer tables after an unknown qualifier, and see the `null` case fail.
 
-## Step 5. Members after `obj:`
+## Step 5. Members after `obj:` (done)
 
 - `crates/oxabl_semantic/src/surface.rs` (new): `ClassSource` (with
   `classes_in`; the workspace index answers it with an empty, incomplete list
@@ -232,6 +232,25 @@ Tests (tester): `crates/oxabl/tests/completion_members_lsp.rs`.
 Verify: `cargo test -p oxabl_semantic -p oxabl_pipeline -p oxabl_daemon` and
 the test file; clippy. Extend `completion_bench` with `obj:`. Break: let
 `TypeName` reach instance members, and see the static case fail.
+
+As built: `ClassSource` has one more implementer than the plan says, the
+daemon's per-base memo of the index (`ClassMemo`, in `completion/members.rs`):
+a request reads each class file once for a base, and a watched file change
+drops what the bases kept. The type is `MemberReach`, not `Reach`
+(`coercion::Reach` exists), and `class_surface` takes a fifth argument,
+`inside`, for the access to the private members of the class the cursor is in.
+The trait of the type hierarchy that was also named `ClassSource` is now
+`oxabl_index::hierarchy::ClassFiles`. The imports of the file and the name of
+each synthesized class symbol are kept in the symbol table (`imports`,
+`indexed_class_name`), because the surface walk needs them after the resolve
+pass ended. A list of members has every member of
+the surface, and the items that match the word come first. The context finder
+reads a keyword that touches a `.` or a `:` on its left (`app.Color:`) as a
+receiver. At a statement start, a word that is a statement and a name in scope
+(`THIS-OBJECT`) is one item. Black-box tests of what the tester's file does not state (the class
+of the open file, the inherited names of a class body, the method detail, the
+receivers that give `null`, and the facts a base keeps until a file changes)
+are in `crates/oxabl/tests/completion_members_extra_lsp.rs`.
 
 ## Step 6. Types and the `USING` edit
 

@@ -14,6 +14,7 @@ mod base;
 mod case;
 mod context;
 mod keywords;
+mod members;
 mod names;
 mod paths;
 mod rank;
@@ -29,6 +30,7 @@ use oxabl_semantic::{ScopeId, ScopeKind};
 use oxabl_style::KeywordCase;
 use oxabl_workspace::{DirEntry, FileSystem};
 
+pub use members::{ClassMemo, MemoView, member_documentation};
 pub use oxabl_lexer::Token;
 pub use tokens::Prior;
 
@@ -108,6 +110,10 @@ pub struct CompletionBase<'b, 's, 'a> {
     /// The tokens of `text`, as [`lex`] gives them. A request lexes only what
     /// differs from them. `None`: the request lexes the whole current text.
     pub tokens: Option<&'b [Token]>,
+    /// The answers about other classes that earlier requests of this base
+    /// read, so a request parses no class file again. `None`: each request
+    /// asks the index.
+    pub classes: Option<MemoView<'b>>,
 }
 
 impl CompletionBase<'_, '_, '_> {
@@ -197,6 +203,21 @@ pub enum ItemData {
     },
     /// A program or include file. Boxed, so the other items stay small.
     Path(Box<PathData>),
+    /// A member of a class of the workspace. Boxed, so the other items stay
+    /// small.
+    Member(Box<MemberData>),
+}
+
+/// A member of a class file of the workspace, by the class that declares it.
+/// Resolve finds the file again by the name of the class: the ids of the
+/// index are valid in one run only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberData {
+    /// The qualified name of the declaring class.
+    pub class: String,
+    /// What the member is: a code that [`member_documentation`] reads.
+    pub kind: &'static str,
+    pub name: String,
 }
 
 /// A program or include file of an item: its path as the item writes it,
@@ -363,6 +384,7 @@ fn collector(context: &Context) -> Option<Collector> {
         Context::IncludeFiles => |engine, _| engine.include_files(),
         Context::PreprocessorNames => |engine, _| engine.preprocessor_names(),
         Context::IncludeArguments => |engine, _| engine.include_arguments(),
+        Context::Members => |engine, _| engine.members(),
         // The other contexts have no collector yet.
         _ => return None,
     })
@@ -475,8 +497,16 @@ impl Engine<'_, '_, '_, '_> {
         let mut items: Vec<Candidate> = keywords::statement_keywords(place)
             .iter()
             .map(|keyword| Candidate::keyword(keyword, self.case))
-            .chain(names)
             .collect();
+        // A word that is both a statement and a name in scope (`THIS-OBJECT`)
+        // is one item.
+        let words: std::collections::HashSet<String> = items
+            .iter()
+            .map(|item| item.label.to_ascii_lowercase())
+            .collect();
+        items.extend(names.into_iter().filter(|item| {
+            item.kind != ItemKind::Keyword || !words.contains(&item.label.to_ascii_lowercase())
+        }));
         if self.request.snippets {
             items.extend(
                 snippets::SNIPPETS
@@ -610,6 +640,11 @@ impl Engine<'_, '_, '_, '_> {
                         .rsplit_once('.')
                         .and_then(|(_, field)| rank::quality(word, field))
                         .or_else(|| rank::quality(word, &candidate.label))?,
+                    // Every member of a receiver comes: the client filters them,
+                    // and those that match the word come first.
+                    _ if self.found.context == Context::Members => {
+                        rank::quality(word, &candidate.label).unwrap_or(Quality::Unmatched)
+                    }
                     _ => rank::quality(word, &candidate.label)?,
                 };
                 let quality = if word.is_empty() {

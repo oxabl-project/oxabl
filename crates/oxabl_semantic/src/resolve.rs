@@ -742,10 +742,13 @@ impl<'a> Walker<'a> {
             }
             StatementKind::Constructor {
                 access,
+                is_static,
                 parameters,
                 body,
-                ..
             } => {
+                if *is_static {
+                    self.symbols.record_static_constructor(stmt.id);
+                }
                 let cs = self.tree.push(
                     ScopeKind::Constructor,
                     scope,
@@ -2068,7 +2071,14 @@ impl<'a> ResolveWalker<'a> {
     fn collect_using_imports(&mut self, program: &[Statement]) {
         let imports = ImportContext::from_statements(program);
         if !imports.is_empty() {
-            self.cross_file_mut().imports = Arc::new(imports);
+            let imports = Arc::new(imports);
+            // The table keeps them for the surface walk, which needs an index.
+            // A run with no index has no reader: keeping the last reference
+            // would also move the free of the context into the table's drop.
+            if self.ctx.index_loaded {
+                self.symbols.record_imports(Arc::clone(&imports));
+            }
+            self.cross_file_mut().imports = imports;
         }
     }
 
@@ -2576,6 +2586,7 @@ impl<'a> ResolveWalker<'a> {
             },
             use_span,
         ));
+        self.symbols.record_indexed_class_name(sym, name.clone());
         let cf = self.cross_file_mut();
         cf.synth_classes.insert(name.clone(), sym);
         cf.indexed_class_of.insert(sym, name.clone());
@@ -7996,11 +8007,20 @@ pub(crate) fn lookup_supertype(
     imports: &ImportContext,
     raw: &str,
 ) -> SupertypeLookup {
+    lookup_supertype_in(&crate::surface::WorkspaceClasses(index), imports, raw)
+}
+
+/// [`lookup_supertype`] over any class source.
+pub(crate) fn lookup_supertype_in(
+    source: &dyn crate::surface::ClassSource,
+    imports: &ImportContext,
+    raw: &str,
+) -> SupertypeLookup {
     for candidate in imports.candidates(raw) {
         let ImportCandidate::Name(name) = candidate else {
             return SupertypeLookup::Assembly;
         };
-        if !matches!(index.class(&name), IndexAnswer::NotFound) {
+        if !matches!(source.class(&name), IndexAnswer::NotFound) {
             return SupertypeLookup::Class(name);
         }
     }

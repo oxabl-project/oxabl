@@ -13,6 +13,9 @@ pub(crate) enum Quality {
     Other,
     /// A match that starts at a later part of the label (`cu` in `bCust`).
     Inner,
+    /// No match. Only a context that gives all its items, whatever the word
+    /// (the members after `obj:`), has it, and these come last.
+    Unmatched,
 }
 
 /// Whether `label` matches `word`, and how well. The characters of the word
@@ -86,6 +89,8 @@ fn is_part_start(label: &[u8], at: usize) -> bool {
 pub(crate) mod nearness {
     /// A name of the innermost scope; each outer scope adds one.
     pub const SCOPE: u8 = 0;
+    /// A member the class inherits: after the names of every scope.
+    pub const INHERITED: u8 = 31;
     /// A keyword, a built-in function or a snippet.
     pub const KEYWORD: u8 = 50;
     /// A table or a field of the schema.
@@ -114,7 +119,7 @@ pub(crate) mod fit {
 pub(crate) fn sort_text(fit: u8, quality: Quality, nearness: u8, label: &str) -> String {
     format!(
         "{}{}{}{:02}{}",
-        u8::from(quality == Quality::Inner),
+        u8::from(matches!(quality, Quality::Inner | Quality::Unmatched)),
         fit.min(9),
         quality as u8,
         nearness.min(99),
