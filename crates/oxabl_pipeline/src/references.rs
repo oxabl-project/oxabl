@@ -541,9 +541,7 @@ impl Referent {
             .into_iter()
             .filter(|unit| *unit != origin && !first.contains(unit))
             .collect();
-        // Sort once by raw OS-string bytes instead of maintaining a `BTreeSet`
-        // whose `Path::cmp` re-parses path components on every insertion.
-        rest.sort_unstable_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
+        rest.sort_unstable_by(|a, b| oxabl_common::cmp_paths(a, b));
         ordered.extend(rest);
         let mut gaps = Vec::new();
         let found = ordered.len();

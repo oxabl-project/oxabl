@@ -41,6 +41,7 @@
 //! They are a different fact from an unresolved reference and are never merged
 //! with one.
 
+use oxabl_common::cmp_paths;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -224,7 +225,7 @@ impl Dependents {
     /// Distinct dependent files, each once however many kinds link it.
     pub fn files(&self) -> Vec<&Path> {
         let mut files: Vec<&Path> = self.dependents.iter().map(|d| d.file.as_path()).collect();
-        files.sort_unstable();
+        files.sort_unstable_by(|a, b| cmp_paths(a, b));
         files.dedup();
         files
     }
@@ -425,11 +426,9 @@ impl Subjects {
 /// first, which has the lowest span start.
 fn sort_dependents(rows: &mut Vec<Dependent>) {
     rows.sort_by(|a, b| {
-        (a.file.as_os_str(), a.kind, a.span.map(|s| s.start)).cmp(&(
-            b.file.as_os_str(),
-            b.kind,
-            b.span.map(|s| s.start),
-        ))
+        cmp_paths(&a.file, &b.file)
+            .then(a.kind.cmp(&b.kind))
+            .then(a.span.map(|s| s.start).cmp(&b.span.map(|s| s.start)))
     });
     rows.dedup_by(|a, b| a.file == b.file && a.kind == b.kind);
 }
@@ -437,8 +436,7 @@ fn sort_dependents(rows: &mut Vec<Dependent>) {
 /// Order the unresolved references of one name, and drop the repeats.
 fn sort_unresolved(rows: &mut Vec<UnresolvedRow>) {
     rows.sort_by(|a, b| {
-        (a.file.as_os_str(), a.reference.name.as_str())
-            .cmp(&(b.file.as_os_str(), b.reference.name.as_str()))
+        cmp_paths(&a.file, &b.file).then_with(|| a.reference.name.cmp(&b.reference.name))
     });
     rows.dedup();
 }
@@ -982,7 +980,7 @@ impl ReverseGraph {
         self.degraded.dedup();
         self.unnameable.sort();
         self.unnameable.dedup();
-        self.files.sort();
+        self.files.sort_unstable_by(|a, b| cmp_paths(a, b));
         self.files.dedup();
     }
 
@@ -1026,8 +1024,7 @@ impl ReverseGraph {
             );
         }
         rows.sort_by(|a, b| {
-            (a.file.as_path(), a.reference.name.as_str())
-                .cmp(&(b.file.as_path(), b.reference.name.as_str()))
+            cmp_paths(&a.file, &b.file).then_with(|| a.reference.name.cmp(&b.reference.name))
         });
         rows.dedup();
         rows
@@ -1123,7 +1120,7 @@ impl ReverseGraph {
         }
 
         let mut out: Vec<PathBuf> = seen.into_iter().collect();
-        out.sort();
+        out.sort_unstable_by(|a, b| cmp_paths(a, b));
         out
     }
 
@@ -1184,8 +1181,7 @@ impl ReverseGraph {
             .flat_map(|rows| rows.iter())
             .collect();
         rows.sort_by(|a, b| {
-            (a.file.as_path(), a.reference.name.as_str())
-                .cmp(&(b.file.as_path(), b.reference.name.as_str()))
+            cmp_paths(&a.file, &b.file).then_with(|| a.reference.name.cmp(&b.reference.name))
         });
         rows
     }
@@ -1217,9 +1213,7 @@ impl ReverseGraph {
                 files.push(path.clone());
             }
         }
-        // Sort by raw OS-string bytes: `Path::cmp` parses path components on
-        // every comparison and dominated incremental workspace passes.
-        files.sort_unstable_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
+        files.sort_unstable_by(|a, b| cmp_paths(a, b));
         files
     }
 
@@ -1237,7 +1231,7 @@ impl ReverseGraph {
             .filter(|path| keep(path))
             .cloned()
             .collect();
-        files.sort();
+        files.sort_unstable_by(|a, b| cmp_paths(a, b));
         files.dedup();
         files
     }

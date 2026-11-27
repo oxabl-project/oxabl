@@ -4,6 +4,7 @@ mod file_id;
 mod file_span;
 mod lint_severity;
 mod panic_guard;
+mod path_order;
 mod source_map;
 pub mod stack;
 mod test_counts;
@@ -24,6 +25,7 @@ pub use panic_guard::{
     catch_panic, count_requested, hold_if_injected, hold_if_injected_unless, hold_if_injected_with,
     injected_bound, injected_limit, panic_if_injected, panic_sites,
 };
+pub use path_order::cmp_paths;
 pub use source_map::SourceMap;
 pub use test_counts::{schema_file_parsed, schema_files_parsed};
 pub use virtual_span::VirtualSpan;
