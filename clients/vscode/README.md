@@ -369,7 +369,7 @@ the daemon that did not start. That daemon stays; stop it with the `kill`
 command in the message if it is stuck.
 
 In a project, these features follow `[workspace.features]` in `oxabl.toml`:
-`diagnostics = false` stops the diagnostics, the dimming of inactive branches, the code lenses and the inlay hints, and `format = false` stops formatting, so format on save and Format Selection do
+`diagnostics = false` stops the diagnostics, the dimming of inactive branches, the database effect lenses and every inlay hint (the parameter names too). Completion, hover, navigation, signature help, the outline and the reference-count lenses do not need diagnostics. `format = false` stops formatting, so format on save and Format Selection do
 nothing. An `oxabl.toml` that oxabl cannot read turns both off until you fix
 it.
 
