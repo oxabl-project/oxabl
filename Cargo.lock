@@ -2923,6 +2923,7 @@ name = "oxabl_preprocessor"
 version = "0.11.0"
 dependencies = [
  "codspeed-criterion-compat",
+ "memchr",
  "oxabl_ast",
  "oxabl_common",
  "oxabl_workspace",
