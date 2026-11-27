@@ -328,11 +328,13 @@ impl<'a> Parser<'a> {
         let expr_cap = if tok_count >= 64 { tok_count / 3 } else { 0 };
         let list_cap = if tok_count >= 64 { tok_count / 8 } else { 0 };
         let name_cap = if tok_count >= 64 { tok_count / 12 } else { 0 };
-        let byte_cap = if tok_count >= 64 {
-            source.len() / 12
-        } else {
-            0
+        // The name text is sized from the text the tokens cover, not from the
+        // whole source: a caller can parse a slice of the tokens of a file.
+        let covered = match (tokens.first(), tokens.last()) {
+            (Some(first), Some(last)) => last.start.saturating_sub(first.start),
+            _ => 0,
         };
+        let byte_cap = if tok_count >= 64 { covered / 12 } else { 0 };
         Parser {
             tokens,
             source,
@@ -623,8 +625,9 @@ impl<'a> Parser<'a> {
         crate::count_parse(self.tokens);
         // Every top-level statement ends at a period, so the capped period
         // count sizes the list without reallocating large statements as it
-        // grows. Nested statements make it an overestimate; the slack is
-        // released below.
+        // grows. Nested statements make it an overestimate, and the program
+        // keeps the capacity: at most `PRESIZED_STATEMENTS` statements for a
+        // file with one top-level statement, such as a class.
         let estimate = self.tokens[self.current.min(self.tokens.len())..]
             .iter()
             .filter(|t| t.kind == Kind::Period)
