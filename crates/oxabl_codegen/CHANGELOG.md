@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.8.0...oxabl_codegen-v0.9.0) (2026-11-27)
+
+
+### Features
+
+* **lsp:** code completion for keywords, snippets and names in scope ([#534](https://github.com/oxabl-project/oxabl/issues/534)) ([e600394](https://github.com/oxabl-project/oxabl/commit/e6003942dd5ee81663503acc3ed0422689f80348))
+
 ## [0.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.7.1...oxabl_codegen-v0.8.0) (2026-11-24)
 
 

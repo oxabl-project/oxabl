@@ -1,5 +1,52 @@
 # Changelog
 
+## [3.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lsp-v3.5.0...oxabl_lsp-v3.6.0) (2026-11-27)
+
+
+### Features
+
+* **lsp:** code completion for keywords, snippets and names in scope ([#534](https://github.com/oxabl-project/oxabl/issues/534)) ([e600394](https://github.com/oxabl-project/oxabl/commit/e6003942dd5ee81663503acc3ed0422689f80348))
+* **lsp:** complete records, fields, RUN targets, include files and preprocessor names ([#546](https://github.com/oxabl-project/oxabl/issues/546)) ([6d30754](https://github.com/oxabl-project/oxabl/commit/6d30754e74636091f7c90fc981dd98b5e5b2823c))
+* **lsp:** declarations from include files in the outline ([#543](https://github.com/oxabl-project/oxabl/issues/543)) ([6cb14cf](https://github.com/oxabl-project/oxabl/commit/6cb14cfa78751724c799ff61bed2a01579e0e285))
+* **lsp:** format a selection ([#540](https://github.com/oxabl-project/oxabl/issues/540)) ([b1cedcb](https://github.com/oxabl-project/oxabl/commit/b1cedcbdcae6a809d11f9918358599e39ea60361))
+* **lsp:** go to implementation, super method and type hierarchy ([#531](https://github.com/oxabl-project/oxabl/issues/531)) ([578188c](https://github.com/oxabl-project/oxabl/commit/578188ca8f9ce6c59561500e67bddf0964838b13))
+* **lsp:** reference-count code lenses ([#532](https://github.com/oxabl-project/oxabl/issues/532)) ([1af858b](https://github.com/oxabl-project/oxabl/commit/1af858b6fdaa262d205abe24d5e34a24b1491ed9))
+* **lsp:** signature help and parameter-name inlay hints ([#533](https://github.com/oxabl-project/oxabl/issues/533)) ([eaeab6b](https://github.com/oxabl-project/oxabl/commit/eaeab6be41c16d152b1b3042b34d4244580d8046))
+
+
+### Bug Fixes
+
+* **check:** report a parse error inside an include at the include site ([#528](https://github.com/oxabl-project/oxabl/issues/528)) ([a5339bb](https://github.com/oxabl-project/oxabl/commit/a5339bb33cdd305f0e8ca2bf6c1676fb91246487))
+* **lsp:** an edit no longer waits for a running diagnostics analysis ([#609](https://github.com/oxabl-project/oxabl/issues/609)) ([5a5e83f](https://github.com/oxabl-project/oxabl/commit/5a5e83f26c7f9051de5a62b1e69956fcbad39b24))
+* **lsp:** the proxy and the daemon never wait on each other ([#578](https://github.com/oxabl-project/oxabl/issues/578)) ([0563621](https://github.com/oxabl-project/oxabl/commit/056362150cd9572882909b436ece4758ab78d775))
+* **lsp:** wait for a slow daemon start ([#545](https://github.com/oxabl-project/oxabl/issues/545)) ([8445706](https://github.com/oxabl-project/oxabl/commit/8445706fc1fa4ecd00a4d70335fef03cfffd8bc7))
+* **preprocessor:** fill {N} in a nested include reference inside an include ([6e7e30d](https://github.com/oxabl-project/oxabl/commit/6e7e30d841be0e5853b6626405a70ac6d437e89c))
+
+
+### Performance Improvements
+
+* **check:** spell and resolve each include path once ([#608](https://github.com/oxabl-project/oxabl/issues/608)) ([793a0d9](https://github.com/oxabl-project/oxabl/commit/793a0d94b98ba7c498b7f941ff9b02e8957cfe0a))
+* **lsp:** resolve the reference lenses of a file in one search ([#592](https://github.com/oxabl-project/oxabl/issues/592)) ([91d9306](https://github.com/oxabl-project/oxabl/commit/91d930645dbc1d54ae5e9ec4a3c0eddc194bfc9b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 4.5.0 to 5.0.0
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_daemon bumped from 0.9.0 to 0.10.0
+    * oxabl_pipeline bumped from 4.1.0 to 5.0.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+  * dev-dependencies
+    * oxabl_daemon bumped from 0.9.0 to 0.10.0
+    * oxabl_analyze bumped from 4.5.0 to 5.0.0
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+    * oxabl_pipeline bumped from 4.1.0 to 5.0.0
+
 ## [3.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lsp-v3.4.0...oxabl_lsp-v3.5.0) (2026-11-25)
 
 

@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.5.0...oxabl_common-v1.6.0) (2026-11-27)
+
+
+### Features
+
+* **lsp:** declarations from include files in the outline ([#543](https://github.com/oxabl-project/oxabl/issues/543)) ([6cb14cf](https://github.com/oxabl-project/oxabl/commit/6cb14cfa78751724c799ff61bed2a01579e0e285))
+* **lsp:** go to implementation, super method and type hierarchy ([#531](https://github.com/oxabl-project/oxabl/issues/531)) ([578188c](https://github.com/oxabl-project/oxabl/commit/578188ca8f9ce6c59561500e67bddf0964838b13))
+* **lsp:** reference-count code lenses ([#532](https://github.com/oxabl-project/oxabl/issues/532)) ([1af858b](https://github.com/oxabl-project/oxabl/commit/1af858b6fdaa262d205abe24d5e34a24b1491ed9))
+* **lsp:** signature help and parameter-name inlay hints ([#533](https://github.com/oxabl-project/oxabl/issues/533)) ([eaeab6b](https://github.com/oxabl-project/oxabl/commit/eaeab6be41c16d152b1b3042b34d4244580d8046))
+
+
+### Bug Fixes
+
+* **lsp:** the proxy and the daemon never wait on each other ([#578](https://github.com/oxabl-project/oxabl/issues/578)) ([0563621](https://github.com/oxabl-project/oxabl/commit/056362150cd9572882909b436ece4758ab78d775))
+* **lsp:** wait for a slow daemon start ([#545](https://github.com/oxabl-project/oxabl/issues/545)) ([8445706](https://github.com/oxabl-project/oxabl/commit/8445706fc1fa4ecd00a4d70335fef03cfffd8bc7))
+
+
+### Performance Improvements
+
+* **check:** build each file's SourceMap once ([#571](https://github.com/oxabl-project/oxabl/issues/571)) ([2285153](https://github.com/oxabl-project/oxabl/commit/2285153fbd06ff75129daa8797c53ea7e01789e8))
+* **check:** find SHARED producers with one expansion and a token scan ([#582](https://github.com/oxabl-project/oxabl/issues/582)) ([c0da43d](https://github.com/oxabl-project/oxabl/commit/c0da43da8f68f284a421fa5e7c9cbb235cf76a2d))
+* **lsp:** resolve the reference lenses of a file in one search ([#592](https://github.com/oxabl-project/oxabl/issues/592)) ([91d9306](https://github.com/oxabl-project/oxabl/commit/91d930645dbc1d54ae5e9ec4a3c0eddc194bfc9b))
+* **schema:** cache the loaded schema between runs and parse .df words without strings ([#590](https://github.com/oxabl-project/oxabl/issues/590)) ([03b035a](https://github.com/oxabl-project/oxabl/commit/03b035ae384c95a461a33cfacf9017f5bb881d6b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+
 ## [1.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.4.0...oxabl_common-v1.5.0) (2026-11-25)
 
 

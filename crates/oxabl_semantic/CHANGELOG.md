@@ -1,5 +1,49 @@
 # Changelog
 
+## [7.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v6.0.1...oxabl_semantic-v7.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** Scope::kind, parent and owner_node are methods, not fields.
+* **parser:** a CREATE whose tail does not parse leaves a parse error
+
+### Features
+
+* **lsp:** code completion for keywords, snippets and names in scope ([#534](https://github.com/oxabl-project/oxabl/issues/534)) ([e600394](https://github.com/oxabl-project/oxabl/commit/e6003942dd5ee81663503acc3ed0422689f80348))
+* **lsp:** complete records, fields, RUN targets, include files and preprocessor names ([#546](https://github.com/oxabl-project/oxabl/issues/546)) ([6d30754](https://github.com/oxabl-project/oxabl/commit/6d30754e74636091f7c90fc981dd98b5e5b2823c))
+* **lsp:** go to implementation, super method and type hierarchy ([#531](https://github.com/oxabl-project/oxabl/issues/531)) ([578188c](https://github.com/oxabl-project/oxabl/commit/578188ca8f9ce6c59561500e67bddf0964838b13))
+* **lsp:** signature help and parameter-name inlay hints ([#533](https://github.com/oxabl-project/oxabl/issues/533)) ([eaeab6b](https://github.com/oxabl-project/oxabl/commit/eaeab6be41c16d152b1b3042b34d4244580d8046))
+* **semantic:** type member access and method calls on user classes ([fdf97e3](https://github.com/oxabl-project/oxabl/commit/fdf97e3a89b59c6d3481bd227ecf43557e290f81))
+
+
+### Bug Fixes
+
+* **lsp:** an edit no longer waits for a running diagnostics analysis ([#609](https://github.com/oxabl-project/oxabl/issues/609)) ([5a5e83f](https://github.com/oxabl-project/oxabl/commit/5a5e83f26c7f9051de5a62b1e69956fcbad39b24))
+* **navigation:** compare parameter lists after preprocessing ([#568](https://github.com/oxabl-project/oxabl/issues/568)) ([a8183ec](https://github.com/oxabl-project/oxabl/commit/a8183ecfd583132f2a0f4ab2f73f97a5b79657c8))
+* **parser:** a CREATE whose tail does not parse leaves a parse error ([068cfa8](https://github.com/oxabl-project/oxabl/commit/068cfa830a0d911686cca9069d83e85bc678288f))
+
+
+### Performance Improvements
+
+* **bench:** end-to-end and memory benchmarks, and a generated ERP-sized workspace ([#569](https://github.com/oxabl-project/oxabl/issues/569)) ([e819edc](https://github.com/oxabl-project/oxabl/commit/e819edcfd261e43755178e6e20c44cc650b757e4))
+* **check:** index each file once for the run, and design one unit for each text ([#591](https://github.com/oxabl-project/oxabl/issues/591)) ([e0793f4](https://github.com/oxabl-project/oxabl/commit/e0793f470b87704020328d26fe4b495ab27d9cdb))
+* **semantic:** find the scope of a statement in a table, and shrink a scope to 48 bytes ([#584](https://github.com/oxabl-project/oxabl/issues/584)) ([258f393](https://github.com/oxabl-project/oxabl/commit/258f393c9f582c77eeb3a4c38defe87a963b2339))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+  * dev-dependencies
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+    * oxabl_parser bumped from 5.0.1 to 6.0.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+
 ## [6.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v6.0.0...oxabl_semantic-v6.0.1) (2026-11-25)
 
 

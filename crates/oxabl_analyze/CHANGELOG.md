@@ -1,5 +1,52 @@
 # Changelog
 
+## [5.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.5.0...oxabl_analyze-v5.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** Scope::kind, parent and owner_node are methods, not fields.
+* **parser:** a CREATE whose tail does not parse leaves a parse error
+
+### Features
+
+* **lsp:** code completion for keywords, snippets and names in scope ([#534](https://github.com/oxabl-project/oxabl/issues/534)) ([e600394](https://github.com/oxabl-project/oxabl/commit/e6003942dd5ee81663503acc3ed0422689f80348))
+* **lsp:** complete records, fields, RUN targets, include files and preprocessor names ([#546](https://github.com/oxabl-project/oxabl/issues/546)) ([6d30754](https://github.com/oxabl-project/oxabl/commit/6d30754e74636091f7c90fc981dd98b5e5b2823c))
+* **lsp:** declarations from include files in the outline ([#543](https://github.com/oxabl-project/oxabl/issues/543)) ([6cb14cf](https://github.com/oxabl-project/oxabl/commit/6cb14cfa78751724c799ff61bed2a01579e0e285))
+* **lsp:** reference-count code lenses ([#532](https://github.com/oxabl-project/oxabl/issues/532)) ([1af858b](https://github.com/oxabl-project/oxabl/commit/1af858b6fdaa262d205abe24d5e34a24b1491ed9))
+
+
+### Bug Fixes
+
+* **check:** report a parse error inside an include at the include site ([#528](https://github.com/oxabl-project/oxabl/issues/528)) ([a5339bb](https://github.com/oxabl-project/oxabl/commit/a5339bb33cdd305f0e8ca2bf6c1676fb91246487))
+* **lsp:** an edit no longer waits for a running diagnostics analysis ([#609](https://github.com/oxabl-project/oxabl/issues/609)) ([5a5e83f](https://github.com/oxabl-project/oxabl/commit/5a5e83f26c7f9051de5a62b1e69956fcbad39b24))
+* **parser:** a CREATE whose tail does not parse leaves a parse error ([068cfa8](https://github.com/oxabl-project/oxabl/commit/068cfa830a0d911686cca9069d83e85bc678288f))
+
+
+### Performance Improvements
+
+* **analyze:** fold include findings on plain data ([#583](https://github.com/oxabl-project/oxabl/issues/583)) ([5c9a448](https://github.com/oxabl-project/oxabl/commit/5c9a448c64eb2891795170a9f9752078cbab77b9))
+* **check:** build each file's SourceMap once ([#571](https://github.com/oxabl-project/oxabl/issues/571)) ([2285153](https://github.com/oxabl-project/oxabl/commit/2285153fbd06ff75129daa8797c53ea7e01789e8))
+* **semantic:** find the scope of a statement in a table, and shrink a scope to 48 bytes ([#584](https://github.com/oxabl-project/oxabl/issues/584)) ([258f393](https://github.com/oxabl-project/oxabl/commit/258f393c9f582c77eeb3a4c38defe87a963b2339))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+    * oxabl_lint bumped from 6.0.1 to 7.0.0
+    * oxabl_parser bumped from 5.0.1 to 6.0.0
+    * oxabl_preprocessor bumped from 0.9.1 to 0.10.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+    * oxabl_semantic bumped from 6.0.1 to 7.0.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+  * dev-dependencies
+    * oxabl_index bumped from 6.0.1 to 7.0.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+
 ## [4.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.4.0...oxabl_analyze-v4.5.0) (2026-11-25)
 
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## [7.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v6.0.0...oxabl_ast-v7.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** a CREATE whose tail does not parse leaves a parse error
+
+### Features
+
+* **lsp:** code completion for keywords, snippets and names in scope ([#534](https://github.com/oxabl-project/oxabl/issues/534)) ([e600394](https://github.com/oxabl-project/oxabl/commit/e6003942dd5ee81663503acc3ed0422689f80348))
+* **semantic:** type member access and method calls on user classes ([fdf97e3](https://github.com/oxabl-project/oxabl/commit/fdf97e3a89b59c6d3481bd227ecf43557e290f81))
+
+
+### Bug Fixes
+
+* **parser:** a CREATE whose tail does not parse leaves a parse error ([068cfa8](https://github.com/oxabl-project/oxabl/commit/068cfa830a0d911686cca9069d83e85bc678288f))
+
+
+### Performance Improvements
+
+* **bench:** end-to-end and memory benchmarks, and a generated ERP-sized workspace ([#569](https://github.com/oxabl-project/oxabl/issues/569)) ([e819edc](https://github.com/oxabl-project/oxabl/commit/e819edcfd261e43755178e6e20c44cc650b757e4))
+
 ## [6.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v5.0.0...oxabl_ast-v6.0.0) (2026-11-24)
 
 

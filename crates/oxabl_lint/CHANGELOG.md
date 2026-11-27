@@ -1,5 +1,50 @@
 # Changelog
 
+## [7.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lint-v6.0.1...oxabl_lint-v7.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** Scope::kind, parent and owner_node are methods, not fields.
+* **parser:** a CREATE whose tail does not parse leaves a parse error
+
+### Features
+
+* **semantic:** type member access and method calls on user classes ([fdf97e3](https://github.com/oxabl-project/oxabl/commit/fdf97e3a89b59c6d3481bd227ecf43557e290f81))
+
+
+### Bug Fixes
+
+* **lsp:** an edit no longer waits for a running diagnostics analysis ([#609](https://github.com/oxabl-project/oxabl/issues/609)) ([5a5e83f](https://github.com/oxabl-project/oxabl/commit/5a5e83f26c7f9051de5a62b1e69956fcbad39b24))
+* **parser:** a CREATE whose tail does not parse leaves a parse error ([068cfa8](https://github.com/oxabl-project/oxabl/commit/068cfa830a0d911686cca9069d83e85bc678288f))
+
+
+### Performance Improvements
+
+* **semantic:** find the scope of a statement in a table, and shrink a scope to 48 bytes ([#584](https://github.com/oxabl-project/oxabl/issues/584)) ([258f393](https://github.com/oxabl-project/oxabl/commit/258f393c9f582c77eeb3a4c38defe87a963b2339))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_effects bumped from 0.3.10 to 0.3.11
+    * oxabl_flow bumped from 0.5.1 to 0.5.2
+    * oxabl_handles bumped from 0.3.1 to 0.3.2
+    * oxabl_index bumped from 6.0.1 to 7.0.0
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+    * oxabl_nulls bumped from 0.3.1 to 0.3.2
+    * oxabl_scope bumped from 0.3.1 to 0.3.2
+    * oxabl_semantic bumped from 6.0.1 to 7.0.0
+  * dev-dependencies
+    * oxabl_index bumped from 6.0.1 to 7.0.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+    * oxabl_parser bumped from 5.0.1 to 6.0.0
+    * oxabl_preprocessor bumped from 0.9.1 to 0.10.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+
 ## [6.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_lint-v6.0.0...oxabl_lint-v6.0.1) (2026-11-25)
 
 

@@ -1,5 +1,48 @@
 # Changelog
 
+## [7.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v6.0.1...oxabl_index-v7.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **lexer:** `TokenValue::String` is now only the normalized spelling of an escaped identifier. A string literal, a date constant and an include reference have `TokenValue::Text { start, end }`; read the text with `Token::text(source)`.
+
+### Features
+
+* **lsp:** go to implementation, super method and type hierarchy ([#531](https://github.com/oxabl-project/oxabl/issues/531)) ([578188c](https://github.com/oxabl-project/oxabl/commit/578188ca8f9ce6c59561500e67bddf0964838b13))
+* **lsp:** reference-count code lenses ([#532](https://github.com/oxabl-project/oxabl/issues/532)) ([1af858b](https://github.com/oxabl-project/oxabl/commit/1af858b6fdaa262d205abe24d5e34a24b1491ed9))
+* **semantic:** type member access and method calls on user classes ([fdf97e3](https://github.com/oxabl-project/oxabl/commit/fdf97e3a89b59c6d3481bd227ecf43557e290f81))
+
+
+### Bug Fixes
+
+* **navigation:** compare parameter lists after preprocessing ([#568](https://github.com/oxabl-project/oxabl/issues/568)) ([a8183ec](https://github.com/oxabl-project/oxabl/commit/a8183ecfd583132f2a0f4ab2f73f97a5b79657c8))
+
+
+### Performance Improvements
+
+* **check:** find SHARED producers with one expansion and a token scan ([#582](https://github.com/oxabl-project/oxabl/issues/582)) ([c0da43d](https://github.com/oxabl-project/oxabl/commit/c0da43da8f68f284a421fa5e7c9cbb235cf76a2d))
+* **check:** index each file once for the run, and design one unit for each text ([#591](https://github.com/oxabl-project/oxabl/issues/591)) ([e0793f4](https://github.com/oxabl-project/oxabl/commit/e0793f470b87704020328d26fe4b495ab27d9cdb))
+* **daemon:** analyse only the changed files in the workspace pass after an edit ([#594](https://github.com/oxabl-project/oxabl/issues/594)) ([cc5ca85](https://github.com/oxabl-project/oxabl/commit/cc5ca85f471f25bc426a56ab5e645b99fe75c5d6))
+* **index:** read the tokens, not a parse, to tell if a file may be expanded ([#581](https://github.com/oxabl-project/oxabl/issues/581)) ([fdc4a50](https://github.com/oxabl-project/oxabl/commit/fdc4a507c6c661e0c060b6ff9222c3cc02217359))
+* **lexer:** keep the text of a literal as its place in the source ([#593](https://github.com/oxabl-project/oxabl/issues/593)) ([0f6ac35](https://github.com/oxabl-project/oxabl/commit/0f6ac35554c111b45456974eeb2e2152f4a97f46))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+    * oxabl_parser bumped from 5.0.1 to 6.0.0
+    * oxabl_preprocessor bumped from 0.9.1 to 0.10.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+    * oxabl_semantic bumped from 6.0.1 to 7.0.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+
 ## [6.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v6.0.0...oxabl_index-v6.0.1) (2026-11-25)
 
 

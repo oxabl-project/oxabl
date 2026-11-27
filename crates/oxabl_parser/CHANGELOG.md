@@ -1,5 +1,45 @@
 # Changelog
 
+## [6.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v5.0.1...oxabl_parser-v6.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **lexer:** `TokenValue::String` is now only the normalized spelling of an escaped identifier. A string literal, a date constant and an include reference have `TokenValue::Text { start, end }`; read the text with `Token::text(source)`.
+* **parser:** a CREATE whose tail does not parse leaves a parse error
+
+### Features
+
+* **lsp:** code completion for keywords, snippets and names in scope ([#534](https://github.com/oxabl-project/oxabl/issues/534)) ([e600394](https://github.com/oxabl-project/oxabl/commit/e6003942dd5ee81663503acc3ed0422689f80348))
+* **semantic:** type member access and method calls on user classes ([fdf97e3](https://github.com/oxabl-project/oxabl/commit/fdf97e3a89b59c6d3481bd227ecf43557e290f81))
+
+
+### Bug Fixes
+
+* **lsp:** an edit no longer waits for a running diagnostics analysis ([#609](https://github.com/oxabl-project/oxabl/issues/609)) ([5a5e83f](https://github.com/oxabl-project/oxabl/commit/5a5e83f26c7f9051de5a62b1e69956fcbad39b24))
+* **parser:** a CREATE whose tail does not parse leaves a parse error ([068cfa8](https://github.com/oxabl-project/oxabl/commit/068cfa830a0d911686cca9069d83e85bc678288f))
+* **parser:** a USING read in a rewound CREATE does not reach an earlier statement ([27405e4](https://github.com/oxabl-project/oxabl/commit/27405e4ec81b3ac732de7ea30732014782effc72))
+
+
+### Performance Improvements
+
+* **bench:** end-to-end and memory benchmarks, and a generated ERP-sized workspace ([#569](https://github.com/oxabl-project/oxabl/issues/569)) ([e819edc](https://github.com/oxabl-project/oxabl/commit/e819edcfd261e43755178e6e20c44cc650b757e4))
+* **check:** index each file once for the run, and design one unit for each text ([#591](https://github.com/oxabl-project/oxabl/issues/591)) ([e0793f4](https://github.com/oxabl-project/oxabl/commit/e0793f470b87704020328d26fe4b495ab27d9cdb))
+* **index:** read the tokens, not a parse, to tell if a file may be expanded ([#581](https://github.com/oxabl-project/oxabl/issues/581)) ([fdc4a50](https://github.com/oxabl-project/oxabl/commit/fdc4a507c6c661e0c060b6ff9222c3cc02217359))
+* **lexer:** keep the text of a literal as its place in the source ([#593](https://github.com/oxabl-project/oxabl/issues/593)) ([0f6ac35](https://github.com/oxabl-project/oxabl/commit/0f6ac35554c111b45456974eeb2e2152f4a97f46))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.9.1 to 0.10.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+
 ## [5.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v5.0.0...oxabl_parser-v5.0.1) (2026-11-25)
 
 

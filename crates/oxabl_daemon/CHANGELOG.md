@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.10.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.9.0...oxabl_daemon-v0.10.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** Scope::kind, parent and owner_node are methods, not fields.
+
+### Features
+
+* **lsp:** code completion for keywords, snippets and names in scope ([#534](https://github.com/oxabl-project/oxabl/issues/534)) ([e600394](https://github.com/oxabl-project/oxabl/commit/e6003942dd5ee81663503acc3ed0422689f80348))
+* **lsp:** complete records, fields, RUN targets, include files and preprocessor names ([#546](https://github.com/oxabl-project/oxabl/issues/546)) ([6d30754](https://github.com/oxabl-project/oxabl/commit/6d30754e74636091f7c90fc981dd98b5e5b2823c))
+* **lsp:** go to implementation, super method and type hierarchy ([#531](https://github.com/oxabl-project/oxabl/issues/531)) ([578188c](https://github.com/oxabl-project/oxabl/commit/578188ca8f9ce6c59561500e67bddf0964838b13))
+* **lsp:** reference-count code lenses ([#532](https://github.com/oxabl-project/oxabl/issues/532)) ([1af858b](https://github.com/oxabl-project/oxabl/commit/1af858b6fdaa262d205abe24d5e34a24b1491ed9))
+* **lsp:** signature help and parameter-name inlay hints ([#533](https://github.com/oxabl-project/oxabl/issues/533)) ([eaeab6b](https://github.com/oxabl-project/oxabl/commit/eaeab6be41c16d152b1b3042b34d4244580d8046))
+
+
+### Bug Fixes
+
+* **daemon:** exit when the workspace root is gone or no client is left ([#588](https://github.com/oxabl-project/oxabl/issues/588)) ([f5bc646](https://github.com/oxabl-project/oxabl/commit/f5bc6466dc6384975ee46c2576e80e5609ae985f))
+* **lsp:** an edit no longer waits for a running diagnostics analysis ([#609](https://github.com/oxabl-project/oxabl/issues/609)) ([5a5e83f](https://github.com/oxabl-project/oxabl/commit/5a5e83f26c7f9051de5a62b1e69956fcbad39b24))
+* **lsp:** the proxy and the daemon never wait on each other ([#578](https://github.com/oxabl-project/oxabl/issues/578)) ([0563621](https://github.com/oxabl-project/oxabl/commit/056362150cd9572882909b436ece4758ab78d775))
+* **lsp:** wait for a slow daemon start ([#545](https://github.com/oxabl-project/oxabl/issues/545)) ([8445706](https://github.com/oxabl-project/oxabl/commit/8445706fc1fa4ecd00a4d70335fef03cfffd8bc7))
+* **navigation:** compare parameter lists after preprocessing ([#568](https://github.com/oxabl-project/oxabl/issues/568)) ([a8183ec](https://github.com/oxabl-project/oxabl/commit/a8183ecfd583132f2a0f4ab2f73f97a5b79657c8))
+
+
+### Performance Improvements
+
+* **bench:** end-to-end and memory benchmarks, and a generated ERP-sized workspace ([#569](https://github.com/oxabl-project/oxabl/issues/569)) ([e819edc](https://github.com/oxabl-project/oxabl/commit/e819edcfd261e43755178e6e20c44cc650b757e4))
+* **bench:** measure the whole edit pass on CodSpeed ([#605](https://github.com/oxabl-project/oxabl/issues/605)) ([d93f472](https://github.com/oxabl-project/oxabl/commit/d93f472fabe57fe83e6daf9f0076237085f539d8))
+* **bench:** measure the workspace pass after an edit ([#604](https://github.com/oxabl-project/oxabl/issues/604)) ([e754399](https://github.com/oxabl-project/oxabl/commit/e754399e79157a2a5c8cb8ef27202af7dd315f91))
+* **check:** find SHARED producers with one expansion and a token scan ([#582](https://github.com/oxabl-project/oxabl/issues/582)) ([c0da43d](https://github.com/oxabl-project/oxabl/commit/c0da43da8f68f284a421fa5e7c9cbb235cf76a2d))
+* **check:** spell and resolve each include path once ([#608](https://github.com/oxabl-project/oxabl/issues/608)) ([793a0d9](https://github.com/oxabl-project/oxabl/commit/793a0d94b98ba7c498b7f941ff9b02e8957cfe0a))
+* **completion:** lex only what a request changes in its base's text ([#610](https://github.com/oxabl-project/oxabl/issues/610)) ([b619d63](https://github.com/oxabl-project/oxabl/commit/b619d638c5ac2c33a552251c3a188cb9d00a4cc3))
+* **daemon:** analyse only the changed files in the workspace pass after an edit ([#594](https://github.com/oxabl-project/oxabl/issues/594)) ([cc5ca85](https://github.com/oxabl-project/oxabl/commit/cc5ca85f471f25bc426a56ab5e645b99fe75c5d6))
+* **daemon:** cut the fixed cost of a workspace pass ([#611](https://github.com/oxabl-project/oxabl/issues/611)) ([2a3c781](https://github.com/oxabl-project/oxabl/commit/2a3c781abbc06dfad83963a134ae136b53d6e960))
+* **lsp:** resolve the reference lenses of a file in one search ([#592](https://github.com/oxabl-project/oxabl/issues/592)) ([91d9306](https://github.com/oxabl-project/oxabl/commit/91d930645dbc1d54ae5e9ec4a3c0eddc194bfc9b))
+* **semantic:** find the scope of a statement in a table, and shrink a scope to 48 bytes ([#584](https://github.com/oxabl-project/oxabl/issues/584)) ([258f393](https://github.com/oxabl-project/oxabl/commit/258f393c9f582c77eeb3a4c38defe87a963b2339))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 4.5.0 to 5.0.0
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_index bumped from 6.0.1 to 7.0.0
+    * oxabl_pipeline bumped from 4.1.0 to 5.0.0
+    * oxabl_semantic bumped from 6.0.1 to 7.0.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_pipeline bumped from 4.1.0 to 5.0.0
+
 ## [0.9.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.8.0...oxabl_daemon-v0.9.0) (2026-11-25)
 
 
