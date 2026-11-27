@@ -32,7 +32,7 @@ use smallvec::SmallVec;
 
 use crate::{
     AnalysisContext, NodeIndexVec, PrimitiveTy, Resolution, ResolvedType, ScopeId, ScopeKind,
-    ScopeTree, SymbolKind, SymbolTable, operators,
+    ScopeTree, SymbolKind, SymbolTable, WorkspaceIndex, operators,
 };
 
 /// Run the type-check pass over `program` given a populated scope tree,
@@ -44,13 +44,14 @@ use crate::{
 /// populated `types` table, ready for `LINT0004` to consume.
 pub fn check_pass(
     program: &[Statement],
-    _ctx: &AnalysisContext,
+    ctx: &AnalysisContext,
     tree: &ScopeTree,
     symbols: &SymbolTable,
     references: &NodeIndexVec<Resolution>,
     types: &mut NodeIndexVec<ResolvedType>,
 ) -> Vec<Diagnostic> {
     let mut walker = CheckWalker {
+        index: ctx.index,
         tree,
         symbols,
         references,
@@ -61,6 +62,7 @@ pub fn check_pass(
 }
 
 struct CheckWalker<'a> {
+    index: &'a dyn WorkspaceIndex,
     tree: &'a ScopeTree,
     symbols: &'a SymbolTable,
     references: &'a NodeIndexVec<Resolution>,
@@ -70,6 +72,7 @@ struct CheckWalker<'a> {
 impl<'a> CheckWalker<'a> {
     fn walk_block(&mut self, stmts: &[Statement], scope: ScopeId) {
         for stmt in stmts {
+            self.index.checkpoint();
             self.walk_statement(stmt, scope);
         }
     }
@@ -1635,6 +1638,7 @@ mod tests {
             );
             let mut types = NodeIndexVec::new();
             let walker = CheckWalker {
+                index: &crate::NullIndex,
                 tree: &tree,
                 symbols: &symbols,
                 references: &references,
@@ -1656,6 +1660,7 @@ mod tests {
         let references = NodeIndexVec::new();
         let mut types = NodeIndexVec::new();
         let walker = CheckWalker {
+            index: &crate::NullIndex,
             tree: &tree,
             symbols: &symbols,
             references: &references,

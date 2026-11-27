@@ -1940,9 +1940,11 @@ pub fn collect_from_expanded_with_summaries(
     }
 
     let tokens = tokenize(&expanded.text);
+    index.checkpoint();
     let mut parser = Parser::new(&tokens, &expanded.text);
-    let program = parser.parse_program();
+    let program = parser.parse_program_between(|| index.checkpoint());
     out.parse_recovered = !program.errors.is_empty();
+    index.checkpoint();
 
     let mut include_rows = IncludeRows::default();
     let mut include_maps = Vec::new();

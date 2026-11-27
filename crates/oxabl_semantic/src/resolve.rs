@@ -375,6 +375,7 @@ impl<'a> Walker<'a> {
 
     fn walk_block(&mut self, stmts: &[Statement], scope: ScopeId) {
         for stmt in stmts {
+            self.ctx.index.checkpoint();
             self.walk_statement(stmt, scope);
         }
     }
@@ -2939,6 +2940,7 @@ impl<'a> ResolveWalker<'a> {
 
     fn walk_block(&mut self, stmts: &[Statement], scope: ScopeId) {
         for stmt in stmts {
+            self.ctx.index.checkpoint();
             self.walk_statement(stmt, scope);
         }
     }

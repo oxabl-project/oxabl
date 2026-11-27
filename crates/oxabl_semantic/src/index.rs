@@ -799,6 +799,13 @@ pub trait WorkspaceIndex {
         None
     }
 
+    /// A point where a long analysis may stop, because nobody waits for its
+    /// answer any more. An incremental implementation unwinds here with its
+    /// cancellation, as it does inside a query it answers. The analysis calls
+    /// this once for each statement it walks and each lint rule it runs, so
+    /// an implementation must make it cheap. Defaults to doing nothing.
+    fn checkpoint(&self) {}
+
     /// The generation this index is on. Stamped onto every
     /// [`Semantic`](crate::Semantic) so stale results are detectable.
     /// Implementations must not return [`IndexRevision::ABSENT`] — that value

@@ -27,8 +27,10 @@
 //! server plumbing: *when* to run, *which* buffers to invalidate, and how to render
 //! a byte span as a `Range` under the negotiated encoding.
 //!
-//! Threading discipline: input mutations run on the main loop; each debounced
-//! diagnostics computation runs on a cloned salsa snapshot on a worker thread. See
+//! Threading discipline: input mutations run on the main loop; each diagnostics
+//! computation (debounced after an edit, at once after an open) runs on a cloned
+//! salsa snapshot on a worker thread, and stops at its next checkpoint when a
+//! write is waiting (`WorkspaceIndex::checkpoint`). See
 //! `oxabl_daemon::db` and [`debounce`].
 
 pub mod capabilities;
@@ -1697,10 +1699,11 @@ impl<'c> Server<'c> {
         }
     }
 
-    /// Dispatch a `textDocument/*` notification. Opens publish immediately (for
-    /// instant feedback); edits mirror into the salsa input on the main thread
-    /// and schedule a debounced recompute (R13). Unknown notifications are
-    /// ignored (per LSP, servers must not error on them).
+    /// Dispatch a `textDocument/*` notification. Opens schedule their
+    /// diagnostics with no debounce window (for instant feedback); edits mirror
+    /// into the salsa input on the main thread and schedule a debounced
+    /// recompute (R13). Unknown notifications are ignored (per LSP, servers
+    /// must not error on them).
     fn handle_notification(&mut self, not: Notification) {
         if matches!(
             not.method.as_str(),
@@ -1756,8 +1759,11 @@ impl<'c> Server<'c> {
                     if let Some(path) = uri_to_path(&doc.uri) {
                         self.schedule_context_users(&path);
                     }
-                    // Open shows diagnostics right away (no debounce).
-                    self.compute_and_publish(&doc.uri);
+                    // Open shows diagnostics at once (no debounce window), but
+                    // on a worker: the analysis of a large file takes seconds,
+                    // and the main loop answers every other message meanwhile.
+                    self.debouncer
+                        .schedule_now(doc.uri, std::time::Instant::now());
                 }
             }
             DidChangeTextDocument::METHOD => {
@@ -2049,60 +2055,6 @@ impl<'c> Server<'c> {
             .connection
             .sender
             .send(Message::Notification(notification));
-    }
-
-    /// Compute diagnostics for `uri` on a salsa snapshot and publish them
-    /// (the immediate open path). The snapshot is dropped before returning so
-    /// a subsequent write never blocks.
-    fn compute_and_publish(&mut self, uri: &Uri) {
-        let Some(version) = self.documents.get(uri).map(|d| d.version) else {
-            return;
-        };
-        if !self.features.diagnostics {
-            self.publish_inactive_regions(uri, version, []);
-            self.publish(uri.clone(), Vec::new(), Some(version));
-            return;
-        }
-        if self.contexts.has_selection(uri) {
-            self.debouncer
-                .schedule(uri.clone(), std::time::Instant::now());
-            return;
-        }
-        let Some((buffer, snapshot, schema)) = self.host.with(|sessions| {
-            let session = sessions.get(&self.session_root)?;
-            Some((
-                session.buffer(uri.as_str())?,
-                session.database().clone(),
-                session.schema_handle(),
-            ))
-        }) else {
-            return;
-        };
-        // Guarded (R8): this runs on the main loop, so an unguarded panic here
-        // takes the whole server down.
-        let analysis = analyze_guarded(&snapshot, buffer, schema, uri.as_str());
-        self.record_dependencies(uri, analysis.dependencies);
-        let Some(collected) = analysis.diagnostics else {
-            // A cancellation is not expected on this path (nothing writes to the
-            // db while the main loop is inside this call), but if one ever does
-            // arrive the open would otherwise publish nothing at all and no timer
-            // would remain — the same stale-forever shape as in `handle_result`.
-            if analysis.panicked {
-                self.publish_inactive_regions(uri, version, []);
-            } else {
-                self.debouncer
-                    .schedule(uri.clone(), std::time::Instant::now());
-            }
-            return;
-        };
-        if let Some(doc) = self.documents.get(uri) {
-            let related = self.related_information.then_some(uri);
-            let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding, related);
-            let regions = analysis.inactive_regions.as_deref().unwrap_or_default();
-            let regions = regions.iter().map(|span| (span.start, span.end));
-            self.publish_inactive_regions(uri, version, regions);
-            self.publish(uri.clone(), lsp_diags, Some(version));
-        }
     }
 
     /// React to `workspace/didChangeWatchedFiles`: `.df` changes hot-reload the

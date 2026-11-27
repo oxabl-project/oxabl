@@ -1700,17 +1700,20 @@ fn class_callers(classes: usize, lines: usize) -> (Workspace, String, String) {
     (Workspace::new(&files), caller, plain)
 }
 
-/// The shortest of three times for the references of `iCount` in `file`.
-fn local_references_time(session: &mut Session, file: &Path, text: &str) -> std::time::Duration {
-    (0..3)
-        .map(|_| {
-            let started = std::time::Instant::now();
-            let (found, _, _) = references_logged(session, file, text, "iCount + 1", 0);
-            assert_eq!(found.len(), 3, "{found:?}");
-            started.elapsed()
+/// The sites of `file` that the search resolved so far, as the daemon of a
+/// session started with `OXABL_TEST_TALLY` reports them.
+fn resolved_sites(session: &Session, file: &Path) -> usize {
+    let label = format!("references {}", file.display());
+    session
+        .stderr()
+        .lines()
+        .filter_map(|line| line.strip_prefix("oxabl-test: tally references.site_keys "))
+        .filter_map(|rest| {
+            let (count, named) = rest.split_once(' ')?;
+            (named == label).then(|| count.parse::<usize>().unwrap())
         })
-        .min()
-        .unwrap()
+        .next_back()
+        .unwrap_or(0)
 }
 
 #[test]
@@ -1718,17 +1721,31 @@ fn a_local_name_costs_no_resolution_of_class_calls() {
     let (ws, caller, plain) = class_callers(200, 300);
     let caller_path = ws.path("caller.p");
     let plain_path = ws.path("plain.p");
-    let mut session = Session::start(&ws.root);
+    let launch = session::Launch {
+        env: &[("OXABL_TEST_TALLY", "1")],
+        ..session::Launch::default()
+    };
+    let mut session = Session::launch_with(&ws.root, json!({"capabilities": {}}), launch, |_| {})
+        .await_initialize()
+        .0;
     session.open(&caller_path, &caller);
     session.open(&plain_path, &plain);
-    let base = local_references_time(&mut session, &plain_path, &plain);
-    let calls = local_references_time(&mut session, &caller_path, &caller);
-    eprintln!("a unit that calls 200 classes: {calls:?}, one that calls none: {base:?}");
+    let (found, _, _) = references_logged(&mut session, &plain_path, &plain, "iCount + 1", 0);
+    assert_eq!(found.len(), 3, "{found:?}");
+    let base = resolved_sites(&session, &plain_path);
+    let (found, _, _) = references_logged(&mut session, &caller_path, &caller, "iCount + 1", 0);
+    assert_eq!(found.len(), 3, "{found:?}");
+    let calls = resolved_sites(&session, &caller_path);
     // The class of each call is resolved only for a name that the call can
-    // be: not for a local variable.
+    // be: not for a local variable. So the sites that the search resolves are
+    // those that spell the name, however many calls the unit holds.
     assert!(
-        calls < base * 5,
-        "a unit that calls 200 classes took {calls:?}, one that calls none {base:?}"
+        base > 0,
+        "the search of the unit with no calls resolved no site"
+    );
+    assert_eq!(
+        calls, base,
+        "the search resolved {calls} sites in a unit that calls 200 classes, {base} in one that calls none"
     );
 }
 

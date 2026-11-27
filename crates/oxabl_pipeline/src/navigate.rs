@@ -908,6 +908,7 @@ impl Navigation<'_, '_> {
     /// What the name at a site refers to. `None` when the site has no answer,
     /// `Some(empty)` when its name has no target.
     pub(crate) fn site_keys(&self, target: &SiteTarget, span: VirtualSpan) -> Option<Vec<Key>> {
+        oxabl_common::test_tally::count("references.site_keys");
         let at = |targets: Vec<Target>| targets.into_iter().map(Key::At).collect();
         match target {
             SiteTarget::Reference(node) => match self.model.semantic.references.get(*node)? {

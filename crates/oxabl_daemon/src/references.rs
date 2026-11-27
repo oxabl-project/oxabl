@@ -187,10 +187,15 @@ pub fn answer_batch(
     };
     let locals = match analyse(host, session_root, root, |unit| {
         let (mut read, mut memo) = (HashMap::new(), ReferenceMemo::default());
-        queries
-            .iter()
-            .map(|query| local_answer(unit, query, &mut read, &mut memo))
-            .collect::<Vec<_>>()
+        let label = || format!("references {}", root.display());
+        let locals = oxabl_common::test_tally::within(label, || {
+            queries
+                .iter()
+                .map(|query| local_answer(unit, query, &mut read, &mut memo))
+                .collect::<Vec<_>>()
+        });
+        report_tally(&label());
+        locals
     }) {
         None => return every(ReferenceError::Modified),
         Some(Err(reason)) => return every(ReferenceError::Failed(reason)),
@@ -486,6 +491,25 @@ impl Pending {
         answer.member = referent.is_member();
         answer.pass = self.pass;
         answer
+    }
+}
+
+/// Test builds only: write what the work of `label` counted, in the lines that
+/// `oxabl` prints for `OXABL_TEST_TALLY`.
+fn report_tally(label: &str) {
+    if oxabl_common::INJECTION_ENABLED
+        && std::env::var_os("OXABL_TEST_TALLY").is_some()
+        && let Some(counts) = oxabl_common::test_tally::counts()
+    {
+        use std::io::Write;
+        for (named, event, count) in counts {
+            if named == label {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "oxabl-test: tally {event} {count} {label}"
+                );
+            }
+        }
     }
 }
 

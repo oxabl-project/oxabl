@@ -472,6 +472,14 @@ impl<'a> Parser<'a> {
     const PRESIZED_STATEMENTS: usize = 64;
 
     pub fn parse_program(&mut self) -> Program {
+        self.parse_program_between(|| {})
+    }
+
+    /// [`parse_program`](Self::parse_program), calling `between` before each
+    /// top-level statement. A caller that may stop waiting for the answer
+    /// unwinds from it, as the analysis of a large file does when its buffer is
+    /// edited.
+    pub fn parse_program_between(&mut self, mut between: impl FnMut()) -> Program {
         #[cfg(feature = "test-counters")]
         crate::count_parse(self.tokens);
         // Every top-level statement ends at a period, so the capped period
@@ -489,6 +497,7 @@ impl<'a> Parser<'a> {
             if self.errors.len() >= Self::MAX_ERRORS {
                 break;
             }
+            between();
             let pos_before = self.current;
             let parsed = match self.parse_statement() {
                 Ok(stmt) => {
