@@ -358,7 +358,7 @@ fn bench_members(c: &mut Criterion) {
                     fragment: false,
                     stale: false,
                     tokens: Some(&tokens),
-                    classes,
+                    classes: classes.map(|memo| memo.at(0)),
                 };
                 complete(request, Some(&base)).map_or(0, |list| list.items.len())
             };
