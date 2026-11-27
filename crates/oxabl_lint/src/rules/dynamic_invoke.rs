@@ -143,15 +143,15 @@ impl DynamicCalls<'_> {
             ) {
                 continue;
             }
-            let Some(name) = dynamic_name(&text[tok.start..tok.end]) else {
+            let Some(name) = dynamic_name(tok.slice(text)) else {
                 continue;
             };
             // DYNAMIC-NEW is reserved; the others must be called to count, since
             // a field may carry the same name.
             let called = tokens.get(i + 1).is_some_and(|t| t.kind == Kind::LeftParen);
             if called || name == "DYNAMIC-NEW" {
-                let start = span.start + tok.start as u32;
-                let end = span.start + tok.end as u32;
+                let start = span.start + tok.start;
+                let end = span.start + tok.end;
                 self.report(Span { start, end }, name);
             }
         }

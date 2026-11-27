@@ -159,12 +159,14 @@ pub(crate) fn of_request<'p>(text: &str, cursor: u32, prior: Option<Prior<'p>>) 
     }
     let need = word_end.max(text.len() - suffix);
     let keep = reusable(prior, prefix);
-    let from = keep.checked_sub(1).map_or(0, |last| prior.tokens[last].end);
+    let from = keep
+        .checked_sub(1)
+        .map_or(0, |last| prior.tokens[last].end as usize);
     let mut tail = Vec::with_capacity(64);
     let mut after = 0;
     for token in Lexer::starting_at(text, from) {
         let last = token.kind == Kind::Eof;
-        let counts = token.start >= need && token.kind != Kind::Comment;
+        let counts = token.start as usize >= need && token.kind != Kind::Comment;
         tail.push(token);
         if last {
             break;
@@ -246,7 +248,7 @@ fn reusable(prior: Prior<'_>, prefix: usize) -> usize {
         .map_or(0, |at| at + 1);
     let mut keep = prior
         .tokens
-        .partition_point(|token| token.end <= safe && token.kind != Kind::Eof);
+        .partition_point(|token| token.end as usize <= safe && token.kind != Kind::Eof);
     for at in (0..keep).rev() {
         match prior.tokens[at].kind {
             Kind::PreprocEnd => break,
@@ -300,7 +302,7 @@ mod tests {
     fn covered(full: &[Token], tokens: &TokenStream<'_>, to: usize) -> bool {
         let first = full
             .iter()
-            .position(|token| token.start >= to)
+            .position(|token| token.start as usize >= to)
             .unwrap_or(full.len());
         tokens.last().is_some_and(|last| last.kind == Kind::Eof) || tokens.len() >= first + 2
     }

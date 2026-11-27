@@ -7599,7 +7599,7 @@ fn header_names<'s>(
 ) -> Vec<(&'s str, Span)> {
     use oxabl_lexer::Kind;
     let mut names = Vec::new();
-    let mut previous: Option<(Kind, usize)> = None;
+    let mut previous: Option<(Kind, u32)> = None;
     while let Some(token) = tokens.next() {
         if token.kind == Kind::Eof {
             break;
@@ -7616,10 +7616,10 @@ fn header_names<'s>(
         });
         if token.kind == Kind::Identifier && !after_qualifier {
             names.push((
-                &text[token.start..token.end],
+                token.slice(text),
                 Span {
-                    start: base + token.start as u32,
-                    end: base + token.end as u32,
+                    start: base + token.start,
+                    end: base + token.end,
                 },
             ));
         }
@@ -7653,7 +7653,7 @@ struct ClassShapedRun {
 /// The end of the `a.b.C` name that starts at `tokens[from]`, and the index of
 /// the token after it. Identifiers joined by byte-adjacent periods lex as a
 /// dotted name.
-fn dotted_run_end(text: &str, tokens: &[oxabl_lexer::Token], from: usize) -> (usize, usize) {
+fn dotted_run_end(text: &str, tokens: &[oxabl_lexer::Token], from: usize) -> (u32, usize) {
     use oxabl_lexer::Kind;
     let mut end = tokens[from].end;
     let mut next = from + 1;
@@ -7661,7 +7661,8 @@ fn dotted_run_end(text: &str, tokens: &[oxabl_lexer::Token], from: usize) -> (us
         && tokens[next].kind == Kind::Period
         && tokens[next].start == end
         && tokens[next + 1].start == tokens[next].end
-        && text[tokens[next + 1].start..tokens[next + 1].end]
+        && tokens[next + 1]
+            .slice(text)
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
     {
@@ -7703,7 +7704,7 @@ fn generic_new_arguments(
             }
             Kind::Identifier if tokens[next - 1].kind != Kind::Period => {
                 let (end, after) = dotted_run_end(text, tokens, next);
-                arguments.push(token.start..end);
+                arguments.push(token.start as usize..end as usize);
                 next = after;
                 continue;
             }
@@ -7732,7 +7733,7 @@ fn class_shaped_runs(text: &str) -> Vec<ClassShapedRun> {
             if tokens[i + 1].kind == Kind::Identifier {
                 let (end, _) = dotted_run_end(text, &tokens, i + 1);
                 runs.push(ClassShapedRun {
-                    name: tokens[i + 1].start..end,
+                    name: tokens[i + 1].start as usize..end as usize,
                     is_constructor: true,
                 });
             }
@@ -7765,7 +7766,7 @@ fn class_shaped_runs(text: &str) -> Vec<ClassShapedRun> {
             after_new && tokens.get(next).is_some_and(|t| t.kind == Kind::LeftParen);
         if !after_member && !in_path && (is_constructor || is_receiver) {
             runs.push(ClassShapedRun {
-                name: start..end,
+                name: start as usize..end as usize,
                 is_constructor,
             });
         }
@@ -7857,7 +7858,7 @@ fn names_after_widget_keywords(
     let lexed;
     let tokens = if tokens
         .last()
-        .is_some_and(|t| t.kind == Kind::Eof && t.end == source.len())
+        .is_some_and(|t| t.kind == Kind::Eof && t.end as usize == source.len())
     {
         tokens
     } else {
@@ -7876,7 +7877,7 @@ fn names_after_widget_keywords(
             | Kind::DataSource
             | Kind::Browse
             | Kind::Rectangle => true,
-            _ => source.get(keyword.start..keyword.end).is_some_and(|text| {
+            _ => source.get(keyword.range()).is_some_and(|text| {
                 ["button", "image", "menu", "sub-menu"]
                     .iter()
                     .any(|word| word.eq_ignore_ascii_case(text))
@@ -7885,7 +7886,7 @@ fn names_after_widget_keywords(
         if !introduces {
             continue;
         }
-        if let Some(text) = source.get(name.start..name.end)
+        if let Some(text) = source.get(name.range())
             && text.starts_with(|c: char| c.is_alphabetic() || c == '_')
         {
             names.insert(fold_atom(text));

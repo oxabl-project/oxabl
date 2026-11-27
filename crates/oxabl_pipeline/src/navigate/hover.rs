@@ -440,7 +440,7 @@ impl Navigation<'_, '_> {
         virt: u32,
     ) -> Option<String> {
         let token = self.token_at(virt)?;
-        if token.start != span.start as usize {
+        if token.start != span.start {
             return None;
         }
         let tokens = &self.parsed().tokens;
@@ -478,12 +478,10 @@ impl Navigation<'_, '_> {
             .iter()
             .filter(|t| t.kind != Kind::Comment)
             .collect();
-        let at = words
-            .iter()
-            .position(|t| t.start <= virt as usize && (virt as usize) < t.end)?;
+        let at = words.iter().position(|t| t.start <= virt && virt < t.end)?;
         let starts = statement_starts(&parsed.program.statements);
         for first in (at.saturating_sub(MAX_HEAD)..=at).rev() {
-            if starts.binary_search(&(words[first].start as u32)).is_ok() {
+            if starts.binary_search(&{ words[first].start }).is_ok() {
                 let (doc, end) = longest_statement(&source, &words[first..])?;
                 return (at < first + end).then(|| doc_markdown(doc));
             }
@@ -494,16 +492,16 @@ impl Navigation<'_, '_> {
     /// The token of the expanded unit that holds `virt`.
     fn token_at(&self, virt: u32) -> Option<&Token> {
         let tokens = &self.parsed().tokens;
-        let at = tokens.partition_point(|t| t.end <= virt as usize);
+        let at = tokens.partition_point(|t| t.end <= virt);
         tokens
             .get(at)
-            .filter(|t| t.start <= virt as usize && t.kind != Kind::Comment)
+            .filter(|t| t.start <= virt && t.kind != Kind::Comment)
     }
 
     /// The bytes in `file` of the token at `virt`.
     fn word_span(&self, file: &Path, virt: u32) -> Option<Span> {
         let token = self.token_at(virt)?;
-        let span = VirtualSpan::new(token.start as u32, token.end as u32);
+        let span = VirtualSpan::new(token.start, token.end);
         let Target { path, span } = self.place(span)?;
         (path == file).then_some(span).flatten()
     }
@@ -957,7 +955,7 @@ fn word_matches(token: &Token, text: &str, word: &str) -> bool {
         return false;
     }
     let lexed = tokenize(word);
-    matches!(lexed.first(), Some(first) if first.kind == token.kind && first.end == word.len())
+    matches!(lexed.first(), Some(first) if first.kind == token.kind && first.end as usize == word.len())
 }
 
 /// The full name of a built-in function written as `name`, which may be an
@@ -1072,7 +1070,7 @@ impl<'t> Source<'t> {
             match token.kind {
                 Kind::LeftParen => {
                     if depth == 0 {
-                        open = Some(token.start as u32);
+                        open = Some(token.start);
                     }
                     depth += 1;
                 }
@@ -1081,7 +1079,7 @@ impl<'t> Source<'t> {
                     if depth == 0
                         && let Some(open) = open
                     {
-                        return Some((open, token.end as u32));
+                        return Some((open, token.end));
                     }
                 }
                 _ => {}
@@ -1096,16 +1094,16 @@ impl<'t> Source<'t> {
         debug_assert!(skip.windows(2).all(|pair| pair[0].1 <= pair[1].0));
         self.tokens_in(from, to)
             .filter(|(_, t)| matches!(t.kind, Kind::IncludeReference | Kind::IncludeArgReference))
-            .filter(|(_, t)| !skipped(skip, t.start as u32))
+            .filter(|(_, t)| !skipped(skip, t.start))
             .map(|(_, t)| Span {
-                start: t.start as u32,
-                end: t.end as u32,
+                start: t.start,
+                end: t.end,
             })
             .collect()
     }
 
     fn token_text(&self, token: &Token) -> &'t str {
-        self.text.get(token.start..token.end).unwrap_or_default()
+        self.text.get(token.range()).unwrap_or_default()
     }
 
     fn slice(&self, span: Span) -> &'t str {
@@ -1131,17 +1129,17 @@ impl<'t> Source<'t> {
                 || (includes
                     && matches!(t.kind, Kind::IncludeReference | Kind::IncludeArgReference))
                 || self.token_text(t).starts_with("{&");
-            expands && !skipped(skip, t.start as u32)
+            expands && !skipped(skip, t.start)
         })
     }
 
     /// The tokens that start in `from..to`, comments left out.
     fn tokens_in(&self, from: u32, to: u32) -> impl Iterator<Item = (usize, &'t Token)> {
-        let first = self.tokens.partition_point(|t| t.start < from as usize);
+        let first = self.tokens.partition_point(|t| t.start < from);
         self.tokens[first..]
             .iter()
             .enumerate()
-            .take_while(move |(_, t)| t.start < to as usize)
+            .take_while(move |(_, t)| t.start < to)
             .filter(|(_, t)| t.kind != Kind::Comment)
             .map(move |(n, t)| (first + n, t))
     }
@@ -1151,7 +1149,7 @@ impl<'t> Source<'t> {
     fn options_end(&self, from: u32, to: u32) -> u32 {
         self.tokens_in(from, to)
             .find(|(_, t)| matches!(t.kind, Kind::Get | Kind::Set | Kind::Colon))
-            .map_or(to, |(_, t)| t.start as u32)
+            .map_or(to, |(_, t)| t.start)
     }
 
     /// ` EXTENT n` as written in `from..to`.
@@ -1191,7 +1189,7 @@ impl<'t> Source<'t> {
             Kind::Minus => tokens.next().map_or(first.end, |t| t.end),
             _ => first.end,
         };
-        let written = self.text.get(first.start..end)?;
+        let written = self.text.get(first.start as usize..end as usize)?;
         Some(format!(
             " INITIAL {}",
             written.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -1508,7 +1506,7 @@ impl<'t> Source<'t> {
                 Kind::LeftParen => depth += 1,
                 Kind::RightParen => depth = depth.saturating_sub(1),
                 Kind::Colon | Kind::Period if depth == 0 => {
-                    end = token.start as u32;
+                    end = token.start;
                     break;
                 }
                 _ => {}
@@ -1520,7 +1518,7 @@ impl<'t> Source<'t> {
                     .iter()
                     .any(|w| text.eq_ignore_ascii_case(w));
             if depth == 0 && start.is_none() && opens {
-                start = Some(token.start as u32);
+                start = Some(token.start);
             }
         }
         match start {
@@ -1583,9 +1581,7 @@ impl<'t> Source<'t> {
             out.push_str(word);
             out.push('.');
             // The next accessor starts after this one's body.
-            from = body
-                .last()
-                .map_or(tokens[at].1.end as u32, |last| last.span.end);
+            from = body.last().map_or(tokens[at].1.end, |last| last.span.end);
         }
         out
     }

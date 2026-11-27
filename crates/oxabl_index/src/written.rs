@@ -126,7 +126,7 @@ pub fn written_imports(text: &str) -> Vec<String> {
         let ends = token.kind == Kind::Period
             && text
                 .as_bytes()
-                .get(token.end)
+                .get(token.end as usize)
                 .is_none_or(u8::is_ascii_whitespace);
         statement.push(token);
         if !ends {
@@ -350,11 +350,8 @@ impl Scan<'_> {
         let start = self.tokens[first].start;
         let end = self.tokens[next - 1].end;
         Name {
-            text: self.text[start..end].to_string(),
-            span: Span {
-                start: start as u32,
-                end: end as u32,
-            },
+            text: self.text[start as usize..end as usize].to_string(),
+            span: Span { start, end },
             next,
         }
     }
@@ -372,8 +369,8 @@ impl Scan<'_> {
                 Name {
                     text: value.to_string(),
                     span: Span {
-                        start: token.start as u32,
-                        end: token.end as u32,
+                        start: token.start,
+                        end: token.end,
                     },
                     next: first + 1,
                 }

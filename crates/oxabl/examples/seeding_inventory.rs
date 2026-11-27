@@ -138,7 +138,7 @@ fn main() {
         let end_offsets: Vec<usize> = tokens
             .iter()
             .filter(|t| t.kind == Kind::End)
-            .map(|t| t.start)
+            .map(|t| t.start as usize)
             .collect();
 
         if !program.errors.is_empty() {
@@ -424,11 +424,11 @@ fn compute_decl(
         .iter()
         .filter(|t| {
             t.kind == Kind::Period
-                && t.start >= node_start
-                && t.end <= s0
-                && ws_or_eof(ctx.src, t.end)
+                && t.start as usize >= node_start
+                && t.end as usize <= s0
+                && ws_or_eof(ctx.src, t.end as usize)
         })
-        .map(|t| t.end)
+        .map(|t| t.end as usize)
         .max();
     let boundary = match last_period_end {
         Some(e) => e,
@@ -437,11 +437,11 @@ fn compute_decl(
             .iter()
             .find(|t| {
                 t.kind == Kind::Colon
-                    && t.start >= node_start
-                    && t.end <= s0
-                    && ws_or_eof(ctx.src, t.end)
+                    && t.start as usize >= node_start
+                    && t.end as usize <= s0
+                    && ws_or_eof(ctx.src, t.end as usize)
             })
-            .map(|t| t.end)
+            .map(|t| t.end as usize)
             .ok_or_else(|| {
                 "cannot locate a statement boundary before the first executable".to_string()
             })?,
@@ -452,8 +452,8 @@ fn compute_decl(
     let true_start = ctx
         .tokens
         .iter()
-        .filter(|t| t.start >= boundary && t.start <= s0 && !is_trivia(t.kind))
-        .map(|t| t.start)
+        .filter(|t| t.start as usize >= boundary && t.start as usize <= s0 && !is_trivia(t.kind))
+        .map(|t| t.start as usize)
         .min()
         .unwrap_or(s0);
 
@@ -790,7 +790,7 @@ mod tests {
         let end_offsets: Vec<usize> = tokens
             .iter()
             .filter(|t| t.kind == Kind::End)
-            .map(|t| t.start)
+            .map(|t| t.start as usize)
             .collect();
         let mut parser = Parser::new(&tokens, src);
         let program = parser.parse_program();

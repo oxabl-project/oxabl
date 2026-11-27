@@ -351,7 +351,7 @@ fn plural(n: usize, word: &str) -> String {
 /// parser keeps no record of `TABLE`, `TABLE-HANDLE`, `DATASET`,
 /// `DATASET-HANDLE` or `BUFFER` on an argument.
 fn argument_shape(tokens: &[Token], expr: &Expression) -> ParamShape {
-    let start = expr.span.start as usize;
+    let start = expr.span.start;
     let at = tokens.partition_point(|t| t.start < start);
     // `BUFFER b:HANDLE` is a handle value, not a buffer argument.
     let plain = matches!(expr.kind, ExpressionKind::Identifier(_));

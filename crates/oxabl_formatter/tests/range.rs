@@ -475,7 +475,7 @@ fn check_style(style_name: &str, style: &StyleGuide) {
             let code: Vec<(usize, usize)> = tokenize(&text)
                 .iter()
                 .filter(|t| !matches!(t.kind, Kind::Comment | Kind::Eof))
-                .map(|t| (t.start, t.end))
+                .map(|t| (t.start as usize, t.end as usize))
                 .collect();
             let comment_spans: Vec<(usize, usize)> = program
                 .comments

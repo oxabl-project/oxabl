@@ -179,7 +179,7 @@ impl SharedDefinitions<'_> {
             Some((name, span)) => self.report(span, mode, &noun, Some(name)),
             None => {
                 let start = stmt.span.start;
-                let end = start + noun_token.end as u32;
+                let end = start + noun_token.end;
                 self.report(Span { start, end }, mode, &noun, None);
             }
         }

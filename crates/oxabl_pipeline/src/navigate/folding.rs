@@ -249,7 +249,7 @@ impl<'t> Folding<'t> {
         let first = words.next()?;
         if first.kind != Kind::IncludeReference
             || words.next().is_some()
-            || (first.start, first.end) != (0, text.len())
+            || (first.start as usize, first.end as usize) != (0, text.len())
         {
             return None;
         }

@@ -343,7 +343,7 @@ fn released_after(source: &str, tx: Span, after: u32, name: &str) -> bool {
         if matches!(t.kind, Kind::Release | Kind::Delete)
             && tokens
                 .next()
-                .is_some_and(|n| same_buffer_name(&text[n.start..n.end], name))
+                .is_some_and(|n| same_buffer_name(n.slice(text), name))
         {
             return true;
         }

@@ -62,25 +62,12 @@ impl From<ParseError> for oxabl_common::Diagnostic {
     }
 }
 
-/// Convert a source byte offset to a `u32` span endpoint.
-///
-/// [`Parser::new`] asserts `source.len() <= u32::MAX as usize`, so every
-/// valid token offset fits in `u32` without truncation.
-#[inline]
-pub(crate) fn span_u32(offset: usize) -> u32 {
-    debug_assert!(
-        offset <= u32::MAX as usize,
-        "source byte offset {offset} exceeds u32::MAX"
-    );
-    u32::try_from(offset).unwrap_or(u32::MAX)
-}
-
 /// Convert a token's `[start, end)` byte offsets into a [`Span`].
 #[inline]
 pub(crate) fn tok_span(token: &Token) -> Span {
     Span {
-        start: span_u32(token.start),
-        end: span_u32(token.end),
+        start: token.start,
+        end: token.end,
     }
 }
 
@@ -262,7 +249,7 @@ pub struct Parser<'a> {
     /// Byte ranges of the short names imported by non-wildcard `USING`
     /// statements seen so far. A word token spelled like one of these is a class
     /// name in a type position even when it is also a keyword (`Method`).
-    imported_classes: Vec<(usize, usize)>,
+    imported_classes: Vec<(u32, u32)>,
     /// The token kinds of the method names declared in this token stream, built
     /// on first use by [`declares_method_named`](Self::declares_method_named).
     method_name_kinds: Option<Vec<Kind>>,
@@ -340,7 +327,7 @@ impl<'a> Parser<'a> {
         // The name text is sized from the text the tokens cover, not from the
         // whole source: a caller can parse a slice of the tokens of a file.
         let covered = match (tokens.first(), tokens.last()) {
-            (Some(first), Some(last)) => last.start.saturating_sub(first.start),
+            (Some(first), Some(last)) => last.start.saturating_sub(first.start) as usize,
             _ => 0,
         };
         let byte_cap = if tok_count >= 64 { covered / 12 } else { 0 };
@@ -515,8 +502,8 @@ impl<'a> Parser<'a> {
         let first = self.tokens.get(lo)?;
         let last = self.tokens.get(hi.min(self.tokens.len()).checked_sub(1)?)?;
         Some(Span {
-            start: span_u32(first.start),
-            end: span_u32(last.end),
+            start: first.start,
+            end: last.end,
         })
     }
 
@@ -538,16 +525,20 @@ impl<'a> Parser<'a> {
         self.names.intern(text)
     }
 
+    /// Return the source substring covering `[start, end)`.
+    #[inline]
+    pub(crate) fn slice(&self, start: u32, end: u32) -> &'a str {
+        &self.source[start as usize..end as usize]
+    }
+
     /// Intern an identifier spanning `start..end`, stripping UNIX backslash
     /// escapes without allocating a temporary `String` in the common case.
     #[inline]
-    pub(crate) fn intern_ident(&mut self, start: usize, end: usize) -> NameId {
-        let authored = &self.source[start..end];
-        if authored.contains('\\') {
-            let normalized = authored.replace('\\', "");
-            self.names.intern(&normalized)
-        } else {
-            self.names.intern(authored)
+    pub(crate) fn intern_ident(&mut self, start: u32, end: u32) -> NameId {
+        let authored = self.slice(start, end);
+        match oxabl_lexer::normalize_identifier(authored) {
+            std::borrow::Cow::Borrowed(s) => self.names.intern(s),
+            std::borrow::Cow::Owned(s) => self.names.intern(&s),
         }
     }
 
@@ -781,11 +772,12 @@ impl<'a> Parser<'a> {
     /// The `{` arm is defensive only — include/preprocessor references never lex
     /// to `Kind::Comment` today (KTD3) — so it is excluded without tripping the
     /// assert.
-    fn classify_comment(&self, start: usize) -> Option<CommentKind> {
+    fn classify_comment(&self, start: u32) -> Option<CommentKind> {
         let bytes = self.source.as_bytes();
         // The lexer keeps a stray `~` in the token that follows it (`~&x`, `~ //x`),
         // with the blanks after it, so a comment can lead with tildes and blanks:
         // classify it by what comes after them.
+        let start = start as usize;
         let start = start
             + match bytes.get(start) {
                 Some(b'~') => bytes[start..]
@@ -1365,7 +1357,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let span = tok_span(tok);
-            let name = self.names.intern(&self.source[tok.start..tok.end]);
+            let name = self.names.intern(tok.slice(self.source));
             names.push(Identifier { name, span });
         }
         names
@@ -1975,11 +1967,12 @@ impl<'a> Parser<'a> {
     /// A word written directly against the colon is a member name whatever
     /// keyword it spells (`o:Fetch(a)`, `JsonDataType:NULL`), as long as what
     /// comes after it can follow a member: `CASE x:WHEN 1` still ends the header.
-    fn is_member_name(&self, index: usize, colon_end: usize) -> bool {
+    fn is_member_name(&self, index: usize, colon_end: u32) -> bool {
         let token = self.token_at(index);
         Self::can_be_member_name(token.kind)
             || (token.start == colon_end
-                && self.source[token.start..token.end]
+                && token
+                    .slice(self.source)
                     .bytes()
                     .next()
                     .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
@@ -2130,16 +2123,16 @@ impl<'a> Parser<'a> {
                 break;
             };
             if !Self::can_be_identifier(next_tok.kind)
-                || self.source[period_end..next_tok.start].contains('\n')
+                || self.slice(period_end, next_tok.start).contains('\n')
             {
                 break;
             }
             self.advance(); // consume '.'
-            let next = self.advance().clone();
+            let next = *self.advance();
             let buf = joined.get_or_insert_with(|| self.names.get(first.name).to_owned());
             buf.push('.');
             buf.push_str(&self.identifier_source(next.start, next.end));
-            end = span_u32(next.end);
+            end = next.end;
         }
 
         let name = match joined {
@@ -2166,9 +2159,9 @@ impl<'a> Parser<'a> {
                 span: self.current_span(),
             });
         }
-        let start_tok = self.advance().clone();
-        let start = span_u32(start_tok.start);
-        let mut end = span_u32(start_tok.end);
+        let start_tok = *self.advance();
+        let start = start_tok.start;
+        let mut end = start_tok.end;
         let first_name = self.intern_ident(start_tok.start, start_tok.end);
         let mut joined: Option<String> = None;
 
@@ -2179,16 +2172,16 @@ impl<'a> Parser<'a> {
                 break;
             };
             if !Self::is_word_kind(next_tok.kind)
-                || self.source[period_end..next_tok.start].contains('\n')
+                || self.slice(period_end, next_tok.start).contains('\n')
             {
                 break;
             }
             self.advance(); // consume '.'
-            let next = self.advance().clone();
+            let next = *self.advance();
             let buf = joined.get_or_insert_with(|| self.names.get(first_name).to_owned());
             buf.push('.');
             buf.push_str(&self.identifier_source(next.start, next.end));
-            end = span_u32(next.end);
+            end = next.end;
         }
 
         let name = match joined {
@@ -2247,7 +2240,7 @@ impl<'a> Parser<'a> {
                 span: self.current_span(),
             });
         }
-        let token = self.advance().clone();
+        let token = *self.advance();
         let start = token.start;
         let mut end = token.end;
 
@@ -2289,10 +2282,7 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Identifier {
-            span: Span {
-                start: span_u32(start),
-                end: span_u32(end),
-            },
+            span: Span { start, end },
             name: self.intern_ident(start, end),
         })
     }
@@ -2300,13 +2290,8 @@ impl<'a> Parser<'a> {
     /// ABL on UNIX accepts backslash as an alternative escape character. The
     /// token span stays on the authored bytes, while semantic identity uses the
     /// spelling the compiler sees after escape removal.
-    fn identifier_source(&self, start: usize, end: usize) -> String {
-        let authored = &self.source[start..end];
-        if authored.contains('\\') {
-            authored.replace('\\', "")
-        } else {
-            authored.to_string()
-        }
+    fn identifier_source(&self, start: u32, end: u32) -> String {
+        oxabl_lexer::normalize_identifier(self.slice(start, end)).into_owned()
     }
 
     fn current_span(&self) -> Span {
@@ -2325,7 +2310,7 @@ impl<'a> Parser<'a> {
         while i > 0 {
             i -= 1;
             if self.tokens[i].kind != Kind::Comment {
-                return span_u32(self.tokens[i].end);
+                return self.tokens[i].end;
             }
         }
         0
@@ -2651,13 +2636,13 @@ impl<'a> Parser<'a> {
             return None;
         }
         self.advance();
-        let tok = self.peek().clone();
+        let tok = *self.peek();
         let span = tok_span(&tok);
         match tok.kind {
             Kind::IntegerLiteral => {
                 self.advance();
                 Some(
-                    self.source[tok.start..tok.end]
+                    tok.slice(self.source)
                         .parse::<u32>()
                         .map_or(ParameterExtent::Unresolved(span), ParameterExtent::Fixed),
                 )
@@ -2797,10 +2782,10 @@ impl<'a> Parser<'a> {
 
     /// Whether `token` is spelled like the short name of a `USING` import.
     fn is_imported_class(&self, token: &Token) -> bool {
-        let text = &self.source[token.start..token.end];
+        let text = token.slice(self.source);
         self.imported_classes
             .iter()
-            .any(|&(start, end)| self.source[start..end].eq_ignore_ascii_case(text))
+            .any(|&(start, end)| self.slice(start, end).eq_ignore_ascii_case(text))
     }
 
     /// The type of a class name, generic when it carries type arguments.
@@ -2868,7 +2853,7 @@ impl<'a> Parser<'a> {
         if !Self::is_word_kind(token.kind) {
             return None;
         }
-        let data_type = short_data_type(&self.source[token.start..token.end])?;
+        let data_type = short_data_type(token.slice(self.source))?;
         let next = self.peek_at(offset + 1);
         match next.kind {
             Kind::Preprop if next.start == token.end => None,
@@ -2876,7 +2861,7 @@ impl<'a> Parser<'a> {
                 // Same rule as `parse_class_qualified_name`.
                 let word = self.peek_at(offset + 2);
                 let qualified = Self::is_word_kind(word.kind)
-                    && !self.source[next.end..word.start].contains('\n');
+                    && !self.slice(next.end, word.start).contains('\n');
                 (!qualified).then_some(data_type)
             }
             _ => Some(data_type),
@@ -2992,10 +2977,7 @@ impl<'a> Parser<'a> {
                 Ok(DataType::PreprocIf(Box::new(preproc)))
             }
             _ => Err(ParseError {
-                message: format!(
-                    "Unknown data type: {}",
-                    &self.source[token.start..token.end]
-                ),
+                message: format!("Unknown data type: {}", token.slice(self.source)),
                 span: tok_span(token),
             }),
         }

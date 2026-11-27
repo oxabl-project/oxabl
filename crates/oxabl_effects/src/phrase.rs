@@ -20,8 +20,8 @@ pub(crate) fn significant(tokens: &[Token]) -> Vec<Tok> {
         .filter(|t| t.kind != Kind::Comment)
         .map(|t| Tok {
             kind: t.kind,
-            start: t.start as u32,
-            end: t.end as u32,
+            start: t.start,
+            end: t.end,
         })
         .collect()
 }

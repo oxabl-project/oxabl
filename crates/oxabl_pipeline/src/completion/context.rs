@@ -133,7 +133,8 @@ pub(crate) fn find(text: &str, tokens: &TokenStream<'_>, cursor: u32) -> Option<
     while end < bytes.len() && is_word_byte(bytes[end]) {
         end += 1;
     }
-    let before = tokens.partition_point(|token| token.end <= start && token.kind != Kind::Eof);
+    let before =
+        tokens.partition_point(|token| token.end as usize <= start && token.kind != Kind::Eof);
     let found = |context, window_start: u32, reaches_start| Found {
         word_start: start as u32,
         word_end: end as u32,
@@ -189,9 +190,9 @@ pub(crate) fn find(text: &str, tokens: &TokenStream<'_>, cursor: u32) -> Option<
                     .filter(|t| t.kind != Kind::Comment);
                 let joined = previous
                     .next()
-                    .filter(|t| t.kind == Kind::Colon && t.end == start)
+                    .filter(|t| t.kind == Kind::Colon && t.end as usize == start)
                     .and_then(|_| previous.next().map(|t| (t, previous.next())))
-                    .filter(|(t, _)| t.end + 1 == start);
+                    .filter(|(t, _)| t.end as usize + 1 == start);
                 return match joined {
                     Some((t, before_it))
                         if matches!(
@@ -217,7 +218,7 @@ pub(crate) fn find(text: &str, tokens: &TokenStream<'_>, cursor: u32) -> Option<
     let window_start = window
         .tokens
         .first()
-        .map_or(start as u32, |at| tokens[*at].start as u32);
+        .map_or(start as u32, |at| tokens[*at].start);
     let reaches_start = !window.boundary && !window.tokens.is_empty();
     let context = classify(text, tokens, &window.tokens, start)?;
     if context == Context::Run {
@@ -246,7 +247,7 @@ pub(crate) fn find(text: &str, tokens: &TokenStream<'_>, cursor: u32) -> Option<
 /// part of a dotted name or the name of a member: it touches a `.` or a `:`
 /// on its left. `DO:` and `ELSE:` have neither.
 fn ends_a_path(bytes: &[u8], token: &Token, before_it: Option<&Token>) -> bool {
-    let word = &bytes[token.start..token.end];
+    let word = &bytes[token.range()];
     !word.is_empty()
         && word.iter().all(|b| is_word_byte(*b))
         && word[0].is_ascii_alphabetic()
@@ -283,7 +284,7 @@ fn statement_window(text: &str, tokens: &TokenStream<'_>, before: usize) -> Opti
                 boundary = true;
                 break;
             }
-            Kind::Colon if followed_by_space(bytes, token.end) => {
+            Kind::Colon if followed_by_space(bytes, token.end as usize) => {
                 boundary = true;
                 break;
             }
@@ -294,10 +295,10 @@ fn statement_window(text: &str, tokens: &TokenStream<'_>, before: usize) -> Opti
             }
             kind if is_directive(kind) => {
                 // The window starts on the line after the directive.
-                let line_end = text[token.end..]
+                let line_end = text[token.end as usize..]
                     .find('\n')
-                    .map_or(text.len(), |at| token.end + at + 1);
-                window.retain(|at| tokens[*at].start >= line_end);
+                    .map_or(text.len(), |at| token.end as usize + at + 1);
+                window.retain(|at| tokens[*at].start as usize >= line_end);
                 boundary = true;
                 break;
             }
@@ -337,12 +338,13 @@ fn qualified(text: &str, tokens: &TokenStream<'_>, start: usize) -> Option<(Cont
     {
         return None;
     }
-    let before = tokens.partition_point(|token| token.end <= from && token.kind != Kind::Eof);
+    let before =
+        tokens.partition_point(|token| token.end as usize <= from && token.kind != Kind::Eof);
     let window = statement_window(text, tokens, before)?;
     let window_start = window
         .tokens
         .first()
-        .map_or(from as u32, |at| tokens[*at].start as u32);
+        .map_or(from as u32, |at| tokens[*at].start);
     let after_record = matches!(
         classify(text, tokens, &window.tokens, from),
         Some(Context::Records(after)) if after != RecordsAfter::Like
@@ -376,8 +378,10 @@ fn classify(
     // `RUN` and its target, while the target is written.
     if first == Kind::Run {
         let path_start = path_start(text.as_bytes(), word_start);
-        let target_from = window.get(1).map_or(word_start, |at| tokens[*at].start);
-        return (path_start <= target_from && path_start > tokens[window[0]].end)
+        let target_from = window
+            .get(1)
+            .map_or(word_start, |at| tokens[*at].start as usize);
+        return (path_start <= target_from && path_start > tokens[window[0]].end as usize)
             .then_some(Context::Run);
     }
 
@@ -604,8 +608,10 @@ fn path_start(bytes: &[u8], word_start: usize) -> usize {
 /// A period inside a name, as in `Customer.Name` or `pkg.Class`.
 fn joined_both(bytes: &[u8], token: &Token) -> bool {
     token.start > 0
-        && is_word_byte(bytes[token.start - 1])
-        && bytes.get(token.end).is_some_and(|b| is_word_byte(*b))
+        && is_word_byte(bytes[token.start as usize - 1])
+        && bytes
+            .get(token.end as usize)
+            .is_some_and(|b| is_word_byte(*b))
 }
 
 /// Whether whitespace, a comment or the end of the text comes at `at`.
@@ -658,7 +664,6 @@ fn unclosed_brace(bytes: &[u8], cursor: usize) -> Option<usize> {
 
 /// Whether byte `at` is inside a token of `kind`.
 fn in_kind(tokens: &TokenStream<'_>, at: u32, kind: Kind) -> bool {
-    let at = at as usize;
     let index = tokens.partition_point(|token| token.start <= at);
     index > 0 && {
         let token = &tokens[index - 1];
@@ -669,21 +674,20 @@ fn in_kind(tokens: &TokenStream<'_>, at: u32, kind: Kind) -> bool {
 /// Whether the cursor is inside a comment or a string: after its first byte,
 /// and before its end or at the end of one that is not closed.
 fn inside_text(tokens: &TokenStream<'_>, bytes: &[u8], cursor: u32) -> bool {
-    let at = cursor as usize;
-    let index = tokens.partition_point(|token| token.start < at);
+    let index = tokens.partition_point(|token| token.start < cursor);
     if index == 0 {
         return false;
     }
     let token = &tokens[index - 1];
-    let body = &bytes[token.start..token.end];
+    let body = &bytes[token.range()];
     // A comment that is not closed lexes as one invalid token.
     let open_comment = token.kind == Kind::Invalid && body.starts_with(b"/*");
     if !(matches!(token.kind, Kind::Comment | Kind::StringLiteral) || open_comment)
-        || at > token.end
+        || cursor > token.end
     {
         return false;
     }
-    if at < token.end || open_comment {
+    if cursor < token.end || open_comment {
         return true;
     }
     match token.kind {

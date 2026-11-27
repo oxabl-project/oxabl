@@ -212,7 +212,7 @@ pub(crate) struct LineFormat {
 fn tokens_end_source(source: &str, tokens: &[Token]) -> bool {
     tokens
         .last()
-        .is_some_and(|t| t.kind == Kind::Eof && t.end == source.len())
+        .is_some_and(|t| t.kind == Kind::Eof && t.end as usize == source.len())
 }
 
 /// [`format()`] with the map from source lines to output lines.

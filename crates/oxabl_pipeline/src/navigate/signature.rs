@@ -172,14 +172,14 @@ fn adjacent(tokens: &[Token], first: usize, second: usize) -> bool {
 }
 
 fn text_of<'t>(tokens: &[Token], text: &'t str, i: usize) -> &'t str {
-    text.get(tokens[i].start..tokens[i].end).unwrap_or_default()
+    text.get(tokens[i].range()).unwrap_or_default()
 }
 
 /// Whether the period at `i` ends a statement: nothing follows it, or white
 /// space. A period inside a name (`customer.name`) is followed by the rest.
 fn ends_statement(tokens: &[Token], text: &str, i: usize) -> bool {
     tokens[i].kind == Kind::Period
-        && text[tokens[i].end..]
+        && text[tokens[i].end as usize..]
             .chars()
             .next()
             .is_none_or(char::is_whitespace)
@@ -426,10 +426,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
     /// The navigation sites that end where the callee's name ends and start
     /// inside it.
     fn sites_of(&self, tokens: &[Token], call: &Call) -> Vec<&'n oxabl_semantic::Site> {
-        let (first, last) = (
-            tokens[call.name.0].start as u32,
-            tokens[call.name.1].end as u32,
-        );
+        let (first, last) = (tokens[call.name.0].start, tokens[call.name.1].end);
         let all = self.nav.model.semantic.symbols.sites();
         self.nav
             .site_index()
@@ -712,7 +709,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
 
     /// The constructors that `SUPER(` or `THIS-OBJECT(` may call.
     fn chained_constructor_sigs(&self, tokens: &[Token], call: &Call) -> Option<Vec<Sig>> {
-        let at = tokens[call.open].start as u32;
+        let at = tokens[call.open].start;
         let parsed = self.nav.parsed();
         let class = parsed.program.statements.iter().find(|s| {
             matches!(s.kind, StatementKind::Class { .. }) && s.span.start <= at && at < s.span.end
@@ -767,10 +764,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
             .filter(|&i| tokens[i].kind != Kind::Comment)
             .map(|i| text_of(tokens, text, i))
             .collect();
-        let name_span = VirtualSpan::new(
-            tokens[call.name.0].start as u32,
-            tokens[call.name.1].end as u32,
-        );
+        let name_span = VirtualSpan::new(tokens[call.name.0].start, tokens[call.name.1].end);
         for site in self.sites_of(tokens, call) {
             let SiteTarget::Run(node) = site.target else {
                 continue;
@@ -891,7 +885,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
                     return primitive(Logical);
                 }
                 let semantic = &self.nav.model.semantic;
-                let span = (token.start as u32, token.end as u32);
+                let span = (token.start, token.end);
                 self.nav
                     .site_index()
                     .holding(span.0)
@@ -1359,7 +1353,7 @@ impl Navigation<'_, '_> {
         })?;
         let tokens = &self.parsed().tokens;
         let text = self.expanded.text.as_str();
-        let end = tokens.partition_point(|t| t.start < virt as usize);
+        let end = tokens.partition_point(|t| t.start < virt);
         let resolver = Resolver::new(self);
         for (open, commas) in enclosing_opens(tokens, text, end) {
             let Some(call) = call_at(tokens, text, open) else {
@@ -1485,10 +1479,9 @@ impl Navigation<'_, '_> {
                     }
                     (None, None) => continue,
                 };
-                let Some(place) = self.place(VirtualSpan::new(
-                    tokens[*first].start as u32,
-                    tokens[*first].end as u32,
-                )) else {
+                let Some(place) =
+                    self.place(VirtualSpan::new(tokens[*first].start, tokens[*first].end))
+                else {
                     continue;
                 };
                 let (Some(span), true) = (place.span, place.path == file) else {
@@ -1523,7 +1516,7 @@ pub fn close_open_call(text: &str, offset: u32) -> Option<String> {
         return None;
     }
     let tokens = oxabl_lexer::tokenize(text);
-    let end = tokens.partition_point(|t| t.start < offset as usize);
+    let end = tokens.partition_point(|t| t.start < offset);
     enclosing_opens(&tokens, text, end)
         .into_iter()
         .find(|(open, _)| call_at(&tokens, text, *open).is_some())?;
@@ -1548,7 +1541,7 @@ pub fn close_open_call(text: &str, offset: u32) -> Option<String> {
     }
     let mut open = 0usize;
     for token in &tokens[first..] {
-        if token.start >= line_end {
+        if token.start as usize >= line_end {
             break;
         }
         match token.kind {
@@ -1561,12 +1554,12 @@ pub fn close_open_call(text: &str, offset: u32) -> Option<String> {
     let empty = before(&tokens, end).is_some_and(|b| tokens[b].kind == Kind::Comma)
         && tokens
             .get(end)
-            .filter(|t| t.start < line_end)
+            .filter(|t| (t.start as usize) < line_end)
             .is_none_or(|t| matches!(t.kind, Kind::RightParen | Kind::Comma));
     // The call and its statement end on this line: closing changes nothing,
     // so a second analysis would give the answer of the first.
     let last = (first..tokens.len())
-        .take_while(|&i| tokens[i].start < line_end)
+        .take_while(|&i| (tokens[i].start as usize) < line_end)
         .filter(|&i| tokens[i].kind != Kind::Comment)
         .last();
     let terminated = last.is_some_and(|i| ends_statement(&tokens, text, i));

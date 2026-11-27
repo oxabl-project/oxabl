@@ -218,8 +218,8 @@ fn significant(tokens: &[LexToken]) -> Vec<Token> {
             .filter(|t| !matches!(t.kind, Kind::Comment | Kind::Eof))
             .map(|t| Token {
                 kind: t.kind,
-                start: t.start,
-                end: t.end,
+                start: t.start as usize,
+                end: t.end as usize,
             }),
     );
     out

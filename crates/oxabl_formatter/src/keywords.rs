@@ -247,7 +247,8 @@ pub(crate) fn name_uses(source: &str, toks: &[Token]) -> Vec<bool> {
         .filter(|&i| !matches!(toks[i].kind, Kind::Comment | Kind::Eof))
         .collect();
     let word_like = |i: usize| {
-        source[toks[i].start..toks[i].end]
+        toks[i]
+            .slice(source)
             .chars()
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_')

@@ -345,8 +345,8 @@ pub mod ast {
 pub mod lexer {
     pub use oxabl_lexer::oxabl_atom::OxablAtom;
     pub use oxabl_lexer::{
-        BUILTIN_FUNCTIONS, CALLABLE_FUNCTION_KINDS, Kind, Lexer, Token, TokenValue,
-        is_builtin_function, is_callable_kind, tokenize,
+        BUILTIN_FUNCTIONS, CALLABLE_FUNCTION_KINDS, Kind, Lexer, Token, is_builtin_function,
+        is_callable_kind, normalize_identifier, tokenize,
     };
 }
 

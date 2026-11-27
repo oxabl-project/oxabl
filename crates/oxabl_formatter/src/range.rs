@@ -443,7 +443,7 @@ impl Code {
                 .filter(|t| {
                     t.kind != oxabl_lexer::Kind::Comment && t.kind != oxabl_lexer::Kind::Eof
                 })
-                .map(|t| (t.start, t.end))
+                .map(|t| (t.start as usize, t.end as usize))
                 .collect(),
             len,
         }

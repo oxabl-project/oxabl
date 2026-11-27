@@ -162,7 +162,7 @@ fn violations(text: &str) -> Vec<&'static str> {
         .filter(|token| token.kind != Kind::Comment)
         .map(|token| Token {
             kind: token.kind,
-            text: text[token.start..token.end].to_ascii_lowercase(),
+            text: token.slice(text).to_ascii_lowercase(),
         })
         .collect();
     let mut found = Vec::new();

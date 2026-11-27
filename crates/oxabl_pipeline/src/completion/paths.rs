@@ -80,14 +80,14 @@ impl Engine<'_, '_, '_, '_> {
         let mut after = self
             .tokens
             .iter_from(self.found.before)
-            .filter(|token| token.start >= self.found.word_end as usize)
+            .filter(|token| token.start >= self.found.word_end)
             .filter(|token| token.kind != Kind::Comment);
         if after
             .next()
             .is_some_and(|token| token.kind == Kind::Procedure)
             && let Some(name) = after.next().filter(|token| token.kind == Kind::Identifier)
         {
-            let label = &text[name.start..name.end];
+            let label = name.slice(text);
             if !items
                 .iter()
                 .any(|item| item.label.eq_ignore_ascii_case(label))

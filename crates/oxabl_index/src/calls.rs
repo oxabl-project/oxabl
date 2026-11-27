@@ -450,15 +450,15 @@ fn handle_name(e: ExprId, pools: &AstPools) -> Option<String> {
 
 /// Significant tokens (no comments) within `span`.
 fn tokens_in(tokens: &[Token], span: Span) -> impl Iterator<Item = &Token> {
-    let from = tokens.partition_point(|t| t.start < span.start as usize);
+    let from = tokens.partition_point(|t| t.start < span.start);
     tokens[from..]
         .iter()
-        .take_while(move |t| t.end <= span.end as usize && t.kind != Kind::Eof)
+        .take_while(move |t| t.end <= span.end && t.kind != Kind::Eof)
         .filter(|t| t.kind != Kind::Comment)
 }
 
 fn text<'a>(source: &'a str, t: &Token) -> &'a str {
-    source.get(t.start..t.end).unwrap_or("")
+    source.get(t.range()).unwrap_or("")
 }
 
 /// For a procedure prototype: whether it is declared `IN SUPER`.
@@ -794,8 +794,8 @@ fn expression_calls(
         let next = toks.get(i + 1).map(|n| n.kind);
         let prev = i.checked_sub(1).map(|p| toks[p].kind);
         let span = Span {
-            start: t.start as u32,
-            end: t.end as u32,
+            start: t.start,
+            end: t.end,
         };
         let unknown = |reason| CallSite {
             at: span,
@@ -872,10 +872,7 @@ fn expression_calls(
         let qualified = i > 0
             && toks[i - 1].end == t.start
             && matches!(prev, Some(Kind::Period | Kind::DoubleColon));
-        if prev == Some(Kind::Function)
-            || qualified
-            || decls.definitions.contains(&(t.start as u32))
-        {
+        if prev == Some(Kind::Function) || qualified || decls.definitions.contains(&{ t.start }) {
             continue;
         }
         if !adjacent && t.kind != Kind::Identifier {

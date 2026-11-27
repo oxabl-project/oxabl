@@ -209,7 +209,7 @@ fn keywords_in(text: &str) -> Vec<String> {
     oxabl::lexer::tokenize(text)
         .iter()
         .filter(|t| !matches!(t.kind, Kind::Identifier | Kind::Eof | Kind::Invalid))
-        .map(|t| &text[t.start..t.end])
+        .map(|t| t.slice(text))
         .filter(|word| word.starts_with(|c: char| c.is_ascii_alphabetic()))
         .map(str::to_string)
         .collect()

@@ -1245,7 +1245,7 @@ pub(crate) fn calls_something(src: &str, span: Span) -> bool {
         if colon {
             return true;
         }
-        let word = &text[t.start..t.end];
+        let word = t.slice(text);
         match n {
             0 => lead = t.kind,
             1 => second_is_name = t.kind == Kind::Identifier,

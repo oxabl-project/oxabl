@@ -184,10 +184,10 @@ pub(crate) fn map(
 
 /// Whether a token that touches the bytes `from..to` opens or closes a scope.
 fn opens_scope(tokens: &TokenStream<'_>, (from, to): (usize, usize)) -> bool {
-    let first = tokens.partition_point(|token| token.end < from);
+    let first = tokens.partition_point(|token| (token.end as usize) < from);
     tokens
         .iter_from(first)
-        .take_while(|token| token.start <= to)
+        .take_while(|token| (token.start as usize) <= to)
         .any(|token| {
             matches!(
                 token.kind,

@@ -9,14 +9,13 @@ fuzz_target!(|data: &[u8]| {
     let tokens = tokenize(&source);
     let last = tokens.last().expect("tokenize returns at least Eof");
     assert_eq!(last.kind, Kind::Eof);
-    let mut at = 0;
+    let mut at = 0usize;
     for token in &tokens {
-        assert!(token.start <= token.end && token.end <= source.len());
-        assert!(
-            token.start >= at,
-            "token starts before the previous one ends"
-        );
-        assert!(source.is_char_boundary(token.start) && source.is_char_boundary(token.end));
-        at = token.end;
+        let start = token.start as usize;
+        let end = token.end as usize;
+        assert!(start <= end && end <= source.len());
+        assert!(start >= at, "token starts before the previous one ends");
+        assert!(source.is_char_boundary(start) && source.is_char_boundary(end));
+        at = end;
     }
 });

@@ -14617,7 +14617,10 @@ fn lookahead_counts_non_comment_tokens_and_preserves_positions() {
     assert_eq!(parser.peek_at(3).kind, Kind::Eof);
     assert_eq!(parser.peek_at(30).kind, Kind::Eof);
     assert_ne!(parser.peek_at(0).end, parser.peek_at(1).start);
-    assert_eq!(parser.peek_at(1).start, source.find("CLOSE").unwrap());
+    assert_eq!(
+        parser.peek_at(1).start as usize,
+        source.find("CLOSE").unwrap()
+    );
 }
 
 #[test]

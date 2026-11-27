@@ -115,8 +115,8 @@ pub(crate) fn analyze(
         .filter(|t| !matches!(t.kind, Kind::Comment | Kind::Eof))
         .map(|t| Tok {
             kind: t.kind,
-            start: t.start as u32,
-            end: t.end as u32,
+            start: t.start,
+            end: t.end,
         })
         .collect();
     let refs = scopes.references();

@@ -513,7 +513,7 @@ pub(super) fn leading_tokens(source: &str, span: Span, n: usize) -> Vec<(Token, 
         .take(n)
         .take_while(|t| t.kind != Kind::Eof)
         .map(|t| {
-            let word = &text[t.start..t.end];
+            let word = t.slice(text);
             (t, word)
         })
         .collect()
