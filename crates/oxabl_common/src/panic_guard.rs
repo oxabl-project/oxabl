@@ -215,6 +215,10 @@ pub mod panic_sites {
     /// [`hold_if_injected_with`](super::hold_if_injected_with). The worker holds its
     /// snapshot meanwhile, and the daemon writes a line to stderr when the hold starts.
     pub const LSP_HIGHLIGHTS: &str = "lsp.highlights";
+    /// The document links of an open buffer, for
+    /// [`count_requested`](super::count_requested): the server logs how many
+    /// navigation models the request built.
+    pub const LSP_DOCUMENT_LINKS: &str = "lsp.document-links";
     /// The reverse inheritance index, once for each class file it reads, for
     /// [`hold_if_injected`](super::hold_if_injected) and
     /// [`panic_if_injected`](super::panic_if_injected). The marker is in the

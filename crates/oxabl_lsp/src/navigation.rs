@@ -5,12 +5,13 @@
 //! over the disk ([`compute_navigation`]) and render its byte spans in the
 //! negotiated position encoding. A highlight of an open file that is its own
 //! root, and that reads no include with unsaved changes, is answered from the
-//! cached analysis ([`compute_highlights`]). The highlights of one document run
-//! one at a time, and a request that a newer one replaced while it waited is
-//! cancelled. An open include with a selected compilation context is analysed
-//! in that root for go to definition, hover and highlights; otherwise an include
-//! is analysed alone. A failed analysis answers with an error, never with an
-//! empty answer that reads as "no definition".
+//! cached analysis ([`compute_highlights`]), and so are the links of an open
+//! file ([`compute_links`]). The highlights of one document run one at a time,
+//! and a request that a newer one replaced while it waited is cancelled. An
+//! open include with a selected compilation context is analysed in that root
+//! for go to definition, hover and highlights; otherwise an include is analysed
+//! alone. A failed analysis answers with an error, never with an empty answer
+//! that reads as "no definition".
 //!
 //! Hover requests run one at a time ([`HoverGate`]). A hover that a newer one
 //! replaced before it started, or that the client cancelled with
@@ -51,7 +52,7 @@ pub(crate) struct HighlightTurn {
 /// How a navigation request waits for the others of its kind.
 #[derive(Default)]
 struct Gate {
-    /// The open buffer whose cached analysis a highlight query uses.
+    /// The open buffer whose cached analysis a highlight or links query uses.
     buffer: Option<String>,
     /// The highlight turn of the document, and this request's number in it.
     turn: Option<(Arc<HighlightTurn>, u64)>,
@@ -178,10 +179,14 @@ impl Server<'_> {
             return self.respond(invalid(req.id, &format!("{} is not a file", uri.as_str())));
         };
         let root = canonical_path(&path);
+        // The links of a file are always those of the file as its own root, so
+        // an open one is answered from the analysis that highlights share. A
+        // file that is not open has no buffer and is read from disk.
+        let own_buffer = Some(uri.as_str().to_string());
         self.spawn_navigation(
             req.id,
             root,
-            None,
+            own_buffer,
             None,
             NavigationQuery::Links,
             |answer, encoding| serde_json::to_value(links(answer, encoding)),
@@ -189,9 +194,9 @@ impl Server<'_> {
     }
 
     /// Answer a navigation request on a worker thread. The response goes
-    /// straight to the client. With a `buffer` key, a highlight query uses the
-    /// open buffer's cached analysis. With a `turn`, the request waits for the
-    /// one before it and is cancelled when a newer one came meanwhile.
+    /// straight to the client. With a `buffer` key, a highlight or links query
+    /// uses the open buffer's cached analysis. With a `turn`, the request waits
+    /// for the one before it and is cancelled when a newer one came meanwhile.
     pub(crate) fn spawn_navigation(
         &mut self,
         id: RequestId,
@@ -275,8 +280,9 @@ impl Server<'_> {
                         )));
                         return;
                     }
+                    let counted = links_count_label(&query, &overlay, &root, &id);
                     let answered = oxabl_common::catch_panic(|| {
-                        let answer = match (&query, buffer) {
+                        let compute = || match (&query, buffer) {
                             (NavigationQuery::Highlights { offset, .. }, Some(buffer))
                                 if !reads_unsaved_include(&snapshot, buffer, &root, &overlay) =>
                             {
@@ -288,6 +294,12 @@ impl Server<'_> {
                                 compute_links(&snapshot, buffer, schema)
                             }
                             _ => compute_navigation(&snapshot, schema, &root, overlay, &query),
+                        };
+                        let answer = match &counted {
+                            Some(label) => {
+                                oxabl_common::test_tally::within(|| label.clone(), compute)
+                            }
+                            None => compute(),
                         };
                         answer.map(|answer| answer.map(|answer| render(answer, &encoding)))
                     });
@@ -314,6 +326,11 @@ impl Server<'_> {
                             format!("oxabl-lsp: the analysis failed: {panic}"),
                         ),
                     };
+                    if let Some(label) = &counted
+                        && !report_links_count(&sender, label)
+                    {
+                        return;
+                    }
                     let _ = sender.send(Message::Response(response));
                 }
             });
@@ -444,6 +461,47 @@ pub(crate) fn unsaved_among(
                 std::fs::read_to_string(path).map_or(true, |saved| saved != text.as_ref())
             })
         })
+}
+
+/// The label that counts the analyses of a links request, when the open text
+/// of `root` asks for the count with `OXABL-TEST-COUNT:lsp.document-links`.
+/// `None` outside a test build.
+fn links_count_label(
+    query: &NavigationQuery,
+    overlay: &HashMap<PathBuf, Arc<str>>,
+    root: &Path,
+    id: &RequestId,
+) -> Option<String> {
+    if !oxabl_common::INJECTION_ENABLED || !matches!(query, NavigationQuery::Links) {
+        return None;
+    }
+    let site = oxabl_common::panic_sites::LSP_DOCUMENT_LINKS;
+    let (_, text) = overlay
+        .iter()
+        .find(|(path, _)| canonical_path(path) == root)?;
+    oxabl_common::count_requested(site, text).then(|| format!("{site} {id}"))
+}
+
+/// Tell a test how many navigation models the links request of `label`
+/// built: one log line, before the answer. False when the client is gone.
+fn report_links_count(sender: &crossbeam_channel::Sender<Message>, label: &str) -> bool {
+    let built: usize = oxabl_common::test_tally::counts()
+        .into_iter()
+        .flatten()
+        .filter(|(named, event, _)| {
+            named == label && *event == oxabl_common::test_tally::NAVIGATION_MODEL
+        })
+        .map(|(_, _, count)| count)
+        .sum();
+    sender
+        .send(Message::Notification(lsp_server::Notification {
+            method: "window/logMessage".to_string(),
+            params: serde_json::json!({
+                "type": lsp_types::MessageType::LOG,
+                "message": format!("oxabl-test: document links built {built} navigation models"),
+            }),
+        }))
+        .is_ok()
 }
 
 fn invalid(id: RequestId, message: &str) -> Response {

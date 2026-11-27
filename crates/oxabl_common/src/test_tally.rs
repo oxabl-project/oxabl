@@ -5,6 +5,10 @@
 //! Without the feature, [`within`] only runs its closure and [`count`] does
 //! nothing.
 
+/// The event of one navigation model that `oxabl_pipeline` builds: the resolve
+/// pass of a unit with its sites recorded.
+pub const NAVIGATION_MODEL: &str = "navigation.model";
+
 #[cfg(feature = "test-panics")]
 mod armed {
     use std::cell::RefCell;
