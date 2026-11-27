@@ -380,8 +380,8 @@ The names that are valid in an expression at the cursor:
   an include is not seen, and the function is then missing).
 - A name the cursor cannot see (declared after it, or in the text a stale base
   changed) does not hide a name of an outer scope that it can see.
-- In a static method or a static property accessor, only the static members of
-  the class are offered.
+- In a static method, a static property accessor or a static constructor, only
+  the static members of the class are offered.
 - In a class body: the members that the class inherits, from the class source
   (`class_surface` with role `ThisObject`, and with role `TypeName` for the
   static ones; a static routine reads only the second). They come after the
@@ -527,14 +527,16 @@ name gives its members as static properties.
 - A name that the context finder reads as a receiver can be a keyword that is
   part of a dotted name or follows a `:` (`app.Color:`, `oUtil:Message:`). A
   keyword alone (`DO:`, `ELSE:`) is a block colon and gives `null`.
-- `THIS-OBJECT:` and `SUPER:` in a static method or a static property
-  accessor give `null`: the compiler refuses them there.
+- `THIS-OBJECT:` and `SUPER:` in a static method, a static property accessor
+  or a static constructor give `null`: the compiler refuses them there.
 - The type name of a parent, written in a subclass, also gives the `PROTECTED`
   static members. An inherited `PACKAGE-PROTECTED` member is never offered: the
   index does not model packages, and the list is incomplete, so an omission is
   safe and a wrong member is not.
-- The walk of the supertypes reads at most `MAX_SUPERTYPES` (64) classes. A
-  longer chain, and an inheritance cycle, give an incomplete list.
+- The walk of the supertypes reads at most `MAX_SUPERTYPES` (64) distinct
+  classes. It reads each class once, so a class that many types name costs one
+  read. A hierarchy with more classes, and an inheritance cycle, give an
+  incomplete list.
 - A receiver reaches the private members of its class only when the cursor is
   in the body of that class: a value of the class of the file (`oOther:`) and
   its type name give them, as the compiler does.

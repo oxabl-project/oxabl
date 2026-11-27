@@ -227,8 +227,9 @@ impl Header {
     }
 }
 
-/// The most supertypes the walk reads for one surface. A longer chain is not
-/// one oxabl lists: the surface is then incomplete.
+/// The most supertype classes the walk reads for one surface, each counted
+/// once. A hierarchy with more is not one oxabl lists: the surface is then
+/// incomplete.
 pub const MAX_SUPERTYPES: usize = 64;
 
 /// The members `reach` gives for `class`, own and inherited, nearest first.
@@ -303,11 +304,6 @@ pub fn class_surface(
 
     let mut read = 0usize;
     while let Some((raw, imports, superclass)) = queue.pop_front() {
-        read += 1;
-        if read > MAX_SUPERTYPES {
-            surface.complete = false;
-            break;
-        }
         let unread = |surface: &mut ClassSurface| {
             if superclass || needs_interfaces {
                 surface.complete = false;
@@ -333,6 +329,11 @@ pub fn class_surface(
         }
         if !visited.insert(folded) {
             continue;
+        }
+        read += 1;
+        if read > MAX_SUPERTYPES {
+            surface.complete = false;
+            break;
         }
         let IndexAnswer::Found(descriptor) = source.class(&name) else {
             unread(&mut surface);
@@ -618,23 +619,27 @@ fn is_reachable(access: AccessModifier, depth: usize, inside: bool, subclass: bo
 }
 
 /// The parameters of a method with each class name resolved, so that two
-/// spellings of one type compare equal. `None` when a name does not resolve.
+/// spellings of one type compare equal. A name that does not resolve (a .NET
+/// type, a class the source lacks) keeps its written spelling, so two equal
+/// spellings still compare equal.
 fn canonical_params(
     source: &dyn ClassSource,
     imports: &ImportContext,
     params: &[MemberParam],
-) -> Option<Vec<MemberParam>> {
+) -> Vec<MemberParam> {
     params
         .iter()
         .map(|param| match &param.shape {
             MemberParamShape::Value(MemberType::Named(raw)) => {
-                let name = canonical_class(source, imports, raw.as_written())?;
-                Some(MemberParam {
-                    mode: param.mode,
-                    shape: MemberParamShape::Value(MemberType::Named(name)),
-                })
+                match canonical_class(source, imports, raw.as_written()) {
+                    Some(name) => MemberParam {
+                        mode: param.mode,
+                        shape: MemberParamShape::Value(MemberType::Named(name)),
+                    },
+                    None => param.clone(),
+                }
             }
-            _ => Some(param.clone()),
+            _ => param.clone(),
         })
         .collect()
 }
@@ -693,15 +698,13 @@ fn reachable(
                     // the method it overrides or implements. The lists are
                     // compared with the class names resolved, each under the
                     // imports of the file that wrote it; a name that does not
-                    // resolve keeps both.
+                    // resolve is compared as written.
                     let same = declared.signature.params.as_deref().is_some_and(|params| {
-                        let Some(new) = canonical_params(source, &declared.imports, params) else {
-                            return false;
-                        };
+                        let new = canonical_params(source, &declared.imports, params);
                         member.signatures.iter().zip(&declared_under[found]).any(
                             |(signature, imports)| {
                                 signature.params.as_deref().is_some_and(|old| {
-                                    canonical_params(source, imports, old).as_ref() == Some(&new)
+                                    canonical_params(source, imports, old) == new
                                 })
                             },
                         )

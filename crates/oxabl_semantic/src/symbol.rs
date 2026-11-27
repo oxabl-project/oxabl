@@ -597,6 +597,9 @@ struct SymbolSideMaps {
     /// may be a class — `NEW x(...)` or a `name:` member access — and the walk
     /// could neither attribute it to a class nor rule it out.
     unattributed_unmodelled_uses: Vec<VirtualSpan>,
+    /// The statements of the `CONSTRUCTOR STATIC` declarations. A constructor
+    /// has no symbol, so the flag of a routine has no place on one.
+    static_constructors: Vec<NodeId>,
     /// The name each synthesized class symbol was asked of the index under,
     /// with the spelling the source used, which a file path derives from.
     indexed_class_names: FxHashMap<SymbolId, IndexName>,
@@ -1011,6 +1014,18 @@ impl SymbolTable {
         self.side
             .as_deref()
             .map_or(&[], |side| side.class_sites.as_slice())
+    }
+
+    /// Record that the constructor statement `node` is `CONSTRUCTOR STATIC`.
+    pub(crate) fn record_static_constructor(&mut self, node: NodeId) {
+        self.side_mut().static_constructors.push(node);
+    }
+
+    /// Whether the constructor statement `node` is `CONSTRUCTOR STATIC`.
+    pub fn is_static_constructor(&self, node: NodeId) -> bool {
+        self.side
+            .as_deref()
+            .is_some_and(|side| side.static_constructors.contains(&node))
     }
 
     /// Record a place in an unmodelled statement that may name a class and was

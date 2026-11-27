@@ -443,19 +443,25 @@ fn inherited_wanted(wanted: Wanted, member: &SurfaceMember) -> bool {
     }
 }
 
-/// Whether `scope` is in a static method or property accessor.
+/// Whether `scope` is in a static method, property accessor or constructor.
 pub(super) fn in_static_routine(base: &CompletionBase<'_, '_, '_>, scope: ScopeId) -> bool {
     let semantic = &base.navigation.model.semantic;
     let tree = &semantic.scope_tree;
     let Some(routine) = tree.ancestors(scope).find(|id| {
         matches!(
             tree.get(*id).kind(),
-            ScopeKind::Method | ScopeKind::PropertyGet | ScopeKind::PropertySet
+            ScopeKind::Method
+                | ScopeKind::PropertyGet
+                | ScopeKind::PropertySet
+                | ScopeKind::Constructor
         )
     }) else {
         return false;
     };
     let owner = tree.get(routine).owner_node();
+    if tree.get(routine).kind() == ScopeKind::Constructor {
+        return semantic.symbols.is_static_constructor(owner);
+    }
     semantic.symbols.iter().any(|(_, symbol)| {
         symbol.declaration == owner
             && matches!(symbol.kind, SymbolKind::Function | SymbolKind::Property)

@@ -742,10 +742,13 @@ impl<'a> Walker<'a> {
             }
             StatementKind::Constructor {
                 access,
+                is_static,
                 parameters,
                 body,
-                ..
             } => {
+                if *is_static {
+                    self.symbols.record_static_constructor(stmt.id);
+                }
                 let cs = self.tree.push(
                     ScopeKind::Constructor,
                     scope,

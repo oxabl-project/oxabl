@@ -77,6 +77,19 @@ END CLASS.
     )
 }
 
+/// A class `app.Gadget` that inherits `app.Widget`, with the cursor in a
+/// constructor that holds `body`.
+fn constructor(modifier: &str, body: &str) -> String {
+    format!(
+        "CLASS app.Gadget INHERITS app.Widget:
+    CONSTRUCTOR {modifier} Gadget():
+        {body}
+    END CONSTRUCTOR.
+END CLASS.
+"
+    )
+}
+
 /// X1.
 #[test]
 fn a_value_of_the_class_of_the_file_reaches_its_private_members() {
@@ -308,6 +321,22 @@ fn this_object_and_super_in_a_static_routine_give_null() {
             );
         }
     }
+    // A static constructor refuses them too, an instance constructor does not.
+    for receiver in ["THIS-OBJECT:|", "SUPER:|"] {
+        let mut ws = files().start();
+        let answer = ws.complete("lib/app/Gadget.cls", &constructor("STATIC", receiver));
+        assert!(
+            matches!(answer, completion::Answer::Null),
+            "static constructor {receiver:?}: {}",
+            answer.summary()
+        );
+    }
+    let mut ws = files().start();
+    let answer = ws.complete(
+        "lib/app/Gadget.cls",
+        &constructor("PUBLIC", "THIS-OBJECT:|"),
+    );
+    answer.list().contains(METHOD, &["Describe"]);
     // The same receivers in an instance method still give the members.
     let mut ws = files().start();
     let answer = ws.complete(
@@ -343,6 +372,8 @@ END CLASS.
     let answer = ws.complete("main.p", "DEFINE VARIABLE oA AS app.LoopA NO-UNDO.\noA:|");
     let list = answer.list();
     list.contains(METHOD, &["FromA", "FromB"]);
+    // Cannot fail before #154: no source answers for `Progress.Lang.Object`,
+    // so every list is incomplete.
     assert!(list.incomplete, "{}", list.summary());
 }
 
@@ -373,6 +404,8 @@ END CLASS.
     let list = answer.list();
     list.contains(METHOD, &["Level0", "Level1", "Level40"]);
     list.lacks(&[&format!("Level{}", LENGTH - 1)]);
+    // Cannot fail before #154: no source answers for `Progress.Lang.Object`,
+    // so every list is incomplete.
     assert!(list.incomplete, "{}", list.summary());
 }
 
@@ -389,6 +422,10 @@ const BASE: &str = "CLASS app.Base:
     END METHOD.
     METHOD PUBLIC VOID mMore(INPUT p AS CHARACTER):
     END METHOD.
+    METHOD PUBLIC VOID mNet(INPUT p AS System.Object):
+    END METHOD.
+    METHOD PUBLIC VOID mNowhere(INPUT p AS nowhere.Thing):
+    END METHOD.
 END CLASS.
 ";
 
@@ -404,6 +441,10 @@ CLASS app.Kid INHERITS app.Base:
     METHOD OVERRIDE PUBLIC VOID mPart(INPUT p AS Part):
     END METHOD.
     METHOD PUBLIC VOID mMore(INPUT p AS INTEGER):
+    END METHOD.
+    METHOD OVERRIDE PUBLIC VOID mNet(INPUT p AS System.Object):
+    END METHOD.
+    METHOD OVERRIDE PUBLIC VOID mNowhere(INPUT p AS nowhere.Thing):
     END METHOD.
     METHOD PUBLIC VOID Run():
         THIS-OBJECT:|
@@ -436,6 +477,15 @@ fn an_override_that_spells_a_parameter_type_another_way_is_one_method() {
             "METHOD VOID (INPUT Object)"
         );
         assert_eq!(detail_of(list, METHOD, "mPart"), "METHOD VOID (INPUT Part)");
+        // A name that does not resolve is compared as written.
+        assert_eq!(
+            detail_of(list, METHOD, "mNet"),
+            "METHOD VOID (INPUT System.Object)"
+        );
+        assert_eq!(
+            detail_of(list, METHOD, "mNowhere"),
+            "METHOD VOID (INPUT nowhere.Thing)"
+        );
         // A real overload is still one.
         assert_eq!(
             detail_of(list, METHOD, "mMore"),
@@ -474,4 +524,78 @@ fn the_type_name_of_a_parent_in_a_subclass_gives_its_protected_static_members() 
     let list = answer.list();
     list.contains(PROPERTY, &["sPub"]);
     list.lacks(&["sProt", "sPriv"]);
+}
+
+/// X18.
+#[test]
+fn a_chain_of_classes_that_repeat_their_interfaces_keeps_its_deepest_member() {
+    const LENGTH: usize = 25;
+    let mut files = files()
+        .file(
+            "lib/app/IA.cls",
+            "INTERFACE app.IA:\n    METHOD PUBLIC VOID FromIA().\nEND INTERFACE.\n",
+        )
+        .file(
+            "lib/app/IB.cls",
+            "INTERFACE app.IB:\n    METHOD PUBLIC VOID FromIB().\nEND INTERFACE.\n",
+        );
+    for level in 0..LENGTH {
+        let parent = if level + 1 < LENGTH {
+            format!(" INHERITS app.Lvl{}", level + 1)
+        } else {
+            String::new()
+        };
+        files = files.file(
+            &format!("lib/app/Lvl{level}.cls"),
+            &format!(
+                "CLASS app.Lvl{level}{parent} IMPLEMENTS app.IA, app.IB:
+    METHOD PUBLIC VOID Lvl{level}():
+    END METHOD.
+END CLASS.
+"
+            ),
+        );
+    }
+    let mut ws = files.start();
+    let answer = ws.complete("main.p", "DEFINE VARIABLE oL AS app.Lvl0 NO-UNDO.\noL:|");
+    answer
+        .list()
+        .contains(METHOD, &["Lvl0", "Lvl12", "Lvl24", "FromIA", "FromIB"]);
+}
+
+/// X19.
+#[test]
+fn a_diamond_of_interfaces_ten_levels_deep_gives_every_member_once() {
+    const DEPTH: usize = 10;
+    let mut files = files();
+    for level in 0..DEPTH {
+        let names: &[&str] = if level == 0 { &[""] } else { &["a", "b"] };
+        for side in names {
+            let parents = if level + 1 < DEPTH {
+                format!(" INHERITS app.I{}a, app.I{}b", level + 1, level + 1)
+            } else {
+                String::new()
+            };
+            files = files.file(
+                &format!("lib/app/I{level}{side}.cls"),
+                &format!(
+                    "INTERFACE app.I{level}{side}{parents}:
+    METHOD PUBLIC VOID M{level}{side}().
+END INTERFACE.
+"
+                ),
+            );
+        }
+    }
+    let mut ws = files.start();
+    let answer = ws.complete("main.p", "DEFINE VARIABLE oI AS app.I0 NO-UNDO.\noI:|");
+    let list = answer.list();
+    list.contains(METHOD, &["M0", "M5a", "M9a", "M9b"]);
+    // One interface at the top and two for each of the nine levels below.
+    let methods = list
+        .items
+        .iter()
+        .filter(|item| item["kind"] == METHOD)
+        .count();
+    assert_eq!(methods, 1 + 2 * (DEPTH - 1), "{}", list.summary());
 }
