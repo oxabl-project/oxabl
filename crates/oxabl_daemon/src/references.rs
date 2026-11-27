@@ -109,7 +109,7 @@ impl Pass {
         session_root: &Path,
         stop: &dyn Fn() -> bool,
     ) -> Option<Pass> {
-        match graph_or_stop(host, session_root, stop) {
+        match graph_or_stop(host, session_root, stop, &|| {}) {
             Ok(Ok(Ok(graph))) if graph.gaps.is_empty() => Some(Pass(Arc::downgrade(&graph.graph))),
             _ => None,
         }
@@ -244,7 +244,7 @@ pub fn answer_batch(
         }
         // These leave out or date the whole search, so they are gaps of each
         // answer, not standing ones.
-        let graph = match graph_or_stop(host, session_root, stop) {
+        let graph = match graph_or_stop(host, session_root, stop, &|| {}) {
             Ok(graph) => graph,
             Err(_) => return cancelled(),
         };
@@ -664,19 +664,39 @@ pub(crate) type GraphAnswer = Result<Result<ReferenceGraph, String>, crate::Meth
 
 /// The workspace graph, from a thread of its own, so a cancel stops the wait
 /// for a workspace pass. The pass goes on and is kept for later requests.
-pub(crate) fn graph_or_cancel(
+/// `waiting` is called about every 50 ms while the pass runs.
+pub(crate) fn graph_or_cancel_waiting(
     host: &SessionHost,
     session_root: &Path,
     cancel: &AtomicBool,
+    waiting: &dyn Fn(),
 ) -> Result<GraphAnswer, ReferenceError> {
-    graph_or_stop(host, session_root, &|| cancel.load(Ordering::Relaxed))
+    graph_or_stop(
+        host,
+        session_root,
+        &|| cancel.load(Ordering::Relaxed),
+        waiting,
+    )
 }
 
-/// [`graph_or_cancel`], stopped when `stop` says so.
+/// The files that the running workspace pass of `session_root` has indexed and
+/// the files it found, or `None` when no pass runs.
+pub(crate) fn pass_counts(host: &SessionHost, session_root: &Path) -> Option<(u32, u32)> {
+    host.with(|sessions| {
+        sessions
+            .get(session_root)?
+            .workspace_progress()
+            .map(|running| running.values())
+    })
+}
+
+/// [`graph_or_cancel_waiting`], stopped when `stop` says so. `waiting` is
+/// called after each look at `stop`.
 fn graph_or_stop(
     host: &SessionHost,
     session_root: &Path,
     stop: &dyn Fn() -> bool,
+    waiting: &dyn Fn(),
 ) -> Result<GraphAnswer, ReferenceError> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let spawned = oxabl_common::stack::builder()
@@ -697,6 +717,7 @@ fn graph_or_stop(
         if stop() {
             return Err(ReferenceError::Cancelled);
         }
+        waiting();
         match receiver.recv_timeout(Duration::from_millis(50)) {
             Ok(answer) => return Ok(answer),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}

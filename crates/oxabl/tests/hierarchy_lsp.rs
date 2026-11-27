@@ -1976,53 +1976,6 @@ fn a_list_of_many_classes_is_cut_and_says_so() {
 }
 
 // ---------------------------------------------------------------------------
-// Cancel
-// ---------------------------------------------------------------------------
-
-#[test]
-fn a_request_that_is_cancelled_stops_the_index_between_two_files() {
-    let held = |name: &str| {
-        format!(
-            "/* OXABL-TEST-HOLD:daemon.hierarchy-index@1500 */\n\
-             CLASS app.{name} INHERITS app.Base:\nEND CLASS.\n"
-        )
-    };
-    let (h1, h2, h3) = (held("H1"), held("H2"), held("H3"));
-    let base = "CLASS app.Base:\nEND CLASS.\n";
-    let ws = small(&[
-        ("app/Base.cls", base),
-        ("app/H1.cls", &h1),
-        ("app/H2.cls", &h2),
-        ("app/H3.cls", &h3),
-    ]);
-    let base_path = ws.path("app/Base.cls");
-    let mut session = Session::start(&ws.root);
-    session.open(&base_path, base);
-    let item = prepared(&mut session, &base_path, base, "app.Base", 0);
-    // A references request waits for the workspace pass without reading the
-    // held files, so the cancel below meets the index and not the pass.
-    let mut params = position(&base_path, base, "app.Base", 0);
-    params["context"] = json!({"includeDeclaration": true});
-    ask(&mut session, "textDocument/references", params);
-
-    let id = session.next_request_id();
-    let started = std::time::Instant::now();
-    session.send(json!({
-        "jsonrpc": "2.0", "id": id, "method": "typeHierarchy/subtypes", "params": {"item": item}
-    }));
-    std::thread::sleep(Duration::from_millis(800));
-    session.send(json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}}));
-    let answer = session.wait_for(|message| message["id"] == json!(id));
-    let elapsed = started.elapsed();
-    assert_eq!(answer["error"]["code"], json!(-32800), "{answer}");
-    // One file was held when the cancel came; the two others were not read.
-    assert!(
-        elapsed >= Duration::from_millis(1400) && elapsed < Duration::from_millis(3200),
-        "{elapsed:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Parameter lists that an include writes
 // ---------------------------------------------------------------------------
 

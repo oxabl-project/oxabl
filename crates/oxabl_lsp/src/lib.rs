@@ -56,6 +56,7 @@ mod references;
 mod schema;
 mod semantic_tokens;
 mod signature_help;
+mod work_progress;
 mod workspace_symbol;
 
 use std::collections::HashMap;
@@ -1073,6 +1074,8 @@ struct Negotiated {
     related_information: bool,
     /// The most folding ranges the client takes (`rangeLimit`), if it says.
     folding_range_limit: Option<usize>,
+    /// Whether the client takes `window/workDoneProgress/create`.
+    work_done_progress: bool,
 }
 
 fn serve_initialized(
@@ -1159,6 +1162,12 @@ fn finish_handshake(
         .and_then(|c| c.folding_range.as_ref())
         .and_then(|c| c.range_limit)
         .map(|limit| limit as usize);
+    let work_done_progress = init
+        .capabilities
+        .window
+        .as_ref()
+        .and_then(|c| c.work_done_progress)
+        .unwrap_or(false);
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
@@ -1210,6 +1219,7 @@ fn finish_handshake(
             inactive_regions,
             related_information,
             folding_range_limit,
+            work_done_progress,
         },
         workspace_root,
     ))
@@ -1320,6 +1330,10 @@ struct Server<'c> {
     references: references::InFlight,
     /// The generation of the newest `oxabl/schema` request; an older one stops.
     schema_requests: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Whether the client takes `window/workDoneProgress/create`.
+    work_done_progress: bool,
+    /// The `window/workDoneProgress/create` requests that wait for the client.
+    progress_creations: std::sync::Arc<work_progress::Creations>,
 }
 
 /// A completed background diagnostics computation, tagged with the buffer
@@ -1367,6 +1381,7 @@ impl<'c> Server<'c> {
             inactive_regions,
             related_information,
             folding_range_limit,
+            work_done_progress,
         } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         let (context_events, context_results) = crossbeam_channel::unbounded();
@@ -1406,6 +1421,8 @@ impl<'c> Server<'c> {
             completions: completion::Gates::default(),
             references: references::InFlight::default(),
             schema_requests: Default::default(),
+            work_done_progress,
+            progress_creations: Default::default(),
         }
     }
 
@@ -1537,7 +1554,9 @@ impl<'c> Server<'c> {
                             }
                             self.handle_notification(not);
                         }
-                        Message::Response(_) => {}
+                        Message::Response(response) => {
+                            self.progress_creations.answered(&response);
+                        }
                     }
                 }
                 recv(lens_rx) -> res => {
@@ -2079,6 +2098,7 @@ impl<'c> Server<'c> {
         }
         // A file on disk changed: no session generation says so.
         self.reference_cache.clear();
+        oxabl_daemon::hierarchy::forget_subtype_index(&self.host, &self.session_root);
         let mut schema_changed = false;
         let mut config_changed = false;
         let mut changed_includes: Vec<PathBuf> = Vec::new();
@@ -2568,6 +2588,7 @@ mod tests {
                 inactive_regions: false,
                 related_information: false,
                 folding_range_limit: None,
+                work_done_progress: false,
             },
             std::time::Duration::from_millis(10),
             None,

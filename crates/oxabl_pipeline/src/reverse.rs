@@ -1209,6 +1209,25 @@ impl ReverseGraph {
         files
     }
 
+    /// The [`tracked_files`](Self::tracked_files) that `keep` accepts, sorted.
+    /// Only those are cloned and sorted, so a caller that wants a few kinds of
+    /// file does not pay for every path of the workspace.
+    pub fn tracked_files_where(&self, keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = self
+            .files
+            .iter()
+            .chain(self.dependents.keys().filter_map(|subject| match subject {
+                Subject::File(path) => Some(path),
+                Subject::Table(_) => None,
+            }))
+            .filter(|path| keep(path))
+            .cloned()
+            .collect();
+        files.sort();
+        files.dedup();
+        files
+    }
+
     /// Resolved edges across the whole workspace.
     pub fn edge_count(&self) -> usize {
         self.edge_count

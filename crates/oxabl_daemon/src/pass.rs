@@ -488,6 +488,11 @@ impl PassContext<'_> {
             },
             |path, expansion, result| {
                 let rows = (self.collect)(path, expansion, result, fs);
+                if oxabl_common::INJECTION_ENABLED
+                    && let Ok(text) = fs.read(path)
+                {
+                    oxabl_common::hold_if_injected(oxabl_common::panic_sites::PASS_FILE, &text);
+                }
                 self.progress.advance();
                 rows
             },
@@ -869,6 +874,16 @@ impl KeptPass {
             }
         }
         true
+    }
+
+    /// The content hash of the text that the pass read at `path`, or `None`
+    /// when no kept analysis read its text.
+    pub fn read_hash(&self, path: &Path) -> Option<blake3::Hash> {
+        let &id = self.table.ids.get(path)?;
+        match &self.inputs[id as usize].read {
+            Some(Some(stamp)) => stamp.hash,
+            _ => None,
+        }
     }
 
     /// How many paths that the pass looked for and did not find are on disk

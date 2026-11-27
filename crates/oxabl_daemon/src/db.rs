@@ -1873,10 +1873,12 @@ impl<'a> HierarchyUnit<'a> {
 
     /// The reverse inheritance index of `files`, class files of the
     /// workspace. `None` when `cancelled` says so, checked before each file.
+    /// `read` is called after the facts of each file are read.
     pub fn subtype_index(
         &self,
         files: &[PathBuf],
         cancelled: &dyn Fn() -> bool,
+        read: &dyn Fn(),
     ) -> Option<SubtypeIndex> {
         let stopped = Cell::new(false);
         let built = SubtypeIndex::build(
@@ -1888,14 +1890,27 @@ impl<'a> HierarchyUnit<'a> {
                 if oxabl_common::INJECTION_ENABLED
                     && let Some(text) = self.read(path)
                 {
-                    oxabl_common::hold_if_injected(
+                    // A real read reaches a query boundary at each file, where a
+                    // write that waits unwinds it: the hold does the same.
+                    oxabl_common::hold_if_injected_unless(
+                        oxabl_common::panic_sites::HIERARCHY_INDEX,
+                        &text,
+                        crate::subtypes::report_hold,
+                        || {
+                            salsa::Database::unwind_if_revision_cancelled(self.snapshot);
+                            cancelled()
+                        },
+                    );
+                    oxabl_common::panic_if_injected(
                         oxabl_common::panic_sites::HIERARCHY_INDEX,
                         &text,
                     );
                 }
+                let facts = self.facts(path);
+                read();
                 Some(ClassFile {
                     path: path.clone(),
-                    facts: self.facts(path),
+                    facts,
                 })
             }),
             &|path| self.resolver(path),

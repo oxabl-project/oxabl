@@ -216,9 +216,14 @@ pub mod panic_sites {
     /// snapshot meanwhile, and the daemon writes a line to stderr when the hold starts.
     pub const LSP_HIGHLIGHTS: &str = "lsp.highlights";
     /// The reverse inheritance index, once for each class file it reads, for
-    /// [`hold_if_injected`](super::hold_if_injected). The marker is in the
+    /// [`hold_if_injected`](super::hold_if_injected) and
+    /// [`panic_if_injected`](super::panic_if_injected). The marker is in the
     /// class file, as for [`LSP_INDEX`].
     pub const HIERARCHY_INDEX: &str = "daemon.hierarchy-index";
+    /// The workspace pass, once for each file it analyses, for
+    /// [`hold_if_injected`](super::hold_if_injected). The marker is in the file.
+    /// The pass has not counted the file as indexed yet.
+    pub const PASS_FILE: &str = "daemon.pass-file";
 }
 
 /// The marker that holds a site for [`HOLD_TIME`], for a test that needs a
@@ -334,6 +339,36 @@ pub fn hold_if_injected_with(site: &str, source: &str, started: impl FnOnce()) {
 
     #[cfg(not(feature = "test-panics"))]
     let _ = (site, source, started);
+}
+
+/// As [`hold_if_injected_with`], but the wait ends as soon as `interrupted`
+/// says so. It polls every 10 ms, so a caller that holds a database snapshot can
+/// make `interrupted` unwind when a write waits, as a real analysis does at its
+/// checkpoints.
+#[inline]
+pub fn hold_if_injected_unless(
+    site: &str,
+    source: &str,
+    started: impl FnOnce(),
+    interrupted: impl Fn() -> bool,
+) {
+    #[cfg(feature = "test-panics")]
+    if let Some(at) = source.find(&format!("{TEST_HOLD_MARKER}:{site}")) {
+        let rest = &source[at + TEST_HOLD_MARKER.len() + 1 + site.len()..];
+        let millis = rest.strip_prefix('@').and_then(|rest| {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            rest[..digits].parse::<u64>().ok()
+        });
+        started();
+        let end =
+            std::time::Instant::now() + millis.map_or(HOLD_TIME, std::time::Duration::from_millis);
+        while std::time::Instant::now() < end && !interrupted() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(not(feature = "test-panics"))]
+    let _ = (site, source, started, interrupted);
 }
 
 /// The marker that asks a site to report the work it did, for a test that

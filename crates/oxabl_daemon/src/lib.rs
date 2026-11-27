@@ -61,6 +61,7 @@ pub mod server;
 pub mod session;
 #[cfg(unix)]
 pub mod stderr;
+mod subtypes;
 pub mod transport;
 
 pub use dispatch::{ClientContext, Dispatch, MethodError, MethodResult};

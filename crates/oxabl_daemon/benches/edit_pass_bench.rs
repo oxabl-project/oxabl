@@ -37,13 +37,16 @@
 //! work, not the time a daemon takes on many cores.
 //!
 //! The setup opens the edited buffers with the text of the files and runs one
-//! full pass, so each timed call is a warm pass after an edit.
+//! full pass, so each timed call is a warm pass after an edit. No request asks
+//! for the subtype index, so no pass starts a build of it, and each call
+//! checks that.
 
 use std::path::PathBuf;
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use oxabl_bench::generate::{GenFile, Knobs, Preset, Workspace, generate};
 use oxabl_daemon::SessionHost;
+use oxabl_daemon::hierarchy::subtype_index_builds;
 use oxabl_daemon::methods::{limit_pass_jobs, reference_graph};
 use oxabl_daemon::session::canonical_root;
 
@@ -162,6 +165,9 @@ impl Fixture {
             "the pass is current: {:?}",
             graph.gaps
         );
+        // No request asked for the subtype index, so the pass starts no build
+        // of it: the number is the pass alone.
+        assert_eq!(subtype_index_builds(&self.host, &self.root), 0);
         graph.graph.tracked_files().len()
     }
 }
