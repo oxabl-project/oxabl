@@ -216,7 +216,8 @@ pub mod panic_sites {
     /// snapshot meanwhile, and the daemon writes a line to stderr when the hold starts.
     pub const LSP_HIGHLIGHTS: &str = "lsp.highlights";
     /// The reverse inheritance index, once for each class file it reads, for
-    /// [`hold_if_injected`](super::hold_if_injected). The marker is in the
+    /// [`hold_if_injected`](super::hold_if_injected) and
+    /// [`panic_if_injected`](super::panic_if_injected). The marker is in the
     /// class file, as for [`LSP_INDEX`].
     pub const HIERARCHY_INDEX: &str = "daemon.hierarchy-index";
     /// The workspace pass, once for each file it analyses, for

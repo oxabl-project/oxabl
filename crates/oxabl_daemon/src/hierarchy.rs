@@ -33,9 +33,11 @@ use crate::db::{HierarchyUnit, with_hierarchy};
 use crate::references::{
     GraphAnswer, ReferenceError, analyse, graph_or_cancel_waiting, pass_counts,
 };
-use crate::session::canonical_path;
-use crate::subtypes::index_for;
-pub use crate::subtypes::{NoProgress, Progress, wait_for_subtype_index};
+use crate::subtypes::{ClassList, class_list, index_for};
+pub use crate::subtypes::{
+    NoProgress, Progress, build_subtype_index_here, forget_subtype_index, subtype_index_builds,
+    wait_for_subtype_index, want_subtype_index,
+};
 
 /// The most class files the reverse index reads. A workspace with more is
 /// cut, and the answer says so.
@@ -501,11 +503,11 @@ fn subtypes(
         return Ok(HierarchyAnswer::default());
     }
     let found = class_files(host, session_root, cancel, progress)?;
-    let mut gaps = found.gaps.clone();
-    let mut answer = with_index(
+    let mut gaps = Vec::new();
+    let (mut answer, mut pass_gaps) = with_index(
         host,
         session_root,
-        &found,
+        found,
         cancel,
         progress,
         |unit, index| {
@@ -559,8 +561,9 @@ fn subtypes(
             Ok(answer)
         },
     )?;
-    gaps.append(&mut answer.gaps);
-    answer.gaps = gaps;
+    pass_gaps.append(&mut gaps);
+    pass_gaps.append(&mut answer.gaps);
+    answer.gaps = pass_gaps;
     Ok(answer)
 }
 
@@ -622,11 +625,11 @@ fn implementations_below(
     progress: &dyn Progress,
 ) -> Result<HierarchyAnswer, ReferenceError> {
     let found = class_files(host, session_root, cancel, progress)?;
-    let mut gaps = found.gaps.clone();
-    let mut answer = with_index(
+    let mut gaps = Vec::new();
+    let (mut answer, mut pass_gaps) = with_index(
         host,
         session_root,
-        &found,
+        found,
         cancel,
         progress,
         |unit, index| {
@@ -691,8 +694,9 @@ fn implementations_below(
             Ok(answer)
         },
     )?;
-    gaps.append(&mut answer.gaps);
-    answer.gaps = gaps;
+    pass_gaps.append(&mut gaps);
+    pass_gaps.append(&mut answer.gaps);
+    answer.gaps = pass_gaps;
     sort_locations(&mut answer.locations);
     Ok(answer)
 }
@@ -713,11 +717,8 @@ fn implementations_of_method(
     let known = with_snapshot(host, session_root, |unit| {
         let facts = unit.facts(&method.class_path);
         let class = facts.classes.first().filter(|_| facts.parsed)?;
-        let (wanted, _) = wanted_methods(&class.members, method);
-        (!wanted.iter().any(|member| overridable(member))).then(|| {
-            let (_, notes) = wanted_methods(&class.members, method);
-            notes
-        })
+        let (wanted, notes) = wanted_methods(&class.members, method);
+        (!wanted.iter().any(|member| overridable(member))).then_some(notes)
     })?;
     if let Some(notes) = known {
         gaps.extend(notes.into_iter().map(Gap::of_referent));
@@ -726,10 +727,11 @@ fn implementations_of_method(
             ..HierarchyAnswer::default()
         });
     }
-    let mut answer = with_index(
+    let mut gaps = Vec::new();
+    let (mut answer, mut pass_gaps) = with_index(
         host,
         session_root,
-        &found,
+        found,
         cancel,
         progress,
         |unit, index| {
@@ -805,8 +807,9 @@ fn implementations_of_method(
             Ok(answer)
         },
     )?;
-    gaps.append(&mut answer.gaps);
-    answer.gaps = gaps;
+    pass_gaps.append(&mut gaps);
+    pass_gaps.append(&mut answer.gaps);
+    answer.gaps = pass_gaps;
     sort_locations(&mut answer.locations);
     Ok(answer)
 }
@@ -1051,7 +1054,7 @@ fn method_spans(
 
 /// The class files of the workspace, from the workspace pass, and what the
 /// pass can miss.
-struct ClassFiles {
+struct FoundClasses {
     /// Why the list can be short, as gaps of the answer.
     gaps: Vec<Gap>,
     /// The graph the files come from, or `None` when no pass gave one.
@@ -1066,14 +1069,14 @@ fn class_files(
     session_root: &Path,
     cancel: &AtomicBool,
     progress: &dyn Progress,
-) -> Result<ClassFiles, ReferenceError> {
+) -> Result<FoundClasses, ReferenceError> {
     check_cancel(cancel)?;
     let graph = graph_or_cancel_waiting(host, session_root, cancel, &|| {
         if let Some((indexed, total)) = pass_counts(host, session_root) {
             progress.waiting_for_pass(indexed, total);
         }
     })?;
-    class_files_of(graph, cancel)
+    class_files_of(host, session_root, graph, cancel)
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<(), ReferenceError> {
@@ -1084,19 +1087,15 @@ fn check_cancel(cancel: &AtomicBool) -> Result<(), ReferenceError> {
     }
 }
 
-/// The class files a pass tracked.
-pub(crate) fn class_files_in(graph: &ReverseGraph) -> Vec<PathBuf> {
-    graph
-        .tracked_files()
-        .into_iter()
-        .filter(|path| is_class_file(path))
-        .collect()
-}
-
 /// What a workspace pass says about the class files, and why the list can be
 /// short: the pass is not current, a file could not be analysed, the pass
 /// failed, or the list was cut.
-fn class_files_of(graph: GraphAnswer, cancel: &AtomicBool) -> Result<ClassFiles, ReferenceError> {
+fn class_files_of(
+    host: &SessionHost,
+    session_root: &Path,
+    graph: GraphAnswer,
+    cancel: &AtomicBool,
+) -> Result<FoundClasses, ReferenceError> {
     let mut gaps = Vec::new();
     let mut kept = None;
     let mut count = 0;
@@ -1110,7 +1109,7 @@ fn class_files_of(graph: GraphAnswer, cancel: &AtomicBool) -> Result<ClassFiles,
                      hold a subtype"
                 )));
             }
-            count = class_files_in(&graph.graph).len();
+            count = class_list(host, session_root, &graph.graph).count;
             kept = Some(graph.graph);
         }
         Ok(Err(reason)) => gaps.push(Gap::of_referent(format!(
@@ -1126,59 +1125,57 @@ fn class_files_of(graph: GraphAnswer, cancel: &AtomicBool) -> Result<ClassFiles,
             "the workspace has {count} class files and the index reads the first {MAX_CLASSES}"
         )));
     }
-    Ok(ClassFiles { gaps, graph: kept })
+    Ok(FoundClasses { gaps, graph: kept })
 }
 
+/// How many times a request takes the graph and asks for the index before it
+/// gives up: an edit stops a build, and a request that keeps meeting edits
+/// must end.
+const MAX_ATTEMPTS: u32 = 5;
+
 /// Run `answer` over the subtype index of the workspace and a unit of the
-/// state that the index describes.
+/// state that the index describes. Gives the answer and the gaps of the pass
+/// whose class files the index read.
 ///
 /// The index is the one the session keeps, or one that the request waits for
-/// (see `crate::subtypes`). With no graph from a pass, only the open buffers
-/// are classes, and the index is built here and not kept.
+/// (see `crate::subtypes`). Each attempt after the first takes the graph again,
+/// so a request does not ask for an index of a pass that a newer one replaced.
+/// With no graph from a pass, only the open buffers are classes, and the index
+/// is built here and not kept.
 fn with_index<T>(
     host: &SessionHost,
     session_root: &Path,
-    found: &ClassFiles,
+    first: FoundClasses,
     cancel: &AtomicBool,
     progress: &dyn Progress,
     answer: impl FnOnce(&HierarchyUnit<'_>, &SubtypeIndex) -> Result<T, ReferenceError>,
-) -> Result<T, ReferenceError> {
-    let Some(graph) = &found.graph else {
-        return with_snapshot(host, session_root, |unit| {
-            let files = with_open_classes(unit, Vec::new(), session_root);
-            let index = unit
-                .subtype_index(&files, &|| cancel.load(Ordering::Relaxed), &|| {})
-                .ok_or(ReferenceError::Cancelled)?;
-            answer(unit, &index)
-        })?;
-    };
-    let ready = index_for(host, session_root, graph, cancel, progress)?;
-    with_hierarchy(&ready.captured.snapshot, ready.captured.overlay, |unit| {
-        answer(unit, &ready.built.index)
-    })
-    .ok_or(ReferenceError::Modified)?
-}
-
-/// `files`, and the open buffers that hold a class file of the workspace and
-/// are not among them: a class not saved yet is a subtype too.
-pub(crate) fn with_open_classes(
-    unit: &HierarchyUnit<'_>,
-    mut files: Vec<PathBuf>,
-    session_root: &Path,
-) -> Vec<PathBuf> {
-    let mut known: Option<std::collections::HashSet<PathBuf>> = None;
-    for open in unit.open_class_files() {
-        let open_canonical = canonical_path(&open);
-        if !open_canonical.starts_with(session_root) {
+) -> Result<(T, Vec<Gap>), ReferenceError> {
+    let mut found = first;
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            found = class_files(host, session_root, cancel, progress)?;
+        }
+        let Some(graph) = &found.graph else {
+            let answered = with_snapshot(host, session_root, |unit| {
+                let none = ClassList::empty();
+                let files = none.with_open_classes(unit, session_root);
+                let index = unit
+                    .subtype_index(&files, &|| cancel.load(Ordering::Relaxed), &|| {})
+                    .ok_or(ReferenceError::Cancelled)?;
+                answer(unit, &index)
+            })??;
+            return Ok((answered, found.gaps));
+        };
+        let Some(ready) = index_for(host, session_root, graph, cancel, progress)? else {
             continue;
-        }
-        let known =
-            known.get_or_insert_with(|| files.iter().map(|path| canonical_path(path)).collect());
-        if known.insert(open_canonical) {
-            files.push(open);
-        }
+        };
+        let answered = with_hierarchy(&ready.captured.snapshot, ready.captured.overlay, |unit| {
+            answer(unit, &ready.built.index)
+        })
+        .ok_or(ReferenceError::Modified)??;
+        return Ok((answered, found.gaps));
     }
-    files
+    Err(ReferenceError::Modified)
 }
 
 pub(crate) fn is_class_file(path: &Path) -> bool {
@@ -1405,6 +1402,8 @@ mod tests {
     fn a_pass_that_is_not_current_is_a_gap_of_the_answer() {
         let cancel = AtomicBool::new(false);
         let found = class_files_of(
+            &SessionHost::new(),
+            Path::new("/no-session"),
             graph_with(&["the workspace index is not ready: 1 of 2 files are indexed"]),
             &cancel,
         )
@@ -1418,7 +1417,13 @@ mod tests {
     #[test]
     fn a_pass_that_cannot_run_is_a_gap_and_not_an_empty_workspace() {
         let cancel = AtomicBool::new(false);
-        let found = class_files_of(Ok(Err("no include path".to_string())), &cancel).unwrap();
+        let found = class_files_of(
+            &SessionHost::new(),
+            Path::new("/no-session"),
+            Ok(Err("no include path".to_string())),
+            &cancel,
+        )
+        .unwrap();
         assert!(found.graph.is_none());
         assert_eq!(
             reasons(&found.gaps),
@@ -1429,7 +1434,13 @@ mod tests {
     #[test]
     fn a_current_pass_has_no_gap() {
         let cancel = AtomicBool::new(false);
-        let found = class_files_of(graph_with(&[]), &cancel).unwrap();
+        let found = class_files_of(
+            &SessionHost::new(),
+            Path::new("/no-session"),
+            graph_with(&[]),
+            &cancel,
+        )
+        .unwrap();
         assert!(found.gaps.is_empty());
     }
 }

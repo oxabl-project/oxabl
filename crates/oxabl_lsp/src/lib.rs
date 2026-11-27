@@ -2098,6 +2098,7 @@ impl<'c> Server<'c> {
         }
         // A file on disk changed: no session generation says so.
         self.reference_cache.clear();
+        oxabl_daemon::hierarchy::forget_subtype_index(&self.host, &self.session_root);
         let mut schema_changed = false;
         let mut config_changed = false;
         let mut changed_includes: Vec<PathBuf> = Vec::new();

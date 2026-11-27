@@ -115,9 +115,12 @@ records are shared one by one, so a pass does not copy the paths or the stamps.
 
 ## What follows a pass
 
-A pass that the daemon stores starts the build of the subtype index on a thread
-of its own (`crates/oxabl_daemon/src/subtypes.rs`,
-`docs/design/type-hierarchy.md`). The build reads the facts of the class files
+In a session that has asked for a type hierarchy or for go to implementation
+once, a pass that the daemon stores starts the build of the subtype index on a
+thread of its own (`crates/oxabl_daemon/src/subtypes.rs`,
+`docs/design/type-hierarchy.md`). In a session that never asked, a pass starts
+no build, so `edit_pass_bench` times the pass alone (it checks that no build
+started). The build reads the facts of the class files
 and holds a database snapshot, so it follows the rules of this document for
 background work: it never holds the sessions lock, a write to a buffer stops
 it at the next file (it does not wait for it), and a request for another

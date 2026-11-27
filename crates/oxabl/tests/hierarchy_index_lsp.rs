@@ -1,15 +1,18 @@
-//! The subtype index through the real `oxabl lsp` and its daemon: the daemon
-//! builds it in the background after the workspace pass, keeps it while nothing
-//! it depends on changes, and a request that must wait for it shows progress
+//! The subtype index through the real `oxabl lsp` and its daemon: the first
+//! request of a session builds it, from then on the daemon builds it in the
+//! background after each workspace pass, it is kept while nothing it depends
+//! on changes, and a request that must wait for it shows progress
 //! (`docs/design/type-hierarchy.md`).
 //!
 //! A test build of the daemon writes lines to stderr when
-//! `OXABL_TEST_INDEX_COUNTS` is set: `oxabl-test: subtype index built for <n>
-//! class files, started by the <pass|request>` for each index that is kept,
-//! and `oxabl-test: subtype index holds` when a build waits at a class file
-//! that has the marker `OXABL-TEST-HOLD:daemon.hierarchy-index@<ms>`. The tests
-//! count these lines. A source with `OXABL-TEST-HOLD:daemon.pass-file@<ms>`
-//! makes the workspace pass wait while it analyses that file.
+//! `OXABL_TEST_INDEX_COUNTS` is set: `oxabl-test: subtype index <built|stopped|
+//! failed> for <n> class files, started by the <pass|request>` for each build
+//! as it ends (`built` is an index that is kept), and `oxabl-test: subtype index holds` when a build
+//! waits at a class file that has the marker
+//! `OXABL-TEST-HOLD:daemon.hierarchy-index@<ms>`. The tests count these lines.
+//! A class file with `OXABL-TEST-PANIC:daemon.hierarchy-index` makes the build
+//! panic. A source with `OXABL-TEST-HOLD:daemon.pass-file@<ms>` makes the
+//! workspace pass wait while it analyses that file.
 
 #![cfg(unix)]
 
@@ -222,34 +225,132 @@ fn standard() -> Workspace {
 }
 
 #[test]
-fn the_first_request_after_the_pass_finds_the_index_built() {
+fn a_session_that_never_asked_builds_no_index_after_a_pass() {
     let ws = standard();
     let base = ws.path("app/Base.cls");
     let mut session = start(&ws.root, json!({}));
     session.open(&base, BASE);
     let item = base_item(&mut session, &ws);
+    // The pass is stored before the answer of this request goes out.
     run_pass(&mut session, &ws);
 
-    // The pass ended. The daemon builds the index with no request for it.
+    // No request asked for the index, so the pass started no build: the first
+    // request builds it.
+    let first = subtypes(&mut session, &item, None);
+    assert_eq!(names(&first.answer), ["app.One", "app.Two"]);
+    let built = built(&session);
+    assert_eq!(built.len(), 1, "{:?}", lines(&session));
+    assert!(
+        built[0].ends_with("started by the request"),
+        "{:?}",
+        lines(&session)
+    );
+}
+
+#[test]
+fn after_the_first_request_each_pass_builds_the_index() {
+    let ws = standard();
+    let base = ws.path("app/Base.cls");
+    let three = ws.path("app/Three.cls");
+    let mut session = start(&ws.root, json!({}));
+    session.open(&base, BASE);
+    let item = base_item(&mut session, &ws);
+    assert_eq!(
+        names(&subtypes(&mut session, &item, None).answer),
+        ["app.One", "app.Two"]
+    );
+    assert_eq!(built(&session).len(), 1, "{:?}", lines(&session));
+
+    // An edit that the pass reads: the next pass is new, and it builds the
+    // index with no request for it.
+    session.open(&three, &sub("Three", "Base"));
+    run_pass(&mut session, &ws);
     wait_for_lines(&session, "index built after the pass", |lines| {
         lines
             .iter()
             .any(|line| line.contains(" built for ") && line.ends_with("started by the pass"))
     });
     let before = built(&session);
-    assert_eq!(before.len(), 1, "{before:?}");
+    assert_eq!(before.len(), 2, "{before:?}");
 
     // The request reads it, shows no progress though it carries a token, and
     // builds nothing.
-    let first = subtypes(&mut session, &item, Some("first"));
-    assert_eq!(names(&first.answer), ["app.One", "app.Two"]);
-    assert!(first.progress().is_empty(), "{:?}", first.progress());
+    let next = subtypes(&mut session, &item, Some("next"));
+    assert_eq!(names(&next.answer), ["app.One", "app.Three", "app.Two"]);
+    assert!(next.progress().is_empty(), "{:?}", next.progress());
     assert_eq!(built(&session), before);
 
     // A second request finds the same index.
-    let second = subtypes(&mut session, &item, None);
-    assert_eq!(names(&second.answer), ["app.One", "app.Two"]);
+    let again = subtypes(&mut session, &item, None);
+    assert_eq!(names(&again.answer), ["app.One", "app.Three", "app.Two"]);
     assert_eq!(built(&session), before);
+}
+
+#[test]
+fn opening_and_closing_a_saved_class_file_keeps_the_index() {
+    let ws = standard();
+    let base = ws.path("app/Base.cls");
+    let two = ws.path("app/Two.cls");
+    let mut session = start(&ws.root, json!({}));
+    session.open(&base, BASE);
+    let item = base_item(&mut session, &ws);
+    assert_eq!(
+        names(&subtypes(&mut session, &item, None).answer),
+        ["app.One", "app.Two"]
+    );
+    assert_eq!(built(&session).len(), 1, "{:?}", lines(&session));
+
+    // The buffer holds the text that the pass read from disk.
+    session.open(&two, &sub("Two", "Base"));
+    assert_eq!(
+        names(&subtypes(&mut session, &item, None).answer),
+        ["app.One", "app.Two"]
+    );
+    assert_eq!(built(&session).len(), 1, "{:?}", lines(&session));
+
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didClose",
+        "params": {"textDocument": {"uri": file_uri(&two)}}
+    }));
+    assert_eq!(
+        names(&subtypes(&mut session, &item, None).answer),
+        ["app.One", "app.Two"]
+    );
+    assert_eq!(built(&session).len(), 1, "{:?}", lines(&session));
+}
+
+#[test]
+fn a_watched_file_event_makes_the_next_request_build_the_index_again() {
+    let ws = standard();
+    let base = ws.path("app/Base.cls");
+    let two = ws.path("app/Two.cls");
+    let mut session = start(&ws.root, json!({}));
+    session.open(&base, BASE);
+    let item = base_item(&mut session, &ws);
+    assert_eq!(
+        names(&subtypes(&mut session, &item, None).answer),
+        ["app.One", "app.Two"]
+    );
+    assert_eq!(built(&session).len(), 1, "{:?}", lines(&session));
+
+    // The editor says that a class file changed. The stamps of the pass can
+    // miss a change (the same length in the same tick of the clock), so the
+    // daemon does not keep an index that the change can make wrong.
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeWatchedFiles",
+        "params": {"changes": [{"uri": file_uri(&two), "type": 2}]}
+    }));
+    assert_eq!(
+        names(&subtypes(&mut session, &item, None).answer),
+        ["app.One", "app.Two"]
+    );
+    let built = built(&session);
+    assert_eq!(built.len(), 2, "{:?}", lines(&session));
+    assert!(
+        built[1].ends_with("started by the request"),
+        "{:?}",
+        lines(&session)
+    );
 }
 
 #[test]
@@ -334,14 +435,27 @@ fn a_class_file_that_changes_on_disk_makes_the_next_request_build_the_index_agai
     assert_eq!(built(&session).len(), 2, "{:?}", lines(&session));
 }
 
+/// Ask for the subtypes once, so that each pass from then on builds the index.
+fn ask_once(session: &mut Session, ws: &Workspace) -> Value {
+    let item = base_item(session, ws);
+    subtypes(session, &item, None);
+    assert_eq!(built(session).len(), 1, "{:?}", lines(session));
+    item
+}
+
 #[test]
 fn an_edit_does_not_wait_for_the_build() {
-    // The build waits 40 s at this class, with its database snapshot.
-    let held = held_sub("Held", 40_000);
-    let ws = Workspace::new(&[("app/Base.cls", BASE), ("app/Held.cls", &held)]);
+    let ws = Workspace::new(&[
+        ("app/Base.cls", BASE),
+        ("app/Held.cls", &sub("Held", "Base")),
+    ]);
     let base = ws.path("app/Base.cls");
     let mut session = start(&ws.root, json!({}));
     session.open(&base, BASE);
+    ask_once(&mut session, &ws);
+    // The next build waits 40 s at this class, with its database snapshot. The
+    // pass sees the new text on disk and starts the build.
+    std::fs::write(ws.path("app/Held.cls"), held_sub("Held", 40_000)).unwrap();
     run_pass(&mut session, &ws);
     wait_for_lines(&session, "build that waits", |lines| {
         lines.iter().any(|line| line.ends_with("holds"))
@@ -373,11 +487,51 @@ fn an_edit_does_not_wait_for_the_build() {
     );
     // The edit stopped the build, and kept no index.
     wait_for_lines(&session, "build stopped by the edit", |lines| {
+        lines.iter().any(|line| line.contains(" stopped for "))
+    });
+    assert_eq!(built(&session).len(), 1, "{:?}", lines(&session));
+}
+
+#[test]
+fn a_newer_pass_stops_the_build_of_an_older_one() {
+    let ws = Workspace::new(&[
+        ("app/Base.cls", BASE),
+        ("app/Held.cls", &sub("Held", "Base")),
+    ]);
+    let base = ws.path("app/Base.cls");
+    let held = ws.path("app/Held.cls");
+    let mut session = start(&ws.root, json!({}));
+    session.open(&base, BASE);
+    let item = ask_once(&mut session, &ws);
+    // The build of the next pass waits 60 s at this class.
+    std::fs::write(&held, held_sub("Held", 60_000)).unwrap();
+    run_pass(&mut session, &ws);
+    wait_for_lines(&session, "build that waits", |lines| {
+        lines.iter().any(|line| line.ends_with("holds"))
+    });
+
+    // A newer pass: nothing waits for the index of the older one, so its build
+    // stops, and the build of the newer pass is kept. No buffer changes, so no
+    // write stops the held build: only the newer build can. `Held` is the last
+    // class file, so the held build ends with an index after the stop, and
+    // only the check that a newer build started keeps that index out.
+    std::fs::write(&held, sub("Held", "Base")).unwrap();
+    run_pass(&mut session, &ws);
+    wait_for_lines(&session, "older build stopped", |lines| {
         lines
             .iter()
-            .any(|line| line.contains(" cancelled for ") || line.contains(" stopped for "))
+            .any(|line| line.contains(" stopped for ") && line.ends_with("started by the pass"))
     });
-    assert!(built(&session).is_empty(), "{:?}", lines(&session));
+    wait_for_lines(&session, "newer build kept", |lines| {
+        lines
+            .iter()
+            .filter(|line| line.contains(" built for "))
+            .count()
+            == 2
+    });
+    let next = subtypes(&mut session, &item, None);
+    assert_eq!(names(&next.answer), ["app.Held"]);
+    assert_eq!(built(&session).len(), 2, "{:?}", lines(&session));
 }
 
 /// A workspace whose index build takes two held class files, so that a request
@@ -417,10 +571,9 @@ fn a_request_that_waits_for_the_index_reports_progress_on_its_token() {
     let mut session = start(&ws.root, json!({}));
     session.open(&base, BASE);
     let item = base_item(&mut session, &ws);
+    // The pass is current, and this session asked for no index yet: the
+    // request starts the build and waits for it.
     run_pass(&mut session, &ws);
-    wait_for_lines(&session, "build that waits", |lines| {
-        lines.iter().any(|line| line.ends_with("holds"))
-    });
 
     let waited = subtypes(&mut session, &item, Some("wait-token"));
     assert_eq!(names(&waited.answer), ["app.H1", "app.H2"]);
@@ -463,10 +616,9 @@ fn a_request_that_waits_asks_the_client_for_a_token() {
     let mut session = start(&ws.root, json!({"window": {"workDoneProgress": true}}));
     session.open(&base, BASE);
     let item = base_item(&mut session, &ws);
+    // The pass is current, and this session asked for no index yet: the
+    // request starts the build and waits for it.
     run_pass(&mut session, &ws);
-    wait_for_lines(&session, "build that waits", |lines| {
-        lines.iter().any(|line| line.ends_with("holds"))
-    });
 
     let waited = subtypes(&mut session, &item, None);
     assert_eq!(names(&waited.answer), ["app.H1", "app.H2"]);
@@ -510,10 +662,9 @@ fn a_client_that_takes_no_progress_gets_none() {
     let mut session = start(&ws.root, json!({}));
     session.open(&base, BASE);
     let item = base_item(&mut session, &ws);
+    // The pass is current, and this session asked for no index yet: the
+    // request starts the build and waits for it.
     run_pass(&mut session, &ws);
-    wait_for_lines(&session, "build that waits", |lines| {
-        lines.iter().any(|line| line.ends_with("holds"))
-    });
 
     let waited = subtypes(&mut session, &item, None);
     assert_eq!(names(&waited.answer), ["app.H1", "app.H2"]);
@@ -572,10 +723,9 @@ fn a_request_that_is_cancelled_stops_waiting_and_the_build_goes_on() {
     let mut session = start(&ws.root, json!({}));
     session.open(&base, BASE);
     let item = base_item(&mut session, &ws);
+    // The pass is current, and this session asked for no index yet: the
+    // request starts the build and waits for it.
     run_pass(&mut session, &ws);
-    wait_for_lines(&session, "build that waits", |lines| {
-        lines.iter().any(|line| line.ends_with("holds"))
-    });
 
     let id = session.next_request_id();
     session.send(json!({
@@ -583,10 +733,25 @@ fn a_request_that_is_cancelled_stops_waiting_and_the_build_goes_on() {
         "params": {"item": item, "workDoneToken": "cancel-token"}
     }));
     // The progress shows that the request waits for the build.
-    session.wait_for(|message| message["method"] == json!("$/progress"));
+    let begin = session.wait_for(|message| message["method"] == json!("$/progress"));
+    assert_eq!(begin["params"]["value"]["kind"], json!("begin"), "{begin}");
     session.send(json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}}));
-    let answer = session.wait_for(|message| message["id"] == json!(id));
+    let mut before = Vec::new();
+    let answer = loop {
+        let message = session.wait_for(|_| true);
+        if message["id"] == json!(id) && message.get("method").is_none() {
+            break message;
+        }
+        before.push(message);
+    };
     assert_eq!(answer["error"]["code"], json!(-32800), "{answer}");
+    // The progress ended before the answer.
+    let ended = Exchange {
+        before,
+        answer: Value::Null,
+    };
+    let kinds = kinds(&ended.progress());
+    assert_eq!(kinds.last().map(String::as_str), Some("end"), "{kinds:?}");
     // The request did not wait for the build, which is still held.
     assert!(built(&session).is_empty(), "{:?}", lines(&session));
 
@@ -594,4 +759,79 @@ fn a_request_that_is_cancelled_stops_waiting_and_the_build_goes_on() {
     let next = subtypes(&mut session, &item, None);
     assert_eq!(names(&next.answer), ["app.H1", "app.H2", "app.H3"]);
     assert_eq!(built(&session).len(), 1, "{:?}", lines(&session));
+}
+
+#[test]
+fn a_client_that_refuses_a_token_gets_no_progress() {
+    let (ws, _) = slow_index();
+    let base = ws.path("app/Base.cls");
+    let mut session = start(&ws.root, json!({"window": {"workDoneProgress": true}}));
+    session.open(&base, BASE);
+    let item = base_item(&mut session, &ws);
+    run_pass(&mut session, &ws);
+
+    let id = session.next_request_id();
+    session.send(json!({
+        "jsonrpc": "2.0", "id": id, "method": "typeHierarchy/subtypes",
+        "params": {"item": item}
+    }));
+    let mut before = Vec::new();
+    let answer = loop {
+        let message = session.wait_for(|_| true);
+        if message["id"] == json!(id) && message.get("method").is_none() {
+            break message;
+        }
+        if message["method"] == json!("window/workDoneProgress/create") {
+            session.send(json!({
+                "jsonrpc": "2.0", "id": message["id"],
+                "error": {"code": -32603, "message": "no progress here"}
+            }));
+        }
+        before.push(message);
+    };
+    assert_eq!(names(&answer["result"]), ["app.H1", "app.H2"]);
+    let creates = before
+        .iter()
+        .filter(|message| message["method"] == json!("window/workDoneProgress/create"))
+        .count();
+    assert_eq!(creates, 1, "{before:?}");
+    assert!(
+        before
+            .iter()
+            .all(|message| message["method"] != json!("$/progress")),
+        "{before:?}"
+    );
+}
+
+#[test]
+fn a_build_that_panics_fails_the_request_and_is_not_kept() {
+    let broken = "/* OXABL-TEST-PANIC:daemon.hierarchy-index */\n\
+                  CLASS app.Broken INHERITS app.Base:\nEND CLASS.\n";
+    let ws = Workspace::new(&[("app/Base.cls", BASE), ("app/Broken.cls", broken)]);
+    let base = ws.path("app/Base.cls");
+    let mut session = start(&ws.root, json!({}));
+    session.open(&base, BASE);
+    let item = base_item(&mut session, &ws);
+
+    for attempt in 1..=2 {
+        let answer = session.request("typeHierarchy/subtypes", json!({"item": item}));
+        assert_eq!(answer["error"]["code"], json!(-32803), "{answer}");
+        let message = answer["error"]["message"].as_str().unwrap();
+        assert!(message.contains("the index failed"), "{message}");
+        // Each request starts a build: a failed one is not kept.
+        let failed = lines(&session)
+            .iter()
+            .filter(|line| line.contains(" failed for "))
+            .count();
+        assert_eq!(failed, attempt, "{:?}", lines(&session));
+    }
+    assert!(built(&session).is_empty(), "{:?}", lines(&session));
+
+    // The daemon still answers.
+    let prepared = exchange(
+        &mut session,
+        "textDocument/prepareTypeHierarchy",
+        position(&base, BASE, "app.Base"),
+    );
+    assert_eq!(prepared.answer[0]["name"], json!("app.Base"));
 }

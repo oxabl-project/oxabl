@@ -1901,6 +1901,10 @@ impl<'a> HierarchyUnit<'a> {
                             cancelled()
                         },
                     );
+                    oxabl_common::panic_if_injected(
+                        oxabl_common::panic_sites::HIERARCHY_INDEX,
+                        &text,
+                    );
                 }
                 let facts = self.facts(path);
                 read();

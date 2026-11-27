@@ -90,8 +90,8 @@ class of the cursor, for the classes of the index and for each supertype that
 the super method walk reaches. An open class file that is not saved yet counts
 as a class of the workspace. So a request after an edit reads again only the
 files that changed, and then builds the index from facts. The workspace pass
-itself reads no facts. The daemon builds the index after the pass, in the
-background (below).
+itself reads no facts. After the first request of a session, the daemon
+builds the index after each pass, in the background (below).
 
 The files to read come from the workspace pass
 (`oxabl_daemon::methods::reference_graph`), as for find references: the files
@@ -101,32 +101,48 @@ it cut the list.
 
 ### The kept index, built in the background
 
-The first read of the facts is the cost of the first request: on a large
-real-world codebase kept outside the repository, the first subtypes request
-of a class with more than 1,000 subclasses took 15.6 s and the next one 0.19 s.
-The editor shows nothing in that time. So the daemon reads the
-facts before the request comes, and keeps the index.
+The first read of the facts is the cost of the first request. On a large
+codebase it takes seconds, and the next request, from memoized facts, takes a
+small part of that. The editor shows nothing in that time. So the daemon keeps
+the index, and after the first request it reads the facts before the next
+request comes.
 
 `crates/oxabl_daemon/src/subtypes.rs` holds, for each session, the index and
 the build that makes it.
 
-- **When it is built.** A workspace pass that ends and is stored starts a
-  build on a thread of its own (`oxabl-subtype-index`). The thread reads the
-  facts of each class file of the pass, and of the open buffers that hold a
-  class, and builds the index. A request that finds no current index starts the
-  same build and waits for it. The build is background work of the daemon: the
-  daemon does not exit idle while it runs. It has no other priority than a
-  workspace pass has. It is one thread, and it holds no lock of the sessions.
+- **When it is built.** A session builds no index until a request needs one
+  (the subtypes, the implementations of a class or of a method that can be
+  overridden). That request starts the build and waits for it, with progress.
+  So a user who never asks for a type hierarchy pays nothing: a workspace pass
+  starts no build. From then on, each workspace pass that ends and is stored
+  starts a build on a thread of its own (`oxabl-subtype-index`), so the index
+  stays warm and the next request finds it ready. The thread reads the facts of
+  each class file of the pass, and of the open buffers that hold a class, and
+  builds the index. The build is background work of the daemon: the daemon does
+  not exit idle while it runs. It has no other priority than a workspace pass
+  has. It is one thread, and it holds no lock of the sessions.
+- **What a build costs besides the facts.** The class files of a pass are
+  listed once for each graph (`ReverseGraph::tracked_files_where`, which clones
+  and sorts only the class files), and canonicalized once for each graph when
+  an open class buffer needs it. A build and a request of the same graph use
+  that list.
 - **When the kept index is current.** The index is kept with a stamp: the
   workspace pass (a graph that is the same one, not an equal one) and the text
-  of every open class buffer. A new configuration or schema clears the stored
-  pass, so it gives a new graph. A request takes the stamp of the session as it is now. It
-  uses the index only when the two stamps are the same, and answers from the
-  database snapshot that it took with that stamp, so the answer and the index
-  describe one moment. A new pass gives a new graph, so an edit that the pass
-  reads, a file that appears and a file that changes on disk all end the
-  current index. Any other change is not an input of the index: a buffer that
-  is not a class does not change the stamp.
+  of each open class buffer whose text is not the text that the pass read
+  (`KeptPass::read_hash`). A new configuration or schema clears the stored
+  pass, so it gives a new graph. A request takes the stamp of the session as it
+  is now. It uses the index only when the two stamps are the same, and answers
+  from the database snapshot that it took with that stamp, so the answer and
+  the index describe one moment. A new pass gives a new graph, so an edit that
+  the pass reads, a file that appears and a file that changes on disk all end
+  the current index. Any other change is not an input of the index: a buffer
+  that is not a class does not change the stamp, and neither does a class file
+  that is opened or closed with the text that the pass read.
+- **A watched-file event.** `workspace/didChangeWatchedFiles` drops the kept
+  index and stops the running build (`forget_subtype_index`), as it clears the
+  cache of reference lenses. The stamps of a pass can miss a change on disk
+  (for example on a network mount), and the event is the editor's word that a
+  file changed.
 - **After an edit.** The index is built again when a pass stores a new graph,
   and when a request needs it. The facts of the files that did not change are
   memoized, so the build reads only the files that changed, and then builds the
@@ -137,8 +153,12 @@ the build that makes it.
   write, so the build stops at the next file. Nothing waits for it, and no
   request of another feature waits for it.
 - **A running build for another stamp is stopped.** Nothing waits for its
-  index any more. A request that meets edits retries the build five times, and
-  then answers with `ReferenceError::Modified`.
+  index any more. The one exception: a request whose graph is older than the
+  stored pass never stops the build of the stored pass. It waits for that build
+  and takes the graph again. A build that a newer build replaced is not kept,
+  also when it ends with an index. Each attempt of a request takes the graph
+  again. A request that meets edits makes five attempts, and then answers with
+  `ReferenceError::Modified`.
 - **Cancel.** A request that waits for the build checks `$/cancelRequest` about
   every 50 ms and answers `RequestCancelled` at once. The build goes on, and the
   next request finds its index. The build checks no cancel of a request.
@@ -375,11 +395,17 @@ new file is seen) with a lookup table for each distinct class name for the
 length of the build. The memo of facts keeps the cost low for a file that did
 not change.
 
-On the `hierarchy_bench` bench (400 direct subclasses of one class, one
-thread), the first request of a session took 16.1 ms before the change and 5.4
-ms after it, and a request on a session that had answered one took 7.6 ms
-before and 4.2 ms after. The build is on a thread of its own, so the bench
-waits for it in its setup and times the request alone.
+The `hierarchy_bench` bench (400 direct subclasses of one class, one thread)
+measures the build and the request apart, because CodSpeed counts only the
+thread that runs the bench. `build_after_pass` and `build_after_edit` run the
+build on the bench thread (`build_subtype_index_here`). `first_subtypes` and
+`next_subtypes` time the request on a built index, and fail when the request
+starts a build. Counted with callgrind, the first request of a session that
+built its index in the background costs 19 million instructions; before the
+kept index, the first request built the index itself and cost 61 million. The
+cold build costs 47 million, and the build after an edit of one class 10
+million. `edit_pass_bench` checks that a pass of a session that never asked
+starts no build: its `edit_pass/leaf` count is the count of a pass alone.
 
 A class file with a preprocessor reference is expanded when its facts are
 read: one preprocessor run and a second parse. Over 200 generated class files
@@ -470,24 +496,35 @@ an interface method; and a list cut at `MAX_LISTED`.
 
 `crates/oxabl/tests/hierarchy_index_lsp.rs` tests the kept index and the
 progress through the real `oxabl lsp`. A test build of the daemon writes a line
-to stderr for each index it builds and keeps, and one when a build waits at a
-class file that has `OXABL-TEST-HOLD:daemon.hierarchy-index@<ms>` (with
-`OXABL_TEST_INDEX_COUNTS` set), and the tests count these lines. They test:
+to stderr for each build as it ends (`built`, `stopped` or `failed`; `built` is
+an index that is kept), and one when a build waits at a class file that has
+`OXABL-TEST-HOLD:daemon.hierarchy-index@<ms>` (with `OXABL_TEST_INDEX_COUNTS`
+set), and the tests count these lines. A class file with
+`OXABL-TEST-PANIC:daemon.hierarchy-index` makes the build panic. They test:
 
-- a request after the pass finds the index built by the pass, builds nothing
-  and shows no progress; a second request builds nothing;
+- a pass of a session that asked for no index builds none, and the first
+  request builds it;
+- after the first request, a pass builds the index, and a request after it
+  builds nothing and shows no progress; a second request builds nothing;
 - an edit of an open class, and a change of a class file on disk, make the next
-  request build the index again;
+  request build the index again; a class file opened and closed with the text
+  that the pass read does not; a watched-file event does;
 - an edit that comes while the build waits at a class file is answered at once,
   and the build is stopped and keeps nothing;
+- a newer pass stops the build of an older one, and only the newer index is
+  kept, also when the older build ends with an index after the stop;
+- a build that panics fails each request that waits for it with the reason,
+  and is not kept;
 - a request that waits for the build shows `begin`, `report` and `end` on its
   own token, with counts that do not go back; with no token it asks the client
   for one (`window/workDoneProgress/create`) and starts when the client has
-  answered; a client that does neither gets nothing;
+  answered; a client that does neither, or that answers `create` with an
+  error, gets nothing;
 - a request that waits for the workspace pass shows the files analysed
   (`OXABL-TEST-HOLD:daemon.pass-file@<ms>` holds the pass at a file);
-- a request that is cancelled while it waits answers at once, and the build
-  goes on: the next request finds its index, and only one index was built.
+- a request that is cancelled while it waits answers at once, after the `end`
+  of its progress, and the build goes on: the next request finds its index, and
+  only one index was built.
 
 `crates/oxabl_pipeline/tests/class_name_span.rs` and
 `crates/oxabl_index/tests/search_base_head.rs` check the two readers of the head

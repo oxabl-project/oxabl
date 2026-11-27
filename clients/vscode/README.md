@@ -179,10 +179,11 @@ you also get, with no setup:
   enum, one level at a time. A supertype that oxabl cannot
   resolve is an item with no icon and the detail `unresolved: ...`, and a
   built-in type shows by name with no file. When the list can be short, its
-  first entry is `incomplete`, with the reason. The daemon reads the class
-  files in the background after the workspace pass, so the first request finds
-  the subtypes ready. A request that has to wait shows progress (the number of
-  class files read) when it waits more than a moment.
+  first entry is `incomplete`, with the reason. The first request reads the
+  class files. After it, the daemon reads them again in the background after
+  each change, so the next request finds the subtypes ready. A request that has
+  to wait shows progress (the number of class files read) when it waits more
+  than a moment.
 - **Hover.** Point at a name to see what it is: a variable, parameter or
   property with its type, `EXTENT`, `INITIAL` and `NO-UNDO`; the signature of
   an internal procedure, function or method (each overload of an inherited
