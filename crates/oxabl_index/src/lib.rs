@@ -733,6 +733,13 @@ fn declared_classes(
                     name: IndexName::new(pools.ident(*name)),
                     file,
                     kind: ClassKind::Interface,
+                    // An interface may extend *several* interfaces, so its
+                    // `INHERITS` list cannot fit `inherits: Option<_>`. The list
+                    // goes to `implements`, which is already "the other
+                    // supertypes, as a set" — no information is lost and the
+                    // consumer's walk is unchanged, whereas picking a first
+                    // parent and discarding the rest would silently drop
+                    // members.
                     inherits: None,
                     implements: inherits
                         .iter()
@@ -1056,7 +1063,12 @@ fn collect_members(
                 ..
             } => members.push(MemberDescriptor {
                 name: IndexName::new(pools.ident(*name)),
+                // The same kind the declare pass gives a locally declared
+                // method, so a synthesized member is indistinguishable from a
+                // local one downstream.
                 kind: SymbolKind::Function,
+                // `None` is `VOID`: the declaration names no type at all, which
+                // is a different fact from naming one the index cannot carry.
                 ty: return_type
                     .as_ref()
                     .map_or(MemberType::Untyped, |dt| member_type(dt, *extent)),

@@ -31,7 +31,7 @@ pub fn token_to_literal(token: &Token, source: &str, names: &mut NameInterner) -
         (Kind::KwTrue | Kind::KwFalse, TokenValue::Boolean(v)) => {
             Some(Literal::Boolean(BooleanLiteral { span, value: *v }))
         }
-        // YES is an alias for TRUE in ABL.
+        // YES is an alias for TRUE in ABL
         (Kind::Yes, _) => Some(Literal::Boolean(BooleanLiteral { span, value: true })),
         // NO is an alias for FALSE in ABL. Bare `no` only reaches the parser
         // when the lexer's space-separated lock lookahead did not claim a
@@ -120,10 +120,12 @@ mod tests {
     fn integer_literal_from_token() {
         let source = "def var myInt as int no-undo init 4.";
         let tokens = tokenize(source);
+        // get the integer literal token
         let token = tokens
             .iter()
             .find(|t| t.kind == Kind::IntegerLiteral)
             .expect("expected an integer literal token");
+        // convert to integer literal
         let mut names = NameInterner::new();
         let lit =
             token_to_literal(token, source, &mut names).expect("expected an integer literal span");
@@ -134,10 +136,12 @@ mod tests {
     fn decimal_literal_from_token() {
         let source = "def var myDec as dec no-undo init 3.14.";
         let tokens = tokenize(source);
+        // get the decimal literal token
         let token = tokens
             .iter()
             .find(|t| t.kind == Kind::DecimalLiteral)
             .expect("expected a decimal literal token");
+        // convert to decimal literal
         let mut names = NameInterner::new();
         let lit =
             token_to_literal(token, source, &mut names).expect("expected a decimal literal span");
@@ -148,10 +152,12 @@ mod tests {
     fn string_literal_from_token() {
         let source = "def var myStr as char no-undo init 'hello'.";
         let tokens = tokenize(source);
+        // get the string literal token
         let token = tokens
             .iter()
             .find(|t| t.kind == Kind::StringLiteral)
             .expect("expected a string literal token");
+        // convert to string literal
         let mut names = NameInterner::new();
         let lit =
             token_to_literal(token, source, &mut names).expect("expected a string literal span");
@@ -166,10 +172,12 @@ mod tests {
     fn boolean_literal_from_token() {
         let source = "def var myBool as log no-undo init true.";
         let tokens = tokenize(source);
+        // get the boolean literal token
         let token = tokens
             .iter()
             .find(|t| t.kind == Kind::KwTrue)
             .expect("expected a boolean literal token");
+        // convert to boolean literal
         let mut names = NameInterner::new();
         let lit =
             token_to_literal(token, source, &mut names).expect("expected a boolean literal span");
@@ -180,10 +188,12 @@ mod tests {
     fn unknown_literal_from_token() {
         let source = "def var myUnk as int no-undo init ?.";
         let tokens = tokenize(source);
+        // get the unknown literal token
         let token = tokens
             .iter()
             .find(|t| t.kind == Kind::Question)
             .expect("expected an unknown literal token");
+        // convert to unknown literal
         let mut names = NameInterner::new();
         let lit =
             token_to_literal(token, source, &mut names).expect("expected an unknown literal span");

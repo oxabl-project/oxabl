@@ -168,6 +168,9 @@ impl Parser<'_> {
             } else if self.check(Kind::StringLiteral) && Self::is_string_like(self.exprs.get(expr))
             {
                 // Implicit string concatenation: adjacent tokens without explicit +.
+                // Only fires when the LHS is already string-like (literal, preprop ref, or
+                // a prior implicit concat). This prevents consuming display items or other
+                // adjacent tokens as accidental concatenation.
                 self.link(&mut links)?;
                 let lo = self.exprs.get(expr).span.start;
                 let right_exp = self.parse_multiplicative()?;
@@ -205,6 +208,7 @@ impl Parser<'_> {
 
     pub fn parse_unary(&mut self) -> ParseResult<ExprId> {
         if self.check(Kind::Minus) {
+            // Prefix form: `lo` is the `-` token, captured before advancing.
             let lo = span_u32(self.peek().start);
             self.advance();
             let expr = self.nested(Self::parse_unary)?;
@@ -212,10 +216,12 @@ impl Parser<'_> {
             return Ok(self.spanned_expr(lo, hi, ExpressionKind::Negate(expr)));
         }
         if self.check(Kind::Add) {
+            // Unary plus — identity operation (e.g. "- + value" means subtract unary+value)
             self.advance();
             return self.nested(Self::parse_unary);
         }
         if self.check(Kind::Not) {
+            // Prefix form: `lo` is the `NOT` token, captured before advancing.
             let lo = span_u32(self.peek().start);
             self.advance();
             let expr = self.nested(Self::parse_unary)?;
@@ -229,6 +235,9 @@ impl Parser<'_> {
         let mut links = 0;
         let mut expr = self.parse_primary()?;
 
+        // Literals can't have postfix operations (member access, method calls, etc.)
+        // Return early to avoid incorrectly parsing following tokens like ':' in "do i = 1 to 10:"
+        // Exception: string literals may have `:U` or `:T` character-type qualifiers — consume them.
         if matches!(self.exprs.get(expr).kind, ExpressionKind::Literal(_)) {
             if self.check(Kind::Colon) {
                 let colon_end = self.token_at(self.current).end;
@@ -238,7 +247,9 @@ impl Parser<'_> {
                     && (self.source[next.start..next.end].eq_ignore_ascii_case("u")
                         || self.source[next.start..next.end].eq_ignore_ascii_case("t"))
                 {
+                    // consume ':'
                     self.advance();
+                    // consume 'U' or 'T'
                     self.advance();
                 }
             }
@@ -247,6 +258,11 @@ impl Parser<'_> {
 
         loop {
             if self.check(Kind::Colon) || self.check(Kind::DoubleColon) {
+                // Only parse as member/method access if the next token is a valid member name
+                // AND is on the same line as the colon.
+                // This avoids consuming ':' in block delimiters like "CASE x:" or "DO:"
+                // and block-headers like "FOR EACH ... cond:".
+                // DoubleColon (::) is ABL's dynamic buffer field access operator.
                 let colon_end = self.token_at(self.current).end;
                 let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
                     !self.source[colon_end..t.start].contains('\n')
@@ -276,9 +292,12 @@ impl Parser<'_> {
     }
 
     pub fn parse_member_or_method(&mut self, object: ExprId) -> ParseResult<ExprId> {
+        // Postfix left-nesting: the node spans from the object's start through
+        // the closing `)`/member token (ast-invariants §5).
         let lo = self.exprs.get(object).span.start;
         let colon_end = self.advance().end; // consumes ':'
 
+        // Expect identifier after ':'
         if !self.is_member_name(self.current, colon_end) {
             return Err(ParseError {
                 message: format!(
@@ -295,6 +314,7 @@ impl Parser<'_> {
             name: self.intern_ident(token.start, token.end),
         };
 
+        // Check for method call: member followed by (
         if self.check(Kind::LeftParen) {
             let arguments =
                 self.parse_call_arguments(false, "Expected ')' after method arguments")?;
@@ -322,8 +342,14 @@ impl Parser<'_> {
     ) -> ParseResult<ExprList> {
         self.advance(); // consume '('
         let mut arguments: SmallVec<[ExprId; 8]> = SmallVec::new();
+        // Empty argument list
         if !self.check(Kind::RightParen) {
+            // parse first argument
+            // consume and store all arguments
             arguments.push(self.parse_call_argument()?);
+            // parse remaining — separated by ',' or, when a Preprop reference like {&args}
+            // expands to comma-separated arguments at compile time, by a bare direction
+            // qualifier (INPUT/OUTPUT/INPUT-OUTPUT) with no preceding comma.
             while self.check(Kind::Comma)
                 || (allow_bare_direction_sep
                     && matches!(
@@ -332,17 +358,23 @@ impl Parser<'_> {
                     ))
             {
                 if self.check(Kind::Comma) {
+                    // consume ',' only when present
                     self.advance();
                 }
                 arguments.push(self.parse_optional_call_argument()?);
             }
         }
+        // if after parsing all arguments we don't find the
+        // closing ), throw error
         self.expect_kind(Kind::RightParen, close_error)?;
         Ok(self.push_expr_list(&arguments))
     }
 
     fn parse_optional_call_argument(&mut self) -> ParseResult<ExprId> {
+        // Skip optional direction qualifier per argument
         self.skip_call_arg_prefixes();
+        // Empty argument (successive commas like func(1,, "x")) — use Unknown literal
+        // Empty argument (successive commas like obj:method(1,, "x")) — Unknown
         if self.check(Kind::Comma) || self.check(Kind::RightParen) {
             let pos = span_u32(self.peek().start);
             return Ok(self.spanned_expr(
@@ -362,12 +394,14 @@ impl Parser<'_> {
     }
 
     fn skip_call_arg_prefixes(&mut self) {
+        // Skip optional direction qualifier (INPUT / OUTPUT / INPUT-OUTPUT)
         if matches!(
             self.peek().kind,
             Kind::Input | Kind::Output | Kind::InputOutput
         ) {
             self.advance();
         }
+        // Skip optional TABLE/TABLE-HANDLE/DATASET/DATASET-HANDLE/DATA-SOURCE for handle args
         if matches!(
             self.peek().kind,
             Kind::Table
@@ -381,11 +415,15 @@ impl Parser<'_> {
     }
 
     fn skip_call_arg_suffixes(&mut self) {
+        // Consume optional IN FRAME/BROWSE qualifier (field:handle IN FRAME f)
         if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse) {
+            // consume IN
             self.advance();
+            // consume FRAME or BROWSE
             self.advance();
             self.consume_widget_name();
         }
+        // Consume optional passing modifiers (BIND, BY-VALUE, BY-REFERENCE, APPEND)
         while matches!(
             self.peek().kind,
             Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
@@ -414,15 +452,25 @@ impl Parser<'_> {
 
     /// Check if we're looking at field access, rather than a statement terminator.
     pub fn is_field_access_ahead(&mut self) -> bool {
+        // skip if it's not a period
         if !self.check(Kind::Period) {
             return false;
         }
+
+        // Only treat as field access if an identifier (or keyword used as identifier) immediately
+        // follows the period with no whitespace. A period followed by whitespace (space, newline)
+        // before an identifier is a statement terminator, not a field access separator.
+        // This prevents "p. var" (space after period) from being mis-parsed as "p.var".
+        // Any word-like token qualifies, so a keyword segment such as `pkg.Color` is a name.
         let period_end = self.token_at(self.current).end;
         self.tokens.get(self.current + 1).is_some_and(|t| {
             (Self::can_be_identifier(t.kind) || Self::is_word_kind(t.kind)) && t.start == period_end
         })
     }
 
+    /// Check if an expression is string-like for implicit concatenation purposes.
+    /// Implicit concat (adjacent tokens without +) only fires when the LHS is
+    /// already a string value, preventing accidental consumption of display items.
     fn is_string_like(expr: &Expression) -> bool {
         matches!(
             &expr.kind,
@@ -432,6 +480,7 @@ impl Parser<'_> {
         )
     }
 
+    /// Check if an expression can be the base of field access (Table.Field)
     fn can_have_field_access(expr: &Expression) -> bool {
         matches!(
             &expr.kind,
@@ -446,6 +495,7 @@ impl Parser<'_> {
         let lo = self.exprs.get(qualifier).span.start;
         self.advance(); // consume '.'
 
+        // Expect identifier (or keyword used as field name) after '.'
         if !Self::can_be_identifier(self.peek().kind) && !Self::is_word_kind(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected field name after '.'".to_string(),
@@ -464,6 +514,12 @@ impl Parser<'_> {
     }
 
     /// Parse a primary expression and stamp its full-extent span.
+    ///
+    /// Thin funnel over `parse_primary_inner`:
+    /// `lo` is the first token examined, `hi` is the end of the last non-comment
+    /// token consumed. Parenthesized groups therefore include the enclosing
+    /// parens (U3), and every leaf/primary form is stamped uniformly regardless
+    /// of which branch produced it.
     pub fn parse_primary(&mut self) -> ParseResult<ExprId> {
         let lo = span_u32(self.peek().start);
         let expr = self.parse_primary_inner()?;
@@ -474,19 +530,33 @@ impl Parser<'_> {
 
     fn parse_primary_inner(&mut self) -> ParseResult<ExprId> {
         match self.peek().kind {
+            // Inline ternary: IF expr THEN expr ELSE expr — valid in any expression position
             Kind::KwIf => self.nested(Self::parse_ternary),
+            // Implicit widget attribute/method: :attribute or :method(args)
+            // In ABL, `:name` without a preceding expression accesses an attribute or
+            // method on the currently focused widget (set by CHOOSE/UPDATE/SET).
+            // Parse as an identifier and let postfix parsing handle method calls.
             Kind::Colon => Ok(self.parse_implicit_widget_member()),
+            // Bare field access: .fieldname — field of the default/implicit buffer.
+            // In ABL, `.fieldname` without a preceding buffer name accesses a field on the
+            // default buffer in scope (e.g., inside a FOR EACH block).
             Kind::Period if Self::can_be_identifier(self.peek_at(1).kind) => {
                 Ok(self.parse_implicit_buffer_field())
             }
+            // Preprocessor reference: {&variable} or compound {&prefix}suffix{&more}...
+            // e.g. {&pre}order{&ext} — multiple adjacent parts form a single identifier.
+            // Requires direct adjacency (no whitespace) between each part.
             Kind::Preprop => self.parse_preprop_primary(),
+            // Mid-expression preprocessor conditional: &IF cond &THEN expr &ELSE expr &ENDIF
             Kind::PreprocIf => self.parse_preproc_if_expr(),
+            // Parenthesized expression
             Kind::LeftParen => {
                 self.advance();
                 let expr = self.parse_expression()?;
                 self.expect_kind(Kind::RightParen, "Expected ')' after expression")?;
                 Ok(expr)
             }
+            // Literals
             Kind::IntegerLiteral
             | Kind::BigIntLiteral
             | Kind::DecimalLiteral
@@ -497,16 +567,39 @@ impl Parser<'_> {
             | Kind::Yes
             | Kind::No
             | Kind::Question => self.parse_literal_primary(),
+            // Include file reference in expression position: {file.i}
             Kind::IncludeReference => Ok(self.parse_include_ref_primary()),
+            // Include positional argument reference in expression position: {1}
             Kind::IncludeArgReference => Ok(self.parse_include_arg_primary()),
+            // NEW ClassName(args) — object instantiation.
+            // Class names may be dotted: NEW app.Widget(company, user-ref).
             Kind::New => self.parse_new_primary(),
+            // DYNAMIC-NEW expr([args]) — dynamic object instantiation where the class name
+            // is a runtime expression (variable or string), not a static identifier.
+            // Modelled like DYNAMIC-FUNCTION: the class expression comes first, then the
+            // constructor arguments.
             Kind::DynamicNew => self.parse_dynamic_new_primary(),
+            // DYNAMIC-FUNCTION("func-name" [IN handle] [, arg1, arg2, ...])
             Kind::DynamicFunction => self.parse_dynamic_function_primary(),
+            // CAN-FIND([FIRST|LAST] table [WHERE expr] [lock] [NO-ERROR])
+            // Boolean expression that checks if a record matching the phrase exists.
             Kind::CanFind => self.parse_can_find_primary(),
+            // LOCKED [table] / LOCKED(table) — checks if a record is exclusively locked.
+            // ABL allows both parenthesized and bare forms.
             Kind::Locked => self.parse_locked_primary(),
+            // AVAILABLE [table] / AVAILABLE(table) — built-in record-availability predicate.
+            // ABL allows both parenthesized and bare forms, e.g.:
+            //   IF AVAILABLE order THEN ...
+            //   IF AVAILABLE(order) THEN ...
+            // CURRENT-CHANGED takes its record the same way.
             Kind::Available | Kind::Ambiguous | Kind::CurrentChanged => {
                 self.parse_record_predicate_primary()
             }
+            // TEMP-TABLE name[:attr] / BUFFER name[:attr] / FRAME name[:attr] / BROWSE name[:attr]
+            // — handle/object reference expressions.
+            // When these keywords appear in expression context followed by an identifier,
+            // consume both tokens as a compound identifier (e.g. BROWSE b-area-p:first-column).
+            // Also handles BUFFER {&preproc} for dynamic buffer references.
             Kind::TempTable
             | Kind::Buffer
             | Kind::Frame
@@ -519,11 +612,21 @@ impl Parser<'_> {
             {
                 Ok(self.parse_handle_prefix_primary())
             }
+            // ACCUM has two forms:
+            //   Form 1: ACCUM aggregate-type [BY break-field] field  (e.g. ACCUM TOTAL amt-total)
+            //   Form 2: ACCUM field (aggregate-type [BY break-field]) (e.g. ACCUM qty (TOTAL BY item))
+            // When not followed by '(', parse the first operand via parse_postfix so that qualified
+            // fields like table.field are consumed whole.  A trailing '(' signals form 2.
             Kind::Accum => self.parse_accum_primary(),
+            // INPUT / OUTPUT as transparent parameter-direction qualifier in expression context.
+            // e.g. WHERE field EQ INPUT param-name — consume INPUT/OUTPUT/INPUT-OUTPUT and
+            // then parse the actual operand.
             Kind::Input | Kind::Output | Kind::InputOutput => {
+                // consume the direction qualifier
                 self.advance();
                 self.nested(Self::parse_primary)
             }
+            // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)
             kind if Self::can_be_identifier(kind) => self.parse_identifier_or_call_primary(),
             kind => Err(ParseError {
                 message: format!("Unexpected token {kind:?}"),
@@ -533,6 +636,7 @@ impl Parser<'_> {
     }
 
     fn parse_implicit_widget_member(&mut self) -> ExprId {
+        // consume ':'
         let colon_token = self.advance().clone();
         if Self::can_be_identifier(self.peek().kind) {
             let attr_token = self.advance().clone();
@@ -546,12 +650,14 @@ impl Parser<'_> {
             };
             return self.expr(ExpressionKind::Identifier(ident));
         }
+        // Bare colon with no identifier — return as unknown
         self.expr(ExpressionKind::Literal(Literal::Unknown(UnknownLiteral {
             span: tok_span(&colon_token),
         })))
     }
 
     fn parse_implicit_buffer_field(&mut self) -> ExprId {
+        // consume '.'
         let period_token = self.advance().clone();
         let field_token = self.advance().clone();
         let prefixed = format!(".{}", &self.source[field_token.start..field_token.end]);
@@ -568,6 +674,8 @@ impl Parser<'_> {
     /// Extend a compound identifier end offset across directly-adjacent
     /// preprocessor/identifier/hyphen-word segments.
     fn extend_adjacent_compound_end(&mut self, mut end: usize, allow_include_arg: bool) -> usize {
+        // Extend with directly-adjacent parts (identifiers, preprops, or
+        // hyphen-separated word suffixes like `{&preproc}-control`).
         loop {
             let next = self.token_at(self.current);
             if next.start != end {
@@ -579,13 +687,16 @@ impl Parser<'_> {
             {
                 end = self.advance().end;
             } else if next.kind == Kind::Minus {
+                // Adjacent hyphen: consume only if a word-like token follows directly.
                 let minus_end = next.end;
                 let after_ok = self
                     .tokens
                     .get(self.current + 1)
                     .is_some_and(|a| a.start == minus_end && Self::is_word_kind(a.kind));
                 if after_ok {
+                    // consume '-'
                     self.advance();
+                    // consume word
                     end = self.advance().end;
                 } else {
                     break;
@@ -600,6 +711,7 @@ impl Parser<'_> {
     fn parse_preprop_primary(&mut self) -> ParseResult<ExprId> {
         let first = self.advance().clone();
         let compound_end = self.extend_adjacent_compound_end(first.end, false);
+        // Bare {&name} with no adjacent parts → PreprocReference
         if compound_end == first.end {
             let raw = &self.source[first.start..first.end];
             let stripped = raw
@@ -609,6 +721,7 @@ impl Parser<'_> {
             let name = self.intern(stripped);
             return Ok(self.expr(ExpressionKind::PreprocReference(name)));
         }
+        // Compound → Identifier using raw source text
         let identifier = Identifier {
             span: Span {
                 start: span_u32(first.start),
@@ -671,7 +784,9 @@ impl Parser<'_> {
     }
 
     fn parse_new_primary(&mut self) -> ParseResult<ExprId> {
+        // consume NEW
         let new_token = self.advance().clone();
+        // `NEW(buffer)` is the record-buffer test; a class name never starts with '('.
         if self.check(Kind::LeftParen) {
             let name = Identifier {
                 span: tok_span(&new_token),
@@ -679,6 +794,8 @@ impl Parser<'_> {
             };
             return self.parse_function_call(name);
         }
+        // Parse dotted class name (e.g., "app.Widget", "api.text", "Progress.Lang.Error").
+        // Use is_word_kind() so keyword-named namespaces/types (e.g. api.text) are accepted.
         if !Self::is_word_kind(self.peek().kind) {
             return Err(ParseError {
                 message: "Expected class name after NEW".to_string(),
@@ -686,7 +803,10 @@ impl Parser<'_> {
             });
         }
         let start = self.peek().start;
+        // consume first name component
         self.advance();
+        // A qualified name has no space around its periods: in
+        // `l = NEW customer.` the period ends the statement.
         while self.check(Kind::Period)
             && self.token_at(self.current - 1).end == self.peek().start
             && self
@@ -694,14 +814,21 @@ impl Parser<'_> {
                 .get(self.current + 1)
                 .is_some_and(|t| Self::is_word_kind(t.kind) && t.start == self.peek().end)
         {
+            // consume '.'
             self.advance();
+            // consume next component
             self.advance();
         }
         let end = self.token_at(self.current - 1).end;
         let class_name = self.intern(&self.source[start..end]);
+
+        // Optional generic type args — `NEW List<String>(...)`.
         let type_arguments = self.parse_generic_type_args();
         let type_arguments = (!type_arguments.0.is_empty()).then(|| Box::new(type_arguments));
 
+        // If no '(' follows, this is the logical NEW record-name test (boolean expression),
+        // not an OO object constructor. Model it as `NEW(record)`, the shape
+        // `AVAILABLE record` has.
         if !self.check(Kind::LeftParen) {
             let (lo, hi) = (span_u32(start), span_u32(end));
             let record = self.spanned_expr(
@@ -720,6 +847,7 @@ impl Parser<'_> {
             return Ok(self.expr(ExpressionKind::FunctionCall { name, arguments }));
         }
 
+        // Parse argument list (supports INPUT/OUTPUT direction qualifiers and TABLE/BUFFER args)
         let arguments = self.parse_new_arguments()?;
         Ok(self.expr(ExpressionKind::New {
             class_name,
@@ -733,12 +861,14 @@ impl Parser<'_> {
         let mut arguments: SmallVec<[ExprId; 8]> = SmallVec::new();
         if !self.check(Kind::RightParen) {
             loop {
+                // Skip optional direction qualifier
                 if matches!(
                     self.peek().kind,
                     Kind::Input | Kind::Output | Kind::InputOutput
                 ) {
                     self.advance();
                 }
+                // Handle TABLE/BUFFER/DATASET handle-type arguments (no expression value)
                 if matches!(
                     self.peek().kind,
                     Kind::Table
@@ -754,6 +884,7 @@ impl Parser<'_> {
                 if !self.check(Kind::Comma) {
                     break;
                 }
+                // consume comma
                 self.advance();
             }
         }
@@ -762,13 +893,17 @@ impl Parser<'_> {
     }
 
     fn skip_new_handle_arg(&mut self) {
+        // consume TABLE/BUFFER/DATASET etc.
         self.advance();
+        // Optional FOR keyword
         if self.check(Kind::KwFor) {
             self.advance();
         }
+        // Consume the name
         if Self::can_be_identifier(self.peek().kind) {
             self.advance();
         }
+        // Consume optional BIND/APPEND/BY-VALUE
         while matches!(
             self.peek().kind,
             Kind::Bind | Kind::Append | Kind::ByValue | Kind::ByReference
@@ -783,6 +918,8 @@ impl Parser<'_> {
             span: tok_span(&token),
             name: self.intern(&self.source[token.start..token.end]),
         };
+        // `DYNAMIC-NEW cls (args)`: a name before `(` is the class operand,
+        // not a function call, so it is taken as a plain identifier.
         let class =
             if Self::can_be_identifier(self.peek().kind) && self.check_at(1, Kind::LeftParen) {
                 let id = self.parse_identifier()?;
@@ -792,6 +929,7 @@ impl Parser<'_> {
             };
         let mut arguments: SmallVec<[ExprId; 8]> = SmallVec::new();
         arguments.push(class);
+        // Parse optional argument list
         if self.check(Kind::LeftParen) {
             self.advance();
             if !self.check(Kind::RightParen) {
@@ -818,11 +956,14 @@ impl Parser<'_> {
         self.expect_kind(Kind::LeftParen, "Expected '(' after DYNAMIC-FUNCTION")?;
         let mut arguments: SmallVec<[ExprId; 8]> = SmallVec::new();
         if !self.check(Kind::RightParen) {
+            // First arg is the function name string
             arguments.push(self.parse_expression()?);
+            // Optional IN handle clause
             if self.check(Kind::KwIn) {
                 self.advance();
                 arguments.push(self.parse_expression()?);
             }
+            // Additional comma-separated arguments, with parameter modes
             while self.check(Kind::Comma) {
                 self.advance();
                 arguments.push(self.parse_call_argument()?);
@@ -836,6 +977,8 @@ impl Parser<'_> {
     fn parse_can_find_primary(&mut self) -> ParseResult<ExprId> {
         self.advance(); // consume CAN-FIND
         self.expect_kind(Kind::LeftParen, "Expected '(' after CAN-FIND")?;
+
+        // Optional FIRST/LAST/CURRENT qualifier
         let find_type = match self.peek().kind {
             Kind::First => {
                 self.advance();
@@ -851,10 +994,16 @@ impl Parser<'_> {
             }
             _ => FindType::Unique,
         };
+
+        // Table/buffer name
         let buffer = self.parse_identifier()?;
+
+        // Optional OF table — related-record syntax: CAN-FIND(child OF parent)
         if self.check(Kind::Of) {
+            // consume OF
             self.advance();
             let lo = self.current;
+            // consume parent table name
             self.parse_identifier().ok();
             self.note_dropped(lo);
         }
@@ -875,6 +1024,8 @@ impl Parser<'_> {
     fn parse_can_find_options(
         &mut self,
     ) -> ParseResult<(oxabl_ast::LockType, Option<ExprId>, bool)> {
+        // The record-phrase options may come in any order; the first explicit
+        // lock type wins and WHERE may appear once.
         let mut lock_type = None;
         let mut where_clause = None;
         let mut no_error = false;
@@ -891,9 +1042,11 @@ impl Parser<'_> {
                 Kind::UseIndex => {
                     self.advance();
                     if Self::can_be_identifier(self.peek().kind) {
+                        // consume index name
                         self.advance();
                     }
                 }
+                // USING field [AND field]...
                 Kind::Using => {
                     self.advance();
                     self.nested(Self::parse_postfix)?;
@@ -928,6 +1081,7 @@ impl Parser<'_> {
         if self.check(Kind::LeftParen) {
             return self.parse_function_call(name);
         }
+        // Bare form: LOCKED table — parse the table name as the sole argument
         let arg_token = self.advance().clone();
         let arg_span = tok_span(&arg_token);
         let arg_name = Identifier {
@@ -949,9 +1103,15 @@ impl Parser<'_> {
             span: tok_span(&token),
             name: self.intern(&self.source[token.start..token.end]),
         };
+        // Parenthesized form: AVAILABLE(table) / AMBIGUOUS(table)
         if self.check(Kind::LeftParen) {
             return self.parse_function_call(name);
         }
+        // Bare form: AVAILABLE table / AMBIGUOUS table
+        // Use parse_postfix to handle database-qualified names like dictdb._file
+        // Guard: if the next token cannot be a buffer/table name, treat as bare
+        // AVAILABLE with no argument (bad practice but valid ABL — evaluates the
+        // default buffer in scope).
         if !Self::can_be_identifier(self.peek().kind) && !self.check(Kind::LeftParen) {
             return Ok(self.expr(ExpressionKind::FunctionCall {
                 name,
@@ -964,9 +1124,20 @@ impl Parser<'_> {
     }
 
     fn parse_handle_prefix_primary(&mut self) -> ExprId {
+        // consume TEMP-TABLE or BUFFER
         let _kw_token = self.advance();
+        // consume the table/buffer name
         let name_token = self.advance().clone();
+
+        // Extend with directly-adjacent Preprop or identifier parts so that
+        // compound names like `dataset ds{&mainTable}` or `buffer b-{&tbl}`
+        // are consumed whole. Without this, the adjacent preprop is left as
+        // the next token and the postfix `:member` access is never parsed.
         let end = self.extend_adjacent_compound_end(name_token.end, true);
+
+        // Use only the handle *name* (qh), not the keyword prefix (QUERY).
+        // `QUERY qh:ATTR` is handle-qualified access; resolving "QUERY qh"
+        // as a single atom always fails LINT0001 (#58 item C).
         let identifier = Identifier {
             span: Span {
                 start: span_u32(name_token.start),
@@ -987,6 +1158,9 @@ impl Parser<'_> {
             return self.parse_function_call(name);
         }
         let mut arguments: SmallVec<[ExprId; 4]> = SmallVec::new();
+        // Form 1 aggregate-type word (TOTAL, COUNT, ...): a lone word followed by BY or
+        // by the field. It is a phrase keyword, not an expression, so it is consumed
+        // without becoming an argument.
         if Self::can_be_identifier(self.peek().kind)
             && (self.peek_at(1).kind == Kind::By || Self::can_be_identifier(self.peek_at(1).kind))
         {
@@ -996,11 +1170,15 @@ impl Parser<'_> {
         {
             arguments.push(first_expr);
         }
+        // Form 2: the first operand was the field; the parenthesised spec follows.
+        // Consume '(' ... ')' and return.
         if self.check(Kind::LeftParen) {
             self.skip_balanced_parens();
             let arguments = self.push_expr_list(&arguments);
             return Ok(self.expr(ExpressionKind::FunctionCall { name, arguments }));
         }
+        // Form 1: first operand was the aggregate-type.
+        // optional BY break-field [label] (may be qualified: table.field)
         if self.check(Kind::By) {
             self.advance();
             if Self::can_be_identifier(self.peek().kind) {
@@ -1008,10 +1186,13 @@ impl Parser<'_> {
                 self.nested(Self::parse_postfix).ok();
                 self.note_dropped(lo);
             }
+            // Optional label (integer or string) identifying the break level
             if matches!(self.peek().kind, Kind::IntegerLiteral | Kind::StringLiteral) {
                 self.advance();
             }
         }
+        // field name — may be an identifier, qualified field, indexed access, or
+        // parenthesized expression like (expr1 - expr2)
         if (Self::can_be_identifier(self.peek().kind) || self.check(Kind::LeftParen))
             && let Ok(field_expr) = self.nested(Self::parse_postfix)
         {
@@ -1022,6 +1203,7 @@ impl Parser<'_> {
     }
 
     fn skip_balanced_parens(&mut self) {
+        // consume '('
         self.advance();
         let mut depth = 1usize;
         while depth > 0 && !self.at_end() {
@@ -1041,6 +1223,9 @@ impl Parser<'_> {
 
     fn parse_identifier_or_call_primary(&mut self) -> ParseResult<ExprId> {
         let token = self.advance().clone();
+
+        // identifier{&suffix} compound: e.g. b-{&line-buffer} (direct adjacency only).
+        // Also handles adjacent hyphen-word: e.g. b-{&preproc}-suffix.
         let end = self.extend_adjacent_compound_end(token.end, false);
         let identifier = Identifier {
             span: Span {
@@ -1049,9 +1234,12 @@ impl Parser<'_> {
             },
             name: self.intern_ident(token.start, end),
         };
+
+        // Check for function call: identifier/callable followed by '('
         if self.check(Kind::LeftParen) {
             return self.parse_function_call(identifier);
         }
+
         Ok(self.expr(ExpressionKind::Identifier(identifier)))
     }
 

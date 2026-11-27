@@ -151,7 +151,7 @@ pub fn lex_counts_if_counted() -> Option<(usize, usize, usize)> {
 }
 
 fn parse_integer_literal(kind: &mut Kind, text: &str) -> TokenValue {
-    // Handle ABL trailing-minus notation: "119999-" -> -119999.
+    // Handle ABL trailing-minus notation: "119999-" → -119999
     let (digits, neg) = match text.strip_suffix('-') {
         Some(stripped) => (stripped, true),
         None => (text, false),
@@ -163,8 +163,9 @@ fn parse_integer_literal(kind: &mut Kind, text: &str) -> TokenValue {
         *kind = Kind::BigIntLiteral;
         return TokenValue::BigInt(if neg { -big_int } else { big_int });
     }
-    // Past i64 an ABL integer literal is a decimal. Beyond the decimal range
-    // the token keeps no value, and the parser reports it.
+    // Past i64 an ABL integer literal is a decimal. Beyond
+    // the decimal range the token keeps no value, and the
+    // parser reports it.
     *kind = Kind::DecimalLiteral;
     match digits.parse::<Decimal>() {
         Ok(decimal) => TokenValue::Decimal(if neg { -decimal } else { decimal }),
@@ -173,7 +174,7 @@ fn parse_integer_literal(kind: &mut Kind, text: &str) -> TokenValue {
 }
 
 fn parse_decimal_literal(text: &str) -> TokenValue {
-    // Handle ABL trailing-minus notation: "1.0-" -> -1.0.
+    // Handle ABL trailing-minus notation: "1.0-" → -1.0
     let (digits, neg) = match text.strip_suffix('-') {
         Some(stripped) => (stripped, true),
         None => (text, false),
@@ -185,9 +186,11 @@ fn parse_decimal_literal(text: &str) -> TokenValue {
 }
 
 fn string_literal_value(bytes: &[u8], start: usize, end: usize) -> TokenValue {
-    // Strip quotes while preserving raw escapes (~n) for source mapping.
-    // ABL translation suffixes like :U or :T are part of the token span
-    // but excluded from the stored value.
+    // use +1 and -1 to remove the quotes from our string literal
+    // NOTE - We store escaped characters (~n) as-is to retain
+    // original source mapping, any escapes can be handled later on
+    // ABL translation suffixes like :U or :T are consumed into the token
+    // span but excluded from the stored value.
     let content_end = if end >= 4 && bytes[end - 2] == b':' && bytes[end - 1].is_ascii_alphabetic()
     {
         end - 3
@@ -201,7 +204,7 @@ fn string_literal_value(bytes: &[u8], start: usize, end: usize) -> TokenValue {
 }
 
 fn include_reference_value(source: &str, start: usize, end: usize) -> TokenValue {
-    // Store trimmed content between braces (excluding `{` and `}`).
+    // Store trimmed content between braces (excluding { and })
     let inner = &source[start + 1..end - 1];
     let from = start + 1 + (inner.len() - inner.trim_start().len());
     TokenValue::Text {
@@ -347,19 +350,34 @@ impl<'a> Lexer<'a> {
     fn read_next_kind(&mut self, start: usize) -> Kind {
         while let Some(c) = self.advance() {
             match c {
+                // whitespace, skip (we skip earlier, this is a sanity check)
                 ' ' | '\t' => continue,
                 '\n' if self.in_directive => {
                     self.in_directive = false;
                     return Kind::PreprocEnd;
                 }
                 '\n' => continue,
+
+                // if it starts with an operator it must be one
                 '+' | '-' | '*' | '/' | '=' | '>' | '<' => return self.read_operator_kind(c),
                 '?' => return Kind::Question,
+
+                // If it starts with a quote, must be a string literal
                 '"' | '\'' => return self.read_string_literal(c),
+                // If it starts with a digit, must be a number literal
                 '0'..='9' => return self.read_number_literal(),
+
+                // If it starts with a letter or underscore, could be keyword or identifier
                 'a'..='z' | 'A'..='Z' | '_' => return self.read_identifier_or_keyword(start),
+
+                // A '.' followed by a digit is a decimal literal like .01, .5, .123
+                // Otherwise it's a statement terminator.
                 '.' => return self.read_period_or_decimal(),
+
+                // Colons are always on their own, can't be used in identifiers or keywords
                 ':' => return self.read_colon(),
+
+                // Punctuation
                 '(' => return Kind::LeftParen,
                 ')' => return Kind::RightParen,
                 '[' => return Kind::LeftBracket,
@@ -367,9 +385,16 @@ impl<'a> Lexer<'a> {
                 '{' => return self.read_open_brace(start),
                 '}' => return Kind::RightBrace,
                 ',' => return Kind::Comma,
+
+                // Preprocessor directives like &if, &scoped-define
                 '&' => return self.read_preprocessor_directive(start),
+                // '@' is ABL's field-format reference operator in DISPLAY (same as keyword AT)
                 '@' => return Kind::At,
+                // '^' skips a field in IMPORT and PROMPT-FOR.
                 '^' => return Kind::Caret,
+                // Tilde (~) is ABL's line-continuation character.
+                // Inside &SCOPED-DEFINE / &GLOBAL-DEFINE: skip ~ and \n without ending directive.
+                // Outside directives: also skip ~ followed by \n as a line continuation.
                 '~' => {
                     self.skip_line_continuation();
                     continue;
@@ -389,6 +414,7 @@ impl<'a> Lexer<'a> {
             '+' => self.match_equals(Kind::PlusEquals, Kind::Add),
             '-' => self.match_equals(Kind::MinusEquals, Kind::Minus),
             '*' => self.match_equals(Kind::StarEquals, Kind::Star),
+            // could be divide, could be a comment
             '/' => match self.peek() {
                 Some('=') => {
                     self.advance();
@@ -432,6 +458,7 @@ impl<'a> Lexer<'a> {
 
     fn read_period_or_decimal(&mut self) -> Kind {
         if matches!(self.peek(), Some('0'..='9')) {
+            // Consume digits after the decimal point
             while matches!(self.peek(), Some('0'..='9')) {
                 self.advance();
             }
@@ -451,20 +478,26 @@ impl<'a> Lexer<'a> {
 
     fn read_open_brace(&mut self, start: usize) -> Kind {
         match self.peek() {
+            // Preprocessor references {&thing}
             Some('&') => {
                 self.advance();
                 self.read_preprocessor_reference(start)
             }
+            // Include positional argument references {0}, {1}, {2}, etc.
             Some('0'..='9') => self.read_include_arg_reference(start),
+            // Include file references {file.i}, {path/file.i args}
+            // Also handles {{&var}...} where include path starts with a preproc variable
             Some('a'..='z' | 'A'..='Z' | '/' | '.' | '"' | '{') => {
                 self.read_include_reference(start)
             }
+            // Leading whitespace inside braces - look ahead to determine type
             Some(c) if c.is_ascii_whitespace() => self.read_ws_prefixed_brace(start),
             _ => Kind::LeftBrace,
         }
     }
 
     fn read_ws_prefixed_brace(&mut self, start: usize) -> Kind {
+        // Peek past whitespace to find first meaningful char
         let mut lookahead = self.chars.clone();
         let first_non_ws = loop {
             match lookahead.next() {
@@ -487,10 +520,12 @@ impl<'a> Lexer<'a> {
         }
         if matches!(self.peek(), Some('\n')) {
             self.advance();
+            // Stay in directive; do not emit PreprocEnd
+            // else: \n was already consumed; loop continues to next char
         }
     }
 
-    // Read and return the next token in the source.
+    // Read and return the next token in the source
     fn read_next_token(&mut self) -> Token {
         self.normalized_word = None;
         self.skip_whitespace();
@@ -521,11 +556,14 @@ impl<'a> Lexer<'a> {
                 .parse()
                 .map_or(TokenValue::None, TokenValue::BigInt),
             Kind::DecimalLiteral => parse_decimal_literal(&self.source[start..end]),
+            // The value of a date constant depends on the `-d` startup
+            // parameter, so the token keeps its spelling.
             Kind::DateLiteral => TokenValue::Text { start, end },
             Kind::StringLiteral => string_literal_value(self.source.as_bytes(), start, end),
             Kind::KwTrue => TokenValue::Boolean(true),
             Kind::KwFalse => TokenValue::Boolean(false),
             Kind::IncludeReference => include_reference_value(self.source, start, end),
+            // Store the positional argument index
             Kind::IncludeArgReference => self.source[start + 1..end - 1]
                 .parse::<i32>()
                 .map_or(TokenValue::None, TokenValue::Integer),
@@ -533,6 +571,7 @@ impl<'a> Lexer<'a> {
                 .normalized_word
                 .take()
                 .map_or(TokenValue::None, TokenValue::String),
+            // Tokens with no value (operators and keywords) just don't set a value
             _ => TokenValue::None,
         }
     }
