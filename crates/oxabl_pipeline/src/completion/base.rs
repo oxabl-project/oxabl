@@ -78,7 +78,7 @@ pub(crate) fn map(
     let (stale, prefix, suffix) = match tokens.diff_from(base.text) {
         TextDiff::Same => (false, new.len(), 0),
         TextDiff::Differs { prefix, suffix } => (true, prefix, suffix),
-        TextDiff::Unknown if old == new => (false, new.len(), 0),
+        TextDiff::Unknown if std::ptr::eq(old, new) || old == new => (false, new.len(), 0),
         TextDiff::Unknown => {
             let (prefix, suffix) = super::tokens::common_ends(old, new);
             (true, prefix, suffix)

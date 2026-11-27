@@ -184,11 +184,17 @@ pub(crate) fn of_request<'p>(text: &str, cursor: u32, prior: Option<Prior<'p>>) 
 const AFTER: usize = 2;
 
 /// The length of the common start of `old` and `new`, and of their common end
-/// that does not overlap it. Compares 8-byte chunks first to avoid per-byte
-/// loop overhead on large documents.
+/// that does not overlap it. Fast-paths equal slices through SIMD `memcmp`
+/// before scanning mismatching ends in 32-byte and 8-byte chunks.
 pub(crate) fn common_ends(old: &[u8], new: &[u8]) -> (usize, usize) {
+    if std::ptr::eq(old, new) || old == new {
+        return (old.len(), 0);
+    }
     let min_len = old.len().min(new.len());
     let mut prefix = 0;
+    while prefix + 32 <= min_len && old[prefix..prefix + 32] == new[prefix..prefix + 32] {
+        prefix += 32;
+    }
     while prefix + 8 <= min_len && old[prefix..prefix + 8] == new[prefix..prefix + 8] {
         prefix += 8;
     }
@@ -200,6 +206,12 @@ pub(crate) fn common_ends(old: &[u8], new: &[u8]) -> (usize, usize) {
     let mut suffix = 0;
     let old_len = old.len();
     let new_len = new.len();
+    while suffix + 32 <= room
+        && old[old_len - suffix - 32..old_len - suffix]
+            == new[new_len - suffix - 32..new_len - suffix]
+    {
+        suffix += 32;
+    }
     while suffix + 8 <= room
         && old[old_len - suffix - 8..old_len - suffix]
             == new[new_len - suffix - 8..new_len - suffix]
@@ -366,5 +378,26 @@ mod tests {
             TokenStream::from_slice(&tokens).diff_from(old),
             TextDiff::Unknown
         );
+    }
+
+    #[test]
+    fn common_ends_handles_equal_slices_and_long_chunked_matches() {
+        let long = "DEFINE VARIABLE total AS INTEGER NO-UNDO.\n".repeat(4);
+        let cloned = long.clone();
+        assert_eq!(
+            common_ends(long.as_bytes(), long.as_bytes()),
+            (long.len(), 0)
+        );
+        assert_eq!(
+            common_ends(long.as_bytes(), cloned.as_bytes()),
+            (long.len(), 0)
+        );
+
+        let mut edited = long.clone();
+        let at = 75;
+        edited.insert_str(at, "/* edit */");
+        let (prefix, suffix) = common_ends(long.as_bytes(), edited.as_bytes());
+        assert_eq!(prefix, at);
+        assert_eq!(suffix, long.len() - at);
     }
 }

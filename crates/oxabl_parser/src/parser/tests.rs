@@ -12232,6 +12232,20 @@ fn comments_leading_only_file_still_captured() {
 }
 
 #[test]
+fn without_comments_skips_comment_table_but_keeps_identical_statements() {
+    let source = "// leading\nDEFINE VARIABLE x AS INTEGER NO-UNDO. /* mid */\nx = 1. // end\n";
+    let tokens = tokenize(source);
+    let with_comments = Parser::new(&tokens, source).parse_program();
+    let without_comments = Parser::new(&tokens, source)
+        .without_comments()
+        .parse_program();
+    assert_eq!(with_comments.comments.len(), 3);
+    assert!(without_comments.comments.is_empty());
+    assert_eq!(with_comments.statements, without_comments.statements);
+    assert_eq!(with_comments.pools, without_comments.pools);
+}
+
+#[test]
 fn comments_appbuilder_directive_is_line_excluding_newline() {
     let source = "&ANALYZE-SUSPEND _VERSION-NUMBER\nvar x as int.";
     let comments = collect_program_comments(source);

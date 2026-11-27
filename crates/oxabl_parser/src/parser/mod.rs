@@ -226,6 +226,14 @@ pub struct Parser<'a> {
     /// token slice contains no comments at all (`collect_comments` skips its
     /// scan in O(1)).
     first_comment: Option<usize>,
+    /// Exclusive end index of leading comments skipped by [`Parser::new`].
+    /// When `has_comments` is `false`, no comments exist at or after this
+    /// index, so `collect_comments` stops here instead of scanning the file.
+    leading_comments_end: usize,
+    /// Whether [`parse_program_between`](Self::parse_program_between) builds
+    /// [`Program::comments`]. Defaults to `true`; non-formatter callers disable
+    /// it via [`Parser::without_comments`].
+    collect_comments: bool,
     /// Monotonic allocator for node ids assigned to parser-produced
     /// [`Statement`]s. See `docs/design/ast-invariants.md` §NodeId invariants.
     node_ids: NodeIdAllocator,
@@ -308,6 +316,7 @@ impl<'a> Parser<'a> {
         while current < tokens.len() && tokens[current].kind == Kind::Comment {
             current += 1;
         }
+        let leading_comments_end = current;
         // Record the first comment after the leading block so `advance()` can
         // skip `skip_comments()` when none remain and `collect_comments()` can
         // return in O(1) for comment-free files.
@@ -341,6 +350,8 @@ impl<'a> Parser<'a> {
             current,
             has_comments,
             first_comment,
+            leading_comments_end,
+            collect_comments: true,
             node_ids: NodeIdAllocator::new(),
             names: NameInterner::with_capacity(name_cap, byte_cap),
             exprs: ExprPool::with_capacity(expr_cap, list_cap),
@@ -609,8 +620,41 @@ impl<'a> Parser<'a> {
     /// Prevents infinite loops when error recovery cannot make progress.
     const MAX_ERRORS: usize = 50;
 
-    /// Upper bound on the initial capacity of the top-level statement list.
+    /// Lower threshold above which the top-level statement list scales from
+    /// token count rather than counting periods directly.
     const PRESIZED_STATEMENTS: usize = 64;
+
+    /// Upper bound on the initial capacity of the top-level statement list.
+    const MAX_PRESIZED_STATEMENTS: usize = 16_384;
+
+    /// Skip collecting [`Program::comments`].
+    ///
+    /// Semantic analysis, linting, indexing, and navigation never read the
+    /// comment table, so skipping the final token-slice scan avoids a full
+    /// sweep over the token vector.
+    #[must_use]
+    pub fn without_comments(mut self) -> Self {
+        self.collect_comments = false;
+        self
+    }
+
+    /// Estimate initial capacity for the top-level statement list without
+    /// scanning large token slices.
+    fn estimate_statements(&self) -> usize {
+        let start = self.current.min(self.tokens.len());
+        let remaining = &self.tokens[start..];
+        if remaining.len() < Self::PRESIZED_STATEMENTS {
+            return remaining.iter().filter(|t| t.kind == Kind::Period).count();
+        }
+        let header = &remaining[..remaining.len().min(32)];
+        if header
+            .iter()
+            .any(|t| matches!(t.kind, Kind::Class | Kind::Interface | Kind::KwEnum))
+        {
+            return 16;
+        }
+        (remaining.len() / 80).clamp(Self::PRESIZED_STATEMENTS, Self::MAX_PRESIZED_STATEMENTS)
+    }
 
     pub fn parse_program(&mut self) -> Program {
         self.parse_program_between(|| {})
@@ -623,16 +667,7 @@ impl<'a> Parser<'a> {
     pub fn parse_program_between(&mut self, mut between: impl FnMut()) -> Program {
         #[cfg(feature = "test-counters")]
         crate::count_parse(self.tokens);
-        // Every top-level statement ends at a period, so the capped period
-        // count sizes the list without reallocating large statements as it
-        // grows. Nested statements make it an overestimate; the slack is
-        // released below.
-        let estimate = self.tokens[self.current.min(self.tokens.len())..]
-            .iter()
-            .filter(|t| t.kind == Kind::Period)
-            .take(Self::PRESIZED_STATEMENTS)
-            .count();
-        let mut statements = Vec::with_capacity(estimate);
+        let mut statements = Vec::with_capacity(self.estimate_statements());
 
         while !self.at_end() {
             if self.errors.len() >= Self::MAX_ERRORS {
@@ -678,11 +713,14 @@ impl<'a> Parser<'a> {
         // parse_statement calls. This preserves the aggregate error-reporting
         // contract even though block bodies now recover instead of bubbling.
         debug_assert_stmt_sibling_order(&statements);
-        // A file with one top-level statement, such as a class, would keep the
-        // capacity of `PRESIZED_STATEMENTS` statements. The expression and name
-        // pools keep theirs: their shrink costs more than most parses gain,
-        // because most programs are dropped at once.
-        statements.shrink_to_fit();
+        // Shrink only when unused capacity is large: a file with few top-level
+        // statements (such as a class or procedure file) releases slack while
+        // large flat files avoid a multi-megabyte realloc copy.
+        if statements.capacity() > Self::PRESIZED_STATEMENTS
+            && statements.capacity() > statements.len().saturating_mul(2)
+        {
+            statements.shrink_to_fit();
+        }
         let comments = self.collect_comments();
         let pools = AstPools {
             names: std::mem::take(&mut self.names).finish(),
@@ -703,16 +741,24 @@ impl<'a> Parser<'a> {
     /// fast-path, so no skip site can leak a dropped comment (origin R3.4). It
     /// does **not** gate on `has_comments` (KTD2): that flag is `false` for a
     /// file whose only comments are leading, so gating on it would lose them
-    /// (`first_comment` covers the leading ones). The token stream is already
-    /// source-ordered, so the result is sorted by `span.start` with no explicit
-    /// sort, and the `Vec` allocates only when comments exist. A file with no
-    /// comment returns in O(1) without scanning the token slice.
+    /// (`first_comment` covers the leading ones, bounded by
+    /// `leading_comments_end`). The token stream is already source-ordered, so
+    /// the result is sorted by `span.start` with no explicit sort, and the
+    /// `Vec` allocates only when comments exist.
     fn collect_comments(&self) -> Vec<Comment> {
+        if !self.collect_comments {
+            return Vec::new();
+        }
         let Some(start_idx) = self.first_comment else {
             return Vec::new();
         };
+        let scan_end = if self.has_comments {
+            self.tokens.len()
+        } else {
+            self.leading_comments_end
+        };
         let mut comments = Vec::new();
-        for token in &self.tokens[start_idx..] {
+        for token in &self.tokens[start_idx..scan_end] {
             if token.kind != Kind::Comment {
                 continue;
             }

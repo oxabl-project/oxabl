@@ -308,8 +308,19 @@ impl PipelineConfig {
     /// Warnings are non-fatal by construction — a malformed `oxabl.toml` yields
     /// defaults plus one [`ConfigWarning::Config`], never an error.
     pub fn resolve(anchor: &Path, overrides: &ConfigOverrides) -> (Self, Vec<ConfigWarning>) {
-        let (config, warnings, _) = resolve_at(anchor, overrides, SchemaLoading::Load);
+        let (config, warnings, _, _) = resolve_at(anchor, overrides, SchemaLoading::Load);
         (config, warnings)
+    }
+
+    /// Like [`resolve`](Self::resolve), also returning the [`ConfigInputs`]
+    /// consulted on disk so a daemon can stamp them and reuse the loaded
+    /// configuration and schema across incremental passes.
+    pub fn resolve_with_inputs(
+        anchor: &Path,
+        overrides: &ConfigOverrides,
+    ) -> (Self, Vec<ConfigWarning>, ConfigInputs) {
+        let (config, warnings, _, inputs) = resolve_at(anchor, overrides, SchemaLoading::Load);
+        (config, warnings, inputs)
     }
 
     /// [`resolve`](Self::resolve) for an editor. With no `oxabl.toml` above the
@@ -321,7 +332,7 @@ impl PipelineConfig {
         anchor: &Path,
         overrides: &ConfigOverrides,
     ) -> (Self, Vec<ConfigWarning>) {
-        let (mut config, warnings, found) = resolve_at(anchor, overrides, SchemaLoading::Load);
+        let (mut config, warnings, found, _) = resolve_at(anchor, overrides, SchemaLoading::Load);
         if !found {
             config.features = FeaturesConfig::OFF;
         }
@@ -347,8 +358,61 @@ impl PipelineConfig {
         anchor: &Path,
         overrides: &ConfigOverrides,
     ) -> (Self, Vec<ConfigWarning>) {
-        let (config, warnings, _) = resolve_at(anchor, overrides, SchemaLoading::Skip);
+        let (config, warnings, _, _) = resolve_at(anchor, overrides, SchemaLoading::Skip);
         (config, warnings)
+    }
+}
+
+/// Files and directories read when resolving a [`PipelineConfig`], so a
+/// long-lived daemon can stamp them and reuse the resolved configuration and
+/// loaded schema while none of them have changed on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigInputs {
+    /// Nearest ancestor directory holding `oxabl.toml`, if any.
+    pub config_root: Option<PathBuf>,
+    /// Files and directories consulted during resolution (`oxabl.toml`,
+    /// configured schema entries, and expanded `.df` files).
+    pub paths: Vec<PathBuf>,
+}
+
+impl ConfigInputs {
+    /// Discover the configuration root for `anchor` using the same rule as
+    /// [`PipelineConfig::resolve`].
+    pub fn discover_root(anchor: &Path) -> Option<PathBuf> {
+        let dir = start_dir(anchor);
+        find_workspace_root(&dir)
+    }
+}
+
+/// Collect the filesystem paths that [`resolve_at`] reads for `root` and
+/// `parsed`, without re-parsing any `.df` file.
+fn collect_config_inputs(
+    root: Option<&Path>,
+    parsed: Option<&WorkspaceConfig>,
+    overrides: &ConfigOverrides,
+) -> ConfigInputs {
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push_unique = |path: PathBuf| {
+        if seen.insert(path.clone()) {
+            paths.push(path);
+        }
+    };
+    if let Some(root) = root {
+        push_unique(root.join("oxabl.toml"));
+        if let Some(config) = parsed {
+            for entry in schema_entries(config, root, overrides.schema_path.as_ref()) {
+                push_unique(entry);
+            }
+            let mut warnings = Vec::new();
+            for file in schema_files(config, root, overrides.schema_path.as_ref(), &mut warnings) {
+                push_unique(file);
+            }
+        }
+    }
+    ConfigInputs {
+        config_root: root.map(Path::to_path_buf),
+        paths,
     }
 }
 
@@ -370,7 +434,7 @@ fn resolve_at(
     anchor: &Path,
     overrides: &ConfigOverrides,
     schema: SchemaLoading,
-) -> (PipelineConfig, Vec<ConfigWarning>, bool) {
+) -> (PipelineConfig, Vec<ConfigWarning>, bool, ConfigInputs) {
     let start_dir = start_dir(anchor);
 
     let root = find_workspace_root(&start_dir);
@@ -379,24 +443,31 @@ fn resolve_at(
     match parsed {
         // A config exists and parsed: derive everything from that one value.
         Some((root, Ok(config))) => {
+            let inputs = if schema == SchemaLoading::Load {
+                collect_config_inputs(Some(root), Some(&config), overrides)
+            } else {
+                collect_config_inputs(Some(root), None, overrides)
+            };
             let (config, warnings) = derive(&config, root, overrides, schema);
-            (config, warnings, true)
+            (config, warnings, true, inputs)
         }
         // A config exists but is unreadable or malformed. Degrade every
         // configured surface to its default and report once — not once per
         // surface, which is what the three `resolved_*` helpers do today.
         Some((root, Err(message))) => {
+            let inputs = collect_config_inputs(Some(root), None, overrides);
             let (mut config, mut warnings) =
                 derive(&WorkspaceConfig::defaults(), root, overrides, schema);
             config.features = FeaturesConfig::OFF;
             warnings.insert(0, ConfigWarning::Config(message));
-            (config, warnings, true)
+            (config, warnings, true, inputs)
         }
         // No config anywhere above the anchor: overrides only, silently.
         None => {
+            let inputs = collect_config_inputs(None, None, overrides);
             let (config, warnings) =
                 derive(&WorkspaceConfig::defaults(), &start_dir, overrides, schema);
-            (config, warnings, false)
+            (config, warnings, false, inputs)
         }
     }
 }

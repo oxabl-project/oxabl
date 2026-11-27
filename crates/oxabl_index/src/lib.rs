@@ -181,7 +181,9 @@ pub fn program_signatures_at(
 ) -> (Option<ProgramSignatures>, Vec<PathBuf>) {
     fn parse(source: &str) -> Option<ProgramSignatures> {
         let tokens = oxabl_lexer::tokenize(source);
-        let program = Parser::new(&tokens, source).parse_program();
+        let program = Parser::new(&tokens, source)
+            .without_comments()
+            .parse_program();
         program
             .is_ok()
             .then(|| ProgramSignatures::of(&program.statements, &program.pools))
@@ -506,7 +508,9 @@ impl<'s> Written<'s> {
     /// `None` when the parse recovered an error.
     fn parse(source: &'s str) -> Option<Self> {
         let tokens = oxabl_lexer::tokenize(source);
-        let program = Parser::new(&tokens, source).parse_program();
+        let program = Parser::new(&tokens, source)
+            .without_comments()
+            .parse_program();
         program.is_ok().then_some(Written {
             source,
             tokens,

@@ -15,9 +15,8 @@ pub struct PreprocIf<T> {
     pub else_branch: Option<T>,
 }
 
-// Guard against accidental growth of the AST's central enum. `StatementKind`'s
-// size is set by its largest variants, `BufferCopy` (713 bytes) and `Assign`
-// (656 bytes), which embed several `Expression`s inline. Gated to
+// Guard against accidental growth of the AST's central enum. Expressions and
+// names live in `AstPools`, so `StatementKind` fits within 168 bytes. Gated to
 // 64-bit; bump the bound deliberately if a variant legitimately grows.
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<StatementKind>() <= 168);

@@ -136,7 +136,7 @@ compares the bytes that the returned `Program` keeps:
 | Stage | Allocations | Bytes | Kept |
 | --- | --- | --- | --- |
 | lex | 1 | 1,241,136 | |
-| parse | 894 | 1,877,634 | 1,186,066 |
+| parse | 891 | 1,792,194 | 1,186,642 |
 
 The kept bytes include the capacity that the vectors of the program do not use
 (274,418 bytes here): the parser sizes the pools from the number of tokens and

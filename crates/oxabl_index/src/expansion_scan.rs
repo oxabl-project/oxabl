@@ -46,7 +46,9 @@ pub(crate) fn may_declare_a_type(tokens: &[Token]) -> bool {
 /// not parse, is nothing but includes and directives, or declares a class or
 /// interface at file level.
 pub(crate) fn parsed(source: &str, tokens: &[Token]) -> bool {
-    let program = Parser::new(tokens, source).parse_program();
+    let program = Parser::new(tokens, source)
+        .without_comments()
+        .parse_program();
     !program.is_ok()
         || crate::only_includes(&program.statements)
         || program.statements.iter().any(is_header)
