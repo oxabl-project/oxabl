@@ -39,6 +39,11 @@ use crate::builtin_signatures::{parameter_ranges, syntaxes};
 use crate::hints::{InlayHint, InlayKind};
 use crate::keyword_docs::DocKind;
 
+mod callee;
+
+use callee::argument_keyword;
+pub use callee::{ArgumentKeyword, CallAt, Callee, CalleeParameter};
+
 /// How many tokens a scan from the cursor reads before it gives up.
 const MAX_SCAN: usize = 20_000;
 
@@ -117,6 +122,7 @@ struct Param {
     name: Option<String>,
     /// `None` when the declaration does not state it.
     mode: Option<ParamMode>,
+    keyword: ArgumentKeyword,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -595,38 +601,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         if !doc.reserved && self.nav.may_hide_routines(node) {
             return None;
         }
-        let documentation = doc_markdown(doc);
-        let sigs: Vec<Sig> = syntaxes(full)
-            .map(|builtin| Sig {
-                info: SignatureInfo {
-                    label: builtin.label.to_string(),
-                    parameters: parameter_ranges(builtin),
-                    active_parameter: None,
-                    documentation: Some(documentation.clone()),
-                },
-                params: builtin
-                    .params
-                    .iter()
-                    .map(|_| Param {
-                        name: None,
-                        mode: None,
-                    })
-                    .collect(),
-                slots: builtin
-                    .params
-                    .iter()
-                    .map(|_| Slot {
-                        width: 1,
-                        include: None,
-                    })
-                    .collect(),
-                call: None,
-                repeats: builtin.repeats,
-                max_args: builtin.max_args,
-                modes_known: false,
-            })
-            .collect();
-        (!sigs.is_empty()).then_some(sigs)
+        builtin_table_sigs(full, doc)
     }
 
     /// The constructors of class `class` that `access` reaches.
@@ -996,6 +971,44 @@ fn constructors(
     (!sigs.is_empty()).then_some(sigs)
 }
 
+/// The syntaxes of the built-in function `full` that the table of
+/// `builtin_signatures.rs` holds.
+fn builtin_table_sigs(full: &str, doc: &crate::keyword_docs::KeywordDoc) -> Option<Vec<Sig>> {
+    let documentation = doc_markdown(doc);
+    let sigs: Vec<Sig> = syntaxes(full)
+        .map(|builtin| Sig {
+            info: SignatureInfo {
+                label: builtin.label.to_string(),
+                parameters: parameter_ranges(builtin),
+                active_parameter: None,
+                documentation: Some(documentation.clone()),
+            },
+            params: builtin
+                .params
+                .iter()
+                .map(|_| Param {
+                    name: None,
+                    mode: None,
+                    keyword: ArgumentKeyword::None,
+                })
+                .collect(),
+            slots: builtin
+                .params
+                .iter()
+                .map(|_| Slot {
+                    width: 1,
+                    include: None,
+                })
+                .collect(),
+            call: None,
+            repeats: builtin.repeats,
+            max_args: builtin.max_args,
+            modes_known: false,
+        })
+        .collect();
+    (!sigs.is_empty()).then_some(sigs)
+}
+
 /// The first class or interface in `statements`: the statement, its name and
 /// its body.
 fn class_of(statements: &[Statement]) -> Option<(&Statement, String, &[Statement])> {
@@ -1213,6 +1226,7 @@ fn signature(
             params.push(Param {
                 name: param_name(statement),
                 mode: Some(mode),
+                keyword: argument_keyword(statement),
             });
             call = match (call, call_param_of(statement)) {
                 (Some(mut list), Some(param)) => {
@@ -1263,6 +1277,7 @@ fn sig_clone(sig: &Sig) -> Sig {
             .map(|p| Param {
                 name: p.name.clone(),
                 mode: p.mode,
+                keyword: p.keyword,
             })
             .collect(),
         slots: sig.slots.clone(),
@@ -1358,6 +1373,53 @@ impl Navigation<'_, '_> {
     /// call does not resolve, or oxabl cannot tell all the declarations it may
     /// reach.
     pub fn signature_help(&self, file: &Path, offset: u32) -> Option<SignatureHelp> {
+        let resolver = Resolver::new(self);
+        let (call, commas, mut sigs) = self.resolved_call(&resolver, file, offset)?;
+        let tokens = &self.parsed().tokens;
+        let text = self.expanded.text.as_str();
+        let open = call.open;
+        let args = arguments(tokens, text, open);
+        let active = match sigs.len() {
+            1 => Some(0),
+            _ if args.items.iter().any(Option::is_none) => None,
+            _ => picked_sig(&sigs, &resolver.reach(tokens, text, &sigs, &args)),
+        };
+        if let Some(at) = active.filter(|at| *at > 0) {
+            let picked = sigs.remove(at);
+            sigs.insert(0, picked);
+        }
+        let signatures = sigs
+            .into_iter()
+            .map(|sig| {
+                let count = sig.info.parameters.len();
+                let active_parameter = match sig.slot_of(commas) {
+                    Some((slot, _)) => Some(slot),
+                    None if sig.repeats && count > 0 && sig.max_args.is_none_or(|m| commas < m) => {
+                        Some(count - 1)
+                    }
+                    None => None,
+                };
+                SignatureInfo {
+                    active_parameter,
+                    ..sig.info
+                }
+            })
+            .collect();
+        Some(SignatureHelp {
+            signatures,
+            active_signature: active.map(|_| 0),
+        })
+    }
+
+    /// The innermost call around byte `offset` of `file` that names a
+    /// callee, the commas before the cursor at its level, and the
+    /// declarations it may reach. `None` as [`Self::signature_help`].
+    fn resolved_call(
+        &self,
+        resolver: &Resolver<'_, '_, '_>,
+        file: &Path,
+        offset: u32,
+    ) -> Option<(Call, usize, Vec<Sig>)> {
         let file = search::normalize_lexically(file);
         if self.include_at(&file, offset).is_some() {
             return None;
@@ -1369,7 +1431,6 @@ impl Navigation<'_, '_> {
         let tokens = &self.parsed().tokens;
         let text = self.expanded.text.as_str();
         let end = tokens.partition_point(|t| t.start < virt as usize);
-        let resolver = Resolver::new(self);
         for (open, commas) in enclosing_opens(tokens, text, end) {
             let Some(call) = call_at(tokens, text, open) else {
                 continue;
@@ -1383,41 +1444,8 @@ impl Navigation<'_, '_> {
             {
                 continue;
             }
-            let mut sigs = resolver.resolve(tokens, text, &call)?;
-            let args = arguments(tokens, text, open);
-            let active = match sigs.len() {
-                1 => Some(0),
-                _ if args.items.iter().any(Option::is_none) => None,
-                _ => picked_sig(&sigs, &resolver.reach(tokens, text, &sigs, &args)),
-            };
-            if let Some(at) = active.filter(|at| *at > 0) {
-                let picked = sigs.remove(at);
-                sigs.insert(0, picked);
-            }
-            let signatures = sigs
-                .into_iter()
-                .map(|sig| {
-                    let count = sig.info.parameters.len();
-                    let active_parameter = match sig.slot_of(commas) {
-                        Some((slot, _)) => Some(slot),
-                        None if sig.repeats
-                            && count > 0
-                            && sig.max_args.is_none_or(|m| commas < m) =>
-                        {
-                            Some(count - 1)
-                        }
-                        None => None,
-                    };
-                    SignatureInfo {
-                        active_parameter,
-                        ..sig.info
-                    }
-                })
-                .collect();
-            return Some(SignatureHelp {
-                signatures,
-                active_signature: active.map(|_| 0),
-            });
+            let sigs = resolver.resolve(tokens, text, &call)?;
+            return Some((call, commas, sigs));
         }
         None
     }

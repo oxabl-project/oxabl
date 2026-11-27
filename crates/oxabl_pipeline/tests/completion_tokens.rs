@@ -73,6 +73,7 @@ fn ask(base_text: &str, text: &str, offset: usize, keyword_case: KeywordCase) ->
         path: &path,
         keyword_case,
         snippets: true,
+        call_arguments: Default::default(),
         trigger: None,
         config: &config,
         listing: &FreshListing(&fs),
@@ -83,6 +84,7 @@ fn ask(base_text: &str, text: &str, offset: usize, keyword_case: KeywordCase) ->
         fragment: false,
         stale: false,
         tokens,
+        callees: None,
     };
     Asked {
         list: complete(&request, Some(&base(Some(&tokens)))),
@@ -171,6 +173,7 @@ fn a_request_answers_as_with_a_full_lex_and_lexes_only_the_edit() {
         path: &path,
         keyword_case: KeywordCase::Uppercase,
         snippets: true,
+        call_arguments: Default::default(),
         trigger: None,
         config: &config,
         listing: &listing,
@@ -181,6 +184,7 @@ fn a_request_answers_as_with_a_full_lex_and_lexes_only_the_edit() {
         fragment: false,
         stale: false,
         tokens: Some(&tokens),
+        callees: None,
     };
     let (_, before, _) = lex_counts();
     let stale = request(&text, offset as u32);

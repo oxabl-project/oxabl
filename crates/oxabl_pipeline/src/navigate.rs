@@ -45,7 +45,9 @@ mod signature;
 
 pub use hover::Hover;
 pub use semantic::{SemanticKind, SemanticModifiers, SemanticToken};
-pub use signature::{SignatureHelp, SignatureInfo, close_open_call};
+pub use signature::{
+    ArgumentKeyword, CallAt, Callee, CalleeParameter, SignatureHelp, SignatureInfo, close_open_call,
+};
 
 /// Where a name is declared: a file, and the declaring name's bytes in it.
 /// `span` is `None` when the target is the file itself (a program, an include).

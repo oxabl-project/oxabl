@@ -33,6 +33,7 @@
 //! write is waiting (`WorkspaceIndex::checkpoint`). See
 //! `oxabl_daemon::db` and [`debounce`].
 
+mod call_fill;
 pub mod capabilities;
 mod code_lens;
 mod completion;
@@ -1202,7 +1203,10 @@ fn finish_handshake(
     Ok((
         Negotiated {
             options,
-            completion: completion::Options::from_client(&init.capabilities),
+            completion: completion::Options::from_client(
+                &init.capabilities,
+                init.initialization_options.as_ref(),
+            ),
             inlay,
             semantic,
             outline: outline_includes::Settings::from_init(init.initialization_options.as_ref()),
@@ -1481,6 +1485,8 @@ impl<'c> Server<'c> {
                                 self.handle_completion(req)?;
                             } else if req.method == ResolveCompletionItem::METHOD {
                                 self.handle_completion_resolve(req)?;
+                            } else if req.method == call_fill::METHOD {
+                                self.handle_call_arguments(req)?;
                             } else if req.method == SignatureHelpRequest::METHOD {
                                 self.handle_signature_help(req)?;
                             } else if req.method == DocumentHighlightRequest::METHOD {
@@ -1826,6 +1832,7 @@ impl<'c> Server<'c> {
                 self.handle_semantic_tokens_settings(&not.params);
                 self.handle_reference_lens_settings(&not.params);
                 self.handle_outline_settings(&not.params);
+                self.handle_completion_settings(&not.params);
                 self.handle_configuration_change(not.params);
             }
             DidCloseTextDocument::METHOD => {

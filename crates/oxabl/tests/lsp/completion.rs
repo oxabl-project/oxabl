@@ -184,11 +184,16 @@ impl Files {
     }
 
     pub fn start_with(self, capabilities: Value) -> Ws {
+        self.start_with_options(capabilities, Value::Null)
+    }
+
+    /// Start with `options` as the initialization options (`null`: none).
+    pub fn start_with_options(self, capabilities: Value, options: Value) -> Ws {
         let dir = tempfile::tempdir().unwrap();
         for (path, text) in &self.0 {
             write(&dir.path().join(path), text);
         }
-        let session = Session::start_with(dir.path(), capabilities);
+        let session = Session::start_with_options(dir.path(), capabilities, options);
         Ws { dir, session }
     }
 }

@@ -11,6 +11,7 @@
 //! [`CompletionList::incomplete`].
 
 mod base;
+mod call_fill;
 mod case;
 mod context;
 mod keywords;
@@ -29,6 +30,7 @@ use oxabl_semantic::{ScopeId, ScopeKind};
 use oxabl_style::KeywordCase;
 use oxabl_workspace::{DirEntry, FileSystem};
 
+pub use call_fill::{CallArguments, DeclaredCallees, ItemAction, OpenedCall, fill_call, open_call};
 pub use oxabl_lexer::Token;
 pub use tokens::Prior;
 
@@ -58,6 +60,8 @@ pub struct CompletionRequest<'r> {
     pub keyword_case: KeywordCase,
     /// Whether the client takes snippet items.
     pub snippets: bool,
+    /// What a call item inserts after its name: `docs/design/call-fill.md`.
+    pub call_arguments: CallArguments,
     /// The character the person typed that made the client ask, when it
     /// asked for that reason.
     pub trigger: Option<char>,
@@ -108,6 +112,9 @@ pub struct CompletionBase<'b, 's, 'a> {
     /// The tokens of `text`, as [`lex`] gives them. A request lexes only what
     /// differs from them. `None`: the request lexes the whole current text.
     pub tokens: Option<&'b [Token]>,
+    /// The declarations of the routines of the analysis, for the call fill.
+    /// `None`: a call item asks for its fill after the insert.
+    pub callees: Option<&'b DeclaredCallees>,
 }
 
 impl CompletionBase<'_, '_, '_> {
@@ -155,6 +162,8 @@ pub struct CompletionItem {
     pub snippet: bool,
     /// What `completionItem/resolve` reads.
     pub data: ItemData,
+    /// What the client does after it inserts the item.
+    pub action: ItemAction,
 }
 
 /// What an item is, for its icon.
@@ -627,16 +636,23 @@ impl Engine<'_, '_, '_, '_> {
         ranked.truncate(LIMIT);
         CompletionList {
             incomplete: incomplete || cut,
+            // The fill reads one declaration for each item, so it runs on the
+            // items that the cut keeps.
             items: ranked
                 .into_iter()
-                .map(|(sort_text, candidate)| CompletionItem {
-                    label: candidate.label,
-                    kind: candidate.kind,
-                    detail: candidate.detail,
-                    sort_text,
-                    insert: candidate.insert,
-                    snippet: candidate.snippet,
-                    data: candidate.data,
+                .map(|(sort_text, candidate)| {
+                    let mut item = CompletionItem {
+                        label: candidate.label,
+                        kind: candidate.kind,
+                        detail: candidate.detail,
+                        sort_text,
+                        insert: candidate.insert,
+                        snippet: candidate.snippet,
+                        data: candidate.data,
+                        action: ItemAction::None,
+                    };
+                    self.fill(&mut item);
+                    item
                 })
                 .collect(),
             word_start: self.found.word_start,
