@@ -21,8 +21,8 @@ pub use lint_severity::{LintLayer, LintRuleRef, LintSeverityMap};
 pub use panic_guard::{
     HOLD_TIME, INJECTION_ENABLED, InternalPanic, TEST_ABORT_MARKER, TEST_BOUND_MARKER,
     TEST_COUNT_MARKER, TEST_HOLD_MARKER, TEST_LIMIT_MARKER, TEST_PANIC_MARKER, abort_if_injected,
-    catch_panic, count_requested, hold_if_injected, hold_if_injected_with, injected_bound,
-    injected_limit, panic_if_injected, panic_sites,
+    catch_panic, count_requested, hold_if_injected, hold_if_injected_unless, hold_if_injected_with,
+    injected_bound, injected_limit, panic_if_injected, panic_sites,
 };
 pub use source_map::SourceMap;
 pub use test_counts::{schema_file_parsed, schema_files_parsed};

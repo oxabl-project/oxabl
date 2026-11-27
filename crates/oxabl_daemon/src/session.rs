@@ -177,6 +177,8 @@ pub struct Session {
     workspace_progress: Option<WorkspaceProgress>,
     /// The bases code completion reads, per open document.
     completion: Arc<crate::completion::Bases>,
+    /// The subtype index, and the build that makes it.
+    subtypes: Arc<crate::subtypes::IndexSlot>,
 }
 
 /// Live counters for one whole-workspace pass, plus the signal that it ended.
@@ -527,7 +529,13 @@ impl Session {
             workspace: None,
             workspace_progress: None,
             completion: Arc::default(),
+            subtypes: Arc::default(),
         }
+    }
+
+    /// The kept subtype index and its build.
+    pub(crate) fn subtype_slot(&self) -> Arc<crate::subtypes::IndexSlot> {
+        Arc::clone(&self.subtypes)
     }
 
     /// The bases code completion reads.

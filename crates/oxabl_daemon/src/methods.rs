@@ -913,6 +913,15 @@ fn run_claimed_pass(
                 // because the memoized diagnostics stay valid across the write and
                 // the next recompute is the first to use the wrong rules.
                 session.install_workspace(workspace.clone(), &progress);
+                // The subtype index reads the class files of the workspace.
+                // Its build is the background work that follows a pass, so the
+                // first request that needs it finds it ready.
+                if session
+                    .workspace()
+                    .is_some_and(|stored| Arc::ptr_eq(&stored.graph, &workspace.graph))
+                {
+                    crate::subtypes::after_pass(host, session, &workspace.graph);
+                }
                 Ok(Some(workspace))
             })
         }

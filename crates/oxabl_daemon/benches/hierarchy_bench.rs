@@ -2,24 +2,28 @@
 //!
 //! - `hierarchy/first_subtypes`: a workspace of one base class and 400 direct
 //!   subclasses, each with a few members. The setup opens a new session for the
-//!   root and runs the workspace pass, so no fact of a class file is memoized.
-//!   The timed part is the `subtypes` request for the base class: it reads the
-//!   facts of every class file and builds the reverse index.
+//!   root and runs the workspace pass. The daemon builds the subtype index on a
+//!   thread of its own after the pass, and the setup waits for it
+//!   (`wait_for_subtype_index`). The timed part is the `subtypes` request for
+//!   the base class, as the first request of a session meets the index.
 //! - `hierarchy/next_subtypes`: the same request on a session that already
-//!   answered one, so the facts of every class file are memoized. The
-//!   difference from `first_subtypes` is the cost of the first request.
+//!   answered one.
 //!
 //! The workspace is written once, in a temporary directory. The pass reads
 //! from disk, outside the timed part, and runs on the calling thread
 //! (`methods::limit_pass_jobs(1)`): CodSpeed counts the instructions of the
-//! thread that runs the bench and none of a worker's.
+//! thread that runs the bench and none of a worker's. The build of the index
+//! is on a thread of its own, so it is not in the number: the number is what
+//! the request itself costs.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use oxabl_daemon::SessionHost;
-use oxabl_daemon::hierarchy::{HierarchyQuery, TypeKey, answer_hierarchy};
+use oxabl_daemon::hierarchy::{
+    HierarchyQuery, NoProgress, TypeKey, answer_hierarchy, wait_for_subtype_index,
+};
 use oxabl_daemon::methods::{limit_pass_jobs, reference_graph};
 use oxabl_daemon::session::canonical_root;
 use oxabl_pipeline::PipelineConfig;
@@ -78,7 +82,8 @@ impl Workspace {
         }
     }
 
-    /// A new session whose workspace pass is current.
+    /// A new session whose workspace pass is current and whose subtype index is
+    /// built.
     fn session(&self) -> SessionHost {
         let host = SessionHost::new();
         // The configuration a client resolves from `oxabl.toml`.
@@ -99,6 +104,7 @@ impl Workspace {
             graph.gaps
         );
         assert_eq!(graph.graph.tracked_files().len(), SUBCLASSES + 1);
+        wait_for_subtype_index(&host, &self.root);
         host
     }
 
@@ -108,7 +114,7 @@ impl Workspace {
         query: &HierarchyQuery,
     ) -> oxabl_daemon::hierarchy::HierarchyAnswer {
         let cancel = AtomicBool::new(false);
-        answer_hierarchy(host, &self.root, &self.base, query, &cancel)
+        answer_hierarchy(host, &self.root, &self.base, query, &cancel, &NoProgress)
             .expect("the request is answered")
     }
 

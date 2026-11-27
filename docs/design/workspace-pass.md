@@ -113,6 +113,18 @@ records are shared one by one, so a pass does not copy the paths or the stamps.
    the daemon keeps the graph and the symbol rows that it has. A reference lens
    that holds the pass (`references::Pass`) then stays current.
 
+## What follows a pass
+
+A pass that the daemon stores starts the build of the subtype index on a thread
+of its own (`crates/oxabl_daemon/src/subtypes.rs`,
+`docs/design/type-hierarchy.md`). The build reads the facts of the class files
+and holds a database snapshot, so it follows the rules of this document for
+background work: it never holds the sessions lock, a write to a buffer stops
+it at the next file (it does not wait for it), and a request for another
+feature does not wait for it. An edit does not start a pass by itself. The next
+request that needs a pass runs it, and the pass then starts a build for the new
+graph.
+
 ## Fail closed
 
 A pass is full when:

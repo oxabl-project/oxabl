@@ -12,16 +12,19 @@
 //! `Null` that says why.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use lsp_server::{Request, Response};
 use lsp_types::request::GotoImplementationParams;
 use lsp_types::{
-    Location, PositionEncodingKind, SymbolKind, TextDocumentPositionParams, TypeHierarchyItem,
-    TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams,
+    Location, PositionEncodingKind, ProgressToken, SymbolKind, TextDocumentPositionParams,
+    TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
+    TypeHierarchySupertypesParams,
 };
 use oxabl_daemon::canonical_path;
 use oxabl_daemon::hierarchy::{
-    Form, HierarchyAnswer, HierarchyQuery, ItemKind, TypeItem, TypeKey, answer_hierarchy,
+    Form, HierarchyAnswer, HierarchyQuery, ItemKind, NoProgress, TypeItem, TypeKey,
+    answer_hierarchy,
 };
 use oxabl_pipeline::{Gap, Span};
 use serde::{Deserialize, Serialize};
@@ -29,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::Server;
 use crate::path_to_uri;
 use crate::references::{Ropes, invalid, with_dropped};
+use crate::work_progress::{Ending, Report};
 
 /// The custom request that answers go to super method.
 pub(crate) const SUPER_METHOD: &str = "oxabl/superMethod";
@@ -166,6 +170,17 @@ fn locations(answer: &HierarchyAnswer, encoding: &PositionEncodingKind) -> (Vec<
 }
 
 impl Server<'_> {
+    /// The progress of a request that can wait for the workspace pass or for
+    /// the subtype index. `token` is the one the request carried.
+    fn report(&self, token: Option<ProgressToken>) -> Arc<Report> {
+        Arc::new(Report::new(
+            self.connection.sender.clone(),
+            Arc::clone(&self.progress_creations),
+            token,
+            self.work_done_progress,
+        ))
+    }
+
     pub(crate) fn handle_implementation(&mut self, req: Request) -> anyhow::Result<()> {
         let params: GotoImplementationParams = match serde_json::from_value(req.params) {
             Ok(params) => params,
@@ -177,12 +192,14 @@ impl Server<'_> {
             return Ok(());
         };
         let query = HierarchyQuery::Implementation { file, offset };
+        let report = self.report(params.work_done_progress_params.work_done_token);
         self.spawn_answer(
             req.id,
             root,
             ("the implementations", STANDING),
             move |host, session_root, root, cancel| {
-                answer_hierarchy(host, session_root, root, &query, cancel)
+                let _ending = Ending(Arc::clone(&report));
+                answer_hierarchy(host, session_root, root, &query, cancel, &*report)
             },
             |answer: &HierarchyAnswer| answer.gaps.clone(),
             |answer, encoding| {
@@ -212,7 +229,7 @@ impl Server<'_> {
             root,
             ("the super method", STANDING),
             move |host, session_root, root, cancel| {
-                answer_hierarchy(host, session_root, root, &query, cancel)
+                answer_hierarchy(host, session_root, root, &query, cancel, &NoProgress)
             },
             |_: &HierarchyAnswer| Vec::new(),
             |answer, encoding| {
@@ -246,7 +263,7 @@ impl Server<'_> {
             root,
             ("the type hierarchy", STANDING),
             move |host, session_root, root, cancel| {
-                answer_hierarchy(host, session_root, root, &query, cancel)
+                answer_hierarchy(host, session_root, root, &query, cancel, &NoProgress)
             },
             |answer: &HierarchyAnswer| answer.gaps.clone(),
             |answer, encoding| {
@@ -273,6 +290,7 @@ impl Server<'_> {
         self.spawn_types(
             req.id,
             params.item,
+            params.work_done_progress_params.work_done_token,
             "the supertypes",
             HierarchyQuery::Supertypes,
         )
@@ -286,6 +304,7 @@ impl Server<'_> {
         self.spawn_types(
             req.id,
             params.item,
+            params.work_done_progress_params.work_done_token,
             "the subtypes",
             HierarchyQuery::Subtypes,
         )
@@ -296,6 +315,7 @@ impl Server<'_> {
         &mut self,
         id: lsp_server::RequestId,
         shown: TypeHierarchyItem,
+        token: Option<ProgressToken>,
         what: &'static str,
         query: fn(TypeKey) -> HierarchyQuery,
     ) -> anyhow::Result<()> {
@@ -308,12 +328,14 @@ impl Server<'_> {
         };
         let root = canonical_path(&key.root);
         let query = query(key);
+        let report = self.report(token);
         self.spawn_answer(
             id,
             root,
             (what, STANDING),
             move |host, session_root, root, cancel| {
-                answer_hierarchy(host, session_root, root, &query, cancel)
+                let _ending = Ending(Arc::clone(&report));
+                answer_hierarchy(host, session_root, root, &query, cancel, &*report)
             },
             |answer: &HierarchyAnswer| answer.gaps.clone(),
             move |answer, encoding| {

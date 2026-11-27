@@ -488,6 +488,11 @@ impl PassContext<'_> {
             },
             |path, expansion, result| {
                 let rows = (self.collect)(path, expansion, result, fs);
+                if oxabl_common::INJECTION_ENABLED
+                    && let Ok(text) = fs.read(path)
+                {
+                    oxabl_common::hold_if_injected(oxabl_common::panic_sites::PASS_FILE, &text);
+                }
                 self.progress.advance();
                 rows
             },
