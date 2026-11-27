@@ -1,5 +1,27 @@
 # Changelog
 
+## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v2.0.5...oxabl_lexer-v3.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **lexer:** `TokenValue::String` is now only the normalized spelling of an escaped identifier. A string literal, a date constant and an include reference have `TokenValue::Text { start, end }`; read the text with `Token::text(source)`.
+
+### Performance Improvements
+
+* **bench:** end-to-end and memory benchmarks, and a generated ERP-sized workspace ([#569](https://github.com/oxabl-project/oxabl/issues/569)) ([e819edc](https://github.com/oxabl-project/oxabl/commit/e819edcfd261e43755178e6e20c44cc650b757e4))
+* **check:** index each file once for the run, and design one unit for each text ([#591](https://github.com/oxabl-project/oxabl/issues/591)) ([e0793f4](https://github.com/oxabl-project/oxabl/commit/e0793f470b87704020328d26fe4b495ab27d9cdb))
+* **completion:** lex only what a request changes in its base's text ([#610](https://github.com/oxabl-project/oxabl/issues/610)) ([b619d63](https://github.com/oxabl-project/oxabl/commit/b619d638c5ac2c33a552251c3a188cb9d00a4cc3))
+* **formatter:** lex the source once for the caller and once for the candidate ([#579](https://github.com/oxabl-project/oxabl/issues/579)) ([89ab4c3](https://github.com/oxabl-project/oxabl/commit/89ab4c3f60acee45e14890574eebdc5d6fdba1e5))
+* **lexer:** keep the text of a literal as its place in the source ([#593](https://github.com/oxabl-project/oxabl/issues/593)) ([0f6ac35](https://github.com/oxabl-project/oxabl/commit/0f6ac35554c111b45456974eeb2e2152f4a97f46))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+
 ## [2.0.5](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v2.0.4...oxabl_lexer-v2.0.5) (2026-11-25)
 
 

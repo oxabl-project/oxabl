@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.2](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.6.1...oxabl_schema-v0.6.2) (2026-11-27)
+
+
+### Performance Improvements
+
+* **daemon:** analyse only the changed files in the workspace pass after an edit ([#594](https://github.com/oxabl-project/oxabl/issues/594)) ([cc5ca85](https://github.com/oxabl-project/oxabl/commit/cc5ca85f471f25bc426a56ab5e645b99fe75c5d6))
+* **schema:** cache the loaded schema between runs and parse .df words without strings ([#590](https://github.com/oxabl-project/oxabl/issues/590)) ([03b035a](https://github.com/oxabl-project/oxabl/commit/03b035ae384c95a461a33cfacf9017f5bb881d6b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+
 ## [0.6.1](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.6.0...oxabl_schema-v0.6.1) (2026-11-25)
 
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.10.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.9.1...oxabl_preprocessor-v0.10.0) (2026-11-27)
+
+
+### Features
+
+* **lsp:** complete records, fields, RUN targets, include files and preprocessor names ([#546](https://github.com/oxabl-project/oxabl/issues/546)) ([6d30754](https://github.com/oxabl-project/oxabl/commit/6d30754e74636091f7c90fc981dd98b5e5b2823c))
+
+
+### Bug Fixes
+
+* **preprocessor:** fill {N} in a nested include reference inside an include ([6e7e30d](https://github.com/oxabl-project/oxabl/commit/6e7e30d841be0e5853b6626405a70ac6d437e89c))
+* **preprocessor:** limit a named include argument to its own include ([#529](https://github.com/oxabl-project/oxabl/issues/529)) ([81e30dc](https://github.com/oxabl-project/oxabl/commit/81e30dc24fc389cc21883084dd72f87d9c55afa3))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+
 ## [0.9.1](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.9.0...oxabl_preprocessor-v0.9.1) (2026-11-25)
 
 

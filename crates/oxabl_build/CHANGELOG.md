@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.2](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.9.1...oxabl_build-v0.9.2) (2026-11-27)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_effects bumped from 0.3.10 to 0.3.11
+    * oxabl_index bumped from 6.0.1 to 7.0.0
+    * oxabl_pipeline bumped from 4.1.0 to 5.0.0
+    * oxabl_semantic bumped from 6.0.1 to 7.0.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+  * dev-dependencies
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+
 ## [0.9.1](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.9.0...oxabl_build-v0.9.1) (2026-11-25)
 
 

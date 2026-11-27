@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.11](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.3.10...oxabl_effects-v0.3.11) (2026-11-27)
+
+
+### Bug Fixes
+
+* **effects:** a read of an unknown table makes the summary partial ([#530](https://github.com/oxabl-project/oxabl/issues/530)) ([8a2d523](https://github.com/oxabl-project/oxabl/commit/8a2d52344165c87ef2b8cd428c79ee3bab9b1215))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_flow bumped from 0.5.1 to 0.5.2
+    * oxabl_index bumped from 6.0.1 to 7.0.0
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+    * oxabl_scope bumped from 0.3.1 to 0.3.2
+  * dev-dependencies
+    * oxabl_parser bumped from 5.0.1 to 6.0.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+
 ## [0.3.10](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.3.9...oxabl_effects-v0.3.10) (2026-11-25)
 
 

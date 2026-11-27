@@ -1,5 +1,27 @@
 # Changelog
 
+## [3.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.7.1...oxabl_workspace-v3.8.0) (2026-11-27)
+
+
+### Features
+
+* **lsp:** code completion for keywords, snippets and names in scope ([#534](https://github.com/oxabl-project/oxabl/issues/534)) ([e600394](https://github.com/oxabl-project/oxabl/commit/e6003942dd5ee81663503acc3ed0422689f80348))
+* **lsp:** complete records, fields, RUN targets, include files and preprocessor names ([#546](https://github.com/oxabl-project/oxabl/issues/546)) ([6d30754](https://github.com/oxabl-project/oxabl/commit/6d30754e74636091f7c90fc981dd98b5e5b2823c))
+
+
+### Performance Improvements
+
+* **check:** index each file once for the run, and design one unit for each text ([#591](https://github.com/oxabl-project/oxabl/issues/591)) ([e0793f4](https://github.com/oxabl-project/oxabl/commit/e0793f470b87704020328d26fe4b495ab27d9cdb))
+* **daemon:** cut the fixed cost of a workspace pass ([#611](https://github.com/oxabl-project/oxabl/issues/611)) ([2a3c781](https://github.com/oxabl-project/oxabl/commit/2a3c781abbc06dfad83963a134ae136b53d6e960))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+
 ## [3.7.1](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.7.0...oxabl_workspace-v3.7.1) (2026-11-25)
 
 

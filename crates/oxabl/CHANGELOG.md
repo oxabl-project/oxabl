@@ -1,5 +1,92 @@
 # Changelog
 
+## [7.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v6.1.0...oxabl-v7.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **lexer:** `TokenValue::String` is now only the normalized spelling of an escaped identifier. A string literal, a date constant and an include reference have `TokenValue::Text { start, end }`; read the text with `Token::text(source)`.
+* **semantic:** Scope::kind, parent and owner_node are methods, not fields.
+* **parser:** a CREATE whose tail does not parse leaves a parse error
+
+### Features
+
+* **lsp:** code completion for keywords, snippets and names in scope ([#534](https://github.com/oxabl-project/oxabl/issues/534)) ([e600394](https://github.com/oxabl-project/oxabl/commit/e6003942dd5ee81663503acc3ed0422689f80348))
+* **lsp:** complete records, fields, RUN targets, include files and preprocessor names ([#546](https://github.com/oxabl-project/oxabl/issues/546)) ([6d30754](https://github.com/oxabl-project/oxabl/commit/6d30754e74636091f7c90fc981dd98b5e5b2823c))
+* **lsp:** declarations from include files in the outline ([#543](https://github.com/oxabl-project/oxabl/issues/543)) ([6cb14cf](https://github.com/oxabl-project/oxabl/commit/6cb14cfa78751724c799ff61bed2a01579e0e285))
+* **lsp:** format a selection ([#540](https://github.com/oxabl-project/oxabl/issues/540)) ([b1cedcb](https://github.com/oxabl-project/oxabl/commit/b1cedcbdcae6a809d11f9918358599e39ea60361))
+* **lsp:** go to implementation, super method and type hierarchy ([#531](https://github.com/oxabl-project/oxabl/issues/531)) ([578188c](https://github.com/oxabl-project/oxabl/commit/578188ca8f9ce6c59561500e67bddf0964838b13))
+* **lsp:** reference-count code lenses ([#532](https://github.com/oxabl-project/oxabl/issues/532)) ([1af858b](https://github.com/oxabl-project/oxabl/commit/1af858b6fdaa262d205abe24d5e34a24b1491ed9))
+* **lsp:** signature help and parameter-name inlay hints ([#533](https://github.com/oxabl-project/oxabl/issues/533)) ([eaeab6b](https://github.com/oxabl-project/oxabl/commit/eaeab6be41c16d152b1b3042b34d4244580d8046))
+* **semantic:** type member access and method calls on user classes ([fdf97e3](https://github.com/oxabl-project/oxabl/commit/fdf97e3a89b59c6d3481bd227ecf43557e290f81))
+
+
+### Bug Fixes
+
+* **check:** report a parse error inside an include at the include site ([#528](https://github.com/oxabl-project/oxabl/issues/528)) ([a5339bb](https://github.com/oxabl-project/oxabl/commit/a5339bb33cdd305f0e8ca2bf6c1676fb91246487))
+* **daemon:** exit when the workspace root is gone or no client is left ([#588](https://github.com/oxabl-project/oxabl/issues/588)) ([f5bc646](https://github.com/oxabl-project/oxabl/commit/f5bc6466dc6384975ee46c2576e80e5609ae985f))
+* **effects:** a read of an unknown table makes the summary partial ([#530](https://github.com/oxabl-project/oxabl/issues/530)) ([8a2d523](https://github.com/oxabl-project/oxabl/commit/8a2d52344165c87ef2b8cd428c79ee3bab9b1215))
+* **lsp:** an edit no longer waits for a running diagnostics analysis ([#609](https://github.com/oxabl-project/oxabl/issues/609)) ([5a5e83f](https://github.com/oxabl-project/oxabl/commit/5a5e83f26c7f9051de5a62b1e69956fcbad39b24))
+* **lsp:** the proxy and the daemon never wait on each other ([#578](https://github.com/oxabl-project/oxabl/issues/578)) ([0563621](https://github.com/oxabl-project/oxabl/commit/056362150cd9572882909b436ece4758ab78d775))
+* **lsp:** wait for a slow daemon start ([#545](https://github.com/oxabl-project/oxabl/issues/545)) ([8445706](https://github.com/oxabl-project/oxabl/commit/8445706fc1fa4ecd00a4d70335fef03cfffd8bc7))
+* **navigation:** compare parameter lists after preprocessing ([#568](https://github.com/oxabl-project/oxabl/issues/568)) ([a8183ec](https://github.com/oxabl-project/oxabl/commit/a8183ecfd583132f2a0f4ab2f73f97a5b79657c8))
+* **parser:** a CREATE whose tail does not parse leaves a parse error ([068cfa8](https://github.com/oxabl-project/oxabl/commit/068cfa830a0d911686cca9069d83e85bc678288f))
+* **parser:** a USING read in a rewound CREATE does not reach an earlier statement ([27405e4](https://github.com/oxabl-project/oxabl/commit/27405e4ec81b3ac732de7ea30732014782effc72))
+* **preprocessor:** fill {N} in a nested include reference inside an include ([6e7e30d](https://github.com/oxabl-project/oxabl/commit/6e7e30d841be0e5853b6626405a70ac6d437e89c))
+
+
+### Performance Improvements
+
+* **bench:** end-to-end and memory benchmarks, and a generated ERP-sized workspace ([#569](https://github.com/oxabl-project/oxabl/issues/569)) ([e819edc](https://github.com/oxabl-project/oxabl/commit/e819edcfd261e43755178e6e20c44cc650b757e4))
+* **check:** build each file's SourceMap once ([#571](https://github.com/oxabl-project/oxabl/issues/571)) ([2285153](https://github.com/oxabl-project/oxabl/commit/2285153fbd06ff75129daa8797c53ea7e01789e8))
+* **check:** find SHARED producers with one expansion and a token scan ([#582](https://github.com/oxabl-project/oxabl/issues/582)) ([c0da43d](https://github.com/oxabl-project/oxabl/commit/c0da43da8f68f284a421fa5e7c9cbb235cf76a2d))
+* **check:** index each file once for the run, and design one unit for each text ([#591](https://github.com/oxabl-project/oxabl/issues/591)) ([e0793f4](https://github.com/oxabl-project/oxabl/commit/e0793f470b87704020328d26fe4b495ab27d9cdb))
+* **check:** spell and resolve each include path once ([#608](https://github.com/oxabl-project/oxabl/issues/608)) ([793a0d9](https://github.com/oxabl-project/oxabl/commit/793a0d94b98ba7c498b7f941ff9b02e8957cfe0a))
+* **daemon:** analyse only the changed files in the workspace pass after an edit ([#594](https://github.com/oxabl-project/oxabl/issues/594)) ([cc5ca85](https://github.com/oxabl-project/oxabl/commit/cc5ca85f471f25bc426a56ab5e645b99fe75c5d6))
+* **formatter:** lex the source once for the caller and once for the candidate ([#579](https://github.com/oxabl-project/oxabl/issues/579)) ([89ab4c3](https://github.com/oxabl-project/oxabl/commit/89ab4c3f60acee45e14890574eebdc5d6fdba1e5))
+* **index:** read the tokens, not a parse, to tell if a file may be expanded ([#581](https://github.com/oxabl-project/oxabl/issues/581)) ([fdc4a50](https://github.com/oxabl-project/oxabl/commit/fdc4a507c6c661e0c060b6ff9222c3cc02217359))
+* **lexer:** keep the text of a literal as its place in the source ([#593](https://github.com/oxabl-project/oxabl/issues/593)) ([0f6ac35](https://github.com/oxabl-project/oxabl/commit/0f6ac35554c111b45456974eeb2e2152f4a97f46))
+* **lsp:** resolve the reference lenses of a file in one search ([#592](https://github.com/oxabl-project/oxabl/issues/592)) ([91d9306](https://github.com/oxabl-project/oxabl/commit/91d930645dbc1d54ae5e9ec4a3c0eddc194bfc9b))
+* **schema:** cache the loaded schema between runs and parse .df words without strings ([#590](https://github.com/oxabl-project/oxabl/issues/590)) ([03b035a](https://github.com/oxabl-project/oxabl/commit/03b035ae384c95a461a33cfacf9017f5bb881d6b))
+* **semantic:** find the scope of a statement in a table, and shrink a scope to 48 bytes ([#584](https://github.com/oxabl-project/oxabl/issues/584)) ([258f393](https://github.com/oxabl-project/oxabl/commit/258f393c9f582c77eeb3a4c38defe87a963b2339))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 5.0.1 to 6.0.0
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_ast bumped from 6.0.0 to 7.0.0
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+    * oxabl_preprocessor bumped from 0.9.1 to 0.10.0
+    * oxabl_semantic bumped from 6.0.1 to 7.0.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+    * oxabl_analyze bumped from 4.5.0 to 5.0.0
+    * oxabl_pipeline bumped from 4.1.0 to 5.0.0
+    * oxabl_lint bumped from 6.0.1 to 7.0.0
+    * oxabl_lsp bumped from 3.5.0 to 3.6.0
+    * oxabl_daemon bumped from 0.9.0 to 0.10.0
+    * oxabl_build bumped from 0.9.1 to 0.9.2
+    * oxabl_build_remote bumped from 0.2.14 to 0.2.15
+    * oxabl_formatter bumped from 2.1.3 to 3.0.0
+  * dev-dependencies
+    * oxabl_analyze bumped from 4.5.0 to 5.0.0
+    * oxabl_common bumped from 1.5.0 to 1.6.0
+    * oxabl_semantic bumped from 6.0.1 to 7.0.0
+    * oxabl_parser bumped from 5.0.1 to 6.0.0
+    * oxabl_schema bumped from 0.6.1 to 0.6.2
+    * oxabl_workspace bumped from 3.7.1 to 3.8.0
+    * oxabl_lexer bumped from 2.0.5 to 3.0.0
+    * oxabl_pipeline bumped from 4.1.0 to 5.0.0
+    * oxabl_flow bumped from 0.5.1 to 0.5.2
+    * oxabl_handles bumped from 0.3.1 to 0.3.2
+    * oxabl_scope bumped from 0.3.1 to 0.3.2
+    * oxabl_effects bumped from 0.3.10 to 0.3.11
+    * oxabl_nulls bumped from 0.3.1 to 0.3.2
+    * oxabl_index bumped from 6.0.1 to 7.0.0
+
 ## [6.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v6.0.0...oxabl-v6.1.0) (2026-11-25)
 
 
