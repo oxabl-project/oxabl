@@ -35,3 +35,4 @@ harness = false
 # Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
 # (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.
 [lints]
+workspace = true

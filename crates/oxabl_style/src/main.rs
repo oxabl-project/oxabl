@@ -8,101 +8,103 @@ fn main() -> ExitCode {
     let command = args.get(1).map(|s| s.as_str()).unwrap_or("preset");
 
     match command {
-        "preset" => {
-            let name = args.get(2).map(|s| s.as_str()).unwrap_or("oestandards");
-            match StyleGuide::from_preset_name(name) {
-                Some(guide) => match guide.to_toml() {
-                    Ok(s) => println!("{s}"),
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        return ExitCode::from(2);
-                    }
-                },
-                None => {
-                    eprintln!(
-                        "error: unknown preset `{name}` (use `oestandards` or `consultingwerk`)"
-                    );
-                    return ExitCode::from(1);
-                }
-            }
-        }
-        "validate" => {
-            let path = match args.get(2) {
-                Some(p) => p,
-                None => {
-                    eprintln!("usage: oxabl-style validate <path>");
-                    return ExitCode::from(1);
-                }
-            };
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("error: cannot read `{path}`: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            match StyleGuide::from_toml(&content) {
-                Ok(_) => {
-                    eprintln!("{path}: valid");
-                }
-                Err(e) => {
-                    eprintln!("{path}: {e}");
-                    return ExitCode::from(3);
-                }
-            }
-        }
-        "diff" => {
-            let path = match args.get(2) {
-                Some(p) => p,
-                None => {
-                    eprintln!("usage: oxabl-style diff <path>");
-                    return ExitCode::from(1);
-                }
-            };
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("error: cannot read `{path}`: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            let user = match StyleGuide::from_toml(&content) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("{path}: {e}");
-                    return ExitCode::from(3);
-                }
-            };
-            let base = StyleGuide::default_base();
-            let deviations = match style_diff(&base, &user) {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            if deviations.is_empty() {
-                eprintln!("{path}: matches default base (no deviations)");
-            } else {
-                eprintln!(
-                    "{path}: {} field(s) differ from default base",
-                    deviations.len()
-                );
-                for (field, base_val, user_val) in deviations {
-                    println!("{field}: {base_val} => {user_val}");
-                }
-            }
-        }
+        "preset" => preset(args.get(2).map(|s| s.as_str()).unwrap_or("oestandards")),
+        "validate" => validate(args.get(2)),
+        "diff" => diff(args.get(2)),
         _ => {
             eprintln!("usage: oxabl-style <command> [args]");
             eprintln!("commands:");
             eprintln!("  preset <name>     Print a named preset as TOML (default: oestandards)");
             eprintln!("  validate <path>   Validate a TOML style guide file");
             eprintln!("  diff <path>       Diff a config against the default base");
-            return ExitCode::from(1);
+            ExitCode::from(1)
         }
     }
+}
 
+fn preset(name: &str) -> ExitCode {
+    let Some(guide) = StyleGuide::from_preset_name(name) else {
+        eprintln!("error: unknown preset `{name}` (use `oestandards` or `consultingwerk`)");
+        return ExitCode::from(1);
+    };
+    match guide.to_toml() {
+        Ok(s) => {
+            println!("{s}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Read the file at the path argument, or return the exit code to use.
+fn read_path_arg<'a>(
+    command: &str,
+    arg: Option<&'a String>,
+) -> Result<(&'a String, String), ExitCode> {
+    let Some(path) = arg else {
+        eprintln!("usage: oxabl-style {command} <path>");
+        return Err(ExitCode::from(1));
+    };
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok((path, content)),
+        Err(e) => {
+            eprintln!("error: cannot read `{path}`: {e}");
+            Err(ExitCode::from(2))
+        }
+    }
+}
+
+fn validate(arg: Option<&String>) -> ExitCode {
+    let (path, content) = match read_path_arg("validate", arg) {
+        Ok(read) => read,
+        Err(code) => return code,
+    };
+    match StyleGuide::from_toml(&content) {
+        Ok(_) => {
+            eprintln!("{path}: valid");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            ExitCode::from(3)
+        }
+    }
+}
+
+fn diff(arg: Option<&String>) -> ExitCode {
+    let (path, content) = match read_path_arg("diff", arg) {
+        Ok(read) => read,
+        Err(code) => return code,
+    };
+    let user = match StyleGuide::from_toml(&content) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    let base = StyleGuide::default_base();
+    let deviations = match style_diff(&base, &user) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    if deviations.is_empty() {
+        eprintln!("{path}: matches default base (no deviations)");
+    } else {
+        eprintln!(
+            "{path}: {} field(s) differ from default base",
+            deviations.len()
+        );
+        for (field, base_val, user_val) in deviations {
+            println!("{field}: {base_val} => {user_val}");
+        }
+    }
     ExitCode::SUCCESS
 }
 
@@ -116,11 +118,13 @@ fn main() -> ExitCode {
 fn style_diff(
     base: &StyleGuide,
     user: &StyleGuide,
-) -> Result<Vec<(String, String, String)>, toml::ser::Error> {
-    let base_tbl: toml::Table =
-        toml::from_str(&base.to_toml()?).expect("serialized StyleGuide must parse as a TOML table");
-    let user_tbl: toml::Table =
-        toml::from_str(&user.to_toml()?).expect("serialized StyleGuide must parse as a TOML table");
+) -> Result<Vec<(String, String, String)>, String> {
+    let table = |guide: &StyleGuide| -> Result<toml::Table, String> {
+        let text = guide.to_toml().map_err(|e| e.to_string())?;
+        toml::from_str(&text).map_err(|e| format!("serialized StyleGuide is not a TOML table: {e}"))
+    };
+    let base_tbl = table(base)?;
+    let user_tbl = table(user)?;
 
     let mut keys: Vec<&String> = base_tbl.keys().chain(user_tbl.keys()).collect();
     keys.sort_unstable();

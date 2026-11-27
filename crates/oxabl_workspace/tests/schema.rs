@@ -7,16 +7,17 @@ use std::collections::BTreeSet;
 use oxabl_workspace::WorkspaceConfig;
 
 fn object_keys(value: &serde_json::Value) -> BTreeSet<String> {
-    value
-        .as_object()
-        .expect("expected a JSON object")
-        .keys()
-        .cloned()
-        .collect()
+    let Some(object) = value.as_object() else {
+        panic!("expected a JSON object");
+    };
+    object.keys().cloned().collect()
 }
 
 fn workspace_schema() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(WorkspaceConfig)).unwrap()
+    match serde_json::to_value(schemars::schema_for!(WorkspaceConfig)) {
+        Ok(value) => value,
+        Err(error) => panic!("the schema must serialize: {error}"),
+    }
 }
 
 #[test]

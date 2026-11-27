@@ -29,9 +29,11 @@ pub fn builder() -> thread::Builder {
 /// When the thread cannot be created, as `std::thread::spawn` does.
 pub fn run<T: Send>(work: impl FnOnce() -> T + Send) -> T {
     thread::scope(|scope| {
-        builder()
-            .spawn_scoped(scope, work)
-            .expect("failed to spawn an analysis thread")
+        let handle = match builder().spawn_scoped(scope, work) {
+            Ok(handle) => handle,
+            Err(error) => panic!("failed to spawn an analysis thread: {error}"),
+        };
+        handle
             .join()
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     })

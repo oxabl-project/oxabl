@@ -5,14 +5,17 @@ use std::path::Path;
 
 /// Load the large fixture file from workspace resources/.
 fn load_fixture() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("resources")
-        .join("bench_keywords.abl");
-    fs::read_to_string(path).unwrap()
+        .and_then(Path::parent)
+    else {
+        panic!("CARGO_MANIFEST_DIR must have two parent directories");
+    };
+    let path = root.join("resources").join("bench_keywords.abl");
+    match fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) => panic!("cannot read {}: {error}", path.display()),
+    }
 }
 
 fn source_map_benchmarks(c: &mut Criterion) {
