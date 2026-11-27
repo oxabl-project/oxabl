@@ -102,7 +102,9 @@ pub(crate) const MAX_DEPTH: usize = 32;
 
 fn outline_inner(source: &str) -> (Vec<OutlineSymbol>, bool) {
     let tokens = oxabl_lexer::tokenize(source);
-    let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+    let program = oxabl_parser::Parser::new(&tokens, source)
+        .without_comments()
+        .parse_program();
     let mut walker = Walker {
         source,
         pools: &program.pools,

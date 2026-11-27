@@ -256,12 +256,38 @@ impl WorkspaceProgress {
     }
 }
 
+/// Stamped filesystem inputs of a workspace pass's [`PipelineConfig`], so an
+/// incremental pass can reuse the loaded configuration and schema while
+/// `oxabl.toml`, schema directories, and `.df` files remain unchanged.
+#[derive(Clone)]
+pub(crate) struct ConfigStamps {
+    pub config_root: Option<PathBuf>,
+    pub files: Vec<FileStamp>,
+}
+
+impl ConfigStamps {
+    pub(crate) fn capture(inputs: oxabl_pipeline::ConfigInputs) -> Self {
+        ConfigStamps {
+            config_root: inputs.config_root,
+            files: inputs.paths.into_iter().map(FileStamp::capture).collect(),
+        }
+    }
+
+    /// Whether every configuration and schema file stamped here still matches
+    /// disk and no closer `oxabl.toml` has appeared above `root`.
+    pub(crate) fn is_current(&self, root: &Path) -> bool {
+        oxabl_pipeline::ConfigInputs::discover_root(root) == self.config_root
+            && self.files.iter().all(|stamp| !stamp.changed())
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct WorkspaceSnapshot {
     pub graph: Arc<ReverseGraph>,
     pub symbols: Arc<Vec<Arc<SymbolRow>>>,
     pub files: Arc<Vec<FileStamp>>,
     pub config: Arc<PipelineConfig>,
+    pub config_stamps: Arc<ConfigStamps>,
     /// The session state this pass was built against, kept whole.
     ///
     /// Whole rather than the buffer counter alone, because this is what decides

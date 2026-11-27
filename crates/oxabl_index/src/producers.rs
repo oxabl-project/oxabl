@@ -345,7 +345,9 @@ fn candidates_in(path: &Path, source: &str, includes: &IncludeContext<'_>) -> Ve
     let mut tokens = oxabl_lexer::tokenize(source);
     let mut names = Vec::new();
     let expanded = if written_says {
-        let program = Parser::new(&tokens, source).parse_program();
+        let program = Parser::new(&tokens, source)
+            .without_comments()
+            .parse_program();
         // The text as written answers when it parses, unless the index reads
         // the expanded text; and when the expanded text does not parse, the
         // index falls back to it. So its names are kept in both cases.
@@ -371,7 +373,9 @@ fn candidates_in(path: &Path, source: &str, includes: &IncludeContext<'_>) -> Ve
             // does not, the index reads the text as written, and the names
             // found so far stand as extra candidates.
             let whole = oxabl_lexer::tokenize(&text);
-            let program = Parser::new(&whole, &text).parse_program();
+            let program = Parser::new(&whole, &text)
+                .without_comments()
+                .parse_program();
             if program.is_ok() {
                 names.extend(crate::declared_shared(
                     &program.statements,

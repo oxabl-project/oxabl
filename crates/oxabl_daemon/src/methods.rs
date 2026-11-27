@@ -1113,6 +1113,39 @@ fn report_pass_counts(analysed: usize, discovered: usize, kept: &pass::KeptPass)
     }
 }
 
+/// Reuse the previous snapshot's configuration and loaded schema when session
+/// generations and every stamped configuration/schema file still match disk.
+fn resolve_pass_config(
+    root: &Path,
+    generations: SessionGenerations,
+    previous: Option<&WorkspaceSnapshot>,
+) -> (
+    Arc<oxabl_pipeline::PipelineConfig>,
+    Arc<crate::session::ConfigStamps>,
+    bool,
+) {
+    if let Some(prev) = previous
+        && prev.generations.config == generations.config
+        && prev.generations.schema == generations.schema
+        && prev.config_stamps.is_current(root)
+    {
+        return (
+            Arc::clone(&prev.config),
+            Arc::clone(&prev.config_stamps),
+            true,
+        );
+    }
+    let (config, _warnings, inputs) = oxabl_pipeline::PipelineConfig::resolve_with_inputs(
+        root,
+        &oxabl_pipeline::ConfigOverrides::default(),
+    );
+    (
+        Arc::new(config),
+        Arc::new(crate::session::ConfigStamps::capture(inputs)),
+        false,
+    )
+}
+
 /// Run a pass. With `previous`, analyse only the files that changed since it
 /// ran (see [`crate::pass`]); the pass is full when the configuration, the
 /// schema or the `SHARED` producers are not the same.
@@ -1124,8 +1157,7 @@ fn build_workspace_from(
     previous: Option<&WorkspaceSnapshot>,
 ) -> Result<WorkspaceSnapshot, MethodError> {
     let started = Instant::now();
-    let (config, _warnings) =
-        oxabl_pipeline::PipelineConfig::resolve(root, &oxabl_pipeline::ConfigOverrides::default());
+    let (config, config_stamps, reused_config) = resolve_pass_config(root, generations, previous);
     let files = discover_path_in(root, &config.root_extensions).map_err(MethodError::internal)?;
     let discovered_files = files.len();
     let disk = config.file_system();
@@ -1141,6 +1173,10 @@ fn build_workspace_from(
         progress,
     };
     let previous = previous.filter(|previous| {
+        if reused_config && Arc::ptr_eq(&previous.config, &config) {
+            debug_assert!(previous.kept.same_config(&config));
+            return true;
+        }
         previous.generations.config == generations.config
             && previous.generations.schema == generations.schema
             && previous.kept.same_config(&config)
@@ -1153,7 +1189,8 @@ fn build_workspace_from(
         graph,
         symbols,
         files: Arc::new(tracked_files.into_iter().map(FileStamp::capture).collect()),
-        config: Arc::new(config),
+        config,
+        config_stamps,
         generations,
         pass_millis: started.elapsed().as_millis() as u64,
         root: root.to_path_buf(),
@@ -1954,5 +1991,74 @@ mod tests {
             .expect("a caller parked behind a re-claimed slot never returned")
             .expect("the pass it finally ran succeeded");
         let _ = parked.join();
+    }
+
+    #[test]
+    fn incremental_pass_reuses_config_until_config_or_schema_changes() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let root = dir.path();
+        std::fs::write(
+            root.join("oxabl.toml"),
+            "[workspace]\nname = \"test\"\n\
+             [workspace.sources]\ninclude_paths = [\".\"]\n\
+             [workspace.schema]\nfiles = [\"db.df\"]\n",
+        )
+        .expect("write oxabl.toml");
+        std::fs::write(
+            root.join("db.df"),
+            "ADD TABLE \"Customer\"\nADD FIELD \"CustNum\" OF \"Customer\" AS integer\n",
+        )
+        .expect("write db.df");
+        std::fs::write(root.join("a.p"), "MESSAGE \"one\".\n").expect("write a.p");
+
+        let host = SessionHost::new();
+        let generations = host.with(|sessions| sessions.for_root(root).generations());
+        let first = build_workspace_from(
+            root,
+            HashMap::new(),
+            generations,
+            &WorkspaceProgress::default(),
+            None,
+        )
+        .expect("first pass succeeds");
+        assert!(first.config.schema.table("Customer").is_some());
+
+        // An open-buffer edit keeps the same Arc<PipelineConfig> and loaded Schema.
+        let mut overlay = HashMap::new();
+        overlay.insert(root.join("a.p"), Arc::from("MESSAGE \"two\".\n"));
+        let second = build_workspace_from(
+            root,
+            overlay,
+            generations,
+            &WorkspaceProgress::default(),
+            Some(&first),
+        )
+        .expect("second pass succeeds");
+        assert!(
+            Arc::ptr_eq(&first.config, &second.config),
+            "incremental pass must reuse the loaded config and schema across buffer edits"
+        );
+
+        // Changing the .df file on disk invalidates ConfigStamps even without
+        // bumping session generations, so the schema reloads.
+        std::fs::write(
+            root.join("db.df"),
+            "ADD TABLE \"Customer\"\nADD FIELD \"CustNum\" OF \"Customer\" AS integer\n\
+             ADD TABLE \"Orders\"\nADD FIELD \"OrderNum\" OF \"Orders\" AS integer\n",
+        )
+        .expect("update db.df");
+        let third = build_workspace_from(
+            root,
+            HashMap::new(),
+            generations,
+            &WorkspaceProgress::default(),
+            Some(&second),
+        )
+        .expect("third pass succeeds");
+        assert!(
+            !Arc::ptr_eq(&second.config, &third.config),
+            "a modified .df file must invalidate the cached config and reload schema"
+        );
+        assert!(third.config.schema.table("Orders").is_some());
     }
 }

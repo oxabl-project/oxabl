@@ -30,17 +30,22 @@ impl<T> NodeIndexVec<T> {
         }
     }
 
-    /// Pre-allocate one slot for every NodeId in a parsed `program`.
+    /// Pre-allocate and initialize one slot for every NodeId in a parsed
+    /// `program`.
     ///
     /// The parser gives a node its id after its children, so the last
-    /// top-level statement holds the highest id. A hand-built tree breaks
-    /// this at worst into a growing table, never a wrong one.
+    /// top-level statement holds the highest id. Pre-filling the slots here
+    /// avoids repeated `resize_with` calls on the hot `insert` path. A
+    /// hand-built tree breaks this at worst into a growing table, never a
+    /// wrong one.
     pub fn for_program(program: &[Statement]) -> Self {
         let slots = match program.last() {
             Some(s) if s.id != NodeId::DUMMY => s.id.as_u32() as usize + 1,
             _ => 0,
         };
-        Self::with_capacity(slots)
+        let mut inner = Vec::with_capacity(slots);
+        inner.resize_with(slots, || None);
+        NodeIndexVec { inner }
     }
 
     /// Number of slots (both populated and empty) in the backing vec.
@@ -66,15 +71,22 @@ impl<T> NodeIndexVec<T> {
     /// [`NodeId::DUMMY`] is silently ignored — it represents an unassigned
     /// slot on hand-constructed AST (tests, error recovery) and keying a
     /// side table on `u32::MAX` would resize the backing vec to 2^32 slots.
+    #[inline]
     pub fn insert(&mut self, id: NodeId, value: T) -> Option<T> {
         if id == NodeId::DUMMY {
             return None;
         }
         let idx = id.as_u32() as usize;
         if idx >= self.inner.len() {
-            self.inner.resize_with(idx + 1, || None);
+            self.grow(idx);
         }
         self.inner[idx].replace(value)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn grow(&mut self, idx: usize) {
+        self.inner.resize_with(idx + 1, || None);
     }
 
     /// Iterate over `(NodeId, &T)` pairs. Empty slots are skipped.
@@ -131,9 +143,9 @@ mod tests {
         );
         let sem = crate::analyze_file(&program.statements, &ctx);
 
-        let slots = NodeIndexVec::<u32>::for_program(&program.statements)
-            .inner
-            .capacity();
+        let prefilled = NodeIndexVec::<u32>::for_program(&program.statements);
+        let slots = prefilled.inner.capacity();
+        assert_eq!(prefilled.len(), slots);
         assert!(sem.types.len() > 1 && sem.types.len() <= slots);
         assert!(sem.references.len() > 1 && sem.references.len() <= slots);
     }

@@ -385,7 +385,9 @@ impl<'a> IncluderPools<'a> {
             }
 
             let tokens = oxabl_lexer::tokenize(&expanded.text);
-            let program = oxabl_parser::Parser::new(&tokens, &expanded.text).parse_program();
+            let program = oxabl_parser::Parser::new(&tokens, &expanded.text)
+                .without_comments()
+                .parse_program();
             let handles = oxabl_handles::analyze_tokens(
                 oxabl_flow::FileInput::new(
                     &program.statements,

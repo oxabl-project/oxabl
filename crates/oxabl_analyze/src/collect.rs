@@ -1941,7 +1941,7 @@ pub fn collect_from_expanded_with_summaries(
 
     let tokens = tokenize(&expanded.text);
     index.checkpoint();
-    let mut parser = Parser::new(&tokens, &expanded.text);
+    let mut parser = Parser::new(&tokens, &expanded.text).without_comments();
     let program = parser.parse_program_between(|| index.checkpoint());
     out.parse_recovered = !program.errors.is_empty();
     index.checkpoint();
@@ -2153,7 +2153,9 @@ pub fn database_hints_from_expanded(
         return Vec::new();
     }
     let tokens = tokenize(&expanded.text);
-    let program = Parser::new(&tokens, &expanded.text).parse_program();
+    let program = Parser::new(&tokens, &expanded.text)
+        .without_comments()
+        .parse_program();
     let include_spans = expanded.include_spans();
     let ctx = lint_context(
         expanded,
@@ -2355,7 +2357,7 @@ fn analyze_expanded(
     let timing = std::env::var_os("OXABL_EDGE_PROFILE").map(|_| std::time::Instant::now());
     let tokens = tokenize(&expanded.text);
     let lexed = timing.map(|t| t.elapsed());
-    let mut parser = Parser::new(&tokens, &expanded.text);
+    let mut parser = Parser::new(&tokens, &expanded.text).without_comments();
     let program = parser.parse_program();
     let parsed = timing.map(|t| t.elapsed());
     inspect(&program.statements, &program.pools, &expanded.text, &tokens);

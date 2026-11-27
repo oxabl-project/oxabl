@@ -244,7 +244,9 @@ struct Parsed {
 impl Parsed {
     fn of(text: &str) -> Parsed {
         let tokens = oxabl_lexer::tokenize(text);
-        let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
+        let program = oxabl_parser::Parser::new(&tokens, text)
+            .without_comments()
+            .parse_program();
         Parsed { tokens, program }
     }
 }

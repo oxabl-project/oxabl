@@ -55,7 +55,9 @@ pub fn document_syntax(source: &str) -> Result<DocumentSyntax, InternalPanic> {
 impl DocumentSyntax {
     fn new(source: &str) -> Self {
         let tokens = oxabl_lexer::tokenize(source);
-        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        let program = oxabl_parser::Parser::new(&tokens, source)
+            .without_comments()
+            .parse_program();
         let mut builder = Builder {
             source,
             tokens: &tokens,
