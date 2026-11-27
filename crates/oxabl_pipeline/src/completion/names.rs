@@ -12,8 +12,8 @@ use std::collections::HashSet;
 
 use oxabl_ast::NodeId;
 use oxabl_semantic::{
-    ClassLattice, NamespaceId, ResolvedType, ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolId,
-    SymbolKind, assignable,
+    ClassLattice, NamespaceId, ResolvedType, ScopeId, ScopeKind, SurfaceMember, Symbol,
+    SymbolFlags, SymbolId, SymbolKind, assignable,
 };
 
 use super::context::RecordsAfter;
@@ -116,14 +116,15 @@ impl Engine<'_, '_, '_, '_> {
         let mut seen: HashSet<(NamespaceId, &str)> = HashSet::new();
         let mut items = Vec::new();
         let mut class_incomplete = false;
+        let mut inherits_from: Option<ScopeId> = None;
         let statik = in_static_routine(base, scope);
         for (depth, id) in tree.ancestors(scope).enumerate() {
             let held = tree.get(id);
             let members = matches!(held.kind(), ScopeKind::Class | ScopeKind::Interface);
             if held.kind() == ScopeKind::Class {
-                // Every class inherits members from `Progress.Lang.Object`,
-                // and oxabl lists no inherited member yet.
-                class_incomplete = true;
+                // The inherited members are added after the own ones, which
+                // hide them.
+                inherits_from = Some(id);
             }
             for ns in namespaces {
                 let mut bound: Vec<(&str, SymbolId)> = held
@@ -164,6 +165,19 @@ impl Engine<'_, '_, '_, '_> {
                             ..item
                         });
                     }
+                }
+            }
+        }
+        if let Some(class) = inherits_from {
+            let (inherited, incomplete) = self.inherited_names(base, class, statik);
+            class_incomplete |= incomplete;
+            for (member, item) in inherited {
+                let hidden = seen.iter().any(|(ns, name)| {
+                    *ns == inherited_namespace(member.kind)
+                        && name.eq_ignore_ascii_case(&member.name)
+                });
+                if inherited_wanted(wanted, &member) && !hidden {
+                    items.push(item);
                 }
             }
         }
@@ -241,9 +255,17 @@ impl Engine<'_, '_, '_, '_> {
                 } else {
                     ""
                 };
-                let others = symbols
-                    .method_overloads(sym)
-                    .map_or(0, |all| all.len().saturating_sub(1));
+                let overloads = symbols.method_overloads(sym);
+                let others = overloads.map_or(0, |all| all.len().saturating_sub(1));
+                let first = overloads
+                    .and_then(|all| all.first())
+                    .copied()
+                    .unwrap_or(sym);
+                let params = symbols
+                    .method_param_decls(first)
+                    .map_or_else(String::new, |params| {
+                        format!(" ({})", super::members::params_text(base, params))
+                    });
                 let more = match others {
                     0 => String::new(),
                     1 => " (+1 overload)".to_string(),
@@ -251,7 +273,7 @@ impl Engine<'_, '_, '_, '_> {
                 };
                 (
                     ItemKind::Method,
-                    Some(format!("METHOD {statik}{returns}{more}")),
+                    Some(format!("METHOD {statik}{returns}{params}{more}")),
                 )
             }
             SymbolKind::Function => (
@@ -386,6 +408,38 @@ impl Engine<'_, '_, '_, '_> {
             .find(|(_, symbol)| symbol.declaration == owner && symbol.kind == SymbolKind::Class)
             .and_then(|(sym, _)| semantic.symbols.supertypes(sym))
             .is_some_and(|supertypes| supertypes.inherits.is_some())
+    }
+}
+
+/// The namespace a class member of `kind` is bound in.
+fn inherited_namespace(kind: SymbolKind) -> NamespaceId {
+    match kind {
+        SymbolKind::Function => NamespaceId::Functions,
+        SymbolKind::Event => NamespaceId::Events,
+        SymbolKind::TempTable | SymbolKind::Buffer => NamespaceId::Buffers,
+        _ => NamespaceId::Values,
+    }
+}
+
+/// Whether a position of `wanted` takes the inherited member.
+fn inherited_wanted(wanted: Wanted, member: &SurfaceMember) -> bool {
+    let record = matches!(member.kind, SymbolKind::TempTable | SymbolKind::Buffer);
+    match wanted {
+        Wanted::Values => member.kind != SymbolKind::Event && member.kind != SymbolKind::DataSource,
+        Wanted::StatementStart => matches!(
+            member.kind,
+            SymbolKind::Variable
+                | SymbolKind::Property
+                | SymbolKind::Function
+                | SymbolKind::TempTable
+                | SymbolKind::Buffer
+        ),
+        Wanted::Records(after) => match after {
+            RecordsAfter::BufferFor | RecordsAfter::BufferForTempTable => {
+                member.kind == SymbolKind::TempTable
+            }
+            RecordsAfter::Like | RecordsAfter::Record => record,
+        },
     }
 }
 

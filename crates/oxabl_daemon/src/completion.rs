@@ -20,9 +20,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use oxabl_pipeline::completion::{
-    CompletionBase, CompletionList, CompletionRequest, DirListing, Prior, Token, complete,
-    keyword_documentation, lex, path_documentation, sorted_listing, symbol_documentation,
-    table_documentation, wants_base,
+    ClassMemo, CompletionBase, CompletionList, CompletionRequest, DirListing, Prior, Token,
+    complete, keyword_documentation, lex, member_documentation, path_documentation, sorted_listing,
+    symbol_documentation, table_documentation, wants_base,
 };
 use oxabl_pipeline::{Expansion, LintPipeline, Navigation, NavigationModel};
 use oxabl_workspace::{DirEntry, FileSystem};
@@ -68,6 +68,11 @@ pub struct Base {
     /// The tokens of `text`, lexed once: a request lexes only what differs
     /// from them. A refresh fills them before it keeps the base.
     tokens: OnceLock<Vec<Token>>,
+    /// What the requests of this base learned about other classes, so none
+    /// reads a class file that an earlier one read.
+    classes: ClassMemo,
+    /// The [`Bases::class_epoch`] the answers in `classes` are of.
+    classes_epoch: AtomicU64,
 }
 
 impl Base {
@@ -170,6 +175,9 @@ pub struct Bases {
     listings: Listings,
     /// Numbers the bases in the order their analysis started.
     sequence: AtomicU64,
+    /// Counts the changes of files on disk, which make the answers about
+    /// classes of every base wrong.
+    class_epoch: AtomicU64,
 }
 
 impl Bases {
@@ -191,6 +199,9 @@ impl Bases {
     /// listing of the directory that holds each path, and the listings
     /// of the directories under it.
     pub fn forget_listings(&self, paths: &[PathBuf]) {
+        // A class file that changed, or came, or went: no base keeps what it
+        // learned about classes.
+        self.class_epoch.fetch_add(1, Ordering::SeqCst);
         let mut cache = self.listings.0.lock().unwrap_or_else(|e| e.into_inner());
         cache.epoch += 1;
         cache.listed.retain(|dir, _| {
@@ -202,6 +213,7 @@ impl Bases {
 
     /// Drop every base and listing: the configuration or the schema changed.
     pub fn clear(&self) {
+        self.class_epoch.fetch_add(1, Ordering::SeqCst);
         self.slots().clear();
         let mut cache = self.listings.0.lock().unwrap_or_else(|e| e.into_inner());
         cache.epoch += 1;
@@ -364,12 +376,18 @@ pub fn compute_completion(
     };
     let list = with_base(&base, |navigation| {
         let fragment = query.key.root.is_none() && oxabl_workspace::is_include_fragment(&document);
+        // Answers about classes that a file change made wrong are dropped.
+        let epoch = bases.class_epoch.load(Ordering::SeqCst);
+        if base.classes_epoch.swap(epoch, Ordering::SeqCst) != epoch {
+            base.classes.clear();
+        }
         let completion = CompletionBase {
             navigation,
             text: &base.text,
             fragment,
             stale,
             tokens: Some(base.tokens()),
+            classes: Some(&base.classes),
         };
         complete(&request(query, &document, listing), Some(&completion))
     })
@@ -438,6 +456,8 @@ fn make_own_base(
         config: config.clone(),
         generation,
         tokens: OnceLock::new(),
+        classes: ClassMemo::default(),
+        classes_epoch: AtomicU64::new(0),
     })
 }
 
@@ -597,6 +617,8 @@ fn make_context_base(
         config: config.clone(),
         generation,
         tokens: OnceLock::new(),
+        classes: ClassMemo::default(),
+        classes_epoch: AtomicU64::new(0),
     })
 }
 
@@ -628,6 +650,14 @@ pub enum ResolveQuery {
     /// A program or include file, as the item writes it, under an include
     /// path entry.
     Path { path: String, entry: PathBuf },
+    /// The member `name` (of a kind that `ItemData::Member` names) of the
+    /// class `class` of the workspace, in the include paths of base `base`.
+    Member {
+        base: u64,
+        class: String,
+        kind: String,
+        name: String,
+    },
 }
 
 /// The Markdown documentation of an item. `None` when there is none, or the
@@ -649,6 +679,18 @@ pub fn compute_resolve(bases: &Bases, query: ResolveQuery) -> Option<String> {
             table_documentation(&base.config.pipeline.schema, table, Some(field))
         }
         ResolveQuery::Path { path, entry } => Some(path_documentation(&path, &entry)),
+        ResolveQuery::Member {
+            base,
+            class,
+            kind,
+            name,
+        } => {
+            let base = bases.by_id(base)?;
+            with_base(&base, |navigation| {
+                member_documentation(navigation, &class, &kind, &name)
+            })
+            .flatten()
+        }
     }
 }
 

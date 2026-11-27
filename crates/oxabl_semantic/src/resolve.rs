@@ -391,11 +391,17 @@ impl<'a> Walker<'a> {
                 is_shared,
                 is_new_global_shared,
                 is_static,
+                access,
                 ..
             } => {
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared)
                     | flag_if(*is_static, SymbolFlags::STATIC);
-                self.declare_variable(stmt, scope, name, type_source, *extent, flags);
+                let sym = self.declare_variable(stmt, scope, name, type_source, *extent, flags);
+                if let (Some(sym), Some(access)) = (sym, *access)
+                    && self.tree.get(scope).kind() == ScopeKind::Class
+                {
+                    self.symbols.record_member_access(sym, access);
+                }
             }
 
             // ---- Parameters (DEFINE [IN|OUT|IN-OUT] PARAMETER ...) --------
@@ -982,7 +988,7 @@ impl<'a> Walker<'a> {
         type_source: &TypeSource,
         extent: Option<u32>,
         flags: SymbolFlags,
-    ) {
+    ) -> Option<SymbolId> {
         // BLOB / CLOB rejection per plan §Type system.
         if let TypeSource::Explicit(dt) = type_source
             && matches!(dt, DataType::Blob | DataType::Clob)
@@ -1034,6 +1040,7 @@ impl<'a> Walker<'a> {
         {
             self.symbols.record_block_defined(id, block_scope);
         }
+        sym
     }
 
     /// Declare the variables that `name AS type` / `name LIKE field` frame
@@ -2068,7 +2075,9 @@ impl<'a> ResolveWalker<'a> {
     fn collect_using_imports(&mut self, program: &[Statement]) {
         let imports = ImportContext::from_statements(program);
         if !imports.is_empty() {
-            self.cross_file_mut().imports = Arc::new(imports);
+            let imports = Arc::new(imports);
+            self.symbols.record_imports(Arc::clone(&imports));
+            self.cross_file_mut().imports = imports;
         }
     }
 
@@ -2576,6 +2585,7 @@ impl<'a> ResolveWalker<'a> {
             },
             use_span,
         ));
+        self.symbols.record_indexed_class_name(sym, name.clone());
         let cf = self.cross_file_mut();
         cf.synth_classes.insert(name.clone(), sym);
         cf.indexed_class_of.insert(sym, name.clone());
@@ -7996,11 +8006,20 @@ pub(crate) fn lookup_supertype(
     imports: &ImportContext,
     raw: &str,
 ) -> SupertypeLookup {
+    lookup_supertype_in(&crate::surface::WorkspaceClasses(index), imports, raw)
+}
+
+/// [`lookup_supertype`] over any class source.
+pub(crate) fn lookup_supertype_in(
+    source: &dyn crate::surface::ClassSource,
+    imports: &ImportContext,
+    raw: &str,
+) -> SupertypeLookup {
     for candidate in imports.candidates(raw) {
         let ImportCandidate::Name(name) = candidate else {
             return SupertypeLookup::Assembly;
         };
-        if !matches!(index.class(&name), IndexAnswer::NotFound) {
+        if !matches!(source.class(&name), IndexAnswer::NotFound) {
             return SupertypeLookup::Class(name);
         }
     }

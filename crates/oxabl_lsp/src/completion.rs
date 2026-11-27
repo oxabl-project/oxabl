@@ -268,6 +268,14 @@ fn resolve_query(data: &Value) -> Option<ResolveQuery> {
             .and_then(|n| u32::try_from(n).ok())
     };
     let base = data.get("base").and_then(Value::as_u64)?;
+    if let Some(member) = data.get("member").and_then(Value::as_str) {
+        return Some(ResolveQuery::Member {
+            base,
+            class: data.get("class").and_then(Value::as_str)?.to_string(),
+            kind: data.get("kind").and_then(Value::as_str)?.to_string(),
+            name: member.to_string(),
+        });
+    }
     if let Some(table) = number("table") {
         return Some(match number("field") {
             Some(field) => ResolveQuery::Field { base, table, field },
@@ -318,6 +326,12 @@ fn render(
                 ItemData::Path(data) => {
                     Some(json!({ "path": data.path, "entry": data.entry.to_string_lossy() }))
                 }
+                ItemData::Member(data) => Some(json!({
+                    "base": base,
+                    "class": data.class,
+                    "kind": data.kind,
+                    "member": data.name,
+                })),
             };
             // A directory asks for the list of its entries.
             let command = (item.kind == ItemKind::Folder).then(|| Command {

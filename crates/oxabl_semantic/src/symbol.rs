@@ -17,8 +17,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::{
-    CallParam, IndexName, IndexedFileId, MemberParam, NamespaceId, ResolvedType, ScopeId,
-    UnresolvedReason,
+    CallParam, ImportContext, IndexName, IndexedFileId, MemberParam, NamespaceId, ResolvedType,
+    ScopeId, UnresolvedReason,
 };
 
 /// Dense arena index for a symbol.
@@ -593,6 +593,18 @@ struct SymbolSideMaps {
     /// may be a class — `NEW x(...)` or a `name:` member access — and the walk
     /// could neither attribute it to a class nor rule it out.
     unattributed_unmodelled_uses: Vec<VirtualSpan>,
+    /// The access modifier of each class data member (`DEFINE ... VARIABLE`)
+    /// that wrote one. Methods, properties and events carry theirs in
+    /// [`SymbolFlags`]; a variable does not, so that its flags stay as they
+    /// are for every other reader.
+    member_access: FxHashMap<SymbolId, oxabl_ast::AccessModifier>,
+    /// The `USING` imports of the analysed file, when it has any and an index
+    /// was attached: the names its class header and its members are written
+    /// under.
+    imports: Option<Arc<ImportContext>>,
+    /// The name each synthesized class symbol was asked of the index under,
+    /// with the spelling the source used, which a file path derives from.
+    indexed_class_names: FxHashMap<SymbolId, IndexName>,
     /// The navigation record, kept only when the context asks for it
     /// ([`AnalysisContext::record_sites`](crate::AnalysisContext::record_sites)).
     navigation: Navigation,
@@ -1044,6 +1056,40 @@ impl SymbolTable {
         self.side
             .as_deref()
             .is_some_and(|side| side.navigation.maybe_member_calls.contains(&node))
+    }
+
+    pub(crate) fn record_member_access(
+        &mut self,
+        sym: SymbolId,
+        access: oxabl_ast::AccessModifier,
+    ) {
+        self.side_mut().member_access.insert(sym, access);
+    }
+
+    /// The access modifier a class data member wrote, `None` when it wrote
+    /// none (or when `sym` is not a data member).
+    pub fn member_access(&self, sym: SymbolId) -> Option<oxabl_ast::AccessModifier> {
+        self.side.as_deref()?.member_access.get(&sym).copied()
+    }
+
+    pub(crate) fn record_imports(&mut self, imports: Arc<ImportContext>) {
+        self.side_mut().imports = Some(imports);
+    }
+
+    /// The `USING` imports of the analysed file. `None` when it has none, or
+    /// when no index was attached.
+    pub fn imports(&self) -> Option<&Arc<ImportContext>> {
+        self.side.as_deref()?.imports.as_ref()
+    }
+
+    pub(crate) fn record_indexed_class_name(&mut self, sym: SymbolId, name: IndexName) {
+        self.side_mut().indexed_class_names.insert(sym, name);
+    }
+
+    /// The qualified name under which the synthesized class symbol `sym` was
+    /// found in the index. `None` for a class this file declares.
+    pub fn indexed_class_name(&self, sym: SymbolId) -> Option<&IndexName> {
+        self.side.as_deref()?.indexed_class_names.get(&sym)
     }
 
     pub(crate) fn record_class_file(&mut self, sym: SymbolId, file: IndexedFileId) {

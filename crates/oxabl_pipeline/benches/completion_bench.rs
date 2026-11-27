@@ -8,7 +8,9 @@
 //! are a statement start inside a procedure, the words after `DEFINE`, an
 //! expression (the names in scope and the built-in functions), the records
 //! after `FIND FIRST`, the fields after `Customer.`, the fields and values of a
-//! `WHERE`, and the procedures and programs after `RUN`.
+//! `WHERE`, and the procedures and programs after `RUN`. The `members` group
+//! is the members after `obj:` and the inherited names of a class body, over
+//! its own fixture of three classes.
 
 use std::fmt::Write;
 use std::hint::black_box;
@@ -17,7 +19,7 @@ use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use oxabl_pipeline::completion::{
-    CompletionBase, CompletionRequest, FreshListing, Prior, complete, lex, wants_base,
+    ClassMemo, CompletionBase, CompletionRequest, FreshListing, Prior, complete, lex, wants_base,
 };
 use oxabl_pipeline::{LintPipeline, PipelineConfig};
 use oxabl_schema::test_support::schema_from_df;
@@ -139,6 +141,7 @@ fn bench_completion(c: &mut Criterion) {
                 fragment: false,
                 stale: false,
                 tokens: Some(&base_tokens),
+                classes: None,
             };
             complete(request, Some(&base)).map_or(0, |list| list.items.len())
         };
@@ -236,6 +239,7 @@ fn bench_large_directory(c: &mut Criterion) {
                 fragment: false,
                 stale: false,
                 tokens: Some(&tokens),
+                classes: None,
             };
             complete(&request, Some(&base)).map_or(0, |list| list.items.len())
         };
@@ -245,5 +249,149 @@ fn bench_large_directory(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_completion, bench_large_directory);
+/// A class `name` of the package `app` with `members` properties and
+/// `members` methods, each method in two overloads, and the parent `parent`.
+fn class_file(name: &str, parent: Option<&str>, members: usize) -> String {
+    let mut s = format!("CLASS app.{name}");
+    if let Some(parent) = parent {
+        write!(s, " INHERITS app.{parent}").unwrap();
+    }
+    s.push_str(":\n");
+    for k in 0..members {
+        write!(
+            s,
+            "    DEFINE PUBLIC PROPERTY {name}Prop{k} AS INTEGER NO-UNDO GET. SET.\n\
+                 DEFINE PROTECTED VARIABLE {name}Guard{k} AS CHARACTER NO-UNDO.\n\
+                 METHOD PUBLIC INTEGER {name}Call{k}():\n        RETURN {k}.\n    END METHOD.\n\
+                 METHOD PUBLIC INTEGER {name}Call{k}(INPUT piValue AS INTEGER):\n        RETURN piValue.\n    END METHOD.\n"
+        )
+        .unwrap();
+    }
+    s
+}
+
+/// The members after `oUtil:` and `THIS-OBJECT:`, and the inherited names of a
+/// class body, over three classes of 120 members each that inherit one from
+/// the other. `cold` makes each request with a run that has read no class
+/// file, as the daemon's request does with no memo; `memoized` shares a
+/// [`ClassMemo`] between the runs, as the bases of the daemon do.
+fn bench_members(c: &mut Criterion) {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        PathBuf::from("/ws/app/Base.cls"),
+        class_file("Base", None, 120) + "END CLASS.\n",
+    );
+    fs.insert(
+        PathBuf::from("/ws/app/Util.cls"),
+        class_file("Util", Some("Base"), 120) + "END CLASS.\n",
+    );
+    let special =
+        class_file("Special", Some("Util"), 120) + "    METHOD PUBLIC VOID Run():\n        ";
+    let config = PipelineConfig {
+        include_paths: vec![PathBuf::from("/ws")],
+        ..PipelineConfig::default()
+    };
+    let listing = FreshListing(&fs);
+    let none = |_| None;
+    let memo = ClassMemo::default();
+    let cases: [(&str, PathBuf, String, &str); 3] = [
+        (
+            "instance",
+            PathBuf::from("/ws/use.p"),
+            "DEFINE VARIABLE oUtil AS app.Util NO-UNDO.\n".to_string(),
+            "oUtil:",
+        ),
+        (
+            "this_object",
+            PathBuf::from("/ws/app/Special.cls"),
+            special.clone(),
+            "THIS-OBJECT:",
+        ),
+        (
+            "inherited_names",
+            PathBuf::from("/ws/app/Special.cls"),
+            special,
+            "Util",
+        ),
+    ];
+    let mut group = c.benchmark_group("members");
+    group.sample_size(20);
+    for (name, path, head, typed) in &cases {
+        let tail = "\n    END METHOD.\nEND CLASS.\n";
+        let tail = if path.extension().is_some_and(|e| e == "cls") {
+            tail
+        } else {
+            "\n"
+        };
+        let text = format!("{head}{typed}{tail}");
+        let offset = (head.len() + typed.len()) as u32;
+        let request = CompletionRequest {
+            text: &text,
+            offset,
+            path,
+            keyword_case: KeywordCase::Uppercase,
+            snippets: true,
+            trigger: None,
+            config: &config,
+            listing: &listing,
+        };
+        let base_run = LintPipeline::new(&config, &fs).with_define_record(true);
+        let base_handle = base_run.with_file(path);
+        let expansion = base_handle.expand(&text);
+        let model = Arc::new(
+            base_handle
+                .navigation_model(&expansion)
+                .expect("it preprocesses"),
+        );
+        let tokens = lex(&text);
+        // One request with a run of its own, as the daemon makes it.
+        let ask =
+            |request: &CompletionRequest<'_>, base_text: &str, classes: Option<&ClassMemo>| {
+                let run = LintPipeline::new(&config, &fs);
+                let handle = run.with_file(path);
+                let navigation = handle
+                    .navigation_with(&expansion, Arc::clone(&model), &none)
+                    .expect("it preprocesses");
+                let base = CompletionBase {
+                    navigation: &navigation,
+                    text: base_text,
+                    fragment: false,
+                    stale: false,
+                    tokens: Some(&tokens),
+                    classes,
+                };
+                complete(request, Some(&base)).map_or(0, |list| list.items.len())
+            };
+        let found = ask(&request, &text, Some(&memo));
+        assert!(found > 100, "{name}: {found} items");
+        group.bench_function(format!("cold/{name}"), |b| {
+            b.iter(|| black_box(ask(&request, &text, None)))
+        });
+        group.bench_function(format!("memoized/{name}"), |b| {
+            b.iter(|| black_box(ask(&request, &text, Some(&memo))))
+        });
+        // Stale: a line inserted in front of the cursor since the base.
+        let edited = format!("{head}\n{typed}{tail}");
+        let stale = CompletionRequest {
+            text: &edited,
+            offset: (head.len() + 1 + typed.len()) as u32,
+            ..request
+        };
+        assert!(
+            ask(&stale, &text, Some(&memo)) > 100,
+            "{name}: no stale items"
+        );
+        group.bench_function(format!("memoized_stale/{name}"), |b| {
+            b.iter(|| black_box(ask(&stale, &text, Some(&memo))))
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_completion,
+    bench_large_directory,
+    bench_members
+);
 criterion_main!(benches);

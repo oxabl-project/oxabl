@@ -182,25 +182,21 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
     if start > 0 {
         match bytes[start - 1] {
             b':' => {
-                let joined = tokens[..before]
+                let mut previous = tokens[..before]
                     .iter()
                     .rev()
-                    .find(|t| t.kind != Kind::Comment)
+                    .filter(|t| t.kind != Kind::Comment);
+                let joined = previous
+                    .next()
                     .filter(|t| t.kind == Kind::Colon && t.end == start)
-                    .and_then(|_| {
-                        tokens[..before]
-                            .iter()
-                            .rev()
-                            .filter(|t| t.kind != Kind::Comment)
-                            .nth(1)
-                    })
-                    .filter(|t| t.end + 1 == start);
+                    .and_then(|_| previous.next().map(|t| (t, previous.next())))
+                    .filter(|(t, _)| t.end + 1 == start);
                 return match joined {
-                    Some(t)
+                    Some((t, before_it))
                         if matches!(
                             t.kind,
                             Kind::Identifier | Kind::RightParen | Kind::ThisObject
-                        ) =>
+                        ) || ends_a_path(bytes, t, before_it) =>
                     {
                         Some(found(Context::Members, start as u32, false))
                     }
@@ -243,6 +239,18 @@ pub(crate) fn find(text: &str, tokens: &[Token], cursor: u32) -> Option<Found> {
         after_branch: window.after_branch && window.tokens.is_empty(),
         ..found(context, window_start, reaches_start)
     })
+}
+
+/// Whether `token`, which a keyword spells (`Color`, `Message`), is the last
+/// part of a dotted name or the name of a member: it touches a `.` or a `:`
+/// on its left. `DO:` and `ELSE:` have neither.
+fn ends_a_path(bytes: &[u8], token: &Token, before_it: Option<&Token>) -> bool {
+    let word = &bytes[token.start..token.end];
+    !word.is_empty()
+        && word.iter().all(|b| is_word_byte(*b))
+        && word[0].is_ascii_alphabetic()
+        && before_it
+            .is_some_and(|t| matches!(t.kind, Kind::Period | Kind::Colon) && t.end == token.start)
 }
 
 /// The tokens of a statement window, from the statement start up to (not

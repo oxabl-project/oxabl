@@ -532,7 +532,12 @@ impl Navigation<'_, '_> {
     }
 
     /// Each declaration of member `name` in the class file `file`.
-    fn member_hover(&self, file: IndexedFileId, kind: SymbolKind, name: &str) -> Option<String> {
+    pub(crate) fn member_hover(
+        &self,
+        file: IndexedFileId,
+        kind: SymbolKind,
+        name: &str,
+    ) -> Option<String> {
         let path = self.path_of(file)?;
         let text = self.run.file_system().read(&path).ok()?;
         let parsed = Parsed::of(&text);
