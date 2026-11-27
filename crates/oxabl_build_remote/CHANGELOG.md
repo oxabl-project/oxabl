@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_build_remote-v0.2.15...oxabl_build_remote-v0.3.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ast:** Identifier.name is a NameId, expression fields are ExprId or ExprList, and the analysis entry points take the program's AstPools.
+
+### Performance Improvements
+
+* **ast:** keep names and expressions in per-program pools ([#632](https://github.com/oxabl-project/oxabl/issues/632)) ([e6fbebd](https://github.com/oxabl-project/oxabl/commit/e6fbebd1ec47740059c1557fd5e3118a4818df6a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_build bumped from 0.9.2 to 0.10.0
+
 ## [0.2.15](https://github.com/oxabl-project/oxabl/compare/oxabl_build_remote-v0.2.14...oxabl_build_remote-v0.2.15) (2026-11-27)
 
 

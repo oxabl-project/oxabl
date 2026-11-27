@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_bench"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 description = "End-to-end and memory benchmarks of oxabl, and a generator of large synthetic ABL workspaces"

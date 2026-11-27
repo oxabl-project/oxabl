@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.5.2...oxabl_flow-v0.6.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ast:** Identifier.name is a NameId, expression fields are ExprId or ExprList, and the analysis entry points take the program's AstPools.
+
+### Performance Improvements
+
+* **ast:** keep names and expressions in per-program pools ([#632](https://github.com/oxabl-project/oxabl/issues/632)) ([e6fbebd](https://github.com/oxabl-project/oxabl/commit/e6fbebd1ec47740059c1557fd5e3118a4818df6a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 7.0.0 to 8.0.0
+    * oxabl_lexer bumped from 3.0.0 to 4.0.0
+  * dev-dependencies
+    * oxabl_parser bumped from 6.0.0 to 7.0.0
+
 ## [0.5.2](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.5.1...oxabl_flow-v0.5.2) (2026-11-27)
 
 

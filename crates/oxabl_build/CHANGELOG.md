@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.10.0](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.9.2...oxabl_build-v0.10.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ast:** Identifier.name is a NameId, expression fields are ExprId or ExprList, and the analysis entry points take the program's AstPools.
+
+### Performance Improvements
+
+* **ast:** keep names and expressions in per-program pools ([#632](https://github.com/oxabl-project/oxabl/issues/632)) ([e6fbebd](https://github.com/oxabl-project/oxabl/commit/e6fbebd1ec47740059c1557fd5e3118a4818df6a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.6.0 to 2.0.0
+    * oxabl_effects bumped from 0.3.11 to 0.4.0
+    * oxabl_index bumped from 7.0.0 to 8.0.0
+    * oxabl_pipeline bumped from 5.0.0 to 6.0.0
+    * oxabl_semantic bumped from 7.0.0 to 8.0.0
+    * oxabl_workspace bumped from 3.8.0 to 4.0.0
+  * dev-dependencies
+    * oxabl_lexer bumped from 3.0.0 to 4.0.0
+
 ## [0.9.2](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.9.1...oxabl_build-v0.9.2) (2026-11-27)
 
 
