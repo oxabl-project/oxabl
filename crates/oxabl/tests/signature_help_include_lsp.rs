@@ -781,6 +781,67 @@ fn rough_workspace() -> Workspace {
     ws
 }
 
+/// Includes whose text one compile may change below the parameter include:
+/// an `&IF` that picks nothing, a `{&name}` alone, and an argument that is a
+/// `{&name}` reference.
+fn below_workspace() -> Workspace {
+    let ws = Workspace::new();
+    ws.write(
+        "inc/if-empty.i",
+        "&IF DEFINED(EXTRA) &THEN , INPUT pcX AS CHARACTER &ENDIF",
+    );
+    ws.write("inc/outer-if.i", "INPUT pcA AS CHARACTER{inc/if-empty.i}\n");
+    ws.write("inc/extra-only.i", "{&EXTRA-PARAMS}");
+    ws.write(
+        "inc/outer-ref.i",
+        "INPUT pcA AS CHARACTER{inc/extra-only.i}\n",
+    );
+    ws.write("inc/pos.i", "INPUT pcA AS CHARACTER {1}\n");
+    ws.write(
+        "app/Below.cls",
+        "CLASS app.Below:\n\
+         \x20   METHOD PUBLIC VOID NestedIf({inc/outer-if.i}, INPUT pcB AS INTEGER):\n\
+         \x20   END METHOD.\n\
+         \x20   METHOD PUBLIC VOID NestedRef({inc/outer-ref.i}, INPUT pcB AS INTEGER):\n\
+         \x20   END METHOD.\n\
+         \x20   METHOD PUBLIC VOID Arg({inc/pos.i {&MORE}}, INPUT pcB AS INTEGER):\n\
+         \x20   END METHOD.\n\
+         \x20   METHOD PUBLIC VOID Whole({inc/std-params.i}, INPUT pcB AS INTEGER):\n\
+         \x20   END METHOD.\n\
+         END CLASS.\n",
+    );
+    ws
+}
+
+#[test]
+fn an_include_below_a_parameter_include_that_may_change_gives_no_count() {
+    let mut ws = below_workspace();
+    let mut session = hint_session(&ws);
+    for member in ["NestedIf", "NestedRef", "Arg"] {
+        let marked = format!(
+            "DEFINE VARIABLE o AS app.Below NO-UNDO.\no = NEW app.Below().\no:{member}(‸cCompany, 1).\n"
+        );
+        let case = ws.program(&mut session, &marked);
+        assert_eq!(help(&mut session, &case), Value::Null, "{member}");
+        assert_eq!(hints(&mut session, &case), [], "{member}");
+        let hover_at = marked
+            .replace('‸', "")
+            .replace(&format!("o:{member}"), &format!("o:‸{member}"));
+        let case = ws.program(&mut session, &hover_at);
+        let text = hover(&mut session, &case).unwrap_or_default();
+        assert!(
+            !text.contains("parameter)") && !text.contains("parameters)"),
+            "{member}: {text}"
+        );
+    }
+    // The member beside them keeps its signature.
+    let case = ws.program(
+        &mut session,
+        "DEFINE VARIABLE o AS app.Below NO-UNDO.\no = NEW app.Below().\no:Whole(‸cCompany, cUser, 1).\n",
+    );
+    assert!(help(&mut session, &case).is_object());
+}
+
 const ROUGH: &str =
     "DEFINE VARIABLE o AS app.Rough NO-UNDO.\no = NEW app.Rough(cCompany, cUser, \"n\").\n";
 

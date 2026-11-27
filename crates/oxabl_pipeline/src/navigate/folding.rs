@@ -111,6 +111,8 @@ struct Built {
 }
 
 struct Node {
+    /// Its place in the list of expansions.
+    index: usize,
     path: PathBuf,
     file: Option<oxabl_common::FileId>,
     children: Vec<usize>,
@@ -154,7 +156,9 @@ impl<'t> Folding<'t> {
             regions.sort_by_key(|region| region.expanded.start);
             let mut nodes: Vec<Node> = expansions
                 .iter()
-                .map(|expansion| Node {
+                .enumerate()
+                .map(|(index, expansion)| Node {
+                    index,
                     path: expansion.path.to_path_buf(),
                     file: expansion.file,
                     children: Vec::new(),
@@ -218,15 +222,11 @@ impl<'t> Folding<'t> {
                 group.params.push(statement);
                 continue;
             }
-            let plain = self.reference(site);
-            let whole = plain.is_some() && self.read_whole(region);
+            let text = self.reference(site)?;
+            let whole = self.read_whole(region);
             if strict && !whole {
                 return None;
             }
-            let text = match plain {
-                Some(text) => text,
-                None => self.site_text(site)?,
-            };
             out.push(Entry::Include(Group {
                 site,
                 text,
@@ -237,16 +237,9 @@ impl<'t> Folding<'t> {
         Some(out)
     }
 
-    /// The bytes of the reference at `site`, on one line.
-    fn site_text(&self, site: Span) -> Option<String> {
-        let text = self
-            .root_text()?
-            .get(site.start as usize..site.end as usize)?;
-        Some(text.split_whitespace().collect::<Vec<_>>().join(" "))
-    }
-
     /// The include reference at `site`, on one line. `None` when the bytes
-    /// there are not one `{file}` reference.
+    /// there are not one `{file}` reference, or when its arguments hold a
+    /// `{&name}` reference.
     fn reference(&self, site: Span) -> Option<String> {
         let text = self
             .root_text()?
@@ -258,6 +251,11 @@ impl<'t> Folding<'t> {
             || words.next().is_some()
             || (first.start, first.end) != (0, text.len())
         {
+            return None;
+        }
+        // The value of a `{&name}` is not in the text, so the arguments are
+        // not known.
+        if text[1..].contains("{&") {
             return None;
         }
         Some(text.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -287,8 +285,17 @@ impl<'t> Folding<'t> {
     /// Whether the text of the include file of `node` is the same for every
     /// compile. One lex for each file.
     fn node_whole(&self, node: &Node) -> bool {
-        let Some(file) = node.file else {
-            return true;
+        // An expansion that kept no text of its own (an `&IF` that picks
+        // nothing) still has the text the preprocessor read. With no text
+        // known, nothing is known.
+        let Some(file) = node.file.or_else(|| {
+            self.expanded
+                .expansion_ids()
+                .get(node.index)
+                .copied()
+                .flatten()
+        }) else {
+            return false;
         };
         if let Some(known) = self.cache.whole_files.borrow().get(&node.path) {
             return *known;

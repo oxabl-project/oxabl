@@ -177,7 +177,10 @@ The entries are known whole, and the declaration has a signature, only when:
   no signature;
 - the include is one plain `{file}` reference, and neither it nor an include
   below it holds a `{&name}` reference or an `&IF` (the text of the include
-  may differ from one compile to another);
+  may differ from one compile to another). The arguments of the reference
+  hold no `{&name}` reference. An include below it that kept no text of its
+  own, such as an `&IF` that picks nothing, is read from the text that the
+  preprocessor read; when that text is not known, the include is not whole;
 - every include that the file writes in the main block of a program (outside
   its procedures and functions), or in a procedure, is the entry of a
   parameter list. An include that declares no parameter, such as one of
