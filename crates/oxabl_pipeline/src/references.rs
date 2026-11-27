@@ -13,8 +13,10 @@
 //! complete answer.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+
+use rustc_hash::FxHashSet;
 
 use oxabl_ast::Span;
 use oxabl_common::VirtualSpan;
@@ -372,9 +374,9 @@ impl Referent {
     pub fn search(&self, graph: &ReverseGraph, origin: &Path, limit: usize) -> Search {
         let origin = search::normalize_lexically(origin);
         let mut own: Vec<PathBuf> = Vec::new();
-        let mut units: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut units: FxHashSet<PathBuf> = FxHashSet::default();
         let mut unresolved = 0usize;
-        let mut add = |subject: &Subject, kinds: &[EdgeKind], units: &mut BTreeSet<PathBuf>| {
+        let mut add = |subject: &Subject, kinds: &[EdgeKind], units: &mut FxHashSet<PathBuf>| {
             let dependents = graph.dependents(subject);
             let mut found = Vec::new();
             for dependent in dependents.all() {
@@ -481,8 +483,10 @@ impl Referent {
                     }
                     // A class that names the class can inherit the member, and
                     // so can a class that names that one.
-                    let mut seen = BTreeSet::from([search::normalize_lexically(&class)]);
-                    let mut classes = VecDeque::from([search::normalize_lexically(&class)]);
+                    let mut seen = FxHashSet::default();
+                    let root_class = search::normalize_lexically(&class);
+                    seen.insert(root_class.clone());
+                    let mut classes = VecDeque::from([root_class]);
                     while let Some(class) = classes.pop_front() {
                         let found = add(
                             &Subject::file(&class),
@@ -532,12 +536,13 @@ impl Referent {
             .into_iter()
             .filter(|file| !is_include_fragment(file) && *file != origin)
             .collect();
-        let first: HashSet<PathBuf> = ordered.iter().cloned().collect();
-        ordered.extend(
-            units
-                .into_iter()
-                .filter(|unit| *unit != origin && !first.contains(unit)),
-        );
+        let first: FxHashSet<PathBuf> = ordered.iter().cloned().collect();
+        let mut rest: Vec<PathBuf> = units
+            .into_iter()
+            .filter(|unit| *unit != origin && !first.contains(unit))
+            .collect();
+        rest.sort_unstable_by(|a, b| oxabl_common::cmp_paths(a, b));
+        ordered.extend(rest);
         let mut gaps = Vec::new();
         let found = ordered.len();
         if found > limit {

@@ -92,7 +92,7 @@ statics and caches, then one time under `oxabl_bench::alloc::measure`, and
 prints one row to stderr:
 
 ```text
-memory check/file: 44569 allocations, 28481330 bytes requested, peak 10916557 bytes, retained 0 bytes
+memory check/file: 9974 allocations, 9521036 bytes requested, peak 3799126 bytes, retained 0 bytes
 ```
 
 - `allocations`: calls of `alloc`, `alloc_zeroed` and `realloc`.
@@ -130,12 +130,23 @@ Simulation result.
 
 `crates/oxabl_bench/tests/alloc_budget.rs` lexes and parses
 `resources/lsp_bench.p` (20,311 tokens) under the counting allocator, and
-compares the allocations and the bytes with a budget:
+compares the allocations and the bytes with a budget. For the parse it also
+compares the bytes that the returned `Program` keeps:
 
-| Stage | Allocations | Bytes |
-| --- | --- | --- |
-| lex | 1 | 1,241,136 |
-| parse | 11,877 | 3,942,288 |
+| Stage | Allocations | Bytes | Kept |
+| --- | --- | --- | --- |
+| lex | 1 | 1,241,136 | |
+| parse | 894 | 1,877,634 | 1,186,066 |
+
+The kept bytes include the capacity that the vectors of the program do not use
+(274,418 bytes here): the parser sizes the pools from the number of tokens and
+does not shrink them, and a shrink of the expression pool alone costs 4% of the
+instructions of this parse. The statement list is shrunk: it costs a few
+hundred instructions, and a file with one top-level statement, such as a class,
+would otherwise keep the capacity of 64 statements. The counter counts the
+shrink, a `realloc`, as one more allocation and its new size as bytes
+requested, so the bytes of the `check` benches below read about 5% higher for
+it; their peak reads lower.
 
 The counts are the same on each run of one toolchain. The test fails when a
 number is more than 0.5% above its budget. It also fails when a number is more
@@ -161,12 +172,20 @@ allocates nothing does not fail it. Find that cost with callgrind on
 `check/workspace_include_findings` and `check/include_findings_repeated`. A gain
 of the size of this one is below the threshold of CodSpeed.
 
+`crates/oxabl_bench/tests/slice_parse_alloc.rs` guards the parse of a slice of
+the tokens of a file, which the scan for `NEW SHARED` producers does for each
+`DEFINE NEW SHARED` statement. It parses one statement of more than 64 tokens alone, and
+then from a slice of the tokens of a text of 320,664 bytes, and wants the same
+allocations and bytes: 15 and 7,617. A parser that sizes a buffer from the
+length of the source asks for 34,174 bytes for the slice.
+
 ### Type sizes
 
 A `const` assertion holds the size of each type that a file has many of:
-`Token` (48 bytes), `TokenValue` (24), `Identifier` (32), `Literal` (40),
-`Expression` (80), `Statement` (744), `Scope` (48), `BindingMap` (144) and
-`Symbol` (64). A type that grows does not compile. To see the sizes of the
+`Token` (48 bytes), `TokenValue` (24), `NameId` (4), `ExprId` (4), `ExprList`
+(8), `Identifier` (12), `Literal` (32), `Expression` (48), `Statement` (192),
+`Scope` (48), `BindingMap` (144) and `Symbol` (64). A type that grows does not
+compile. To see the sizes of the
 variants:
 
 ```sh
@@ -537,30 +556,31 @@ The job `codspeed-memory` uses the Memory instrument (see [Memory](#memory)).
 ## Baseline
 
 x86-64 Linux, rustc 1.100.0. The machine was loaded, so this table has no
-times: read them on CodSpeed. The memory numbers are of the warm run.
+times: read them on CodSpeed. The memory numbers are of the warm run, with the
+names and the expressions of a program in its pools (`AstPools`).
 
 | Bench | Allocations | Bytes requested | Peak |
 | --- | --- | --- | --- |
-| `check/file` | 44,569 | 28.5 MB | 10.9 MB |
-| `check/workspace` | 618,870 | 457.1 MB | 3.1 MB |
-| `check/workspace_include_findings` | 1,070,457 | 684.4 MB | 3.2 MB |
-| `format/file_end_to_end` | 19,961 | 16.2 MB | 10.1 MB |
-| `producers/scan` | 60,453 | 67.6 MB | 0.3 MB |
-| `navigation/definitions` | 27,690 | 13.7 MB | 5.6 MB |
-| `navigation/links` | 7,198 | 5.3 MB | 2.4 MB |
+| `check/file` | 9,976 | 9.6 MB | 3.8 MB |
+| `check/workspace` | 247,975 | 182.2 MB | 1.5 MB |
+| `check/workspace_include_findings` | 573,746 | 302.6 MB | 1.6 MB |
+| `format/file_end_to_end` | 8,530 | 5.3 MB | 3.4 MB |
+| `producers/scan` | 30,853 | 26.8 MB | 0.2 MB |
+| `navigation/definitions` | 5,363 | 8.9 MB | 3.8 MB |
+| `navigation/links` | 2,965 | 2.5 MB | 1.2 MB |
 | `workspace_symbols/query` | 5,395 | 0.6 MB | 0.5 MB |
-| `daemon_cycle/features_on_one_revision` | 87,891 | 47.2 MB | 6.9 MB |
-| `lexer/large_mixed/lsp_bench` | 169 | 1.2 MB | 1.2 MB |
-| `lexer/large_mixed/1mb` | 43 | 10.1 MB | 10.1 MB |
-| `parser/large_mixed/lsp_bench` | 11,877 | 3.9 MB | 2.6 MB |
-| `parser/large_mixed/1mb` | 74,226 | 53.0 MB | 29.8 MB |
-| `semantic/large/lsp_bench/declare` | 43 | 0.9 MB | 0.4 MB |
+| `daemon_cycle/features_on_one_revision` | 19,822 | 28.2 MB | 5.4 MB |
+| `lexer/large_mixed/lsp_bench` | 1 | 1.2 MB | 1.2 MB |
+| `lexer/large_mixed/1mb` | 1 | 10.1 MB | 10.1 MB |
+| `parser/large_mixed/lsp_bench` | 894 | 1.9 MB | 1.2 MB |
+| `parser/large_mixed/1mb` | 12,031 | 16.8 MB | 10.7 MB |
+| `semantic/large/lsp_bench/declare` | 140 | 0.19 MB | 0.11 MB |
 | `semantic/large/lsp_bench/resolve` | 12 | 0.35 MB | 0.34 MB |
-| `semantic/large/nested_blocks/declare` | 4,798 | 12.8 MB | 6.5 MB |
+| `semantic/large/nested_blocks/declare` | 5,211 | 1.6 MB | 1.0 MB |
 | `semantic/large/nested_blocks/resolve` | 14 | 1.8 MB | 1.7 MB |
 
-`scripts/bench/cli.sh` on the same machine (`ci` workspace). Wall time and RSS
-are rough:
+`scripts/bench/cli.sh` on the same machine (`ci` workspace), from before the
+pools. Wall time and RSS are rough:
 
 | Surface | Wall | Peak RSS | Heap peak | Allocation calls | Instructions | `tokenize` | `parse_program` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -572,15 +592,13 @@ are rough:
 | `conformance -j 1 big.p` | 0.04 s | 53 MB | 41.1 MB | 74,854 | 160 M | 43.3% (1 full) | 46.2% (1 full) |
 | `explain lsp_bench.p` | 0.01 s | 18 MB | 7.0 MB | 25,059 | 46.4 M | 17.0% (1 full) | 20.0% (1 full) |
 
-The rows above are from before the formatter took the tokens of its caller
-(`format_with_tokens`), and before `check` built each file's line table once.
+The rows of this second table are also from before the formatter took the
+tokens of its caller (`format_with_tokens`), and before `check` built each
+file's line table once.
 For this change alone, from commit `2285153` on the same machine and
 toolchain: `check lsp_bench.p` goes from 103.6 M to 94.5 M instructions
 (`tokenize`: 4 full calls, 0 small), and `format --check src` goes from 355.8 M
-to 288.6 M (600 full calls instead of 900). The warm run of `check/file` makes
-44,318 allocations (27.2 MB requested, peak 9.7 MB) and `format/file_end_to_end`
-makes 19,710 (14.9 MB, peak 8.9 MB); the memory table above has the numbers
-from before.
+to 288.6 M (600 full calls instead of 900).
 
 The test-only feature `test-counters` of `oxabl_lexer` counts the lexers and
 the calls of `tokenize`. Cargo unifies a feature of a dev-dependency over a

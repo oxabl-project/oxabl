@@ -77,8 +77,9 @@ impl Engine<'_, '_, '_, '_> {
         // one declaration. Only that one: a `PROCEDURE` anywhere else is in
         // the base, or in an `&IF` branch the preprocessor did not take.
         let text = self.request.text;
-        let mut after = self.tokens[self.found.before..]
-            .iter()
+        let mut after = self
+            .tokens
+            .iter_from(self.found.before)
             .filter(|token| token.start >= self.found.word_end as usize)
             .filter(|token| token.kind != Kind::Comment);
         if after

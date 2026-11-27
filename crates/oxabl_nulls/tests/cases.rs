@@ -27,11 +27,15 @@ fn missing(body: &str) -> Vec<usize> {
         program.errors
     );
     let options = ScopeOptions::default();
-    let flow = oxabl_flow::build_file_tokens(&program.statements, &source, &tokens, &options.flow);
-    let scopes = oxabl_scope::analyze_flow(
+    let flow = oxabl_flow::build_file_tokens(
         &program.statements,
+        &program.pools,
         &source,
         &tokens,
+        &options.flow,
+    );
+    let scopes = oxabl_scope::analyze_flow(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, &source, &tokens),
         &flow,
         Some(&schema),
         &options,

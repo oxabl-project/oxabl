@@ -84,7 +84,9 @@ fn a_public_parent_method_resolves_for_the_child_with_its_return_type() {
 END CLASS."#;
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "calc-total");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Function);
     // The declared return type is on `data_type`, the same field a local
@@ -102,7 +104,8 @@ END CLASS."#;
 
     // The firewall: without an index the same call is unresolved, exactly as it
     // is for every client today.
-    let (_stmts, plain) = without_index(child);
+    let (program, plain) = without_index(child);
+    let _stmts = &program.statements;
     assert!(resolved_to(&plain, "calc-total").is_empty());
     assert_eq!(
         unresolved_reasons(&plain, "calc-total"),
@@ -125,7 +128,9 @@ fn a_public_parent_property_resolves_for_the_child_with_its_type() {
 END CLASS."#;
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "base-label");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Property);
     assert_eq!(
@@ -134,7 +139,9 @@ END CLASS."#;
     );
     assert_synthesized(&sem, sym, NamespaceId::Values);
 
-    let (_stmts, plain) = without_index(child);
+    let (program, plain) = without_index(child);
+
+    let _stmts = &program.statements;
     assert!(resolved_to(&plain, "base-label").is_empty());
     assert!(symbols_named(&plain, "base-label").is_empty());
 }
@@ -147,7 +154,8 @@ fn a_protected_parent_method_resolves_for_the_child() {
         v-rate = calc-rate().
     END METHOD.
 END CLASS."#;
-    let (_stmts, sem) = with_index(child, &[(CALC_BASE_PATH, CALC_BASE)]);
+    let (program, sem) = with_index(child, &[(CALC_BASE_PATH, CALC_BASE)]);
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "calc-rate");
     assert_eq!(
         sem.symbols.get(sym).data_type.as_ref(),
@@ -165,7 +173,9 @@ fn a_private_parent_method_does_not_resolve_for_the_child() {
 END CLASS."#;
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     assert!(
         resolved_to(&sem, "calc-secret").is_empty(),
         "a private member is not inherited, so nothing may resolve to it"
@@ -189,7 +199,9 @@ END CLASS."#;
         "an inaccessible member is not an undefined symbol"
     );
 
-    let (_stmts, plain) = without_index(child);
+    let (program, plain) = without_index(child);
+
+    let _stmts = &program.statements;
     assert_eq!(
         unresolved_reasons(&plain, "calc-secret"),
         vec![UnresolvedReason::External],
@@ -217,7 +229,9 @@ fn an_inaccessible_ancestor_member_only_softens_its_own_namespace() {
 END CLASS."#;
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     assert_eq!(
         unresolved_reasons(&sem, "calc-secret"),
         vec![UnresolvedReason::NotInScope],
@@ -240,7 +254,8 @@ END CLASS."#;
         v-n = calc-secret().
     END METHOD.
 END CLASS."#;
-    let (_stmts, sem) = with_index(called, &workspace);
+    let (program, sem) = with_index(called, &workspace);
+    let _stmts = &program.statements;
     assert_eq!(
         unresolved_reasons(&sem, "calc-secret"),
         vec![UnresolvedReason::PresentButUnusable]
@@ -261,7 +276,9 @@ fn a_name_no_ancestor_declares_stays_undefined_under_an_index() {
 END CLASS."#;
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     assert_eq!(
         unresolved_reasons(&sem, "calc-totl"),
         vec![UnresolvedReason::NotInScope]
@@ -293,7 +310,9 @@ END CLASS."#;
         ),
     ];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "calc-total");
     assert_eq!(
         sem.symbols.get(sym).data_type.as_ref(),
@@ -314,7 +333,9 @@ fn a_class_inheriting_itself_terminates_with_not_found() {
 END CLASS."#;
     let workspace = [("/src/orders/child.cls", child)];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     assert!(resolved_to(&sem, "calc-total").is_empty());
     assert_eq!(
         unresolved_reasons(&sem, "calc-total"),
@@ -341,7 +362,9 @@ END CLASS."#;
 END CLASS."#;
     let workspace = [("/src/orders/a.cls", a), ("/src/orders/b.cls", b)];
 
-    let (_stmts, sem) = with_index(a, &workspace);
+    let (program, sem) = with_index(a, &workspace);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "from-b");
     assert_eq!(
         sem.symbols.get(sym).data_type.as_ref(),
@@ -368,7 +391,9 @@ END CLASS."#;
 END INTERFACE."#,
     )];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "required-total");
     assert_eq!(
         sem.symbols.get(sym).data_type.as_ref(),
@@ -393,7 +418,9 @@ fn a_member_declared_on_both_child_and_parent_resolves_to_the_childs() {
     END METHOD.
 END CLASS."#;
 
-    let (_stmts, sem) = with_index(child, &[(CALC_BASE_PATH, CALC_BASE)]);
+    let (program, sem) = with_index(child, &[(CALC_BASE_PATH, CALC_BASE)]);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "calc-total");
     let symbol = sem.symbols.get(sym);
     assert_ne!(
@@ -425,7 +452,9 @@ fn twenty_references_to_one_inherited_member_synthesize_it_once() {
     }
     body.push_str("    END METHOD.\nEND CLASS.");
 
-    let (_stmts, sem) = with_index(&body, &[(CALC_BASE_PATH, CALC_BASE)]);
+    let (program, sem) = with_index(&body, &[(CALC_BASE_PATH, CALC_BASE)]);
+
+    let _stmts = &program.statements;
     let sym = sole_resolved(&sem, "calc-total");
     assert_eq!(
         symbols_named(&sem, "calc-total"),
@@ -461,7 +490,9 @@ PROCEDURE elsewhere:
 END PROCEDURE."#;
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
 
-    let (_stmts, sem) = with_index(source, &workspace);
+    let (program, sem) = with_index(source, &workspace);
+
+    let _stmts = &program.statements;
     // One reference resolved (inside the class), one did not (outside it).
     assert_eq!(resolved_to(&sem, "calc-total").len(), 1);
     assert_eq!(
@@ -484,7 +515,8 @@ END PROCEDURE."#;
 #[test]
 fn an_unresolvable_parent_is_recorded_on_the_class_symbol_with_its_span() {
     let child = "CLASS orders.child INHERITS orders.no-such-base: END CLASS.";
-    let (_stmts, sem) = with_index(child, &[]);
+    let (program, sem) = with_index(child, &[]);
+    let _stmts = &program.statements;
 
     let class = sem
         .symbols
@@ -513,7 +545,8 @@ fn an_unresolvable_parent_is_recorded_on_the_class_symbol_with_its_span() {
 
 #[test]
 fn a_class_with_no_parent_is_distinguishable_from_one_whose_parent_is_missing() {
-    let (_stmts, sem) = without_index("CLASS orders.child: END CLASS.");
+    let (program, sem) = without_index("CLASS orders.child: END CLASS.");
+    let _stmts = &program.statements;
     let class = sem
         .symbols
         .iter()
@@ -530,7 +563,8 @@ fn a_class_with_no_parent_is_distinguishable_from_one_whose_parent_is_missing() 
 fn implemented_interfaces_are_recorded_in_declaration_order() {
     let source = "CLASS orders.child INHERITS orders.calc-base IMPLEMENTS orders.i-calc, orders.i-audit: \
          END CLASS.";
-    let (_stmts, sem) = without_index(source);
+    let (program, sem) = without_index(source);
+    let _stmts = &program.statements;
     let class = sem
         .symbols
         .iter()
@@ -788,7 +822,8 @@ fn a_mismatched_assignment_from_an_inherited_method_is_reported() {
     // were true then. Promoting the type onto `Symbol::data_type` is what turns
     // the silence into the finding, and this is where that shows.
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
-    let (_stmts, sem) = with_index(MISMATCHED_CHILD, &workspace);
+    let (program, sem) = with_index(MISMATCHED_CHILD, &workspace);
+    let _stmts = &program.statements;
 
     let member = sole_resolved(&sem, "calc-total");
     assert_eq!(
@@ -853,7 +888,9 @@ fn inherited_overloads_do_not_lend_calls_the_first_return_type() {
     END CLASS."#;
     let workspace = [(CALC_BASE_PATH, parent)];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     let member = sole_resolved(&sem, "choose");
     assert_eq!(
         sem.symbols.overload_set_data_type(member),
@@ -908,7 +945,9 @@ fn an_override_up_the_chain_keeps_the_inherited_return_type() {
         ("/src/orders/calc-root.cls", grandparent),
     ];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     let member = sole_resolved(&sem, "choose");
     assert_eq!(
         sem.symbols.get(member).data_type.as_ref(),
@@ -945,7 +984,9 @@ fn an_overload_set_agreeing_on_its_return_type_is_still_judged() {
     END CLASS."#;
     let workspace = [(CALC_BASE_PATH, parent)];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     let member = sole_resolved(&sem, "choose");
     assert_eq!(
         sem.symbols.get(member).data_type.as_ref(),
@@ -994,7 +1035,9 @@ END CLASS."#;
 END CLASS."#;
     let workspace = [("/src/orders/void-base.cls", base)];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     let member = sole_resolved(&sem, "do-it");
     assert_eq!(
         sem.symbols.get(member).data_type,
@@ -1017,7 +1060,9 @@ fn a_parent_property_type_reaches_the_lattice_like_a_return_type_does() {
 END CLASS."#;
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     let member = sole_resolved(&sem, "base-label");
     assert_eq!(
         sem.symbols.get(member).data_type.as_ref(),
@@ -1049,7 +1094,9 @@ END CLASS."#;
         ),
     ];
 
-    let (_stmts, sem) = with_index(child, &workspace);
+    let (program, sem) = with_index(child, &workspace);
+
+    let _stmts = &program.statements;
     let member = sole_resolved(&sem, "calc-total");
     assert_eq!(
         sem.symbols.get(member).data_type.as_ref(),
@@ -1068,7 +1115,8 @@ fn nothing_is_synthesized_and_nothing_is_typed_without_an_index() {
     // The promotion cannot fire where nothing was looked up. Stated on the
     // mismatch fixture, so a regression shows as a *new* finding rather than as a
     // missing symbol.
-    let (_stmts, sem) = without_index(MISMATCHED_CHILD);
+    let (program, sem) = without_index(MISMATCHED_CHILD);
+    let _stmts = &program.statements;
     assert!(symbols_named(&sem, "calc-total").is_empty());
     assert!(lint0004_without_index(MISMATCHED_CHILD).is_empty());
 }

@@ -445,7 +445,12 @@ fn every_module_is_reachable() {
 
     // parse → semantic → lint → format, all via the facade.
     let program = parse("MESSAGE \"x\".");
-    let ctx = AnalysisContext::new(oxabl::common::FileId::new(1), "MESSAGE \"x\".", &schema);
+    let ctx = AnalysisContext::new(
+        oxabl::common::FileId::new(1),
+        "MESSAGE \"x\".",
+        &schema,
+        &program.pools,
+    );
     let sem: Semantic = analyze_file(&program.statements, &ctx);
     let _lints = oxabl::lint::lint_file(&program.statements, &sem, &ctx);
     let formatted = oxabl::formatter::format("MESSAGE \"x\".", &program, &style);

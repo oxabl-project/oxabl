@@ -7,7 +7,6 @@ description = "Tokenizer for Progress ABL source code"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_lexer"
 
 [dependencies]
-oxabl_common = { path = "../oxabl_common", version = "1.6.0" }
 rust_decimal = "1.40.0"
 string_cache = "0.9.0"
 
@@ -18,6 +17,7 @@ test-counters = []
 
 [dev-dependencies]
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
+oxabl_common = { path = "../oxabl_common", version = "1.6.0" }
 
 
 [build-dependencies]
@@ -26,3 +26,6 @@ string_cache_codegen = "0.6"
 [[bench]]
 name = "lexer_bench"
 harness = false
+
+[lints]
+workspace = true

@@ -19,7 +19,8 @@ fn compare(name: &str) -> listing::Comparison {
     let tokens = oxabl_lexer::tokenize(&source);
     let program = oxabl_parser::Parser::new(&tokens, &source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
-    let scopes = oxabl_scope::analyze_file(&program.statements, &source, Some(&schema));
+    let scopes =
+        oxabl_scope::analyze_file(&program.statements, &program.pools, &source, Some(&schema));
     let line_of = |at: u32| source[..at as usize].matches('\n').count() as u32 + 1;
     let model = listing::model_blocks(
         &scopes,

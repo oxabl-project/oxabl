@@ -188,7 +188,7 @@ fn direct(
     let text = expanded.text.as_str();
     let tokens = oxabl_lexer::tokenize(text);
     let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
-    let mut ctx = AnalysisContext::new(ROOT_FILE_ID, text, &config.schema)
+    let mut ctx = AnalysisContext::new(ROOT_FILE_ID, text, &config.schema, &program.pools)
         .with_tokens(&tokens)
         .with_parse_recovered(!program.errors.is_empty())
         .with_elided(expanded.elided_offsets())

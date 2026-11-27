@@ -1,84 +1,42 @@
+use crate::parser::tok_span;
 use oxabl_ast::{
-    BooleanLiteral, DateLiteral, DecimalLiteral, IntegerLiteral, Literal, Span, StringLiteral,
-    UnknownLiteral,
+    BooleanLiteral, DateLiteral, DecimalLiteral, IntegerLiteral, Literal, NameInterner,
+    StringLiteral, UnknownLiteral,
 };
 use oxabl_lexer::{Kind, Token, TokenValue};
 
-// pub fn parse_literal(tokens: &mut TokenStream) -> Literal {
-
-// }
-
-/// The literal of `token`, read from `source`, the text that was lexed.
-pub fn token_to_literal(token: &Token, source: &str) -> Option<Literal> {
+/// The literal of `token`, read from `source`, interning string/date text into `names`.
+pub fn token_to_literal(token: &Token, source: &str, names: &mut NameInterner) -> Option<Literal> {
+    let span = tok_span(token);
     match (&token.kind, &token.value) {
         (Kind::IntegerLiteral, TokenValue::Integer(v)) => Some(Literal::Integer(IntegerLiteral {
-            span: Span {
-                start: token.start as u32,
-                end: token.end as u32,
-            },
-            value: *v as i64,
+            span,
+            value: i64::from(*v),
         })),
-        (Kind::BigIntLiteral, TokenValue::BigInt(v)) => Some(Literal::Integer(IntegerLiteral {
-            span: Span {
-                start: token.start as u32,
-                end: token.end as u32,
-            },
-            value: *v,
-        })),
-        (Kind::DecimalLiteral, TokenValue::Decimal(v)) => Some(Literal::Decimal(DecimalLiteral {
-            span: Span {
-                start: token.start as u32,
-                end: token.end as u32,
-            },
-            value: *v,
-        })),
-        (Kind::StringLiteral, TokenValue::Text { .. }) => Some(Literal::String(StringLiteral {
-            span: Span {
-                start: token.start as u32,
-                end: token.end as u32,
-            },
-            value: token.text(source)?.to_string(),
-        })),
-        (Kind::DateLiteral, TokenValue::Text { .. }) => Some(Literal::Date(DateLiteral {
-            span: Span {
-                start: token.start as u32,
-                end: token.end as u32,
-            },
-            text: token.text(source)?.to_string(),
-        })),
-        (Kind::Question, TokenValue::None) => Some(Literal::Unknown(UnknownLiteral {
-            span: Span {
-                start: token.start as u32,
-                end: token.end as u32,
-            },
-        })),
+        (Kind::BigIntLiteral, TokenValue::BigInt(v)) => {
+            Some(Literal::Integer(IntegerLiteral { span, value: *v }))
+        }
+        (Kind::DecimalLiteral, TokenValue::Decimal(v)) => {
+            Some(Literal::Decimal(DecimalLiteral { span, value: *v }))
+        }
+        (Kind::StringLiteral, TokenValue::Text { .. }) => {
+            let value = names.intern(token.text(source)?);
+            Some(Literal::String(StringLiteral { span, value }))
+        }
+        (Kind::DateLiteral, TokenValue::Text { .. }) => {
+            let text = names.intern(token.text(source)?);
+            Some(Literal::Date(DateLiteral { span, text }))
+        }
+        (Kind::Question, TokenValue::None) => Some(Literal::Unknown(UnknownLiteral { span })),
         (Kind::KwTrue | Kind::KwFalse, TokenValue::Boolean(v)) => {
-            Some(Literal::Boolean(BooleanLiteral {
-                span: Span {
-                    start: token.start as u32,
-                    end: token.end as u32,
-                },
-                value: *v,
-            }))
+            Some(Literal::Boolean(BooleanLiteral { span, value: *v }))
         }
         // YES is an alias for TRUE in ABL
-        (Kind::Yes, _) => Some(Literal::Boolean(BooleanLiteral {
-            span: Span {
-                start: token.start as u32,
-                end: token.end as u32,
-            },
-            value: true,
-        })),
+        (Kind::Yes, _) => Some(Literal::Boolean(BooleanLiteral { span, value: true })),
         // NO is an alias for FALSE in ABL. Bare `no` only reaches the parser
         // when the lexer's space-separated lock lookahead did not claim a
         // following LOCK, so this never shadows `NO LOCK`.
-        (Kind::No, _) => Some(Literal::Boolean(BooleanLiteral {
-            span: Span {
-                start: token.start as u32,
-                end: token.end as u32,
-            },
-            value: false,
-        })),
+        (Kind::No, _) => Some(Literal::Boolean(BooleanLiteral { span, value: false })),
         _ => None,
     }
 }
@@ -87,6 +45,7 @@ pub fn token_to_literal(token: &Token, source: &str) -> Option<Literal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxabl_ast::Span;
     use oxabl_lexer::tokenize;
     use rust_decimal::Decimal;
     use std::str::FromStr;
@@ -106,7 +65,7 @@ mod tests {
                 },
                 value: expected_value
             })
-        )
+        );
     }
 
     fn assert_decimal(
@@ -124,25 +83,7 @@ mod tests {
                 },
                 value: expected_value
             })
-        )
-    }
-
-    fn assert_string(
-        literal: Literal,
-        expected_value: String,
-        expected_start: u32,
-        expected_end: u32,
-    ) {
-        assert_eq!(
-            literal,
-            Literal::String(StringLiteral {
-                span: Span {
-                    start: expected_start,
-                    end: expected_end
-                },
-                value: expected_value
-            })
-        )
+        );
     }
 
     fn assert_boolean(
@@ -160,7 +101,7 @@ mod tests {
                 },
                 value: expected_value
             })
-        )
+        );
     }
 
     fn assert_unknown(literal: Literal, expected_start: u32, expected_end: u32) {
@@ -172,7 +113,7 @@ mod tests {
                     end: expected_end
                 },
             })
-        )
+        );
     }
 
     #[test]
@@ -185,8 +126,9 @@ mod tests {
             .find(|t| t.kind == Kind::IntegerLiteral)
             .expect("expected an integer literal token");
         // convert to integer literal
-        let lit = token_to_literal(token, source);
-        let lit = lit.expect("expected an integer literal span");
+        let mut names = NameInterner::new();
+        let lit =
+            token_to_literal(token, source, &mut names).expect("expected an integer literal span");
         assert_integer(lit, 4, 34, 35);
     }
 
@@ -200,8 +142,9 @@ mod tests {
             .find(|t| t.kind == Kind::DecimalLiteral)
             .expect("expected a decimal literal token");
         // convert to decimal literal
-        let lit = token_to_literal(token, source);
-        let lit = lit.expect("expected a decimal literal span");
+        let mut names = NameInterner::new();
+        let lit =
+            token_to_literal(token, source, &mut names).expect("expected a decimal literal span");
         assert_decimal(lit, Decimal::from_str("3.14").unwrap(), 34, 38);
     }
 
@@ -215,9 +158,14 @@ mod tests {
             .find(|t| t.kind == Kind::StringLiteral)
             .expect("expected a string literal token");
         // convert to string literal
-        let lit = token_to_literal(token, source);
-        let lit = lit.expect("expected a string literal span");
-        assert_string(lit, "hello".to_string(), 35, 42);
+        let mut names = NameInterner::new();
+        let lit =
+            token_to_literal(token, source, &mut names).expect("expected a string literal span");
+        let Literal::String(s) = lit else {
+            panic!("expected String literal, got {lit:?}");
+        };
+        assert_eq!(s.span, Span { start: 35, end: 42 });
+        assert_eq!(names.get(s.value), "hello");
     }
 
     #[test]
@@ -230,8 +178,9 @@ mod tests {
             .find(|t| t.kind == Kind::KwTrue)
             .expect("expected a boolean literal token");
         // convert to boolean literal
-        let lit = token_to_literal(token, source);
-        let lit = lit.expect("expected a boolean literal span");
+        let mut names = NameInterner::new();
+        let lit =
+            token_to_literal(token, source, &mut names).expect("expected a boolean literal span");
         assert_boolean(lit, true, 35, 39);
     }
 
@@ -245,8 +194,9 @@ mod tests {
             .find(|t| t.kind == Kind::Question)
             .expect("expected an unknown literal token");
         // convert to unknown literal
-        let lit = token_to_literal(token, source);
-        let lit = lit.expect("expected an unknown literal span");
+        let mut names = NameInterner::new();
+        let lit =
+            token_to_literal(token, source, &mut names).expect("expected an unknown literal span");
         assert_unknown(lit, 34, 35);
     }
 }

@@ -23,7 +23,7 @@ fn lint0002(source: &str) -> Vec<String> {
         program.errors
     );
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     let sem = analyze_file(&program.statements, &ctx);
     unused_variable::run(&program.statements, &sem, &ctx)
         .into_iter()
@@ -44,7 +44,7 @@ fn lint0002_spans(source: &str) -> Vec<(String, u32)> {
         program.errors
     );
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     let sem = analyze_file(&program.statements, &ctx);
     unused_variable::run(&program.statements, &sem, &ctx)
         .into_iter()
@@ -148,7 +148,7 @@ v-total = 1.
     let program = parser.parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema, &program.pools);
     let sem = analyze_file(&program.statements, &ctx);
     let dead = assigned_but_never_read::run(&program.statements, &sem, &ctx);
     assert_eq!(dead.len(), 1, "expected one LINT0006: {dead:?}");

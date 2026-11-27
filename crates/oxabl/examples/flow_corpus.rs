@@ -85,7 +85,7 @@ fn main() {
         let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
         print!(
             "{}",
-            oxabl_flow::build_file(&program.statements, text).dump(text)
+            oxabl_flow::build_file(&program.statements, &program.pools, text).dump(text)
         );
         return;
     }
@@ -167,7 +167,7 @@ fn run_file(pipeline: &LintPipeline, file: &Path, r: &mut Report, verbose: bool)
 
     let t = Instant::now();
     let built = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        oxabl_flow::build_file(&program.statements, &text)
+        oxabl_flow::build_file(&program.statements, &program.pools, &text)
     }));
     r.build_time += t.elapsed();
     let flow = match built {

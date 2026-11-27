@@ -19,9 +19,7 @@ fn scopes(source: &str, inherited: &Inherited) -> oxabl_scope::FileScopes {
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     oxabl_scope::analyze_tokens_inherited(
-        &program.statements,
-        source,
-        &tokens,
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         Some(&schema),
         &ScopeOptions::default(),
         inherited,

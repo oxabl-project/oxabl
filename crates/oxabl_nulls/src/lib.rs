@@ -76,7 +76,7 @@ pub use values::{ValueSource, ValueSourceKind, ValueState, ValueUse};
 
 pub use model::{FailedFind, MissingRecord};
 
-use oxabl_flow::FileFlow;
+use oxabl_flow::{FileFlow, FileInput};
 use oxabl_scope::FileScopes;
 
 /// Options for [`analyze_file`].
@@ -144,15 +144,12 @@ impl FileNulls {
     /// `tokens` are the lexer's tokens of `source`.
     pub fn with_values(
         mut self,
-        source: &str,
-        tokens: &[oxabl_lexer::Token],
-        program: &[oxabl_ast::Statement],
+        input: FileInput<'_>,
         flow: &FileFlow,
         options: &NullOptions<'_>,
     ) -> Self {
         if self.unknown.is_empty() {
-            (self.values, self.value_facts) =
-                values::analyze(source, tokens, program, flow, options.elided);
+            (self.values, self.value_facts) = values::analyze(input, flow, options.elided);
             self.exhausted.extend(
                 self.value_facts
                     .iter()
@@ -170,16 +167,13 @@ impl FileNulls {
     /// own: a file with a file-level Unknown of the scope analysis gets none.
     pub fn with_fields(
         mut self,
-        source: &str,
-        tokens: &[oxabl_lexer::Token],
-        program: &[oxabl_ast::Statement],
+        input: FileInput<'_>,
         flow: &FileFlow,
         sources: &FieldSources<'_>,
         options: &NullOptions<'_>,
     ) -> Self {
         if self.unknown.is_empty() && sources.scopes.unknown().is_empty() {
-            let (uses, exhausted) =
-                values::analyze_fields(source, tokens, program, flow, options.elided, sources);
+            let (uses, exhausted) = values::analyze_fields(input, flow, options.elided, sources);
             self.field_values = uses;
             self.exhausted.extend(exhausted);
             self.exhausted.sort_unstable();
@@ -227,9 +221,7 @@ impl FileNulls {
 /// file-level Unknown of the scope analysis gets none, as with
 /// [`analyze_file`] and [`FileNulls::with_values`].
 pub fn analyze_values(
-    source: &str,
-    tokens: &[oxabl_lexer::Token],
-    program: &[oxabl_ast::Statement],
+    input: FileInput<'_>,
     flow: &FileFlow,
     scopes: &FileScopes,
     options: &NullOptions<'_>,
@@ -238,15 +230,13 @@ pub fn analyze_values(
         unknown: scopes.unknown().to_vec(),
         ..FileNulls::default()
     }
-    .with_values(source, tokens, program, flow, options)
+    .with_values(input, flow, options)
 }
 
 /// The nullable database field uses alone, without the local value facts
 /// and the failed finds: see [`FileNulls::with_fields`].
 pub fn analyze_fields(
-    source: &str,
-    tokens: &[oxabl_lexer::Token],
-    program: &[oxabl_ast::Statement],
+    input: FileInput<'_>,
     flow: &FileFlow,
     sources: &FieldSources<'_>,
     options: &NullOptions<'_>,
@@ -255,7 +245,7 @@ pub fn analyze_fields(
         unknown: sources.scopes.unknown().to_vec(),
         ..FileNulls::default()
     }
-    .with_fields(source, tokens, program, flow, sources, options)
+    .with_fields(input, flow, sources, options)
 }
 
 /// Analyse a file over its flow graphs and its scope analysis, both built

@@ -74,11 +74,13 @@ mod build;
 pub mod dataflow;
 pub mod dominators;
 mod dump;
+mod input;
 mod model;
 mod query;
 mod tokens;
 
 pub use build::{FlowOptions, UnitBuilder, build_file, build_file_tokens, build_file_with};
+pub use input::FileInput;
 pub use model::{
     Action, Block, BlockId, BlockKind, Cfg, Condition, Edge, EdgeKind, ErrorDirective, ExitKind,
     ForQualifier, Handling, Node, NodeIx, NodeKind, OpaqueReason, Origin, RetryBehavior,

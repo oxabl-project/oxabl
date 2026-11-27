@@ -17,3 +17,7 @@ smallvec = { version = "1", features = ["union"] }
 [dev-dependencies]
 oxabl_parser = { path = "../oxabl_parser", version = "6.0.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.6.2", features = ["test-support"] }
+
+# Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
+# (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.
+[lints]

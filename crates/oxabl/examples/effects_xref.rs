@@ -194,12 +194,18 @@ fn model_searches(
         elided_includes: expanded.elided_include_offsets(),
         ..ScopeOptions::default()
     };
-    let flow = oxabl_flow::build_file_with(&program.statements, text, &options.flow);
-    let scopes =
-        oxabl_scope::analyze_flow(&program.statements, text, &tokens, &flow, schema, &options);
-    let calls = FileCalls::extract(&program.statements, text, &tokens);
+    let flow =
+        oxabl_flow::build_file_with(&program.statements, &program.pools, text, &options.flow);
+    let scopes = oxabl_scope::analyze_flow(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, text, &tokens),
+        &flow,
+        schema,
+        &options,
+    );
+    let calls = FileCalls::extract(&program.statements, &program.pools, text, &tokens);
     let effects = oxabl_effects::analyze_file(
         &program.statements,
+        &program.pools,
         text,
         &tokens,
         &flow,

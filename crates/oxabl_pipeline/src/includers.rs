@@ -387,9 +387,12 @@ impl<'a> IncluderPools<'a> {
             let tokens = oxabl_lexer::tokenize(&expanded.text);
             let program = oxabl_parser::Parser::new(&tokens, &expanded.text).parse_program();
             let handles = oxabl_handles::analyze_tokens(
-                &program.statements,
-                &expanded.text,
-                &tokens,
+                oxabl_flow::FileInput::new(
+                    &program.statements,
+                    &program.pools,
+                    &expanded.text,
+                    &tokens,
+                ),
                 &FlowOptions::default(),
             );
             for (_, object) in handles.objects() {

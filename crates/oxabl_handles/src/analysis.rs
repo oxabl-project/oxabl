@@ -392,7 +392,7 @@ impl<'c, 'i, 'a> UnitWalk<'c, 'i, 'a> {
         // hold an object.
         for (n, names) in skipped {
             for name in names {
-                if let Some(&v) = var_ix.get(&Name(&name.name)) {
+                if let Some(&v) = var_ix.get(&Name(index.pools.ident(*name))) {
                     w.fx[n.index()].push(Fx::Opaque {
                         var: v,
                         reason: OpaqueReason::SkippedStatement,

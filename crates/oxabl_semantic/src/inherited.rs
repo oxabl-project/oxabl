@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use oxabl_ast::{Statement, StatementKind};
+use oxabl_ast::{AstPools, Statement, StatementKind};
 
 use crate::resolve::{SupertypeLookup, lookup_supertype};
 use crate::{
@@ -71,9 +71,15 @@ pub(crate) enum ChainStart<'a> {
 /// The buffers and temp-tables the class of `program` inherits through its
 /// `INHERITS` chain. Empty for a file with no class, or a class with no
 /// superclass.
-pub fn inherited_records(program: &[Statement], index: &dyn WorkspaceIndex) -> InheritedRecords {
+pub fn inherited_records(
+    program: &[Statement],
+    pools: &AstPools,
+    index: &dyn WorkspaceIndex,
+) -> InheritedRecords {
     let Some((own, Some(parent))) = program.iter().find_map(|s| match &s.kind {
-        StatementKind::Class { name, inherits, .. } => Some((&name.name, inherits.as_ref())),
+        StatementKind::Class { name, inherits, .. } => {
+            Some((pools.ident(*name), inherits.as_ref()))
+        }
         _ => None,
     }) else {
         return InheritedRecords::default();
@@ -83,7 +89,7 @@ pub fn inherited_records(program: &[Statement], index: &dyn WorkspaceIndex) -> I
         Some(IndexName::new(own)),
         ChainStart::Parent {
             imports: Arc::new(ImportContext::from_statements(program)),
-            raw: &parent.name,
+            raw: pools.ident(*parent),
         },
     )
 }

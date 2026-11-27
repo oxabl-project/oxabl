@@ -1,5 +1,7 @@
 //! Allocation budgets of one lex and one parse of `resources/lsp_bench.p`, and
-//! of one parse of the schema fixture `sp2k.df`.
+//! of one parse of the schema fixture `sp2k.df`. The parse also has a budget
+//! for the bytes that the program it returns keeps, with the capacity that its
+//! vectors do not use.
 //!
 //! The counts are the same on every run of one toolchain. A change that
 //! allocates more fails here. A change that allocates less fails too, so its
@@ -26,14 +28,22 @@ struct Budget {
     what: &'static str,
     allocations: u64,
     bytes: u64,
+    /// The bytes still live after the call, for a call that returns what it
+    /// made.
+    retained: Option<u64>,
 }
 
 fn check(budget: &Budget, usage: Usage) -> Vec<String> {
     let mut problems = Vec::new();
+    let retained = u64::try_from(usage.retained).unwrap_or(0);
     for (name, measured, limit) in [
-        ("allocations", usage.allocations, budget.allocations),
-        ("bytes", usage.bytes, budget.bytes),
+        ("allocations", usage.allocations, Some(budget.allocations)),
+        ("bytes", usage.bytes, Some(budget.bytes)),
+        ("retained bytes", retained, budget.retained),
     ] {
+        let Some(limit) = limit else {
+            continue;
+        };
         let what = budget.what;
         if measured as f64 > limit as f64 * (1.0 + BAND) {
             problems.push(format!(
@@ -70,6 +80,7 @@ fn lex_and_parse_of_lsp_bench_stay_in_budget() {
             what: "lex",
             allocations: LEX_ALLOCATIONS,
             bytes: LEX_BYTES,
+            retained: None,
         },
         lex,
     );
@@ -78,6 +89,7 @@ fn lex_and_parse_of_lsp_bench_stay_in_budget() {
             what: "parse",
             allocations: PARSE_ALLOCATIONS,
             bytes: PARSE_BYTES,
+            retained: Some(PARSE_RETAINED),
         },
         parse,
     ));
@@ -103,6 +115,7 @@ fn parse_of_sp2k_df_stays_in_budget() {
             what: "parse_df",
             allocations: DF_ALLOCATIONS,
             bytes: DF_BYTES,
+            retained: None,
         },
         usage,
     );
@@ -110,12 +123,14 @@ fn parse_of_sp2k_df_stays_in_budget() {
 }
 
 // Measured on 20,311 tokens: one allocation (the token vector) and 61 bytes for
-// each token in the lex, 0.58 allocations and 194 bytes for each token in the
-// parse.
+// each token in the lex, 0.04 allocations and 92 bytes for each token in the
+// parse. The program keeps 58 bytes for each token, 14 of them capacity that
+// its vectors do not use.
 const LEX_ALLOCATIONS: u64 = 1;
 const LEX_BYTES: u64 = 1_241_136;
-const PARSE_ALLOCATIONS: u64 = 11_877;
-const PARSE_BYTES: u64 = 3_942_288;
+const PARSE_ALLOCATIONS: u64 = 894;
+const PARSE_BYTES: u64 = 1_877_634;
+const PARSE_RETAINED: u64 = 1_186_066;
 
 // The parse of `sp2k.df` (the strings the model keeps, and no string for a
 // keyword or an attribute word).

@@ -5,7 +5,6 @@
 //! `report`. Before this, that is exactly what it did: the semantic pass
 //! recorded a table reference and `unknown-table-or-field` fired.
 
-use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, FileId};
 use oxabl_lexer::tokenize;
 use oxabl_lint::lint_file;
@@ -21,7 +20,7 @@ ADD FIELD "amount" OF "report" AS integer
 "#;
 
 /// Parse `source` cleanly and analyze it under `schema`.
-fn analyze(schema: &Schema, source: &str) -> (Vec<Statement>, Semantic) {
+fn analyze(schema: &Schema, source: &str) -> (oxabl_parser::Program, Semantic) {
     let tokens = tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     assert!(
@@ -29,16 +28,17 @@ fn analyze(schema: &Schema, source: &str) -> (Vec<Statement>, Semantic) {
         "fixture must parse cleanly: {:?}",
         program.errors
     );
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema, &program.pools);
     let sem = analyze_file(&program.statements, &ctx);
-    (program.statements, sem)
+    (program, sem)
 }
 
 /// Every diagnostic `source` draws under `schema`.
 fn lint(schema: &Schema, source: &str) -> Vec<Diagnostic> {
-    let (stmts, sem) = analyze(schema, source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema);
-    lint_file(&stmts, &sem, &ctx)
+    let (program, sem) = analyze(schema, source);
+    let stmts = &program.statements;
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema, &program.pools);
+    lint_file(stmts, &sem, &ctx)
 }
 
 /// Every name of a resolved reference in `sem`.
@@ -60,7 +60,9 @@ fn output_to_unquoted_file_name_is_not_a_table_reference() {
     let diags = lint(&schema, source);
     assert!(diags.is_empty(), "a file name must not lint: {diags:?}");
 
-    let (_, sem) = analyze(&schema, source);
+    let (program, sem) = analyze(&schema, source);
+
+    let _ = &program.statements;
     let names = resolved_names(&sem);
     assert!(
         !names.iter().any(|n| n == "report"),
@@ -76,7 +78,9 @@ fn input_from_unquoted_file_name_is_not_a_table_reference() {
     let diags = lint(&schema, source);
     assert!(diags.is_empty(), "a file name must not lint: {diags:?}");
 
-    let (_, sem) = analyze(&schema, source);
+    let (program, sem) = analyze(&schema, source);
+
+    let _ = &program.statements;
     let names = resolved_names(&sem);
     assert!(
         !names.iter().any(|n| n == "report"),
@@ -92,7 +96,9 @@ fn output_to_value_still_reads_its_expression() {
     let diags = lint(&schema, source);
     assert!(diags.is_empty(), "VALUE(expr) must stay clean: {diags:?}");
 
-    let (_, sem) = analyze(&schema, source);
+    let (program, sem) = analyze(&schema, source);
+
+    let _ = &program.statements;
     let names = resolved_names(&sem);
     assert!(
         names.iter().any(|n| n == "v-file"),

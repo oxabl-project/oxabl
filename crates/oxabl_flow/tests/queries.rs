@@ -28,7 +28,7 @@ fn parse(source: &str) -> Parsed {
 
 impl Parsed {
     fn flow(&self) -> FileFlow {
-        oxabl_flow::build_file(&self.program.statements, &self.source)
+        oxabl_flow::build_file(&self.program.statements, &self.program.pools, &self.source)
     }
 
     /// Statement and header nodes of `cfg` whose text starts with `prefix`.
@@ -594,7 +594,8 @@ END PROCEDURE.
     let opts = FlowOptions {
         default_directive: Some(ErrorDirective::RoutineLevel),
     };
-    let flow = oxabl_flow::build_file_with(&p.program.statements, &p.source, &opts);
+    let flow =
+        oxabl_flow::build_file_with(&p.program.statements, &p.program.pools, &p.source, &opts);
     assert_eq!(flow.directive(), Some(ErrorDirective::RoutineLevel));
     let cfg = &flow.units()[1];
     let routine_error = cfg
@@ -611,7 +612,8 @@ END PROCEDURE.
 
     // In the file, BLOCK-LEVEL beats the ROUTINE-LEVEL option.
     let p = parse(&format!("BLOCK-LEVEL ON ERROR UNDO, THROW.\n{source}"));
-    let flow = oxabl_flow::build_file_with(&p.program.statements, &p.source, &opts);
+    let flow =
+        oxabl_flow::build_file_with(&p.program.statements, &p.program.pools, &p.source, &opts);
     assert_eq!(flow.directive(), Some(ErrorDirective::BlockLevel));
     let cfg = &flow.units()[1];
     let for_error = cfg
@@ -742,7 +744,7 @@ fn nodes_line_up_with_the_ast() {
         }
         if let StatementKind::Display { items, .. } = &s.kind {
             assert!(matches!(
-                items[0].expression.kind,
+                p.program.pools.expr(items[0].expression).kind,
                 ExpressionKind::Identifier(_)
             ));
         }

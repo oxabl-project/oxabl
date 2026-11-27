@@ -455,11 +455,13 @@ impl Engine<'_, '_, '_, '_> {
     /// for each record of the statement that has it.
     pub(super) fn where_names(&self) -> Option<(Vec<Candidate>, bool)> {
         let text = self.request.text;
-        let window: Vec<&Token> = self.tokens[..self.found.before]
-            .iter()
-            .filter(|token| {
-                token.start as u32 >= self.found.window_start && token.kind != Kind::Comment
-            })
+        let from = self
+            .tokens
+            .partition_point(|token| (token.start as u32) < self.found.window_start);
+        let window: Vec<&Token> = self
+            .tokens
+            .iter_range(from, self.found.before)
+            .filter(|token| token.kind != Kind::Comment)
             .collect();
         let mut incomplete = false;
         let mut records: Vec<(&str, Record)> = Vec::new();

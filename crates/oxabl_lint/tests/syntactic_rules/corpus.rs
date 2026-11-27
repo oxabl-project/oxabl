@@ -99,7 +99,7 @@ fn corpus_counts() {
         if !program.errors.is_empty() {
             recovered += 1;
         }
-        let ctx = AnalysisContext::new(FileId::new(1), &text, &schema);
+        let ctx = AnalysisContext::new(FileId::new(1), &text, &schema, &program.pools);
         let sem = analyze_file(&program.statements, &ctx);
         for (i, (_, rule)) in RULES.iter().enumerate() {
             let mut diags = rule(&program.statements, &sem, &ctx);

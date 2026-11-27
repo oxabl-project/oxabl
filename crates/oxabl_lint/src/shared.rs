@@ -4,7 +4,7 @@ use std::cell::{Cell, OnceCell};
 
 use oxabl_ast::Statement;
 use oxabl_effects::{EffectOptions, FileEffects};
-use oxabl_flow::{FileFlow, FlowOptions};
+use oxabl_flow::{FileFlow, FileInput, FlowOptions};
 use oxabl_handles::FileHandles;
 use oxabl_index::calls::FileCalls;
 use oxabl_nulls::{FileNulls, NullOptions};
@@ -60,9 +60,15 @@ impl<'a> RunShared<'a> {
         self.handles.get_or_init(|| {
             if self.share_flow.get() || self.flow.get().is_some() {
                 let flow = self.flow(program, ctx);
-                return oxabl_handles::analyze_flow(program, ctx.source, ctx.tokens, flow);
+                return oxabl_handles::analyze_flow(
+                    FileInput::new(program, ctx.pools, ctx.source, ctx.tokens),
+                    flow,
+                );
             }
-            oxabl_handles::analyze_tokens(program, ctx.source, ctx.tokens, &FlowOptions::default())
+            oxabl_handles::analyze_tokens(
+                FileInput::new(program, ctx.pools, ctx.source, ctx.tokens),
+                &FlowOptions::default(),
+            )
         })
     }
 
@@ -74,9 +80,7 @@ impl<'a> RunShared<'a> {
             let options = scope_options(ctx);
             let schema = ctx.schema_loaded.then_some(ctx.schema);
             oxabl_scope::analyze_flow_inherited(
-                program,
-                ctx.source,
-                self.tokens(ctx),
+                FileInput::new(program, ctx.pools, ctx.source, self.tokens(ctx)),
                 self.flow(program, ctx),
                 schema,
                 &options,
@@ -95,6 +99,7 @@ impl<'a> RunShared<'a> {
             let schema = ctx.schema_loaded.then_some(ctx.schema);
             oxabl_effects::analyze_file(
                 program,
+                ctx.pools,
                 ctx.source,
                 tokens,
                 self.flow(program, ctx),
@@ -109,7 +114,7 @@ impl<'a> RunShared<'a> {
     /// The calls the file makes and what each one calls, extracted once.
     pub fn calls(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileCalls {
         self.calls
-            .get_or_init(|| FileCalls::extract(program, ctx.source, self.tokens(ctx)))
+            .get_or_init(|| FileCalls::extract(program, ctx.pools, ctx.source, self.tokens(ctx)))
     }
 
     /// The failed finds of the file and the field references they reach,
@@ -131,9 +136,7 @@ impl<'a> RunShared<'a> {
     pub fn null_values(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileNulls {
         self.null_values.get_or_init(|| {
             oxabl_nulls::analyze_values(
-                ctx.source,
-                self.tokens(ctx),
-                program,
+                FileInput::new(program, ctx.pools, ctx.source, self.tokens(ctx)),
                 self.flow(program, ctx),
                 self.scopes(program, ctx),
                 &NullOptions { elided: ctx.elided },
@@ -150,9 +153,7 @@ impl<'a> RunShared<'a> {
                 return FileNulls::default();
             }
             oxabl_nulls::analyze_fields(
-                ctx.source,
-                self.tokens(ctx),
-                program,
+                FileInput::new(program, ctx.pools, ctx.source, self.tokens(ctx)),
                 self.flow(program, ctx),
                 &oxabl_nulls::FieldSources {
                     scopes: self.scopes(program, ctx),
@@ -175,6 +176,7 @@ impl<'a> RunShared<'a> {
         self.flow.get_or_init(|| {
             oxabl_flow::build_file_tokens(
                 program,
+                ctx.pools,
                 ctx.source,
                 self.tokens(ctx),
                 &scope_options(ctx).flow,
@@ -201,7 +203,7 @@ fn inherited(program: &[Statement], ctx: &AnalysisContext) -> Inherited {
     if !ctx.index_loaded || !ctx.index_searches_paths {
         return Inherited::default();
     }
-    let found = oxabl_semantic::inherited_records(program, ctx.index);
+    let found = oxabl_semantic::inherited_records(program, ctx.pools, ctx.index);
     Inherited {
         opaque: found.opaque,
         records: found
@@ -233,11 +235,17 @@ pub(crate) fn analyze_scopes(program: &[Statement], ctx: &AnalysisContext) -> Fi
     if ctx.tokens.is_empty() {
         let tokens = oxabl_lexer::tokenize(ctx.source);
         return oxabl_scope::analyze_tokens_inherited(
-            program, ctx.source, &tokens, schema, &options, &inherited,
+            FileInput::new(program, ctx.pools, ctx.source, &tokens),
+            schema,
+            &options,
+            &inherited,
         );
     }
     oxabl_scope::analyze_tokens_inherited(
-        program, ctx.source, ctx.tokens, schema, &options, &inherited,
+        FileInput::new(program, ctx.pools, ctx.source, ctx.tokens),
+        schema,
+        &options,
+        &inherited,
     )
 }
 
@@ -252,7 +260,7 @@ mod tests {
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
         let schema = oxabl_schema::Schema::empty();
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
 
         let shared = RunShared::default();
         shared.nulls(&program.statements, &ctx);

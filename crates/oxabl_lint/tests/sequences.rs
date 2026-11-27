@@ -4,7 +4,6 @@
 //! the schema declares is silent, one it does not declare is `LINT0003`, and
 //! with no schema loaded nothing is reported at all.
 
-use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, FileId};
 use oxabl_lexer::tokenize;
 use oxabl_lint::{LINT0001, LINT0003, lint_file};
@@ -24,7 +23,7 @@ ADD SEQUENCE "Cust-Seq"
   CYCLE-ON-LIMIT no
 "#;
 
-fn parse(source: &str) -> Vec<Statement> {
+fn parse(source: &str) -> oxabl_parser::Program {
     let tokens = tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     assert!(
@@ -32,15 +31,16 @@ fn parse(source: &str) -> Vec<Statement> {
         "fixture must parse cleanly: {:?}",
         program.errors
     );
-    program.statements
+    program
 }
 
 fn lint(source: &str, schema: &Schema, schema_loaded: bool) -> Vec<Diagnostic> {
-    let stmts = parse(source);
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema);
+    let program = parse(source);
+    let stmts = &program.statements;
+    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema, &program.pools);
     ctx.schema_loaded = schema_loaded;
-    let sem = analyze_file(&stmts, &ctx);
-    lint_file(&stmts, &sem, &ctx)
+    let sem = analyze_file(stmts, &ctx);
+    lint_file(stmts, &sem, &ctx)
 }
 
 fn with_schema(source: &str) -> Vec<Diagnostic> {
@@ -132,11 +132,12 @@ MESSAGE i.
 fn a_sequence_only_df_counts_as_a_loaded_schema() {
     let schema = schema_from_df("ADD SEQUENCE \"Only\"\n  INITIAL 1\n");
     let source = "DEFINE VARIABLE i AS INT64 NO-UNDO.\ni = NEXT-VALUE(only).\ni = NEXT-VALUE(typo).\nMESSAGE i.\n";
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     assert!(ctx.schema_loaded);
-    let sem = analyze_file(&stmts, &ctx);
-    let diags = lint_file(&stmts, &sem, &ctx);
+    let sem = analyze_file(stmts, &ctx);
+    let diags = lint_file(stmts, &sem, &ctx);
     assert_eq!(
         summary(&diags),
         vec![format!("{LINT0003}: unknown sequence `typo`")]
@@ -156,15 +157,17 @@ fn a_variable_operand_of_a_dynamic_form_is_still_a_symbol() {
 
 /// The resolution recorded on each sequence operand of `source`, in order.
 fn operand_resolutions(source: &str, schema: &Schema, schema_loaded: bool) -> Vec<Resolution> {
-    let stmts = parse(source);
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema);
+    let program = parse(source);
+    let stmts = &program.statements;
+    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema, &program.pools);
     ctx.schema_loaded = schema_loaded;
-    let sem = analyze_file(&stmts, &ctx);
+    let sem = analyze_file(stmts, &ctx);
     let mut out = Vec::new();
-    for stmt in &stmts {
+    for stmt in stmts {
         if let oxabl_ast::StatementKind::Assignment { value, .. } = &stmt.kind
-            && let oxabl_ast::ExpressionKind::FunctionCall { name, arguments } = &value.kind
-            && let Some(op) = sequence_operand(name, arguments)
+            && let oxabl_ast::ExpressionKind::FunctionCall { name, arguments } =
+                &program.pools.expr(*value).kind
+            && let Some(op) = sequence_operand(name, *arguments, &program.pools)
         {
             let r = sem.references.get(op.expr.id).expect("operand resolved");
             if let Resolution::Resolved(sym) = r {

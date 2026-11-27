@@ -3,7 +3,7 @@
 //! ([`crate::resolve`]), once every definition of the file is known.
 
 use oxabl_ast::{
-    BufferTarget, CreateTarget, Expression, ExpressionKind as EK, NodeId, OnAction, OnKind,
+    AstPools, BufferTarget, CreateTarget, ExprId, ExpressionKind as EK, NodeId, OnAction, OnKind,
     ParameterType, RunTarget, Span, Statement, StatementKind as SK, StreamOperation, StreamTarget,
     TriggerReferencing,
 };
@@ -227,6 +227,7 @@ fn significant(tokens: &[LexToken]) -> Vec<Token> {
 
 pub(crate) fn collect(
     program: &[Statement],
+    pools: &AstPools,
     source: &str,
     tokens: &[LexToken],
     flow: &FileFlow,
@@ -237,6 +238,7 @@ pub(crate) fn collect(
         units_of.entry(cfg.unit().stmt).or_default().push(cfg.id());
     }
     let mut c = Collector {
+        pools,
         src: source,
         tokens: significant(tokens),
         flow,
@@ -251,6 +253,7 @@ pub(crate) fn collect(
 }
 
 struct Collector<'a> {
+    pools: &'a AstPools,
     src: &'a str,
     tokens: Vec<Token>,
     flow: &'a FileFlow,
@@ -379,7 +382,9 @@ impl<'a> Collector<'a> {
                 set_parameters,
                 ..
             } => {
-                self.out.variables.push((unit, fold(&name.name)));
+                self.out
+                    .variables
+                    .push((unit, fold(self.pools.ident(*name))));
                 let units: SmallVec<[UnitId; 2]> =
                     self.units_of.get(&s.id).cloned().unwrap_or_default();
                 for u in units {
@@ -403,7 +408,8 @@ impl<'a> Collector<'a> {
                 referencing,
                 ..
             } => {
-                let table = target.name.split('.').next().unwrap_or(&target.name);
+                let target_name = self.pools.ident(*target);
+                let table = target_name.split('.').next().unwrap_or(target_name);
                 self.trigger_buffers(unit, table, referencing, target.span);
             }
             SK::Do { body, .. } | SK::Repeat { body, .. } | SK::ForEach { body, .. } => {
@@ -413,7 +419,9 @@ impl<'a> Collector<'a> {
             SK::Catch {
                 body, error_var, ..
             } => {
-                self.out.variables.push((unit, fold(&error_var.name)));
+                self.out
+                    .variables
+                    .push((unit, fold(self.pools.ident(*error_var))));
                 let b = self.cfg(unit).block_of(s.id).unwrap_or(block);
                 self.list(body, unit, b, enclosing);
             }
@@ -541,7 +549,7 @@ impl<'a> Collector<'a> {
                     block,
                     stmt: s.id,
                     kind: ReadKind::Find,
-                    name: buffer.name.clone(),
+                    name: self.pools.ident(*buffer).to_string(),
                     at: buffer.span,
                     lock,
                     target: ReadTarget::Ref(r),
@@ -638,21 +646,21 @@ impl<'a> Collector<'a> {
                         match target {
                             StreamTarget::FileName(f) => smallvec::smallvec![f.span],
                             StreamTarget::Expression(e)
-                                if self.tokens[self.range(e.span)]
+                                if self.tokens[self.range(self.pools.expr(*e).span)]
                                     .first()
                                     .is_some_and(|t| t.kind != Kind::Value) =>
                             {
-                                smallvec::smallvec![e.span]
+                                smallvec::smallvec![self.pools.expr(*e).span]
                             }
                             StreamTarget::Expression(_) => SmallVec::new(),
                         }
                     }
                     StreamOperation::Through(e)
-                        if self.tokens[self.range(e.span)]
+                        if self.tokens[self.range(self.pools.expr(*e).span)]
                             .first()
                             .is_some_and(|t| t.kind != Kind::Value) =>
                     {
-                        smallvec::smallvec![e.span]
+                        smallvec::smallvec![self.pools.expr(*e).span]
                     }
                     _ => SmallVec::new(),
                 };
@@ -664,13 +672,14 @@ impl<'a> Collector<'a> {
             }
             SK::Assignment { target, .. } => {
                 let context = self.context(enclosing);
-                let writes: SmallVec<[(Span, UpdateKind); 1]> = write_span(target)
+                let writes: SmallVec<[(Span, UpdateKind); 1]> = write_span(self.pools, *target)
                     .map(|w| (w, UpdateKind::Assign))
                     .into_iter()
                     .collect();
+                let target_span = self.pools.expr(*target).span;
                 let spans = Spans {
                     writes: &writes,
-                    targets: &[target.span],
+                    targets: &[target_span],
                     ..Spans::default()
                 };
                 self.scan_stmt(s.span, place, spans, context);
@@ -679,15 +688,21 @@ impl<'a> Collector<'a> {
                 let context = self.context(enclosing);
                 let mut writes: SmallVec<[(Span, UpdateKind); 4]> = assignments
                     .iter()
-                    .filter_map(|p| write_span(&p.target))
+                    .filter_map(|p| write_span(self.pools, p.target))
                     .map(|w| (w, UpdateKind::Assign))
                     .collect();
-                let targets: SmallVec<[Span; 4]> =
-                    assignments.iter().map(|p| p.target.span).collect();
+                let targets: SmallVec<[Span; 4]> = assignments
+                    .iter()
+                    .map(|p| self.pools.expr(p.target).span)
+                    .collect();
                 // The parser keeps only the `=` pairs before the first element
                 // without `=`; the screen form that follows assigns fields too.
                 let tail = assignments.last().map_or(s.span.start + 1, |p| {
-                    p.value.span.end.max(p.target.span.end)
+                    self.pools
+                        .expr(p.value)
+                        .span
+                        .end
+                        .max(self.pools.expr(p.target).span.end)
                 });
                 let opaque = self.screen_assign(tail, s.span, &mut writes);
                 let spans = Spans {
@@ -715,7 +730,8 @@ impl<'a> Collector<'a> {
             // A word the parser did not know, followed by more: a statement
             // form the model does not know either.
             SK::ExpressionStatement(e)
-                if matches!(e.kind, EK::Identifier(_)) && self.has_more(e.span, s.span) =>
+                if matches!(self.pools.expr(*e).kind, EK::Identifier(_))
+                    && self.has_more(self.pools.expr(*e).span, s.span) =>
             {
                 let context = self.context(enclosing);
                 let place = Place {
@@ -903,7 +919,8 @@ impl<'a> Collector<'a> {
             ..
         } = kind
         {
-            let table = target.name.split('.').next().unwrap_or(&target.name);
+            let target_name = self.pools.ident(*target);
+            let table = target_name.split('.').next().unwrap_or(target_name);
             self.trigger_buffers(u, table, referencing, target.span);
         }
         let _ = unit;
@@ -917,7 +934,7 @@ impl<'a> Collector<'a> {
         let mut names: SmallVec<[(&str, Span); 3]> = SmallVec::new();
         names.push((table, at));
         for b in [&r.new_buffer, &r.old_buffer].into_iter().flatten() {
-            names.push((&b.name, b.span));
+            names.push((self.pools.ident(*b), b.span));
         }
         for (name, span) in names {
             self.out.buffers.push(DefBuffer {
@@ -938,20 +955,21 @@ impl<'a> Collector<'a> {
     }
 
     fn declare(&mut self, s: &Statement, unit: UnitId) {
+        let pools = self.pools;
         match &s.kind {
             SK::VariableDeclaration { name, .. } => {
-                self.out.variables.push((unit, fold(&name.name)));
+                self.out.variables.push((unit, fold(pools.ident(*name))));
             }
             SK::VariableDeclarationList(list) => self.declare_list(list, unit),
             SK::DefineParameter { param_type, .. } => match param_type {
                 ParameterType::Variable { name, .. } => {
-                    self.out.variables.push((unit, fold(&name.name)));
+                    self.out.variables.push((unit, fold(pools.ident(*name))));
                 }
                 ParameterType::Buffer { name, target } => self.out.buffers.push(DefBuffer {
-                    name: name.name.clone(),
+                    name: pools.ident(*name).to_string(),
                     unit,
                     kind: BufferKind::Parameter,
-                    table: target.name.clone(),
+                    table: pools.ident(*target).to_string(),
                     temp_table: false,
                     at: name.span,
                 }),
@@ -966,8 +984,8 @@ impl<'a> Collector<'a> {
                 ..
             } => {
                 let (table, temp_table) = match target {
-                    BufferTarget::Table(t) => (t.name.clone(), false),
-                    BufferTarget::TempTable(t) => (t.name.clone(), true),
+                    BufferTarget::Table(t) => (pools.ident(*t).to_string(), false),
+                    BufferTarget::TempTable(t) => (pools.ident(*t).to_string(), true),
                 };
                 let kind = if *is_new_shared || *is_new_global_shared {
                     BufferKind::NewShared
@@ -977,7 +995,7 @@ impl<'a> Collector<'a> {
                     BufferKind::Defined
                 };
                 self.out.buffers.push(DefBuffer {
-                    name: name.name.clone(),
+                    name: pools.ident(*name).to_string(),
                     unit,
                     kind,
                     table,
@@ -992,11 +1010,13 @@ impl<'a> Collector<'a> {
                 fields,
                 ..
             } => self.out.temp_tables.push(DefTempTable {
-                name: name.name.clone(),
+                name: pools.ident(*name).to_string(),
                 unit,
                 no_undo: *no_undo,
-                fields: fields.iter().map(|f| fold(&f.name.name)).collect(),
-                like: like_table.as_ref().map(|l| fold(last_segment(&l.name))),
+                fields: fields.iter().map(|f| fold(pools.ident(f.name))).collect(),
+                like: like_table
+                    .as_ref()
+                    .map(|l| fold(last_segment(pools.ident(*l)))),
             }),
             _ => {}
         }
@@ -1029,7 +1049,7 @@ impl<'a> Collector<'a> {
             header_of: None,
             at: name.span,
             role: Role::Free,
-            what: What::Buffer(name.name.clone()),
+            what: What::Buffer(self.pools.ident(*name).to_string()),
             write,
             passed: false,
             origin: name.span.start,
@@ -2036,11 +2056,16 @@ fn close_paren(toks: &[Token], open: usize) -> usize {
 /// The span of an assignment target that a write lands in: a field, an array
 /// element, or the first argument of `ENTRY`, `SUBSTRING`, `OVERLAY` and the
 /// like. An attribute (`x:SCREEN-VALUE`) is no record write.
-fn write_span(target: &Expression) -> Option<Span> {
-    match &target.kind {
-        EK::Identifier(_) | EK::FieldAccess { .. } => Some(target.span),
-        EK::ArrayAccess { array, .. } => write_span(array),
-        EK::FunctionCall { arguments, .. } => arguments.first().and_then(write_span),
+fn write_span(pools: &AstPools, target: ExprId) -> Option<Span> {
+    let expr = pools.expr(target);
+    match &expr.kind {
+        EK::Identifier(_) | EK::FieldAccess { .. } => Some(expr.span),
+        EK::ArrayAccess { array, .. } => write_span(pools, *array),
+        EK::FunctionCall { arguments, .. } => pools
+            .exprs(*arguments)
+            .first()
+            .copied()
+            .and_then(|a| write_span(pools, a)),
         _ => None,
     }
 }

@@ -11,7 +11,7 @@ fn kind_at(source: &str) -> ScopeKind {
     let tokens = oxabl_lexer::tokenize(&text);
     let program = oxabl_parser::Parser::new(&tokens, &text).parse_program();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, &text, &schema)
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, &text, &schema, &program.pools)
         .with_unclosed_blocks(&program.unclosed_blocks);
     let semantic = analyze_file_untyped(&program.statements, &ctx);
     let tree = &semantic.scope_tree;

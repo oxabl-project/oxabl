@@ -42,12 +42,15 @@ fn run(source: &str) -> (FileNulls, oxabl_flow::FileFlow, Duration) {
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty());
-    let flow =
-        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
-    let nulls = FileNulls::default().with_values(
+    let flow = oxabl_flow::build_file_tokens(
+        &program.statements,
+        &program.pools,
         source,
         &tokens,
-        &program.statements,
+        &Default::default(),
+    );
+    let nulls = FileNulls::default().with_values(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         &flow,
         &NullOptions::default(),
     );
@@ -118,11 +121,15 @@ fn analyse_finds(source: &str) -> (oxabl_nulls::FileNulls, Duration) {
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let options = oxabl_scope::ScopeOptions::default();
-    let flow = oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &options.flow);
-    let scopes = oxabl_scope::analyze_flow(
+    let flow = oxabl_flow::build_file_tokens(
         &program.statements,
+        &program.pools,
         source,
         &tokens,
+        &options.flow,
+    );
+    let scopes = oxabl_scope::analyze_flow(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         &flow,
         Some(&schema),
         &options,
@@ -189,19 +196,21 @@ fn analyse_fields(source: &str) -> (FileNulls, Duration) {
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let options = oxabl_scope::ScopeOptions::default();
-    let flow = oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &options.flow);
-    let scopes = oxabl_scope::analyze_flow(
+    let flow = oxabl_flow::build_file_tokens(
         &program.statements,
+        &program.pools,
         source,
         &tokens,
+        &options.flow,
+    );
+    let scopes = oxabl_scope::analyze_flow(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         &flow,
         Some(&schema),
         &options,
     );
     let nulls = oxabl_nulls::analyze_fields(
-        source,
-        &tokens,
-        &program.statements,
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, source, &tokens),
         &flow,
         &oxabl_nulls::FieldSources {
             scopes: &scopes,

@@ -14,7 +14,7 @@ fn analyze(source: &str) -> Semantic {
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     analyze_file(&program.statements, &ctx)
 }
 
@@ -81,32 +81,36 @@ fn a_local_method_records_its_parameter_list_with_class_names_resolved() {
 /// The resolution of each `MemberAccess` / `MethodCall` in walk order, as
 /// `(member name, resolved symbol name or None, untyped)`.
 fn member_refs(source: &str) -> Vec<(String, Option<String>, bool)> {
-    use oxabl_ast::{Expression, ExpressionKind, Statement, StatementKind};
-    fn walk_expr(e: &Expression, out: &mut Vec<(oxabl_ast::NodeId, String)>) {
+    use oxabl_ast::{AstPools, ExprId, ExpressionKind, Statement, StatementKind};
+    fn walk_expr(e_id: ExprId, pools: &AstPools, out: &mut Vec<(oxabl_ast::NodeId, String)>) {
+        let e = pools.expr(e_id);
         match &e.kind {
             ExpressionKind::MemberAccess { object, member } => {
-                walk_expr(object, out);
-                out.push((e.id, member.name.clone()));
+                walk_expr(*object, pools, out);
+                out.push((e.id, pools.ident(*member).to_string()));
             }
             ExpressionKind::MethodCall {
                 object,
                 method,
                 arguments,
             } => {
-                walk_expr(object, out);
-                arguments.iter().for_each(|a| walk_expr(a, out));
-                out.push((e.id, method.name.clone()));
+                walk_expr(*object, pools, out);
+                pools
+                    .exprs(*arguments)
+                    .iter()
+                    .for_each(|&a| walk_expr(a, pools, out));
+                out.push((e.id, pools.ident(*method).to_string()));
             }
             _ => {}
         }
     }
-    fn walk(stmts: &[Statement], out: &mut Vec<(oxabl_ast::NodeId, String)>) {
+    fn walk(stmts: &[Statement], pools: &AstPools, out: &mut Vec<(oxabl_ast::NodeId, String)>) {
         for s in stmts {
             match &s.kind {
                 StatementKind::Class { body, .. } | StatementKind::Method { body, .. } => {
-                    walk(body, out)
+                    walk(body, pools, out)
                 }
-                StatementKind::Assignment { value, .. } => walk_expr(value, out),
+                StatementKind::Assignment { value, .. } => walk_expr(*value, pools, out),
                 _ => {}
             }
         }
@@ -115,10 +119,10 @@ fn member_refs(source: &str) -> Vec<(String, Option<String>, bool)> {
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     let sem = analyze_file(&program.statements, &ctx);
     let mut nodes = Vec::new();
-    walk(&program.statements, &mut nodes);
+    walk(&program.statements, &program.pools, &mut nodes);
     nodes
         .into_iter()
         .map(|(id, name)| {

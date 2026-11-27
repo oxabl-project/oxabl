@@ -36,7 +36,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use oxabl_ast::{Span, Statement};
+use oxabl_ast::{AstPools, Span, Statement};
 use oxabl_common::{
     Diagnostic, FileId, FileSpan, LintSeverityMap, Severity, SourceMap, VirtualSpan,
 };
@@ -1991,13 +1991,14 @@ pub fn collect_from_expanded_with_summaries(
     let include_spans = expanded.include_spans();
     let ctx = lint_context(
         expanded,
+        &program.pools,
         &tokens,
         &include_spans,
         schema,
         schema_loaded,
         source_context,
-        out.parse_recovered,
     )
+    .with_parse_recovered(out.parse_recovered)
     .with_lint_severities(lint_severities.clone())
     .with_index(index);
     let sem = analyze_file(&program.statements, &ctx);
@@ -2121,17 +2122,16 @@ fn without_findings_of_encrypted_reach(
 /// input.
 fn lint_context<'a>(
     expanded: &'a ExpandedFile,
+    pools: &'a AstPools,
     tokens: &'a [oxabl_lexer::Token],
     include_spans: &'a [Span],
     schema: &'a Schema,
     schema_loaded: bool,
     source_context: SourceContext,
-    parse_recovered: bool,
 ) -> AnalysisContext<'a> {
-    let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema)
+    let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema, pools)
         .with_include_regions(include_spans)
         .with_source_context(source_context)
-        .with_parse_recovered(parse_recovered)
         .with_tokens(tokens)
         .with_elided(expanded.elided_offsets())
         .with_elided_includes(expanded.elided_include_offsets());
@@ -2157,13 +2157,14 @@ pub fn database_hints_from_expanded(
     let include_spans = expanded.include_spans();
     let ctx = lint_context(
         expanded,
+        &program.pools,
         &tokens,
         &include_spans,
         schema,
         schema_loaded,
         source_context,
-        !program.errors.is_empty(),
-    );
+    )
+    .with_parse_recovered(!program.errors.is_empty());
     let shared = oxabl_lint::RunShared::default();
     oxabl_lint::hints::database_hints(&program.statements, &ctx, &shared, kinds)
 }
@@ -2267,7 +2268,7 @@ pub fn analyze_from_expanded(
         schema_loaded,
         index,
         source_context,
-        |_, _, _| (),
+        |_, _, _, _| (),
     )
     .0
 }
@@ -2281,7 +2282,7 @@ pub fn analyze_from_expanded_inspecting<T>(
     schema_loaded: bool,
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
-    inspect: impl FnOnce(&[Statement], &str, &[Token]) -> T,
+    inspect: impl FnOnce(&[Statement], &AstPools, &str, &[Token]) -> T,
 ) -> ((Semantic, bool), T) {
     let mut inspect = Some(inspect);
     let mut inspected = None;
@@ -2292,9 +2293,9 @@ pub fn analyze_from_expanded_inspecting<T>(
         index,
         source_context,
         false,
-        &mut |program, text, tokens| {
+        &mut |program, pools, text, tokens| {
             if let Some(inspect) = inspect.take() {
-                inspected = Some(inspect(program, text, tokens));
+                inspected = Some(inspect(program, pools, text, tokens));
             }
         },
     );
@@ -2334,12 +2335,13 @@ pub fn analyze_for_navigation_checked(
         index,
         source_context,
         true,
-        &mut |_, _, _| (),
+        &mut |_, _, _, _| (),
     )
 }
 
-/// What reads the parse of an analysis: the statements, the text and the tokens.
-type ParseInspector<'a> = dyn FnMut(&[Statement], &str, &[Token]) + 'a;
+/// What reads the parse of an analysis: the statements with their pools, the
+/// text and the tokens.
+type ParseInspector<'a> = dyn FnMut(&[Statement], &AstPools, &str, &[Token]) + 'a;
 
 fn analyze_expanded(
     expanded: &ExpandedFile,
@@ -2356,8 +2358,8 @@ fn analyze_expanded(
     let mut parser = Parser::new(&tokens, &expanded.text);
     let program = parser.parse_program();
     let parsed = timing.map(|t| t.elapsed());
-    inspect(&program.statements, &expanded.text, &tokens);
-    let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema)
+    inspect(&program.statements, &program.pools, &expanded.text, &tokens);
+    let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema, &program.pools)
         .with_index(index)
         .with_source_context(source_context)
         .with_sites(record_sites)

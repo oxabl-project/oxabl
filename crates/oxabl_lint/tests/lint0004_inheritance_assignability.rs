@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use oxabl_ast::{NodeId, Statement, StatementKind};
+use oxabl_ast::{AstPools, NodeId, Statement, StatementKind};
 use oxabl_common::{Diagnostic, FileId};
 use oxabl_index::BatchIndex;
 use oxabl_lexer::oxabl_atom::OxablAtom;
@@ -26,7 +26,7 @@ use oxabl_workspace::InMemoryFileSystem;
 // Harness
 // ---------------------------------------------------------------------------
 
-fn parse(source: &str) -> Vec<Statement> {
+fn parse(source: &str) -> oxabl_parser::Program {
     let tokens = oxabl_lexer::tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     assert!(
@@ -34,21 +34,22 @@ fn parse(source: &str) -> Vec<Statement> {
         "fixture must parse cleanly: {:?}",
         program.errors
     );
-    program.statements
+    program
 }
 
 /// `LINT0004` findings for `source`, analyzed with no index — the single-file
 /// world every client is in today.
-fn lint(source: &str) -> (Vec<Statement>, Semantic, Vec<Diagnostic>) {
+fn lint(source: &str) -> (oxabl_parser::Program, Semantic, Vec<Diagnostic>) {
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
-    let sem = analyze_file(&stmts, &ctx);
-    let diags = type_mismatch_assignment::run(&stmts, &sem, &ctx)
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
+    let sem = analyze_file(stmts, &ctx);
+    let diags = type_mismatch_assignment::run(stmts, &sem, &ctx)
         .into_iter()
         .filter(|d| d.code.0 == LINT0004)
         .collect();
-    (stmts, sem, diags)
+    (program, sem, diags)
 }
 
 /// The same, against a real [`BatchIndex`] over an in-memory workspace rooted at
@@ -56,7 +57,7 @@ fn lint(source: &str) -> (Vec<Statement>, Semantic, Vec<Diagnostic>) {
 fn lint_with_index(
     source: &str,
     workspace: &[(&str, &str)],
-) -> (Vec<Statement>, Semantic, Vec<Diagnostic>) {
+) -> (oxabl_parser::Program, Semantic, Vec<Diagnostic>) {
     let mut fs = InMemoryFileSystem::new();
     for (path, contents) in workspace {
         fs.insert(PathBuf::from(path), *contents);
@@ -64,41 +65,43 @@ fn lint_with_index(
     let paths = vec![PathBuf::from("/src")];
     let index = BatchIndex::new(&fs, &paths);
     let schema = Schema::empty();
-    let stmts = parse(source);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
-    let sem = analyze_file(&stmts, &ctx);
-    let diags = type_mismatch_assignment::run(&stmts, &sem, &ctx)
+    let program = parse(source);
+    let stmts = &program.statements;
+    let ctx =
+        AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools).with_index(&index);
+    let sem = analyze_file(stmts, &ctx);
+    let diags = type_mismatch_assignment::run(stmts, &sem, &ctx)
         .into_iter()
         .filter(|d| d.code.0 == LINT0004)
         .collect();
-    (stmts, sem, diags)
+    (program, sem, diags)
 }
 
 /// NodeId of the value expression of the last `target = value` in the file.
 ///
 /// The *last*, because every fixture puts its subject assignment at the end
 /// after whatever declarations it needs.
-fn last_assignment_value_id(stmts: &[Statement]) -> NodeId {
-    fn find(stmts: &[Statement], out: &mut Option<NodeId>) {
+fn last_assignment_value_id(program: &oxabl_parser::Program) -> NodeId {
+    fn find(stmts: &[Statement], pools: &AstPools, out: &mut Option<NodeId>) {
         for s in stmts {
             match &s.kind {
-                StatementKind::Assignment { value, .. } => *out = Some(value.id),
+                StatementKind::Assignment { value, .. } => *out = Some(pools.expr(*value).id),
                 StatementKind::Procedure { body, .. }
                 | StatementKind::Block(body)
                 | StatementKind::Method { body, .. }
-                | StatementKind::Class { body, .. } => find(body, out),
+                | StatementKind::Class { body, .. } => find(body, pools, out),
                 _ => {}
             }
         }
     }
     let mut out = None;
-    find(stmts, &mut out);
+    find(&program.statements, &program.pools, &mut out);
     out.expect("fixture must contain an assignment statement")
 }
 
 /// Synthesized type of the value side of the subject assignment.
-fn value_type(stmts: &[Statement], sem: &Semantic) -> ResolvedType {
-    let id = last_assignment_value_id(stmts);
+fn value_type(program: &oxabl_parser::Program, sem: &Semantic) -> ResolvedType {
+    let id = last_assignment_value_id(program);
     sem.types
         .get(id)
         .cloned()

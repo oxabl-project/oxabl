@@ -337,6 +337,11 @@ the executions of the memoized queries over five cursor moves.
 `document_highlight_lsp.rs` also pins an unsaved include, a new include that has
 no file yet, and that the newest of a burst of requests is answered while older
 ones, on a large file, are replaced.
+`document_link_lsp.rs` also pins an unsaved include, a new include that has no
+file yet, a file that is not open, and that a second request on the same text
+of an open file builds no navigation model: a source with the marker
+`OXABL-TEST-COUNT:lsp.document-links` makes a test build of the server log the
+number of models each links request built.
 `navigation_sweep_lsp.rs` asks for a definition and for highlights at every
 position, and a hover at every position that can give another answer (each
 start and end of a name, and each other character outside a run of spaces), of
@@ -353,10 +358,10 @@ a response with neither `result` nor `error`, which a client rejects.
 
 ## Cost
 
-Go to definition, hover and the links expand, parse and resolve the unit again
-(no type check), with the open buffers over the disk, on a worker thread.
-Nothing is memoized, except what a highlight and a hover on a routine keep (see
-below). A request on a `RUN` target that is not a program also lexes and parses
+Go to definition and hover expand, parse and resolve the unit again (no type
+check), with the open buffers over the disk, on a worker thread. Nothing is
+memoized, except what a highlight, the links of an open file and a hover on a
+routine keep (see below). A request on a `RUN` target that is not a program also lexes and parses
 the expanded unit once more for its call sites (`FileCalls::extract`), and reads
 the outline of each program a handle runs. A hover parses the expanded unit at
 most once more (shared with the call sites), and parses one more file when it
@@ -403,6 +408,12 @@ A highlight comes on every cursor move, so it has a bound:
   variable.
 - An include with a selected compilation context is analysed in its root for
   each request, as go to definition does, and is not memoized.
+- The links of an open file are answered from the same `navigation_model`, with
+  the same condition on unsaved includes, so the links, the highlights and the
+  semantic tokens of one revision of a buffer pay for one resolve pass. The
+  links are always those of the file as its own root, so a selected compilation
+  context does not change this. A file that is not open is analysed from disk
+  for each request.
 - The highlights of one document run one at a time. A request that waits while
   a newer one comes is answered `ContentModified` (-32801) without an analysis,
   so a held arrow key runs at most the analysis in progress and the newest one.

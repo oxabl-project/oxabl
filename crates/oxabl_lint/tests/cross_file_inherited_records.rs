@@ -46,11 +46,13 @@ fn analyse(source: &str, base: &str) -> (Semantic, Vec<(&'static str, String)>) 
     let dirs = vec![PathBuf::from("/src")];
     let index = BatchIndex::new(&fs, &dirs);
     let schema = customer_schema();
-    let stmts = parse(source);
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+    let program = parse(source);
+    let stmts = &program.statements;
+    let mut ctx =
+        AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools).with_index(&index);
     ctx.schema_loaded = true;
-    let sem = oxabl_semantic::analyze_file(&stmts, &ctx);
-    let findings = lint_file(&stmts, &sem, &ctx)
+    let sem = oxabl_semantic::analyze_file(stmts, &ctx);
+    let findings = lint_file(stmts, &sem, &ctx)
         .into_iter()
         .map(|d| (d.code.0, d.message))
         .collect();
@@ -134,6 +136,24 @@ fn a_for_each_over_an_inherited_buffer_reads_its_table() {
 }
 
 #[test]
+fn a_bare_field_in_the_where_of_an_inherited_for_each_resolves_to_its_table() {
+    let source = child("FOR EACH cust_ WHERE Name = \"x\": END.");
+    let (sem, findings) = analyse(&source, BASE);
+
+    assert_eq!(codes(&findings), Vec::<&str>::new(), "{findings:?}");
+    assert_eq!(
+        sem.symbols.get(sole_resolved(&sem, "name")).kind,
+        SymbolKind::Field,
+        "the bare field resolves through the inherited buffer"
+    );
+    let reads: Vec<_> = symbols_named(&sem, "cust_")
+        .into_iter()
+        .filter(|s| sem.symbols.get(*s).table_id.is_some())
+        .collect();
+    assert!(!reads.is_empty(), "the implicit buffer reads Customer");
+}
+
+#[test]
 fn a_buffer_of_an_inherited_temp_table_reads_no_schema_table() {
     let source = child("FIND FIRST ttbuf_. MESSAGE ttbuf_.f.");
     let (sem, findings) = analyse(&source, BASE);
@@ -197,10 +217,12 @@ fn a_temp_table_of_a_farther_ancestor_hides_a_schema_table() {
     let index = BatchIndex::new(&fs, &dirs);
     let schema = customer_schema();
     let source = child("FIND FIRST mid_.");
-    let stmts = parse(&source);
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, &source, &schema).with_index(&index);
+    let program = parse(&source);
+    let stmts = &program.statements;
+    let mut ctx =
+        AnalysisContext::new(FileId::UNKNOWN, &source, &schema, &program.pools).with_index(&index);
     ctx.schema_loaded = true;
-    let sem = oxabl_semantic::analyze_file(&stmts, &ctx);
+    let sem = oxabl_semantic::analyze_file(stmts, &ctx);
 
     assert_eq!(table_of(&sem, "mid_").1, None);
 }
@@ -222,10 +244,12 @@ fn analyse_in(classes: &[(&str, &str)], source: &str) -> Semantic {
     let dirs = vec![PathBuf::from("/src")];
     let index = BatchIndex::new(&fs, &dirs);
     let schema = customer_schema();
-    let stmts = parse(source);
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_index(&index);
+    let program = parse(source);
+    let stmts = &program.statements;
+    let mut ctx =
+        AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools).with_index(&index);
     ctx.schema_loaded = true;
-    oxabl_semantic::analyze_file(&stmts, &ctx)
+    oxabl_semantic::analyze_file(stmts, &ctx)
 }
 
 #[test]

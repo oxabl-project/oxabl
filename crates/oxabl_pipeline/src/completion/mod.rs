@@ -421,7 +421,7 @@ struct Engine<'e, 'b, 's, 'a> {
     request: &'e CompletionRequest<'e>,
     base: Option<&'e CompletionBase<'b, 's, 'a>>,
     mapped: Option<&'e Mapped>,
-    tokens: &'e [Token],
+    tokens: &'e tokens::TokenStream<'e>,
     found: &'e Found,
     case: Case,
 }
@@ -600,9 +600,8 @@ impl Engine<'_, '_, '_, '_> {
     /// The keyword of the `CLASS`, `INTERFACE` or `ENUM` statement before the
     /// window, in the current text.
     fn class_header_kind(&self) -> Option<Kind> {
-        let tokens = &self.tokens[..self.found.before];
         let mut previous = None;
-        for token in tokens {
+        for token in self.tokens.iter_to(self.found.before) {
             if token.kind == Kind::Comment {
                 continue;
             }

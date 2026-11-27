@@ -21,7 +21,8 @@ fn codes(map: LintSeverityMap) -> Vec<&'static str> {
     let tokens = tokenize(SRC);
     let program = Parser::new(&tokens, SRC).parse_program();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, SRC, &schema).with_lint_severities(map);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, SRC, &schema, &program.pools)
+        .with_lint_severities(map);
     let sem = analyze_file(&program.statements, &ctx);
     Registry::builtin()
         .run(&program.statements, &sem, &ctx)

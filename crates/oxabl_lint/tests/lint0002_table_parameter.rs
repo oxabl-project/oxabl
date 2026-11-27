@@ -24,7 +24,7 @@ fn lint0002(source: &str) -> Vec<String> {
         program.errors
     );
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     let sem = analyze_file(&program.statements, &ctx);
     unused_variable::run(&program.statements, &sem, &ctx)
         .into_iter()

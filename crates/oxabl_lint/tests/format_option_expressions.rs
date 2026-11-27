@@ -33,7 +33,7 @@ fn analyze(source: &str) -> (Semantic, Vec<Diagnostic>) {
         program.errors
     );
     let schema: Schema = schema_from_df(DF);
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     ctx.schema_loaded = true;
     let sem = analyze_file(&program.statements, &ctx);
     let diags = lint_file(&program.statements, &sem, &ctx);

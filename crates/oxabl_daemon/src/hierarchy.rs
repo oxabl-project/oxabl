@@ -1354,6 +1354,9 @@ fn place_name(
             text
         }
     };
+    if let Some(name) = node.name_span {
+        return Some((name, name));
+    }
     match class_name_span(&text, node.name.as_written()) {
         Some(name) => Some((name, name)),
         None => class_decl(&text).map(|decl| (decl.span, decl.selection)),

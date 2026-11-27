@@ -33,7 +33,8 @@ fn child(body: &str) -> String {
 #[test]
 fn a_protected_variable_resolves_for_the_child_with_its_type() {
     let source = child("DEFINE VARIABLE v AS INTEGER NO-UNDO. v = count_.");
-    let (_stmts, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let (program, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let _stmts = &program.statements;
 
     let sym = sole_resolved(&sem, "count_");
     assert_eq!(sem.symbols.get(sym).kind, SymbolKind::Variable);
@@ -47,7 +48,8 @@ fn a_protected_variable_resolves_for_the_child_with_its_type() {
 #[test]
 fn a_public_variable_resolves_for_the_child() {
     let source = child("MESSAGE shown_.");
-    let (_stmts, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let (program, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let _stmts = &program.statements;
 
     sole_resolved(&sem, "shown_");
 }
@@ -55,7 +57,8 @@ fn a_public_variable_resolves_for_the_child() {
 #[test]
 fn a_protected_object_variable_is_no_class_reference() {
     let source = child("IF req_:ToString() EQ \"x\" THEN RETURN.");
-    let (_stmts, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let (program, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let _stmts = &program.statements;
 
     assert_eq!(
         sem.symbols.get(sole_resolved(&sem, "req_")).kind,
@@ -72,7 +75,8 @@ fn a_protected_object_variable_is_no_class_reference() {
 fn a_private_variable_does_not_resolve_for_the_child() {
     for name in ["secret_", "unmarked_"] {
         let source = child(&format!("IF {name}:ToString() EQ \"x\" THEN RETURN."));
-        let (_stmts, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+        let (program, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+        let _stmts = &program.statements;
 
         assert!(
             resolved_to(&sem, name).is_empty(),
@@ -98,7 +102,8 @@ fn a_private_variable_does_not_resolve_for_the_child() {
 #[test]
 fn a_protected_temp_table_and_buffer_resolve_in_the_buffers_namespace() {
     let source = child("DEFINE VARIABLE h AS HANDLE NO-UNDO. h = buf_:HANDLE. h = tt_:HANDLE.");
-    let (_stmts, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let (program, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let _stmts = &program.statements;
 
     let buf = sole_resolved(&sem, "buf_");
     assert_eq!(sem.symbols.get(buf).kind, SymbolKind::Buffer);
@@ -111,7 +116,8 @@ fn a_protected_temp_table_and_buffer_resolve_in_the_buffers_namespace() {
 #[test]
 fn a_protected_dataset_resolves_for_the_child() {
     let source = child("ds_:EMPTY-DATASET().");
-    let (_stmts, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let (program, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let _stmts = &program.statements;
 
     assert_eq!(
         sem.symbols.get(sole_resolved(&sem, "ds_")).kind,
@@ -129,7 +135,8 @@ fn a_variable_resolves_through_a_three_level_chain() {
         ),
     ];
     let source = "USING pkg.*.\nCLASS app.child INHERITS pkg.mid:\n    METHOD PUBLIC VOID run-it():\n        req_:ToString().\n    END METHOD.\nEND CLASS.";
-    let (_stmts, sem) = with_index(source, &workspace);
+    let (program, sem) = with_index(source, &workspace);
+    let _stmts = &program.statements;
 
     sole_resolved(&sem, "req_");
 }
@@ -141,7 +148,8 @@ fn a_name_that_is_a_class_still_resolves_as_one() {
         ("/src/pkg/util.cls", "CLASS pkg.util: END CLASS."),
     ];
     let source = child("pkg.util:ToString().");
-    let (_stmts, sem) = with_index(&source, &workspace);
+    let (program, sem) = with_index(&source, &workspace);
+    let _stmts = &program.statements;
 
     assert!(matches!(
         sem.symbols.class_lookup(&OxablAtom::from("pkg.util")),
@@ -152,7 +160,8 @@ fn a_name_that_is_a_class_still_resolves_as_one() {
 #[test]
 fn a_name_no_ancestor_declares_is_still_a_class_miss() {
     let source = child("nothing_:ToString().");
-    let (_stmts, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let (program, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let _stmts = &program.statements;
 
     assert!(resolved_to(&sem, "nothing_").is_empty());
     assert_eq!(
@@ -164,7 +173,8 @@ fn a_name_no_ancestor_declares_is_still_a_class_miss() {
 #[test]
 fn the_child_own_variable_shadows_the_inherited_one() {
     let source = child("DEFINE VARIABLE count_ AS CHARACTER NO-UNDO. count_ = \"x\".");
-    let (_stmts, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let (program, sem) = with_index(&source, &[(BASE_PATH, BASE)]);
+    let _stmts = &program.statements;
 
     let sym = sole_resolved(&sem, "count_");
     assert_eq!(

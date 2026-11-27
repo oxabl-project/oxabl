@@ -72,8 +72,8 @@ pub use model::{
     Written,
 };
 
-use oxabl_ast::{Span, Statement};
-use oxabl_flow::{FlowOptions, UnitId};
+use oxabl_ast::{AstPools, Span, Statement};
+use oxabl_flow::{FileInput, FlowOptions, UnitId};
 use oxabl_schema::Schema;
 use rustc_hash::FxHashMap;
 
@@ -238,85 +238,84 @@ fn include_may_run_after(
 
 /// Analyse a parsed file. `source` must be the text the statements were
 /// parsed from; `schema` is `None` when no schema is loaded.
-pub fn analyze_file(program: &[Statement], source: &str, schema: Option<&Schema>) -> FileScopes {
-    analyze_file_with(program, source, schema, &ScopeOptions::default())
+pub fn analyze_file(
+    program: &[Statement],
+    pools: &AstPools,
+    source: &str,
+    schema: Option<&Schema>,
+) -> FileScopes {
+    analyze_file_with(program, pools, source, schema, &ScopeOptions::default())
 }
 
 /// [`analyze_file`] with options.
 pub fn analyze_file_with(
     program: &[Statement],
+    pools: &AstPools,
     source: &str,
     schema: Option<&Schema>,
     options: &ScopeOptions<'_>,
 ) -> FileScopes {
     let tokens = oxabl_lexer::tokenize(source);
-    analyze_tokens(program, source, &tokens, schema, options)
+    analyze_tokens(
+        FileInput::new(program, pools, source, &tokens),
+        schema,
+        options,
+    )
 }
 
 /// [`analyze_file_with`] with the tokens the statements were parsed from
 /// (`oxabl_lexer::tokenize(source)`), so the text is not lexed again.
 pub fn analyze_tokens(
-    program: &[Statement],
-    source: &str,
-    tokens: &[oxabl_lexer::Token],
+    input: FileInput<'_>,
     schema: Option<&Schema>,
     options: &ScopeOptions<'_>,
 ) -> FileScopes {
-    analyze_tokens_inherited(
-        program,
-        source,
-        tokens,
-        schema,
-        options,
-        &Inherited::default(),
-    )
+    analyze_tokens_inherited(input, schema, options, &Inherited::default())
 }
 
 /// [`analyze_tokens`] for a class that inherits buffers and temp-tables.
 pub fn analyze_tokens_inherited(
-    program: &[Statement],
-    source: &str,
-    tokens: &[oxabl_lexer::Token],
+    input: FileInput<'_>,
     schema: Option<&Schema>,
     options: &ScopeOptions<'_>,
     inherited: &Inherited,
 ) -> FileScopes {
-    let flow = oxabl_flow::build_file_tokens(program, source, tokens, &options.flow);
-    analyze_flow_inherited(program, source, tokens, &flow, schema, options, inherited)
+    let flow = oxabl_flow::build_file_tokens(
+        input.statements,
+        input.pools,
+        input.source,
+        input.tokens,
+        &options.flow,
+    );
+    analyze_flow_inherited(input, &flow, schema, options, inherited)
 }
 
 /// [`analyze_tokens`] over the file's CFGs, already built from the same
 /// statements with `options.flow` (`oxabl_flow::build_file_tokens`).
 pub fn analyze_flow(
-    program: &[Statement],
-    source: &str,
-    tokens: &[oxabl_lexer::Token],
+    input: FileInput<'_>,
     flow: &oxabl_flow::FileFlow,
     schema: Option<&Schema>,
     options: &ScopeOptions<'_>,
 ) -> FileScopes {
-    analyze_flow_inherited(
-        program,
-        source,
-        tokens,
-        flow,
-        schema,
-        options,
-        &Inherited::default(),
-    )
+    analyze_flow_inherited(input, flow, schema, options, &Inherited::default())
 }
 
 /// [`analyze_flow`] for a class that inherits buffers and temp-tables.
 pub fn analyze_flow_inherited(
-    program: &[Statement],
-    source: &str,
-    tokens: &[oxabl_lexer::Token],
+    input: FileInput<'_>,
     flow: &oxabl_flow::FileFlow,
     schema: Option<&Schema>,
     options: &ScopeOptions<'_>,
     inherited: &Inherited,
 ) -> FileScopes {
-    let collected = collect::collect(program, source, tokens, flow, options);
+    let FileInput {
+        statements: program,
+        pools,
+        source,
+        tokens,
+    } = input;
+    let collected = collect::collect(program, pools, source, tokens, flow, options);
     let mut file_unknown: Vec<Unknown> = Vec::new();
     if options.parse_recovered {
         file_unknown.push(Unknown {

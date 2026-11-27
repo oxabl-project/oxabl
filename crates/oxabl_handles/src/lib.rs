@@ -132,9 +132,8 @@ pub use model::{
     Placement, PoolSite, Site, Step, Summary, UnitHandles, Verdict,
 };
 
-use oxabl_ast::Statement;
-use oxabl_flow::{FileFlow, FlowOptions, UnitBuilder, UnitId};
-use oxabl_lexer::Token;
+use oxabl_ast::{AstPools, Statement};
+use oxabl_flow::{FileFlow, FileInput, FlowOptions, UnitBuilder, UnitId};
 
 /// The dynamic objects of one file, by unit.
 #[derive(Debug, Clone, Default)]
@@ -169,55 +168,49 @@ impl FileHandles {
 
 /// Analyse a parsed file. `source` must be the text the statements were
 /// parsed from (the expanded text when includes were expanded).
-pub fn analyze_file(program: &[Statement], source: &str) -> FileHandles {
-    analyze_file_with(program, source, &FlowOptions::default())
+pub fn analyze_file(program: &[Statement], pools: &AstPools, source: &str) -> FileHandles {
+    analyze_file_with(program, pools, source, &FlowOptions::default())
 }
 
 /// [`analyze_file`] with the flow options (the default error directive).
 pub fn analyze_file_with(
     program: &[Statement],
+    pools: &AstPools,
     source: &str,
     options: &FlowOptions,
 ) -> FileHandles {
-    analyze(program, source, &[], options, None)
+    analyze(FileInput::new(program, pools, source, &[]), options, None)
 }
 
 /// [`analyze_file_with`] with the tokens the statements were parsed from
 /// (`oxabl_lexer::tokenize(source)`), so block headers are not lexed again.
-pub fn analyze_tokens(
-    program: &[Statement],
-    source: &str,
-    tokens: &[Token],
-    options: &FlowOptions,
-) -> FileHandles {
-    analyze(program, source, tokens, options, None)
+pub fn analyze_tokens(input: FileInput<'_>, options: &FlowOptions) -> FileHandles {
+    analyze(input, options, None)
 }
 
 /// [`analyze_tokens`] over the file's CFGs, already built with the default
 /// flow options (`oxabl_flow::build_file_tokens`), so no unit is built again.
-pub fn analyze_flow(
-    program: &[Statement],
-    source: &str,
-    tokens: &[Token],
-    flow: &FileFlow,
-) -> FileHandles {
-    analyze(program, source, tokens, &FlowOptions::default(), Some(flow))
+pub fn analyze_flow(input: FileInput<'_>, flow: &FileFlow) -> FileHandles {
+    analyze(input, &FlowOptions::default(), Some(flow))
 }
 
-fn analyze(
-    program: &[Statement],
-    source: &str,
-    tokens: &[Token],
-    options: &FlowOptions,
-    flow: Option<&FileFlow>,
-) -> FileHandles {
-    let index = index::FileIndex::build(program, source);
+/// `tokens` of `input` may be empty: the flow builder then lexes the block
+/// headers it reads.
+fn analyze(input: FileInput<'_>, options: &FlowOptions, flow: Option<&FileFlow>) -> FileHandles {
+    let FileInput {
+        statements: program,
+        pools,
+        source,
+        tokens,
+    } = input;
+    let index = index::FileIndex::build(program, pools, source);
     if index.creating.is_empty() {
         return FileHandles::default();
     }
     let builder = std::cell::OnceCell::new();
-    let builder =
-        || builder.get_or_init(|| UnitBuilder::with_tokens(program, source, tokens, options));
+    let builder = || {
+        builder.get_or_init(|| UnitBuilder::with_tokens(program, pools, source, tokens, options))
+    };
     // A statement with nodes is in the unit that has them; the builder
     // answers for the others.
     let mut units: Vec<UnitId> = index

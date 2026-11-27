@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use oxabl_ast::Span;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_semantic::{
     ClassDescriptor, ClassKind, ClassResolution, ImportContext, IndexAnswer, IndexName,
@@ -256,6 +257,9 @@ pub struct ClassNode {
     pub imports: Arc<ImportContext>,
     /// The supertypes the header names, resolved. Never leaves one out.
     pub supertypes: Vec<SupertypeRef>,
+    /// Byte span of the type name in the unexpanded file, when known from the
+    /// facts parse.
+    pub name_span: Option<Span>,
 }
 
 /// What a supertype is, as a key of the reverse index.
@@ -331,6 +335,7 @@ impl SubtypeIndex {
                     members: Arc::clone(&class.members),
                     imports: Arc::clone(&descriptor.imports),
                     supertypes: supertypes_of(descriptor, &*index),
+                    name_span: class.name_span,
                 });
             }
         }

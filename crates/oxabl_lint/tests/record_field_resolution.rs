@@ -13,7 +13,6 @@
 //!
 //! Every fixture here is synthetic.
 
-use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, FileId};
 use oxabl_lexer::tokenize;
 use oxabl_lint::{LINT0001, LINT0003, lint_file};
@@ -32,7 +31,7 @@ ADD TABLE "bar"
 ADD FIELD "gamma" OF "bar" AS character
 "#;
 
-fn parse(source: &str) -> Vec<Statement> {
+fn parse(source: &str) -> oxabl_parser::Program {
     let tokens = tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     assert!(
@@ -40,15 +39,16 @@ fn parse(source: &str) -> Vec<Statement> {
         "fixture must parse cleanly: {:?}",
         program.errors
     );
-    program.statements
+    program
 }
 
 fn analyze(source: &str, schema: &Schema) -> (Semantic, Vec<Diagnostic>) {
-    let stmts = parse(source);
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema);
+    let program = parse(source);
+    let stmts = &program.statements;
+    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema, &program.pools);
     ctx.schema_loaded = !schema.is_empty();
-    let sem = analyze_file(&stmts, &ctx);
-    let diags = lint_file(&stmts, &sem, &ctx);
+    let sem = analyze_file(stmts, &ctx);
+    let diags = lint_file(stmts, &sem, &ctx);
     (sem, diags)
 }
 

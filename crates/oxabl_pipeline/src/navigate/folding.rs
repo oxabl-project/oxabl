@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use oxabl_analyze::ExpandedFile;
-use oxabl_ast::{ParameterDirection, Span, Statement, StatementKind};
+use oxabl_ast::{AstPools, ParameterDirection, Span, Statement, StatementKind};
 use oxabl_common::VirtualSpan;
 use oxabl_lexer::{Kind, Token};
 
@@ -302,7 +302,9 @@ impl<'t> Folding<'t> {
         }
         let whole = self.expanded.source_text(file).is_some_and(|text| {
             let tokens: Vec<Token> = oxabl_lexer::tokenize(text);
-            !Source::new(text, &tokens).may_expand(0, u32::MAX, &[], false)
+            // `may_expand` reads the tokens alone: this text is not parsed.
+            let no_parse = AstPools::new();
+            !Source::new(text, &tokens, &no_parse).may_expand(0, u32::MAX, &[], false)
         });
         self.cache
             .whole_files
@@ -356,7 +358,7 @@ impl Loaded {
                         StatementKind::Class { .. } | StatementKind::Interface { .. }
                     )
                 })?;
-                let raw = Source::new(&self.text, &self.parsed.tokens);
+                let raw = Source::new(&self.text, &self.parsed.tokens, &self.parsed.program.pools);
                 Some(ClassScan {
                     hides_members: class_may_hide_members(&raw, class, false),
                     includes: class_includes(&raw, class),
@@ -375,6 +377,7 @@ impl Loaded {
             return Some(View {
                 text: &self.text,
                 tokens: &self.parsed.tokens,
+                pools: &self.parsed.program.pools,
                 statements: &self.parsed.program.statements,
                 expanded: None,
                 folding: None,
@@ -389,6 +392,7 @@ impl Loaded {
         Some(View {
             text: &expanded.text,
             tokens: &unfolded.parsed.tokens,
+            pools: &unfolded.parsed.program.pools,
             statements: &unfolded.parsed.program.statements,
             expanded: Some(expanded),
             folding: Some(Folding::new(expanded, &unfolded.cache, move || {
@@ -419,6 +423,7 @@ fn unfold(nav: &Navigation, path: &Path, text: &str) -> Option<Unfolded> {
 pub(super) struct View<'l> {
     text: &'l str,
     tokens: &'l [Token],
+    pub pools: &'l AstPools,
     pub statements: &'l [Statement],
     expanded: Option<&'l ExpandedFile>,
     folding: Option<Folding<'l>>,
@@ -426,7 +431,7 @@ pub(super) struct View<'l> {
 
 impl View<'_> {
     pub fn source(&self) -> Source<'_> {
-        let source = Source::new(self.text, self.tokens);
+        let source = Source::new(self.text, self.tokens, self.pools);
         match &self.folding {
             Some(folding) => source.folded(folding),
             None => source,

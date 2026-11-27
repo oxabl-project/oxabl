@@ -53,7 +53,7 @@
 //! shows it, else at the `{...}` site in the including file.
 
 use oxabl_ast::{
-    Expression, ExpressionKind, FindType, LockType, NodeId, Span, Statement, StatementKind,
+    AstPools, ExprId, ExpressionKind, FindType, LockType, NodeId, Span, Statement, StatementKind,
 };
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_flow::{
@@ -102,7 +102,7 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
     if not_judged(scopes) {
         return Vec::new();
     }
-    let upgrades = upgrades(program, ctx.source);
+    let upgrades = upgrades(program, ctx.pools, ctx.source);
     if upgrades.is_empty() {
         return Vec::new();
     }
@@ -124,6 +124,7 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
                 .get_or_insert_with(|| {
                     UnitBuilder::with_tokens(
                         program,
+                        ctx.pools,
                         ctx.source,
                         ctx.tokens,
                         &FlowOptions::default(),
@@ -257,8 +258,9 @@ fn no_wait(source: &str, span: Span) -> bool {
 }
 
 /// Every `FIND ... EXCLUSIVE-LOCK` that locks a record again, by statement.
-fn upgrades(program: &[Statement], source: &str) -> FxHashMap<NodeId, Upgrade> {
+fn upgrades(program: &[Statement], pools: &AstPools, source: &str) -> FxHashMap<NodeId, Upgrade> {
     struct Finds<'a> {
+        pools: &'a AstPools,
         source: &'a str,
         out: FxHashMap<NodeId, Upgrade>,
     }
@@ -276,8 +278,9 @@ fn upgrades(program: &[Statement], source: &str) -> FxHashMap<NodeId, Upgrade> {
                     Some(Upgrade::Current)
                 } else {
                     where_clause
-                        .as_ref()
-                        .and_then(|w| same_row(self.source, w, &buffer.name))
+                        .and_then(|w| {
+                            same_row(self.pools, self.source, w, self.pools.ident(*buffer))
+                        })
                         .map(Upgrade::SameRow)
                 };
                 if let Some(u) = upgrade {
@@ -288,23 +291,24 @@ fn upgrades(program: &[Statement], source: &str) -> FxHashMap<NodeId, Upgrade> {
         }
     }
     let mut v = Finds {
+        pools,
         source,
         out: FxHashMap::default(),
     };
-    walk_block(&mut v, program);
+    walk_block(&mut v, pools, program);
     v.out
 }
 
 /// In a `WHERE` of `AND`ed terms, the other buffer of a term
 /// `ROWID(found) = ROWID(other)` (or `RECID`).
-fn same_row(source: &str, expr: &Expression, found: &str) -> Option<String> {
-    match &expr.kind {
+fn same_row(pools: &AstPools, source: &str, expr: ExprId, found: &str) -> Option<String> {
+    match &pools.expr(expr).kind {
         ExpressionKind::And(a, b) => {
-            same_row(source, a, found).or_else(|| same_row(source, b, found))
+            same_row(pools, source, *a, found).or_else(|| same_row(pools, source, *b, found))
         }
         ExpressionKind::Equal(a, b) => {
-            let (ka, na) = row_of(source, a)?;
-            let (kb, nb) = row_of(source, b)?;
+            let (ka, na) = row_of(pools, source, *a)?;
+            let (kb, nb) = row_of(pools, source, *b)?;
             if ka != kb {
                 return None;
             }
@@ -321,21 +325,19 @@ fn same_row(source: &str, expr: &Expression, found: &str) -> Option<String> {
 }
 
 /// `ROWID(b)` or `RECID(b)`: the function and the buffer name.
-fn row_of<'e>(source: &str, expr: &'e Expression) -> Option<(Kind, &'e str)> {
-    let ExpressionKind::FunctionCall { name, arguments } = &expr.kind else {
+fn row_of<'p>(pools: &'p AstPools, source: &str, expr: ExprId) -> Option<(Kind, &'p str)> {
+    let ExpressionKind::FunctionCall { name, arguments } = &pools.expr(expr).kind else {
         return None;
     };
     let kind = leading_tokens(source, name.span, 1).first()?.0.kind;
     if !matches!(kind, Kind::Rowid | Kind::Recid) {
         return None;
     }
-    match arguments.as_slice() {
-        [
-            Expression {
-                kind: ExpressionKind::Identifier(id),
-                ..
-            },
-        ] => Some((kind, id.name.as_str())),
+    match pools.exprs(*arguments) {
+        [only] => match &pools.expr(*only).kind {
+            ExpressionKind::Identifier(id) => Some((kind, pools.ident(*id))),
+            _ => None,
+        },
         _ => None,
     }
 }

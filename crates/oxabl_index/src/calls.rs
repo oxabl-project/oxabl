@@ -18,8 +18,8 @@
 //! `docs/design/strict-analysis-open-questions.md`, section 8.
 
 use oxabl_ast::{
-    DataType, Expression, ExpressionKind, OnAction, OnKind, ParameterDirection, ParameterType,
-    PersistentRunTarget, RunTarget, Span, Statement, StatementKind, TypeSource,
+    AstPools, DataType, ExprId, Expression, ExpressionKind, OnAction, OnKind, ParameterDirection,
+    ParameterType, PersistentRunTarget, RunTarget, Span, Statement, StatementKind, TypeSource,
 };
 use oxabl_lexer::{Kind, Token};
 use oxabl_semantic::{IndexAnswer, IndexName, IndexedFileId, WorkspaceIndex};
@@ -200,9 +200,14 @@ impl DynamicCalls {
 impl FileCalls {
     /// The calls of a parsed file. `tokens` are the tokens `program` was
     /// parsed from (`oxabl_lexer::tokenize(source)`).
-    pub fn extract(program: &[Statement], source: &str, tokens: &[Token]) -> FileCalls {
+    pub fn extract(
+        program: &[Statement],
+        pools: &AstPools,
+        source: &str,
+        tokens: &[Token],
+    ) -> FileCalls {
         let mut decls = Decls::default();
-        walk(program, &mut |s| decls.statement(s, source, tokens));
+        walk(program, &mut |s| decls.statement(s, pools, source, tokens));
         let mut out = FileCalls {
             procedures: decls.procedures.clone(),
             functions: decls.functions.clone(),
@@ -226,7 +231,7 @@ impl FileCalls {
             {
                 dynamic.run_value = true;
             }
-            if let Some(site) = run_site(s, tokens, &decls) {
+            if let Some(site) = run_site(s, pools, tokens, &decls) {
                 if matches!(
                     (&site.target, &s.kind),
                     (
@@ -281,7 +286,7 @@ fn is_handle(t: &TypeSource) -> bool {
 }
 
 impl Decls {
-    fn statement(&mut self, s: &Statement, source: &str, tokens: &[Token]) {
+    fn statement(&mut self, s: &Statement, pools: &AstPools, source: &str, tokens: &[Token]) {
         match &s.kind {
             StatementKind::Procedure {
                 name,
@@ -289,27 +294,29 @@ impl Decls {
                 is_external,
                 ..
             } => {
+                let text = pools.ident(*name);
                 if *is_external {
-                    self.libraries.push(name.name.clone());
+                    self.libraries.push(text.to_owned());
                 } else if *is_prototype {
                     let sup = delegated_to_super(source, tokens, s.span);
-                    self.delegated.push((name.name.clone(), sup));
+                    self.delegated.push((text.to_owned(), sup));
                 } else {
-                    self.procedures.push(name.name.clone());
+                    self.procedures.push(text.to_owned());
                 }
             }
             StatementKind::Function { name, body, .. } => {
+                let text = pools.ident(*name);
                 if !body.is_empty() {
-                    self.functions.push(name.name.clone());
+                    self.functions.push(text.to_owned());
                 } else if let Some(sup) = prototype_in(source, tokens, s.span) {
-                    self.delegated.push((name.name.clone(), sup));
-                } else if !self.functions.iter().any(|f| same(f, &name.name)) {
+                    self.delegated.push((text.to_owned(), sup));
+                } else if !self.functions.iter().any(|f| same(f, text)) {
                     // A FORWARD declaration, or a definition with no statements.
-                    self.functions.push(name.name.clone());
+                    self.functions.push(text.to_owned());
                 }
             }
             StatementKind::Method { name, .. } => {
-                self.methods.push(name.name.clone());
+                self.methods.push(pools.ident(*name).to_owned());
                 self.definitions.push(name.span.start);
             }
             StatementKind::Run {
@@ -317,7 +324,7 @@ impl Decls {
                 persistent_handle: Some(h),
                 ..
             } => {
-                if let Some(hn) = handle_name(h) {
+                if let Some(hn) = handle_name(*h, pools) {
                     self.persistent.push((hn, name.clone()));
                 }
             }
@@ -325,7 +332,7 @@ impl Decls {
                 persistent_handle: Some(h),
                 ..
             } => {
-                if let Some(hn) = handle_name(h) {
+                if let Some(hn) = handle_name(*h, pools) {
                     self.other_writes.push(hn);
                 }
             }
@@ -334,37 +341,41 @@ impl Decls {
         match &s.kind {
             StatementKind::VariableDeclaration {
                 name, type_source, ..
-            } if is_handle(type_source) => self.handles.push(name.name.to_ascii_lowercase()),
+            } if is_handle(type_source) => {
+                self.handles.push(pools.ident(*name).to_ascii_lowercase())
+            }
             StatementKind::DefineParameter {
                 param_type:
                     ParameterType::Variable {
                         name, type_source, ..
                     },
                 ..
-            } if is_handle(type_source) => self.handles.push(name.name.to_ascii_lowercase()),
+            } if is_handle(type_source) => {
+                self.handles.push(pools.ident(*name).to_ascii_lowercase())
+            }
             StatementKind::DefineParameter {
                 param_type: ParameterType::Handle { name, .. },
                 ..
-            } => self.handles.push(name.name.to_ascii_lowercase()),
+            } => self.handles.push(pools.ident(*name).to_ascii_lowercase()),
             StatementKind::DefineTempTable { fields, .. } => {
                 for f in fields.iter().filter(|f| is_handle(&f.type_source)) {
-                    self.handles.push(f.name.name.to_ascii_lowercase());
+                    self.handles.push(pools.ident(f.name).to_ascii_lowercase());
                 }
             }
             StatementKind::Property {
                 name,
                 data_type: DataType::Handle | DataType::Com,
                 ..
-            } => self.handles.push(name.name.to_ascii_lowercase()),
+            } => self.handles.push(pools.ident(*name).to_ascii_lowercase()),
             _ => {}
         }
         // Any other write to a name: an assignment, an OUTPUT argument, a
         // parameter or shared definition.
         match &s.kind {
-            StatementKind::Assignment { target, .. } => self.write(target),
+            StatementKind::Assignment { target, .. } => self.write(*target, pools),
             StatementKind::Assign { assignments } => {
                 for p in assignments {
-                    self.write(&p.target);
+                    self.write(p.target, pools);
                 }
             }
             StatementKind::Run { arguments, .. } => {
@@ -373,7 +384,7 @@ impl Decls {
                         a.direction,
                         ParameterDirection::Output | ParameterDirection::InputOutput
                     ) {
-                        self.write(&a.expression);
+                        self.write(a.expression, pools);
                     }
                 }
             }
@@ -384,7 +395,8 @@ impl Decls {
                 is_new_global_shared,
                 ..
             } if *is_shared || *is_new_shared || *is_new_global_shared => {
-                self.other_writes.push(name.name.to_ascii_lowercase());
+                self.other_writes
+                    .push(pools.ident(*name).to_ascii_lowercase());
             }
             StatementKind::DefineParameter { .. } => {
                 if let Some(name) = parameter_name(source, tokens, s.span) {
@@ -395,8 +407,8 @@ impl Decls {
         }
     }
 
-    fn write(&mut self, target: &Expression) {
-        if let Some(n) = handle_name(target) {
+    fn write(&mut self, target: ExprId, pools: &AstPools) {
+        if let Some(n) = handle_name(target, pools) {
             self.other_writes.push(n);
         }
     }
@@ -429,9 +441,9 @@ pub fn is_this_procedure(tokens: &[Token], handle: &Expression) -> bool {
 }
 
 /// The folded name of a plain variable expression.
-fn handle_name(e: &Expression) -> Option<String> {
-    match &e.kind {
-        ExpressionKind::Identifier(id) => Some(id.name.to_ascii_lowercase()),
+fn handle_name(e: ExprId, pools: &AstPools) -> Option<String> {
+    match &pools.expr(e).kind {
+        ExpressionKind::Identifier(id) => Some(pools.ident(*id).to_ascii_lowercase()),
         _ => None,
     }
 }
@@ -483,7 +495,7 @@ fn parameter_name(source: &str, tokens: &[Token], span: Span) -> Option<String> 
 }
 
 /// The call a `RUN` or `PUBLISH` statement makes.
-fn run_site(s: &Statement, tokens: &[Token], decls: &Decls) -> Option<CallSite> {
+fn run_site(s: &Statement, pools: &AstPools, tokens: &[Token], decls: &Decls) -> Option<CallSite> {
     if let StatementKind::Run {
         target,
         in_handle,
@@ -509,10 +521,10 @@ fn run_site(s: &Statement, tokens: &[Token], decls: &Decls) -> Option<CallSite> 
                 reason: UnknownCall::Unexpanded,
             },
             (RunTarget::Literal { name, .. }, Some(h)) => {
-                if is_this_procedure(tokens, h) {
+                if is_this_procedure(tokens, pools.expr(*h)) {
                     internal(name, decls)
                 } else {
-                    match handle_name(h).and_then(|hn| decls.handle_program(&hn)) {
+                    match handle_name(*h, pools).and_then(|hn| decls.handle_program(&hn)) {
                         Some(program) => CallTarget::InProgram {
                             program: program.to_string(),
                             procedure: name.clone(),

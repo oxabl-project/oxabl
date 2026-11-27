@@ -1,7 +1,9 @@
 //! The case completion writes keywords in.
 
-use oxabl_lexer::{Kind, Token};
+use oxabl_lexer::Kind;
 use oxabl_style::KeywordCase;
+
+use super::tokens::TokenStream;
 
 /// Upper or lower case, for the keywords of one answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,7 +20,7 @@ impl Case {
         keyword_case: KeywordCase,
         word: &str,
         text: &str,
-        tokens: &[Token],
+        tokens: &TokenStream<'_>,
         before: usize,
     ) -> Case {
         match keyword_case {
@@ -26,8 +28,8 @@ impl Case {
             KeywordCase::Lowercase => Case::Lower,
             KeywordCase::Preserve => written_case(word)
                 .or_else(|| {
-                    tokens[..before]
-                        .iter()
+                    tokens
+                        .iter_to(before)
                         .rev()
                         .filter(|token| is_keyword(token.kind))
                         .find_map(|token| written_case(&text[token.start..token.end]))
@@ -140,7 +142,13 @@ mod tests {
     fn case(keyword_case: KeywordCase, word: &str, text: &str) -> Case {
         let tokens = oxabl_lexer::tokenize(text);
         let before = tokens.iter().filter(|t| t.kind != Kind::Eof).count();
-        Case::of(keyword_case, word, text, &tokens, before)
+        Case::of(
+            keyword_case,
+            word,
+            text,
+            &TokenStream::from_slice(&tokens),
+            before,
+        )
     }
 
     #[test]

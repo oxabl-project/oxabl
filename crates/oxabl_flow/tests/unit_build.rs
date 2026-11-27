@@ -42,9 +42,10 @@ fn a_statement_finds_its_own_unit_only() {
         let source = std::fs::read_to_string(&path).unwrap();
         let tokens = oxabl_lexer::tokenize(&source);
         let program = oxabl_parser::Parser::new(&tokens, &source).parse_program();
-        let flow = oxabl_flow::build_file(&program.statements, &source);
+        let flow = oxabl_flow::build_file(&program.statements, &program.pools, &source);
         let builder = UnitBuilder::new(
             &program.statements,
+            &program.pools,
             &source,
             &oxabl_flow::FlowOptions::default(),
         );
@@ -77,7 +78,12 @@ fn a_statement_in_no_unit_has_none() {
     let source = "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n";
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
-    let builder = UnitBuilder::new(&program.statements, source, &Default::default());
+    let builder = UnitBuilder::new(
+        &program.statements,
+        &program.pools,
+        source,
+        &Default::default(),
+    );
     let missing = oxabl_ast::Statement::new(oxabl_ast::StatementKind::Empty).id;
     assert!(builder.unit_of(missing).is_none());
 }

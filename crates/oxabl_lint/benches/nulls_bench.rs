@@ -66,7 +66,8 @@ fn bench_source(
     let program = Parser::new(&tokens, source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::new(1), source, &schema).with_tokens(&tokens);
+    let ctx =
+        AnalysisContext::new(FileId::new(1), source, &schema, &program.pools).with_tokens(&tokens);
     let sem = analyze_file(&program.statements, &ctx);
     let found = unknown_in_comparison::run(&program.statements, &sem, &ctx);
     assert_eq!(found.len(), reported, "the fixture must exercise the rule");

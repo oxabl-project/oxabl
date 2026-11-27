@@ -87,15 +87,16 @@ fn bench_source(
     reported: usize,
 ) {
     let tokens = tokenize(source);
-    let program = Parser::new(&tokens, source)
+    let parsed = Parser::new(&tokens, source)
         .parse_statements()
         .expect("parse fixture");
+    let program = parsed.statements.as_slice();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::new(1), source, &schema);
-    let sem = analyze_file(&program, &ctx);
+    let ctx = AnalysisContext::new(FileId::new(1), source, &schema, &parsed.pools);
+    let sem = analyze_file(program, &ctx);
 
     assert_eq!(
-        block_var_used_outside::run(&program, &sem, &ctx).len(),
+        block_var_used_outside::run(program, &sem, &ctx).len(),
         reported,
         "the fixture must exercise the rule"
     );
@@ -104,12 +105,12 @@ fn bench_source(
 
     // LINT0005 alone, on an analysed file.
     group.bench_function(format!("{name}/block_var_used_outside"), |b| {
-        b.iter(|| black_box(block_var_used_outside::run(&program, &sem, &ctx)))
+        b.iter(|| black_box(block_var_used_outside::run(program, &sem, &ctx)))
     });
 
     // The default rule set, the cost a `check` pays.
     group.bench_function(format!("{name}/lint_file"), |b| {
-        b.iter(|| black_box(lint_file(&program, &sem, &ctx)))
+        b.iter(|| black_box(lint_file(program, &sem, &ctx)))
     });
 }
 
@@ -135,10 +136,11 @@ fn bench_realistic(c: &mut Criterion, name: &str, fixture: &str, expected: &[&st
     let schema = Schema::empty();
 
     // The contexts carry the parsed tokens, as `check` gives them.
-    let default_ctx = AnalysisContext::new(FileId::new(1), &source, &schema).with_tokens(&tokens);
+    let default_ctx =
+        AnalysisContext::new(FileId::new(1), &source, &schema, &program.pools).with_tokens(&tokens);
     let mut strict = LintSeverityMap::new();
     strict.base_mut().enable_group("strict");
-    let strict_ctx = AnalysisContext::new(FileId::new(1), &source, &schema)
+    let strict_ctx = AnalysisContext::new(FileId::new(1), &source, &schema, &program.pools)
         .with_tokens(&tokens)
         .with_lint_severities(strict);
     let sem = analyze_file(&program.statements, &default_ctx);

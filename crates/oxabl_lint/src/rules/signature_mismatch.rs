@@ -91,8 +91,8 @@
 //! `BY-REFERENCE` options are not compared.
 
 use oxabl_ast::{
-    Expression, ExpressionKind, ParameterDirection, RunArgument, RunTarget, Span, Statement,
-    StatementKind,
+    AstPools, Expression, ExpressionKind, ParameterDirection, RunArgument, RunTarget, Span,
+    Statement, StatementKind,
 };
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_index::calls::{CallKind, CallTarget};
@@ -134,79 +134,95 @@ pub fn check(
         return Vec::new();
     }
     let tokens = shared.tokens(ctx);
-    let fragment = ctx.source_context.is_include_fragment();
     let mut local: Option<ProgramSignatures> = None;
     let mut diags = Vec::new();
-    for_each_run(program, shared.calls(program, ctx), |stmt, site| {
-        if !matches!(site.kind, CallKind::Run | CallKind::Persistent) {
-            return;
-        }
-        let StatementKind::Run {
-            target: RunTarget::Literal { name_span, .. },
-            arguments,
-            ..
-        } = &stmt.kind
-        else {
-            return;
-        };
-        let signature: Option<Arc<Signature>> = match &site.target {
-            CallTarget::Procedure(name) => {
-                if (fragment && is_bare(name)) || !ctx.elided_includes.is_empty() {
-                    return;
-                }
-                let sigs = local.get_or_insert_with(|| ProgramSignatures::of(program));
-                sigs.procedure(&IndexName::new(name)).cloned().map(Arc::new)
+    for_each_run(
+        program,
+        ctx.pools,
+        shared.calls(program, ctx),
+        |stmt, site| {
+            if !matches!(site.kind, CallKind::Run | CallKind::Persistent) {
+                return;
             }
-            CallTarget::Program(name) => {
-                if !ctx.index_loaded
-                    || (is_bare(name) && (fragment || !ctx.elided_includes.is_empty()))
-                {
-                    return;
-                }
-                ctx.index.signature(&IndexName::new(name), None)
+            let StatementKind::Run {
+                target: RunTarget::Literal { name_span, .. },
+                arguments,
+                ..
+            } = &stmt.kind
+            else {
+                return;
+            };
+            let Some(signature) = signature_of(&site.target, program, ctx, &mut local) else {
+                return;
+            };
+            if holds_elided(ctx, stmt.span)
+                || arguments.iter().any(|a| hides_arguments(ctx.pools, a))
+            {
+                return;
             }
-            CallTarget::InProgram { program, procedure } => {
-                if !ctx.index_loaded {
-                    return;
-                }
-                ctx.index
-                    .signature(&IndexName::new(program), Some(&IndexName::new(procedure)))
-            }
-            _ => None,
-        };
-        let Some(signature) = signature else {
-            return;
-        };
-        if holds_elided(ctx, stmt.span) || arguments.iter().any(hides_arguments) {
-            return;
-        }
-        let name = match &site.target {
-            CallTarget::Procedure(n) | CallTarget::Program(n) => n.as_str(),
-            CallTarget::InProgram { procedure, .. } => procedure.as_str(),
-            _ => "",
-        };
-        compare(
-            &Callee {
-                name,
-                target: *name_span,
-                signature: &signature,
-                include_in_call: include_in_call(ctx, stmt.span),
-            },
-            arguments,
-            sem,
-            ctx,
-            tokens,
-            &mut diags,
-        );
-    });
+            let name = match &site.target {
+                CallTarget::Procedure(n) | CallTarget::Program(n) => n.as_str(),
+                CallTarget::InProgram { procedure, .. } => procedure.as_str(),
+                _ => "",
+            };
+            compare(
+                &Callee {
+                    name,
+                    target: *name_span,
+                    signature: &signature,
+                    include_in_call: include_in_call(ctx, stmt.span),
+                },
+                arguments,
+                sem,
+                ctx,
+                tokens,
+                &mut diags,
+            );
+        },
+    );
     diags
+}
+
+/// The signature a `RUN` of `target` is compared with, or `None` when the call
+/// is not compared. `local` keeps the signatures of `program`'s own procedures.
+fn signature_of(
+    target: &CallTarget,
+    program: &[Statement],
+    ctx: &AnalysisContext,
+    local: &mut Option<ProgramSignatures>,
+) -> Option<Arc<Signature>> {
+    let fragment = ctx.source_context.is_include_fragment();
+    match target {
+        CallTarget::Procedure(name) => {
+            if (fragment && is_bare(name)) || !ctx.elided_includes.is_empty() {
+                return None;
+            }
+            let sigs = local.get_or_insert_with(|| ProgramSignatures::of(program, ctx.pools));
+            sigs.procedure(&IndexName::new(name)).cloned().map(Arc::new)
+        }
+        CallTarget::Program(name) => {
+            if !ctx.index_loaded || (is_bare(name) && (fragment || !ctx.elided_includes.is_empty()))
+            {
+                return None;
+            }
+            ctx.index.signature(&IndexName::new(name), None)
+        }
+        CallTarget::InProgram { program, procedure } => {
+            if !ctx.index_loaded {
+                return None;
+            }
+            ctx.index
+                .signature(&IndexName::new(program), Some(&IndexName::new(procedure)))
+        }
+        _ => None,
+    }
 }
 
 /// Whether an argument is text the parser cannot count: an include or a
 /// preprocessor reference.
-fn hides_arguments(arg: &RunArgument) -> bool {
+fn hides_arguments(pools: &AstPools, arg: &RunArgument) -> bool {
     matches!(
-        arg.expression.kind,
+        pools.expr(arg.expression).kind,
         ExpressionKind::IncludeReference { .. }
             | ExpressionKind::IncludeArgReference { .. }
             | ExpressionKind::PreprocReference(_)
@@ -255,8 +271,9 @@ fn compare(
     }
     for (i, (arg, param)) in arguments.iter().zip(params).enumerate() {
         let n = i + 1;
-        let span = arg.expression.span;
-        let shape = argument_shape(tokens, &arg.expression);
+        let expr = ctx.pools.expr(arg.expression);
+        let span = expr.span;
+        let shape = argument_shape(tokens, expr);
         if !shapes_fit(shape, param.shape) {
             diags.push(report(
                 ctx,
@@ -284,7 +301,7 @@ fn compare(
             ));
             continue;
         }
-        if mode != ParamMode::Input && is_expression(&arg.expression) {
+        if mode != ParamMode::Input && is_expression(expr) {
             diags.push(report(
                 ctx,
                 span,
@@ -296,7 +313,7 @@ fn compare(
             ));
             continue;
         }
-        if let Some(message) = type_mismatch(sem, arg, mode, param, n, name) {
+        if let Some(message) = type_mismatch(sem, expr, mode, param, n, name) {
             diags.push(report(
                 ctx,
                 span,
@@ -424,7 +441,7 @@ fn is_expression(expr: &Expression) -> bool {
 /// parameter's, or `None` when it may or either side is not known.
 fn type_mismatch(
     sem: &Semantic,
-    arg: &RunArgument,
+    expr: &Expression,
     mode: ParamMode,
     param: &Param,
     n: usize,
@@ -433,7 +450,7 @@ fn type_mismatch(
     let ParamShape::Scalar(Some(want)) = param.shape else {
         return None;
     };
-    let Some(ResolvedType::Primitive(have)) = sem.types.get(arg.expression.id) else {
+    let Some(ResolvedType::Primitive(have)) = sem.types.get(expr.id) else {
         return None;
     };
     let have = *have;

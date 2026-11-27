@@ -473,6 +473,10 @@ pub struct SymbolTable {
     /// created on first write, like [`Self::side`], so a file with no
     /// temp-table pays one word.
     records: Option<Box<RecordLinks>>,
+    /// Whether the declare pass saw at least one declaration with an explicit
+    /// `DataType::Class(_)`. When `false`, the resolve pass skips its full-AST
+    /// class-type upgrade walk.
+    has_class_typed_decl: bool,
 }
 
 /// The record a buffer reads from: a schema table, or a temp-table this file
@@ -1180,6 +1184,18 @@ impl SymbolTable {
     /// the block-var-used-outside analysis (LINT0005) has nothing to track.
     pub fn has_block_scoped_var(&self) -> bool {
         !self.block_defined.is_empty()
+    }
+
+    /// Record that the declare pass saw a declaration with an explicit class
+    /// type, so the resolve pass must run its class-type upgrade walk.
+    pub(crate) fn mark_has_class_typed_decl(&mut self) {
+        self.has_class_typed_decl = true;
+    }
+
+    /// Whether the declare pass saw any declaration with an explicit class
+    /// type.
+    pub(crate) fn has_class_typed_decl(&self) -> bool {
+        self.has_class_typed_decl
     }
 
     fn records_mut(&mut self) -> &mut RecordLinks {

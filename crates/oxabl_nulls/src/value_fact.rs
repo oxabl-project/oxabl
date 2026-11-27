@@ -3,9 +3,9 @@
 //! A condition is a bit. Bits below `limit` say "this tested local is `?`";
 //! the bits above are the atoms of [`Fact::flag`] and [`Fact::buffer`].
 use super::{KNOWN, QUESTION};
-use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
 /// A set of conditions.
 #[derive(Debug, Clone, Default)]
@@ -73,13 +73,157 @@ impl Required {
             *a |= b;
         }
     }
+    pub fn is_subset_of(&self, other: &Self) -> bool {
+        self.0
+            .iter()
+            .enumerate()
+            .all(|(w, a)| a & !other.0.get(w).copied().unwrap_or(0) == 0)
+    }
+}
+
+/// Sorted `(local_index, Rc<Required>)` pairs shared via `Rc` so `Fact::clone`
+/// and `Fact::clone_from` are O(1) refcount bumps on every CFG edge.
+#[derive(Debug, Default)]
+pub(super) struct RequiresTable(Rc<Vec<(usize, Rc<Required>)>>);
+
+impl Clone for RequiresTable {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+    fn clone_from(&mut self, source: &Self) {
+        self.0 = Rc::clone(&source.0);
+    }
+}
+
+impl PartialEq for RequiresTable {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0) || *self.0 == *other.0
+    }
+}
+impl Eq for RequiresTable {}
+
+impl RequiresTable {
+    pub fn get(&self, i: usize) -> Option<&Required> {
+        self.0
+            .binary_search_by_key(&i, |&(k, _)| k)
+            .ok()
+            .map(|at| self.0[at].1.as_ref())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&usize, &Required)> {
+        self.0.iter().map(|(k, r)| (k, r.as_ref()))
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Required> {
+        self.0.iter().map(|(_, r)| r.as_ref())
+    }
+
+    pub fn insert(&mut self, i: usize, r: Required) {
+        let entries = Rc::make_mut(&mut self.0);
+        match entries.binary_search_by_key(&i, |&(k, _)| k) {
+            Ok(at) => entries[at].1 = Rc::new(r),
+            Err(at) => entries.insert(at, (i, Rc::new(r))),
+        }
+    }
+
+    pub fn remove(&mut self, i: usize) {
+        if let Ok(at) = self.0.binary_search_by_key(&i, |&(k, _)| k) {
+            Rc::make_mut(&mut self.0).remove(at);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        if !self.0.is_empty() {
+            if let Some(entries) = Rc::get_mut(&mut self.0) {
+                entries.clear();
+            } else {
+                self.0 = Rc::new(Vec::new());
+            }
+        }
+    }
+
+    /// Mutate every entry for which `needs_edit` returns true, skipping
+    /// copy-on-write cloning whenever no entry changes.
+    fn mutate_each(
+        &mut self,
+        needs_edit: impl Fn(&Required) -> bool,
+        mut edit: impl FnMut(&mut Required),
+    ) {
+        if !self.0.iter().any(|(_, r)| needs_edit(r)) {
+            return;
+        }
+        for (_, r) in Rc::make_mut(&mut self.0) {
+            if needs_edit(r) {
+                edit(Rc::make_mut(r));
+            }
+        }
+    }
+
+    /// Merge `other` into `self` by intersecting shared entries and sharing
+    /// entries present only in `other`.
+    fn join_with(&mut self, other: &Self) {
+        if Rc::ptr_eq(&self.0, &other.0) || other.0.is_empty() {
+            return;
+        }
+        if self.0.is_empty() {
+            self.0 = Rc::clone(&other.0);
+            return;
+        }
+        let a = self.0.as_slice();
+        let b = other.0.as_slice();
+        let mut merged: Vec<(usize, Rc<Required>)> = Vec::with_capacity(a.len().max(b.len()));
+        let (mut ia, mut ib) = (0, 0);
+        let mut changed = false;
+        while ia < a.len() && ib < b.len() {
+            let (ka, ra) = &a[ia];
+            let (kb, rb) = &b[ib];
+            match ka.cmp(kb) {
+                std::cmp::Ordering::Less => {
+                    merged.push((*ka, Rc::clone(ra)));
+                    ia += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    merged.push((*kb, Rc::clone(rb)));
+                    changed = true;
+                    ib += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if Rc::ptr_eq(ra, rb) || ra.is_subset_of(rb) {
+                        merged.push((*ka, Rc::clone(ra)));
+                    } else if rb.is_subset_of(ra) {
+                        merged.push((*ka, Rc::clone(rb)));
+                        changed = true;
+                    } else {
+                        let mut inter = (**ra).clone();
+                        inter.intersect(rb);
+                        merged.push((*ka, Rc::new(inter)));
+                        changed = true;
+                    }
+                    ia += 1;
+                    ib += 1;
+                }
+            }
+        }
+        while ia < a.len() {
+            merged.push((a[ia].0, Rc::clone(&a[ia].1)));
+            ia += 1;
+        }
+        while ib < b.len() {
+            merged.push((b[ib].0, Rc::clone(&b[ib].1)));
+            changed = true;
+            ib += 1;
+        }
+        if changed {
+            self.0 = Rc::new(merged);
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Fact {
     pub values: Vec<u8>,
     /// Per local: the conditions on every path that carries its `?` source.
-    pub requires: FxHashMap<usize, Required>,
+    pub requires: RequiresTable,
     /// Conditions that hold on every path here.
     pub held: Required,
     /// The leading locals a condition may name: those a test reads.
@@ -116,7 +260,7 @@ impl DerefMut for Fact {
 impl Fact {
     pub fn new(values: Vec<u8>, limit: usize) -> Self {
         let mut f = Self {
-            requires: FxHashMap::default(),
+            requires: RequiresTable::default(),
             values,
             held: Required::new(),
             limit,
@@ -127,13 +271,15 @@ impl Fact {
     /// Make every `?` value a source under the conditions that hold here.
     fn add_sources(&mut self) {
         let certain = self.certain();
+        let mut entries = Vec::new();
         for i in 0..self.values.len() {
             if self.values[i] & QUESTION != 0 {
                 let mut r = certain.clone();
                 self.own(&mut r, i);
-                self.requires.insert(i, r);
+                entries.push((i, Rc::new(r)));
             }
         }
+        self.requires = RequiresTable(Rc::new(entries));
     }
     /// The atom "logical local `i` is true"; the next bit is "not true".
     /// Atoms are even, so `a ^ 1` is the opposite of `a`.
@@ -152,15 +298,13 @@ impl Fact {
     }
     /// Add atom `a` to the conditions of every source.
     pub fn mark_sources(&mut self, a: usize) {
-        for r in self.sources() {
-            r.insert(a);
-        }
+        self.requires
+            .mutate_each(|r| !r.contains(a), |r| r.insert(a));
     }
     /// Remove atom `a` from the conditions of every source.
     pub fn unmark_sources(&mut self, a: usize) {
-        for r in self.sources() {
-            r.remove(a);
-        }
+        self.requires
+            .mutate_each(|r| r.contains(a), |r| r.remove(a));
     }
     /// Drop the sources that carry atom `a`.
     pub fn drop_marked(&mut self, a: usize) {
@@ -185,9 +329,6 @@ impl Fact {
         if i < self.limit {
             r.insert(i);
         }
-    }
-    fn sources(&mut self) -> impl Iterator<Item = &mut Required> {
-        self.requires.values_mut()
     }
     /// The work to clone, join and compare the fact: one unit per local, and
     /// for each source one per word of its conditions.
@@ -217,26 +358,31 @@ impl Fact {
         let opposite = a ^ 1;
         self.held.remove(opposite);
         self.held.insert(a);
-        for r in self.sources() {
-            r.remove(opposite);
-            r.insert(a);
-        }
+        self.requires.mutate_each(
+            |r| r.contains(opposite) || !r.contains(a),
+            |r| {
+                r.remove(opposite);
+                r.insert(a);
+            },
+        );
     }
     /// Forget the atoms from `from` on.
     pub fn drop_atoms_from(&mut self, from: usize) {
         self.held.clear_from(from);
-        for r in self.sources() {
-            r.clear_from(from);
-        }
+        let has_from = |r: &Required| r.0.len() * 64 > from;
+        self.requires.mutate_each(has_from, |r| r.clear_from(from));
     }
     fn drop_flag(&mut self, i: usize) {
         if let Some(a) = Self::flag(self.limit, i) {
             self.held.remove(a);
             self.held.remove(a + 1);
-            for r in self.sources() {
-                r.remove(a);
-                r.remove(a + 1);
-            }
+            self.requires.mutate_each(
+                |r| r.contains(a) || r.contains(a + 1),
+                |r| {
+                    r.remove(a);
+                    r.remove(a + 1);
+                },
+            );
         }
     }
     pub fn write(&mut self, i: usize, value: u8, mut required: Required, preserves: bool) {
@@ -250,15 +396,22 @@ impl Fact {
             required.remove(a + 1);
         }
         let tracked = i < self.limit;
-        for r in self.sources() {
-            if !preserves {
-                r.remove(i);
-            }
-            if value == QUESTION && tracked {
-                r.insert(i);
-            }
+        let remove_i = !preserves;
+        let add_i = value == QUESTION && tracked;
+        if remove_i || add_i {
+            self.requires.mutate_each(
+                |r| (remove_i && r.contains(i)) || (add_i && !r.contains(i)),
+                |r| {
+                    if remove_i {
+                        r.remove(i);
+                    }
+                    if add_i {
+                        r.insert(i);
+                    }
+                },
+            );
         }
-        self.requires.remove(&i);
+        self.requires.remove(i);
         self.values[i] = value;
         if value & QUESTION != 0 {
             required.union(&self.certain());
@@ -271,7 +424,7 @@ impl Fact {
     }
     pub fn drop_source(&mut self, i: usize) {
         self.values[i] &= !QUESTION;
-        self.requires.remove(&i);
+        self.requires.remove(i);
         if self.values[i] == 0 {
             self.fill(0);
         }
@@ -297,7 +450,7 @@ impl Fact {
         } else {
             self.values[i] & !QUESTION
         };
-        self.requires.remove(&i);
+        self.requires.remove(i);
         if self.values[i] == 0 {
             self.fill(0);
         }
@@ -313,17 +466,20 @@ impl Fact {
             }
             self.values[i] = value;
             if value & QUESTION != 0 && i < self.limit {
-                let certain = self.certain();
-                self.requires.entry(i).or_insert(certain).insert(i);
+                let mut required = match self.requires.get(i) {
+                    Some(r) => r.clone(),
+                    None => self.certain(),
+                };
+                required.insert(i);
+                self.requires.insert(i, required);
             }
             if i < self.limit {
-                for r in self.sources() {
-                    r.insert(i);
-                }
+                self.requires
+                    .mutate_each(|r| !r.contains(i), |r| r.insert(i));
             }
             return;
         }
-        let mut required = match self.requires.get(&i) {
+        let mut required = match self.requires.get(i) {
             Some(r) if self.values[i] & super::OPAQUE == 0 => r.clone(),
             _ => self.certain(),
         };
@@ -331,21 +487,21 @@ impl Fact {
         self.values[i] = QUESTION;
         self.requires.insert(i, required);
         if i < self.limit {
-            for r in self.sources() {
-                r.insert(i);
-            }
+            self.requires
+                .mutate_each(|r| !r.contains(i), |r| r.insert(i));
         }
     }
     pub fn link(&mut self, a: usize, b: usize) {
         if a >= self.limit || b >= self.limit {
             return;
         }
-        for r in self.sources() {
-            if r.contains(a) || r.contains(b) {
+        self.requires.mutate_each(
+            |r| (r.contains(a) && !r.contains(b)) || (r.contains(b) && !r.contains(a)),
+            |r| {
                 r.insert(a);
                 r.insert(b);
-            }
-        }
+            },
+        );
     }
     pub fn join(&mut self, other: &Self) {
         if other.dead() {
@@ -356,14 +512,7 @@ impl Fact {
             return;
         }
         self.held.intersect(&other.held);
-        for (i, s) in &other.requires {
-            match self.requires.get_mut(i) {
-                Some(r) => r.intersect(s),
-                None => {
-                    self.requires.insert(*i, s.clone());
-                }
-            }
-        }
+        self.requires.join_with(&other.requires);
         for (v, o) in self.values.iter_mut().zip(&other.values) {
             *v |= o;
         }
@@ -373,10 +522,7 @@ impl Fact {
 #[cfg(test)]
 impl Required {
     pub fn subset(&self, other: &Self) -> bool {
-        self.0
-            .iter()
-            .enumerate()
-            .all(|(w, a)| a & !other.0.get(w).copied().unwrap_or(0) == 0)
+        self.is_subset_of(other)
     }
 }
 
@@ -397,7 +543,7 @@ impl Fact {
             && other.held.subset(&self.held)
             && self.requires.iter().all(|(i, r)| {
                 self.values[*i] & QUESTION == 0
-                    || other.requires.get(i).is_some_and(|o| o.subset(r))
+                    || other.requires.get(*i).is_some_and(|o| o.subset(r))
             })
     }
 }

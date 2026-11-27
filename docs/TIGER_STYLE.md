@@ -178,4 +178,11 @@ A lint comes in with a ratchet. It does not come in with a blanket `#[allow]`.
 3. Fix one crate at a time. Start with the lexer and the parser.
 4. When the count of a crate is zero, set the lint to `deny` for that crate and delete the count.
 
+The tools:
+
+- `tigerstyle-ratchet.txt` holds the counts, one line for each crate and lint. A line `<crate> allow:<lint> <count>` counts the `#[allow]` and `#[expect]` attributes of the crate that name the lint, or a group that holds it (`clippy::pedantic`, `warnings`, ...): such an attribute hides a finding, so it counts too. The scan reads `build.rs` and `src/`, and skips comments and string literals.
+- `cargo xtask tigerstyle` runs clippy over the libraries and binaries of the workspace with the full configuration of `xtask/tigerstyle/clippy.toml` and a `-W` for each lint above, and fails when a count is not the count in the file. A higher count is a regression. A lower count fails too, until the file has it: otherwise the next change could spend the gain. `cargo xtask ci clippy` runs it after clippy, so CI runs it too.
+- `cargo xtask tigerstyle --update` writes the current counts to the file. Run it when a count went down, and commit the file in the same change.
+- The root `clippy.toml` holds only the settings that every crate meets today. A crate at zero (`oxabl_lexer`, `oxabl_parser`) has its own `clippy.toml` with the full configuration and `[lints] workspace = true` in its `Cargo.toml`. Every other crate has an empty `[lints]` table: without it, cargo warns on each build that the crate does not inherit `[workspace.lints]` (`missing_lints_inheritance`).
+
 One `#[allow]` on one item is permitted when the item cannot meet the rule. It needs a comment that gives the reason.

@@ -40,7 +40,7 @@ pub use model::{
     UnitCall, UnitEffects,
 };
 
-use oxabl_ast::{Span, Statement, StatementKind};
+use oxabl_ast::{AstPools, Span, Statement, StatementKind};
 use oxabl_flow::{BlockId, BlockKind, FileFlow, UnitId};
 use oxabl_index::calls::FileCalls;
 use oxabl_lexer::{Kind, Token};
@@ -104,6 +104,7 @@ impl FileEffects {
 #[allow(clippy::too_many_arguments)]
 pub fn analyze_file(
     program: &[Statement],
+    pools: &AstPools,
     source: &str,
     tokens: &[Token],
     flow: &FileFlow,
@@ -117,7 +118,7 @@ pub fn analyze_file(
         source,
         toks: &toks,
     };
-    let decls = Decls::collect(program, &reader, schema);
+    let decls = Decls::collect(program, pools, &reader, schema);
     let loops = Loops::find(flow, scopes, &reader);
     let mut tables: FxHashMap<String, Option<TableInfo>> = FxHashMap::default();
 
@@ -589,14 +590,19 @@ struct Decls {
 }
 
 impl Decls {
-    fn collect(program: &[Statement], reader: &Reader<'_>, schema: Option<&Schema>) -> Decls {
+    fn collect(
+        program: &[Statement],
+        pools: &AstPools,
+        reader: &Reader<'_>,
+        schema: Option<&Schema>,
+    ) -> Decls {
         let mut d = Decls {
             variables: FxHashSet::default(),
             temp_tables: FxHashMap::default(),
         };
         walk(program, &mut |s| match &s.kind {
             StatementKind::VariableDeclaration { name, .. } => {
-                d.variables.insert(name.name.to_ascii_lowercase());
+                d.variables.insert(pools.ident(*name).to_ascii_lowercase());
             }
             StatementKind::DefineTempTable {
                 name,
@@ -609,14 +615,15 @@ impl Decls {
                 let source = match like_table {
                     None => None,
                     Some(like) => {
+                        let like_name = pools.ident(*like);
                         let known = d
                             .temp_tables
-                            .get(&like.name.to_ascii_lowercase())
+                            .get(&like_name.to_ascii_lowercase())
                             .cloned()
                             .map(EffectiveTable::from)
                             .or_else(|| {
                                 schema
-                                    .and_then(|s| s.table(last(&like.name)))
+                                    .and_then(|s| s.table(last(like_name)))
                                     .map(EffectiveTable::from_schema)
                             });
                         // The source table is not known: neither are the fields.
@@ -627,11 +634,13 @@ impl Decls {
                 let declared = EffectiveTable::declare(
                     source,
                     use_indexes,
-                    fields.iter().map(|f| f.name.name.as_str()),
+                    fields.iter().map(|f| pools.ident(f.name)),
                     indexes,
+                    &pools.names,
                 );
                 let info = TableInfo::from(declared);
-                d.temp_tables.insert(name.name.to_ascii_lowercase(), info);
+                d.temp_tables
+                    .insert(pools.ident(*name).to_ascii_lowercase(), info);
             }
             _ => {}
         });

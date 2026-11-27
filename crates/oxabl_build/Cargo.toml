@@ -27,3 +27,7 @@ walkdir = "2"
 [dev-dependencies]
 oxabl_lexer = { path = "../oxabl_lexer", version = "3.0.0" }
 tempfile = "3"
+
+# Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
+# (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.
+[lints]

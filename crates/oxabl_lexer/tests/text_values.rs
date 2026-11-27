@@ -14,23 +14,30 @@ struct Counting;
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
+// Implementing `GlobalAlloc` for the allocation-counting test harness requires `unsafe`.
+#[allow(unsafe_code)]
+// SAFETY: Every method delegates directly to `std::alloc::System` with identical invariants.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Relaxed);
+        // SAFETY: Forwarded with caller-upheld `GlobalAlloc::alloc` preconditions.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: Forwarded with caller-upheld `GlobalAlloc::dealloc` preconditions.
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Relaxed);
+        // SAFETY: Forwarded with caller-upheld `GlobalAlloc::alloc_zeroed` preconditions.
         unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Relaxed);
+        // SAFETY: Forwarded with caller-upheld `GlobalAlloc::realloc` preconditions.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }

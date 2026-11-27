@@ -69,7 +69,7 @@
 //! A finding in an include is reported in the include when the include alone
 //! shows it, else at the `{...}` site in the including file.
 
-use oxabl_ast::{RunTarget, Span, Statement, StatementKind};
+use oxabl_ast::{AstPools, RunTarget, Span, Statement, StatementKind};
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_lexer::{Kind, Lexer};
 use oxabl_scope::FileScopes;
@@ -132,7 +132,7 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
     }
     let fragment = ctx.source_context.is_include_fragment();
     let mut diags = Vec::new();
-    for (span, callee) in opaque_runs(program, ctx.source) {
+    for (span, callee) in opaque_runs(program, ctx.pools, ctx.source) {
         // In an include checked alone, a bare name may be an internal
         // procedure of the includer.
         if fragment && matches!(&callee, Callee::Outside(name) if !name.contains(['.', '/', '\\']))
@@ -177,8 +177,9 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
 
 /// Every `RUN` whose callee is not in the file, in source order. One with an
 /// `ON SERVER` phrase, which runs in another session, is among them.
-fn opaque_runs(program: &[Statement], source: &str) -> Vec<(Span, Callee)> {
+fn opaque_runs(program: &[Statement], pools: &AstPools, source: &str) -> Vec<(Span, Callee)> {
     struct Runs<'a> {
+        pools: &'a AstPools,
         source: &'a str,
         runs: Vec<(Span, Callee)>,
     }
@@ -196,8 +197,8 @@ fn opaque_runs(program: &[Statement], source: &str) -> Vec<(Span, Callee)> {
             if *asynchronous {
                 return true;
             }
-            let this_procedure = in_handle.as_ref().is_some_and(|h| {
-                leading_tokens(self.source, h.span, 2)
+            let this_procedure = in_handle.is_some_and(|h| {
+                leading_tokens(self.source, self.pools.expr(h).span, 2)
                     .iter()
                     .map(|(t, _)| t.kind)
                     .eq([Kind::ThisProcedure])
@@ -214,11 +215,12 @@ fn opaque_runs(program: &[Statement], source: &str) -> Vec<(Span, Callee)> {
         }
     }
     let mut v = Runs {
+        pools,
         source,
         runs: Vec::new(),
     };
-    walk_block(&mut v, program);
-    let internal = internal_procedures(program);
+    walk_block(&mut v, pools, program);
+    let internal = internal_procedures(program, pools);
     let mut runs: Vec<(Span, Callee)> = v
         .runs
         .into_iter()
@@ -233,9 +235,9 @@ fn opaque_runs(program: &[Statement], source: &str) -> Vec<(Span, Callee)> {
 
 /// The internal procedures the file defines with a body, or as an entry
 /// point of a shared library.
-fn internal_procedures(program: &[Statement]) -> Vec<String> {
-    struct Procs(Vec<String>);
-    impl Visitor for Procs {
+fn internal_procedures(program: &[Statement], pools: &AstPools) -> Vec<String> {
+    struct Procs<'a>(&'a AstPools, Vec<String>);
+    impl Visitor for Procs<'_> {
         fn statement(&mut self, stmt: &Statement) -> bool {
             if let StatementKind::Procedure {
                 name,
@@ -245,14 +247,14 @@ fn internal_procedures(program: &[Statement]) -> Vec<String> {
             } = &stmt.kind
                 && (!is_prototype || *is_external)
             {
-                self.0.push(name.name.to_string());
+                self.1.push(self.0.ident(*name).to_string());
             }
             true
         }
     }
-    let mut v = Procs(Vec::new());
-    walk_block(&mut v, program);
-    v.0
+    let mut v = Procs(pools, Vec::new());
+    walk_block(&mut v, pools, program);
+    v.1
 }
 
 /// Whether the `RUN` has an `ON [SERVER] h` phrase: the callee runs in

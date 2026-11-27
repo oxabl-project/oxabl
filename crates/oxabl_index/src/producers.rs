@@ -352,7 +352,7 @@ fn candidates_in(path: &Path, source: &str, includes: &IncludeContext<'_>) -> Ve
         if program.is_ok() && !scan_definitions(&mut tokens, source, &mut names) {
             // A statement that does not parse alone in a text that parses
             // whole: the names of the declare pass, as the index finds them.
-            names = crate::declared_shared(&program.statements, source);
+            names = crate::declared_shared(&program.statements, &program.pools, source);
         }
         crate::may_be_expanded_parsed(&program)
     } else {
@@ -373,7 +373,11 @@ fn candidates_in(path: &Path, source: &str, includes: &IncludeContext<'_>) -> Ve
             let whole = oxabl_lexer::tokenize(&text);
             let program = Parser::new(&whole, &text).parse_program();
             if program.is_ok() {
-                names.extend(crate::declared_shared(&program.statements, &text));
+                names.extend(crate::declared_shared(
+                    &program.statements,
+                    &program.pools,
+                    &text,
+                ));
             }
         }
     }
@@ -422,12 +426,19 @@ fn scan_definitions(tokens: &mut [Token], source: &str, out: &mut Vec<IndexName>
         if let Some(next) = cut {
             tokens[next].kind = Kind::Eof;
         }
-        let parsed = Parser::new(&tokens[at..=end], source).parse_statement();
+        // The name is read before the cut token is restored, because the
+        // parser's name pool borrows the tokens.
+        let found = {
+            let mut parser = Parser::new(&tokens[at..=end], source);
+            parser
+                .parse_statement()
+                .map(|statement| new_shared_name(&statement, &parser).map(IndexName::new))
+        };
         if let Some(next) = cut {
             tokens[next].kind = Kind::Define;
         }
-        match parsed {
-            Ok(statement) => out.extend(new_shared_name(&statement).map(IndexName::new)),
+        match found {
+            Ok(name) => out.extend(name),
             Err(_) => whole = false,
         }
     }
@@ -436,7 +447,7 @@ fn scan_definitions(tokens: &mut [Token], source: &str, out: &mut Vec<IndexName>
 
 /// The name `statement` defines when the declare pass flags it `NEW SHARED`
 /// or `NEW GLOBAL SHARED`.
-fn new_shared_name(statement: &Statement) -> Option<&str> {
+fn new_shared_name<'a>(statement: &Statement, parser: &'a Parser<'_>) -> Option<&'a str> {
     let (name, new_shared, new_global_shared) = match &statement.kind {
         StatementKind::VariableDeclaration {
             name,
@@ -464,7 +475,7 @@ fn new_shared_name(statement: &Statement) -> Option<&str> {
         } => (name, *is_new_shared, *is_new_global_shared),
         _ => return None,
     };
-    (new_shared || new_global_shared).then_some(name.name.as_str())
+    (new_shared || new_global_shared).then_some(parser.ident(*name))
 }
 
 /// The folded names of the internal procedures `files` define, and the files

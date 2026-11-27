@@ -29,8 +29,8 @@ fn lint_all(source: &str, severities: LintSeverityMap) -> Vec<(String, String, u
         program.errors
     );
     let schema = Schema::empty();
-    let ctx =
-        AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_lint_severities(severities);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools)
+        .with_lint_severities(severities);
     let sem = analyze_file(&program.statements, &ctx);
     lint_file(&program.statements, &sem, &ctx)
         .into_iter()
@@ -124,7 +124,8 @@ v-total = 1.
     let mut parser = Parser::new(&tokens, src);
     let program = parser.parse_program();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema).with_lint_severities(as_error);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema, &program.pools)
+        .with_lint_severities(as_error);
     let sem = analyze_file(&program.statements, &ctx);
     let escalated = lint_file(&program.statements, &sem, &ctx);
     let dead: Vec<_> = escalated.iter().filter(|d| d.code.0 == LINT0006).collect();

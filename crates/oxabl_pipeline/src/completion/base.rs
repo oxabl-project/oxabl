@@ -4,10 +4,11 @@
 use std::path::Path;
 
 use oxabl_common::FileId;
-use oxabl_lexer::{Kind, Token};
+use oxabl_lexer::Kind;
 use oxabl_semantic::{ScopeId, ScopeKind};
 
 use super::CompletionBase;
+use super::tokens::{TextDiff, TokenStream};
 
 /// The cursor and the window start of the current text, placed in a base.
 pub(crate) struct Mapped {
@@ -61,7 +62,7 @@ pub(crate) fn map(
     base: &CompletionBase<'_, '_, '_>,
     path: &Path,
     text: &str,
-    tokens: &[Token],
+    tokens: &TokenStream<'_>,
     cursor: u32,
     window_start: u32,
     reference: bool,
@@ -74,11 +75,14 @@ pub(crate) fn map(
     }
     let old = base.text.as_bytes();
     let new = text.as_bytes();
-    let (stale, prefix, suffix) = if old == new {
-        (false, new.len(), 0)
-    } else {
-        let (prefix, suffix) = super::tokens::common_ends(old, new);
-        (true, prefix, suffix)
+    let (stale, prefix, suffix) = match tokens.diff_from(base.text) {
+        TextDiff::Same => (false, new.len(), 0),
+        TextDiff::Differs { prefix, suffix } => (true, prefix, suffix),
+        TextDiff::Unknown if old == new => (false, new.len(), 0),
+        TextDiff::Unknown => {
+            let (prefix, suffix) = super::tokens::common_ends(old, new);
+            (true, prefix, suffix)
+        }
     };
     let to_base = |at: u32| -> u32 {
         let at = at as usize;
@@ -161,8 +165,11 @@ pub(crate) fn map(
         let old_changed = (prefix, old.len() - suffix);
         opens_scope(tokens, new_changed)
             || match base.tokens {
-                Some(old_tokens) => opens_scope(old_tokens, old_changed),
-                None => opens_scope(&oxabl_lexer::tokenize(base.text), old_changed),
+                Some(old_tokens) => opens_scope(&TokenStream::from_slice(old_tokens), old_changed),
+                None => {
+                    let lexed = oxabl_lexer::tokenize(base.text);
+                    opens_scope(&TokenStream::from_slice(&lexed), old_changed)
+                }
             }
     };
     Some(Mapped {
@@ -176,10 +183,10 @@ pub(crate) fn map(
 }
 
 /// Whether a token that touches the bytes `from..to` opens or closes a scope.
-fn opens_scope(tokens: &[Token], (from, to): (usize, usize)) -> bool {
+fn opens_scope(tokens: &TokenStream<'_>, (from, to): (usize, usize)) -> bool {
     let first = tokens.partition_point(|token| token.end < from);
-    tokens[first..]
-        .iter()
+    tokens
+        .iter_from(first)
         .take_while(|token| token.start <= to)
         .any(|token| {
             matches!(

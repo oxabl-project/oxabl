@@ -12,7 +12,7 @@ fn dump(source: &str) -> String {
         "fixture does not parse cleanly: {:?}",
         program.errors
     );
-    oxabl_handles::analyze_file(&program.statements, source).dump(source)
+    oxabl_handles::analyze_file(&program.statements, &program.pools, source).dump(source)
 }
 
 #[test]

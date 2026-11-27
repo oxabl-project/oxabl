@@ -1,0 +1,10 @@
+# Full TigerStyle clippy configuration (see docs/TIGER_STYLE.md).
+# Passed via `CLIPPY_CONF_DIR` by `cargo xtask tigerstyle` across the whole
+# workspace, and mirrored into migrated crates' local `clippy.toml`.
+too-many-lines-threshold = 70
+too-many-arguments-threshold = 5
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+disallowed-methods = [
+    { path = "std::sync::mpsc::channel", reason = "unbounded: use sync_channel with a stated capacity" },
+]

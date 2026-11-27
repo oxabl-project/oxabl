@@ -255,6 +255,8 @@ pub struct IndexHandle {
 #[derive(Default)]
 struct Registry {
     by_path: HashMap<PathBuf, Registered>,
+    /// Indexed files in `index_id - 1` order for O(1) lookup by [`IndexedFileId`].
+    by_id: Vec<IndexedFile>,
     /// The include files some indexed file's facts were read through, and the
     /// revision each input is set to.
     includes: HashMap<PathBuf, (IndexedInclude, u32)>,
@@ -320,6 +322,8 @@ impl IndexHandle {
         registry.next_id += 1;
         let index_id = registry.next_id;
         let input = IndexedFile::new(db, path.to_path_buf(), index_id, 0);
+        debug_assert_eq!(registry.by_id.len() + 1, index_id as usize);
+        registry.by_id.push(input);
         registry.by_path.insert(
             key,
             Registered {
@@ -357,6 +361,16 @@ impl IndexHandle {
             .values()
             .map(|r| (r.input, IndexedFileId::new(r.index_id)))
             .collect()
+    }
+
+    /// Look up a single registered file by its [`IndexedFileId`] in O(1).
+    pub(crate) fn file_by_id(&self, id: IndexedFileId) -> Option<IndexedFile> {
+        let index = usize::try_from(id.raw().checked_sub(1)?).ok()?;
+        let guard = self
+            .registry
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.by_id.get(index).copied()
     }
 
     /// Bump the disk revision of the inputs for `path`, invalidating exactly the
@@ -1751,10 +1765,8 @@ pub fn with_navigation<T>(
         let file_of = |id: IndexedFileId| {
             config
                 .index
-                .registered()
-                .into_iter()
-                .find(|(_, known)| *known == id)
-                .map(|(file, _)| file.path(snapshot).clone())
+                .file_by_id(id)
+                .map(|file| file.path(snapshot).clone())
         };
         let Some(navigation) = handle.navigation(&expansion, &file_of) else {
             return Err("its preprocessing failed".to_string());
@@ -1846,10 +1858,8 @@ impl<'a> HierarchyUnit<'a> {
         self.snapshot
             .config()
             .index
-            .registered()
-            .into_iter()
-            .find(|(_, known)| *known == id)
-            .map(|(file, _)| file.path(self.snapshot).clone())
+            .file_by_id(id)
+            .map(|file| file.path(self.snapshot).clone())
     }
 
     /// A file's text through the open buffers over the disk.
@@ -2034,6 +2044,21 @@ pub fn compute_semantic_tokens(
     })
 }
 
+/// The document links of the open `buffer`, from the same cached analysis as
+/// [`compute_highlights`] and [`compute_semantic_tokens`].
+pub fn compute_links(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+) -> Option<Result<NavigationAnswer, String>> {
+    cached_navigation(snapshot, buffer, schema, |navigation, _root| {
+        NavigationAnswer {
+            links: navigation.links(),
+            ..NavigationAnswer::default()
+        }
+    })
+}
+
 fn to_span(range: Option<(u32, u32)>) -> Option<oxabl_pipeline::Span> {
     range.map(|(start, end)| oxabl_pipeline::Span { start, end })
 }
@@ -2060,10 +2085,8 @@ fn cached_navigation(
         let file_of = |id: IndexedFileId| {
             config
                 .index
-                .registered()
-                .into_iter()
-                .find(|(_, known)| *known == id)
-                .map(|(file, _)| file.path(snapshot).clone())
+                .file_by_id(id)
+                .map(|file| file.path(snapshot).clone())
         };
         let run = config.lint_pipeline();
         let handle = run.with_file(&root).with_index(&index);

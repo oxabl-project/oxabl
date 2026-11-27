@@ -11,9 +11,9 @@
 use std::collections::HashSet;
 
 use oxabl_ast::{
-    AccessModifier, BufferTarget, CreateTarget, DataType, HandleParamKind, Identifier, OnAction,
-    OnKind, ParameterDirection, ParameterType, Span, Statement, StatementKind, TempTableField,
-    TypeSource, WidgetTrigger,
+    AccessModifier, AstPools, BufferTarget, CreateTarget, DataType, HandleParamKind, Identifier,
+    OnAction, OnKind, ParameterDirection, ParameterType, Span, Statement, StatementKind,
+    TempTableField, TypeSource, WidgetTrigger,
 };
 use oxabl_common::{InternalPanic, catch_panic, panic_if_injected, panic_sites};
 use oxabl_lexer::{Kind, Token};
@@ -105,6 +105,7 @@ fn outline_inner(source: &str) -> (Vec<OutlineSymbol>, bool) {
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
     let mut walker = Walker {
         source,
+        pools: &program.pools,
         tokens: &tokens,
         defined_functions: HashSet::new(),
         prototypes: Vec::new(),
@@ -127,6 +128,7 @@ enum Frame<'a> {
 
 struct Walker<'a> {
     source: &'a str,
+    pools: &'a AstPools,
     tokens: &'a [Token],
     /// Lower-case names of the functions the file defines, not only declares.
     defined_functions: HashSet<String>,
@@ -138,6 +140,11 @@ struct Walker<'a> {
 }
 
 impl<'a> Walker<'a> {
+    /// The name `ident` holds, as written.
+    fn name(&self, ident: &Identifier) -> &'a str {
+        self.pools.ident(*ident)
+    }
+
     fn walk(&mut self, statements: &'a [Statement]) {
         let mut stack = vec![Frame::Statements(statements.iter())];
         while let Some(frame) = stack.last_mut() {
@@ -211,7 +218,7 @@ impl<'a> Walker<'a> {
                 body,
                 ..
             } => {
-                let lower = name.name.to_ascii_lowercase();
+                let lower = self.name(name).to_ascii_lowercase();
                 if self.is_function_prototype(span, body) {
                     self.prototypes.push((lower, span));
                 } else {
@@ -317,7 +324,7 @@ impl<'a> Walker<'a> {
                         name, type_source, ..
                     } => {
                         let mut detail = direction.to_string();
-                        if let Some(type_name) = type_detail(type_source, None) {
+                        if let Some(type_name) = type_detail(self.pools, type_source, None) {
                             detail.push(' ');
                             detail.push_str(&type_name);
                         }
@@ -333,12 +340,12 @@ impl<'a> Walker<'a> {
                         (name, format!("{direction} {kind}"))
                     }
                     ParameterType::Buffer { name, target } => {
-                        (name, format!("BUFFER FOR {}", target.name))
+                        (name, format!("BUFFER FOR {}", self.name(target)))
                     }
                 };
                 // The parser names an unnamed prototype parameter `$N`; an ABL
                 // name never starts with `$`.
-                if name.name.starts_with('$') {
+                if self.name(name).starts_with('$') {
                     return;
                 }
                 let symbol = self.named(OutlineKind::Parameter, name, Some(detail), span);
@@ -352,7 +359,7 @@ impl<'a> Walker<'a> {
             } => {
                 let detail = like_table
                     .as_ref()
-                    .map(|table| format!("LIKE {}", table.name));
+                    .map(|table| format!("LIKE {}", self.name(table)));
                 let mut symbol = self.named(OutlineKind::TempTable, name, detail, span);
                 if self.open.len() >= MAX_DEPTH && !fields.is_empty() {
                     symbol = None;
@@ -372,15 +379,17 @@ impl<'a> Walker<'a> {
             }
             StatementKind::DefineBuffer { name, target, .. } => {
                 let detail = match target {
-                    BufferTarget::Table(table) => format!("FOR {}", table.name),
-                    BufferTarget::TempTable(table) => format!("FOR TEMP-TABLE {}", table.name),
+                    BufferTarget::Table(table) => format!("FOR {}", self.name(table)),
+                    BufferTarget::TempTable(table) => {
+                        format!("FOR TEMP-TABLE {}", self.name(table))
+                    }
                 };
                 let symbol = self.named(OutlineKind::Buffer, name, Some(detail), span);
                 self.emit(symbol);
             }
             StatementKind::DefineDataset { name, buffers, .. } => {
                 let detail = (!buffers.is_empty()).then(|| {
-                    let names: Vec<&str> = buffers.iter().map(|b| b.name.as_str()).collect();
+                    let names: Vec<&str> = buffers.iter().map(|b| self.name(b)).collect();
                     format!("FOR {}", names.join(", "))
                 });
                 let symbol = self.named(OutlineKind::Dataset, name, detail, span);
@@ -473,7 +482,7 @@ impl<'a> Walker<'a> {
         {
             // The parser reads `AS type EXTENT n` without keeping the extent.
             let extent = extent.or_else(|| self.written_extent(name.span.end, statement.span));
-            let detail = type_detail(type_source, extent);
+            let detail = type_detail(self.pools, type_source, extent);
             let symbol = self.named(OutlineKind::Variable, name, detail, statement.span);
             self.emit(symbol);
         }
@@ -583,7 +592,7 @@ impl<'a> Walker<'a> {
         } else {
             self.first_word(span)
         };
-        self.make(kind, &name.name, detail, span, selection)
+        self.make(kind, self.name(name), detail, span, selection)
     }
 
     /// Builds a symbol and checks the span rules; `None` when they do not hold.
@@ -643,7 +652,7 @@ impl<'a> Walker<'a> {
         if !contains(table, name) {
             return None;
         }
-        let detail = type_detail(&field.type_source, field.extent);
+        let detail = type_detail(self.pools, &field.type_source, field.extent);
         // A hand-built field has no span of its own.
         let span = if contains(field.span, name) && contains(table, field.span) {
             field.span
@@ -652,7 +661,7 @@ impl<'a> Walker<'a> {
         };
         self.make(
             OutlineKind::Field,
-            &field.name.name,
+            self.name(&field.name),
             detail,
             span,
             Some(name),
@@ -905,13 +914,14 @@ impl<'a> Walker<'a> {
             return self.make(OutlineKind::Trigger, "", detail, span, None);
         };
         let target_end = target.span.end as usize;
-        let phrase_end =
-            if !target.name.is_empty() && target_end > event.end && target_end <= span.end as usize
-            {
-                target_end
-            } else {
-                event.end
-            };
+        let phrase_end = if !self.name(target).is_empty()
+            && target_end > event.end
+            && target_end <= span.end as usize
+        {
+            target_end
+        } else {
+            event.end
+        };
         let mut name = self.source[event.start..event.end].to_string();
         let mut end = event.end;
         for token in tokens.take_while(|t| t.end <= phrase_end) {
@@ -1152,10 +1162,10 @@ pub(crate) fn data_type_name(data_type: &DataType) -> Option<String> {
 }
 
 /// `INTEGER`, `CHARACTER EXTENT 3` or `LIKE Customer.Name`.
-fn type_detail(type_source: &TypeSource, extent: Option<u32>) -> Option<String> {
+fn type_detail(pools: &AstPools, type_source: &TypeSource, extent: Option<u32>) -> Option<String> {
     let mut detail = match type_source {
         TypeSource::Explicit(data_type) => data_type_name(data_type)?,
-        TypeSource::Like { source } => format!("LIKE {}", source.name),
+        TypeSource::Like { source } => format!("LIKE {}", pools.ident(*source)),
     };
     match extent {
         None => {}

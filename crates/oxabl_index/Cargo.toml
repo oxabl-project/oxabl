@@ -37,3 +37,7 @@ rustc-hash = "2"
 oxabl_schema = { path = "../oxabl_schema", version = "0.6.2", features = [
     "test-support",
 ] }
+
+# Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
+# (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.
+[lints]

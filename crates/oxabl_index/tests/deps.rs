@@ -60,7 +60,7 @@ const CHILD_WITH_BUFFER: &str = "CLASS orders.child INHERITS orders.calc-base:\n
 fn analyse(source: &str, schema: &Schema, index: &dyn oxabl_semantic::WorkspaceIndex) -> Semantic {
     let tokens = oxabl_lexer::tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
-    let mut ctx = AnalysisContext::new(ANALYSED, source, schema).with_index(index);
+    let mut ctx = AnalysisContext::new(ANALYSED, source, schema, &program.pools).with_index(index);
     ctx.schema_loaded = !schema.is_empty();
     analyze_file(&program.statements, &ctx)
 }

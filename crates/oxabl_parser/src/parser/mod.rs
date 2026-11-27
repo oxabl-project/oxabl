@@ -13,10 +13,11 @@ pub(crate) mod statements;
 mod tests;
 
 use oxabl_ast::{
-    AccessModifier, Comment, CommentKind, DataType, Expression, ExpressionKind, GenericClass,
-    HandleParamKind, HandlePassingOptions, Identifier, NodeId, NodeIdAllocator, ParameterDirection,
-    ParameterExtent, ParameterType, SkippedTail, Span, Statement, StatementKind, TypeArgument,
-    TypeArguments, TypeSource,
+    AccessModifier, AstPools, Comment, CommentKind, DataType, ExprId, ExprList, ExprPool,
+    Expression, ExpressionKind, GenericClass, HandleParamKind, HandlePassingOptions, Identifier,
+    NameId, NameInterner, NodeId, NodeIdAllocator, ParameterDirection, ParameterExtent,
+    ParameterType, SkippedTail, Span, Statement, StatementKind, TypeArgument, TypeArguments,
+    TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 use std::collections::HashMap;
@@ -61,6 +62,28 @@ impl From<ParseError> for oxabl_common::Diagnostic {
     }
 }
 
+/// Convert a source byte offset to a `u32` span endpoint.
+///
+/// [`Parser::new`] asserts `source.len() <= u32::MAX as usize`, so every
+/// valid token offset fits in `u32` without truncation.
+#[inline]
+pub(crate) fn span_u32(offset: usize) -> u32 {
+    debug_assert!(
+        offset <= u32::MAX as usize,
+        "source byte offset {offset} exceeds u32::MAX"
+    );
+    u32::try_from(offset).unwrap_or(u32::MAX)
+}
+
+/// Convert a token's `[start, end)` byte offsets into a [`Span`].
+#[inline]
+pub(crate) fn tok_span(token: &Token) -> Span {
+    Span {
+        start: span_u32(token.start),
+        end: span_u32(token.end),
+    }
+}
+
 /// Alias for parser results.
 pub type ParseResult<T> = Result<T, ParseError>;
 
@@ -89,27 +112,29 @@ pub(crate) fn debug_assert_stmt_sibling_order(stmts: &[Statement]) {
 /// [`debug_assert_stmt_sibling_order`] for the tolerance/gating contract.
 #[inline]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-pub(crate) fn debug_assert_expr_sibling_order(exprs: &[Expression]) {
+pub(crate) fn debug_assert_expr_sibling_order(exprs: &ExprPool, ids: &[ExprId]) {
     #[cfg(debug_assertions)]
-    for pair in exprs.windows(2) {
+    for pair in ids.windows(2) {
+        let a = exprs.get(pair[0]).span;
+        let b = exprs.get(pair[1]).span;
         debug_assert!(
-            pair[0].span.end <= pair[1].span.start,
-            "sibling expression spans out of source order: {:?} then {:?}",
-            pair[0].span,
-            pair[1].span,
+            a.end <= b.start,
+            "sibling expression spans out of source order: {a:?} then {b:?}",
         );
     }
 }
 
 /// The result of parsing an ABL source file.
 ///
-/// Contains all successfully parsed statements and any errors encountered.
-/// When error recovery is active, the parser continues past errors, so a
-/// `Program` may contain both statements and errors.
+/// Contains all successfully parsed statements, their backing [`AstPools`], and
+/// any errors encountered. When error recovery is active, the parser continues
+/// past errors, so a `Program` may contain both statements and errors.
 #[derive(Debug)]
 pub struct Program {
     /// Successfully parsed statements.
     pub statements: Vec<Statement>,
+    /// Owned pools backing every [`NameId`] and [`ExprId`] in `statements`.
+    pub pools: AstPools,
     /// Errors encountered during parsing.
     pub errors: Vec<ParseError>,
     /// Every comment recognized by the lexer, in source order, hung off the
@@ -123,6 +148,30 @@ pub struct Program {
 }
 
 impl Program {
+    /// Resolve an interned [`NameId`] to its authored text.
+    #[inline]
+    pub fn name(&self, id: NameId) -> &str {
+        self.pools.name(id)
+    }
+
+    /// Resolve an [`Identifier`]'s interned name to its authored text.
+    #[inline]
+    pub fn ident(&self, ident: Identifier) -> &str {
+        self.pools.ident(ident)
+    }
+
+    /// Resolve an [`ExprId`] to its [`Expression`] node.
+    #[inline]
+    pub fn expr(&self, id: ExprId) -> &Expression {
+        self.pools.expr(id)
+    }
+
+    /// Resolve an [`ExprList`] to its slice of [`ExprId`] handles.
+    #[inline]
+    pub fn exprs(&self, list: ExprList) -> &[ExprId] {
+        self.pools.exprs(list)
+    }
+
     /// Returns true if parsing completed without errors.
     pub fn is_ok(&self) -> bool {
         self.errors.is_empty()
@@ -173,9 +222,17 @@ pub struct Parser<'a> {
     /// `skip_comments()` call entirely, eliminating the per-advance overhead in
     /// files that only have leading comments (e.g. the expression benchmark).
     has_comments: bool,
+    /// Index of the first `Kind::Comment` token in `tokens`, or `None` when the
+    /// token slice contains no comments at all (`collect_comments` skips its
+    /// scan in O(1)).
+    first_comment: Option<usize>,
     /// Monotonic allocator for node ids assigned to parser-produced
     /// [`Statement`]s. See `docs/design/ast-invariants.md` §NodeId invariants.
     node_ids: NodeIdAllocator,
+    /// Deduplicating per-parse string interner for identifiers and literal text.
+    names: NameInterner,
+    /// Flat expression and expression-list arena moved into [`Program::pools`].
+    exprs: ExprPool,
     /// Accumulated parse errors recovered from anywhere in the parse — both the
     /// top-level [`parse_program`](Self::parse_program) loop and the per-statement
     /// recovery inside block bodies (see
@@ -241,20 +298,52 @@ pub struct Parser<'a> {
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token], source: &'a str) -> Self {
         debug_assert!(!tokens.is_empty(), "Token slice must contain at least EOF");
+        assert!(
+            source.len() <= u32::MAX as usize,
+            "source length {} exceeds u32::MAX Span limit",
+            source.len()
+        );
         let mut current = 0;
         // Fast-path: skip any leading comments without going through advance().
         while current < tokens.len() && tokens[current].kind == Kind::Comment {
             current += 1;
         }
-        // Check whether any comments remain after the leading block so we know
-        // whether advance() needs to call skip_comments() at all.
-        let has_comments = tokens[current..].iter().any(|t| t.kind == Kind::Comment);
+        // Record the first comment after the leading block so `advance()` can
+        // skip `skip_comments()` when none remain and `collect_comments()` can
+        // return in O(1) for comment-free files.
+        let first_body_comment = tokens[current..]
+            .iter()
+            .position(|t| t.kind == Kind::Comment)
+            .map(|offset| current + offset);
+        let has_comments = first_body_comment.is_some();
+        let first_comment = if current > 0 {
+            Some(0)
+        } else {
+            first_body_comment
+        };
+        // Pre-size the expression and name pools proportionally to token count
+        // to avoid geometric reallocs on medium/large files while keeping small
+        // snippet parses tiny.
+        let tok_count = tokens.len();
+        let expr_cap = if tok_count >= 64 { tok_count / 3 } else { 0 };
+        let list_cap = if tok_count >= 64 { tok_count / 8 } else { 0 };
+        let name_cap = if tok_count >= 64 { tok_count / 12 } else { 0 };
+        // The name text is sized from the text the tokens cover, not from the
+        // whole source: a caller can parse a slice of the tokens of a file.
+        let covered = match (tokens.first(), tokens.last()) {
+            (Some(first), Some(last)) => last.start.saturating_sub(first.start),
+            _ => 0,
+        };
+        let byte_cap = if tok_count >= 64 { covered / 12 } else { 0 };
         Parser {
             tokens,
             source,
             current,
             has_comments,
+            first_comment,
             node_ids: NodeIdAllocator::new(),
+            names: NameInterner::with_capacity(name_cap, byte_cap),
+            exprs: ExprPool::with_capacity(expr_cap, list_cap),
             errors: Vec::new(),
             stmt_start_token: current,
             imported_classes: Vec::new(),
@@ -415,8 +504,8 @@ impl<'a> Parser<'a> {
         let first = self.tokens.get(lo)?;
         let last = self.tokens.get(hi.min(self.tokens.len()).checked_sub(1)?)?;
         Some(Span {
-            start: first.start as u32,
-            end: last.end as u32,
+            start: span_u32(first.start),
+            end: span_u32(last.end),
         })
     }
 
@@ -432,31 +521,83 @@ impl<'a> Parser<'a> {
         self.node_ids.alloc()
     }
 
-    /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and wrap an
-    /// [`ExpressionKind`] in an [`Expression`]. Every parser-produced expression
-    /// goes through this helper.
+    /// Intern `text` case-sensitively in the parser's [`NameInterner`].
     #[inline]
-    pub(crate) fn expr(&mut self, kind: ExpressionKind) -> Expression {
-        // The span defaults to DUMMY here; the precedence-level funnels in
-        // `expressions.rs` overwrite it with the real full-extent span (KTD2).
-        Expression::with_id(self.node_ids.alloc(), Span::DUMMY, kind)
+    pub(crate) fn intern(&mut self, text: &str) -> NameId {
+        self.names.intern(text)
     }
 
-    /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and wrap an
+    /// Intern an identifier spanning `start..end`, stripping UNIX backslash
+    /// escapes without allocating a temporary `String` in the common case.
+    #[inline]
+    pub(crate) fn intern_ident(&mut self, start: usize, end: usize) -> NameId {
+        let authored = &self.source[start..end];
+        if authored.contains('\\') {
+            let normalized = authored.replace('\\', "");
+            self.names.intern(&normalized)
+        } else {
+            self.names.intern(authored)
+        }
+    }
+
+    /// Resolve an interned [`NameId`] while inspecting parsed nodes.
+    #[inline]
+    pub fn name(&self, id: NameId) -> &str {
+        self.names.get(id)
+    }
+
+    /// Resolve an [`Identifier`]'s interned name while inspecting parsed nodes.
+    #[inline]
+    pub fn ident(&self, ident: Identifier) -> &str {
+        self.names.get(ident.name)
+    }
+
+    /// Resolve an [`ExprId`] to its [`Expression`] node.
+    #[inline]
+    pub fn expr_node(&self, id: ExprId) -> &Expression {
+        self.exprs.get(id)
+    }
+
+    /// Resolve an [`ExprList`] to its slice of [`ExprId`] handles.
+    #[inline]
+    pub fn expr_list(&self, list: ExprList) -> &[ExprId] {
+        self.exprs.list(list)
+    }
+
+    /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and store an
+    /// [`ExpressionKind`] in the flat [`ExprPool`]. Every parser-produced
+    /// expression goes through this helper.
+    #[inline]
+    pub(crate) fn expr(&mut self, kind: ExpressionKind) -> ExprId {
+        // The span defaults to DUMMY here; the precedence-level funnels in
+        // `expressions.rs` overwrite it with the real full-extent span (KTD2).
+        let node = Expression::with_id(self.node_ids.alloc(), Span::DUMMY, kind);
+        self.exprs.push(node)
+    }
+
+    /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and store an
     /// [`ExpressionKind`] with an explicit full-extent span `lo..hi` (KTD2/U3).
     ///
     /// `hi` is clamped to at least `lo` so a node can never carry an inverted
     /// span; a genuinely token-less node collapses to zero-width at `lo`.
     #[inline]
-    pub(crate) fn spanned_expr(&mut self, lo: u32, hi: u32, kind: ExpressionKind) -> Expression {
-        Expression::with_id(
+    pub(crate) fn spanned_expr(&mut self, lo: u32, hi: u32, kind: ExpressionKind) -> ExprId {
+        let node = Expression::with_id(
             self.node_ids.alloc(),
             Span {
                 start: lo,
                 end: hi.max(lo),
             },
             kind,
-        )
+        );
+        self.exprs.push(node)
+    }
+
+    /// Store a slice of sibling expressions contiguously in the [`ExprPool`].
+    #[inline]
+    pub(crate) fn push_expr_list(&mut self, items: &[ExprId]) -> ExprList {
+        debug_assert_expr_sibling_order(&self.exprs, items);
+        self.exprs.push_list(items)
     }
 
     /// Parse the entire token stream into a [`Program`] with error recovery.
@@ -537,10 +678,19 @@ impl<'a> Parser<'a> {
         // parse_statement calls. This preserves the aggregate error-reporting
         // contract even though block bodies now recover instead of bubbling.
         debug_assert_stmt_sibling_order(&statements);
+        // A file with one top-level statement, such as a class, would keep the
+        // capacity of `PRESIZED_STATEMENTS` statements. The expression and name
+        // pools keep theirs: their shrink costs more than most parses gain,
+        // because most programs are dropped at once.
         statements.shrink_to_fit();
         let comments = self.collect_comments();
+        let pools = AstPools {
+            names: std::mem::take(&mut self.names).finish(),
+            exprs: std::mem::take(&mut self.exprs),
+        };
         Program {
             statements,
+            pools,
             errors: std::mem::take(&mut self.errors),
             comments,
             unclosed_blocks: std::mem::take(&mut self.unclosed_blocks),
@@ -548,25 +698,27 @@ impl<'a> Parser<'a> {
     }
 
     /// Collect every `Kind::Comment` token into a sorted, classified comment
-    /// table (KTD1). This is one independent linear pass over the full token
-    /// slice — decoupled from the cursor and the `skip_comments` fast-path, so
-    /// no skip site can leak a dropped comment (origin R3.4). It does **not**
-    /// gate on `has_comments` (KTD2): that flag is `false` for a file whose only
-    /// comments are leading, so gating on it would lose them. The token stream
-    /// is already source-ordered, so the result is sorted by `span.start` with
-    /// no explicit sort, and the `Vec` allocates only when comments exist.
+    /// table (KTD1). This is one independent linear pass over the token slice
+    /// from `first_comment` — decoupled from the cursor and the `skip_comments`
+    /// fast-path, so no skip site can leak a dropped comment (origin R3.4). It
+    /// does **not** gate on `has_comments` (KTD2): that flag is `false` for a
+    /// file whose only comments are leading, so gating on it would lose them
+    /// (`first_comment` covers the leading ones). The token stream is already
+    /// source-ordered, so the result is sorted by `span.start` with no explicit
+    /// sort, and the `Vec` allocates only when comments exist. A file with no
+    /// comment returns in O(1) without scanning the token slice.
     fn collect_comments(&self) -> Vec<Comment> {
+        let Some(start_idx) = self.first_comment else {
+            return Vec::new();
+        };
         let mut comments = Vec::new();
-        for token in self.tokens {
+        for token in &self.tokens[start_idx..] {
             if token.kind != Kind::Comment {
                 continue;
             }
             if let Some(kind) = self.classify_comment(token.start) {
                 comments.push(Comment {
-                    span: Span {
-                        start: token.start as u32,
-                        end: token.end as u32,
-                    },
+                    span: tok_span(token),
                     kind,
                 });
             }
@@ -833,7 +985,9 @@ impl<'a> Parser<'a> {
                 // `TRIGGERS:` block — rather than in the funnel, which every
                 // statement pays for.
                 let outer_anchor = self.stmt_start_token;
-                let _ = self.parse_block_body();
+                // Errors inside an EDITING block are recorded via `self.errors`;
+                // the body statements are intentionally discarded by this skip path.
+                drop(self.parse_block_body());
                 self.stmt_start_token = outer_anchor;
                 return self.skip_range(start);
             }
@@ -1070,7 +1224,7 @@ impl<'a> Parser<'a> {
     /// nothing and the tail holds no dynamic-call keyword, which is the common
     /// case, so the node stays allocation-free.
     #[inline(never)]
-    pub(crate) fn skipped_tail(&self, (lo, hi): (usize, usize)) -> Option<Box<SkippedTail>> {
+    pub(crate) fn skipped_tail(&mut self, (lo, hi): (usize, usize)) -> Option<Box<SkippedTail>> {
         // `harvest_skipped_names` drops the token at its `lo`; a tail is always
         // preceded by at least the statement's own first token, so `lo - 1` is
         // in range.
@@ -1148,7 +1302,7 @@ impl<'a> Parser<'a> {
     /// Allocates nothing when the filter keeps nothing, which is the common case
     /// for `PAUSE 1.`-shaped forms.
     #[inline(never)]
-    fn harvest_skipped_names(&self, lo: usize, hi: usize) -> Vec<Identifier> {
+    fn harvest_skipped_names(&mut self, lo: usize, hi: usize) -> Vec<Identifier> {
         let mut names: Vec<Identifier> = Vec::new();
         let hi = hi.min(self.tokens.len());
         for i in (lo + 1)..hi {
@@ -1164,13 +1318,9 @@ impl<'a> Parser<'a> {
             {
                 continue;
             }
-            names.push(Identifier {
-                name: self.source[tok.start..tok.end].to_string(),
-                span: Span {
-                    start: tok.start as u32,
-                    end: tok.end as u32,
-                },
-            });
+            let span = tok_span(tok);
+            let name = self.names.intern(&self.source[tok.start..tok.end]);
+            names.push(Identifier { name, span });
         }
         names
     }
@@ -1371,346 +1521,387 @@ impl<'a> Parser<'a> {
     /// BUFFER, TEMP-TABLE, PRIMARY, INITIAL, EXTENT, etc.
     fn can_be_identifier(kind: Kind) -> bool {
         is_callable_kind(kind)
-            || matches!(
-                kind,
-                Kind::Buffer
-                    | Kind::TempTable
-                    | Kind::Initial
-                    | Kind::Extent
-                    | Kind::Primary
-                    | Kind::Validate
-                    | Kind::BeforeTable
-                    | Kind::WordIndex
-                    | Kind::Preselect
-                    | Kind::Format
-                    | Kind::Label
-                    | Kind::ColumnLabel
-                    | Kind::Ascending
-                    | Kind::Descending
-                    | Kind::Shared
-                    | Kind::Global
-                    // Statement keywords (unreserved, may appear as identifiers)
-                    | Kind::Variable
-                    | Kind::Function
-                    | Kind::Catch
-                    | Kind::Finally
-                    | Kind::Stop
-                    | Kind::Run
-                    | Kind::Display
-                    | Kind::Message
-                    | Kind::Assign
-                    | Kind::Find
-                    | Kind::Procedure
-                    | Kind::Returns // unreserved; used as field/variable name (e.g. field returns as log)
-                    // DB-operation keywords used as OO method names (e.g. model:create(), obj:delete())
-                    | Kind::Create
-                    | Kind::Delete
-                    | Kind::Release
-                    // OO-ABL keywords (all unreserved except SET which is already handled)
-                    | Kind::Class
-                    | Kind::Interface
-                    | Kind::Inherits
-                    | Kind::Implements
-                    | Kind::Method
-                    | Kind::Constructor
-                    | Kind::Destructor
-                    | Kind::Property
-                    | Kind::Public
-                    | Kind::Private
-                    | Kind::Protected
-                    | Kind::PackagePrivate
-                    | Kind::PackageProtected
-                    | Kind::Ordinal
-                    | Kind::Cdecl
-                    | Kind::Pascal
-                    | Kind::Stdcall
-                    | Kind::Abstract
-                    | Kind::Final
-                    | Kind::Override
-                    | Kind::KwStatic
-                    | Kind::Void
-                    | Kind::Get
-                    // Data type keywords (unreserved)
-                    | Kind::Integer
-                    | Kind::Int64
-                    | Kind::Decimal
-                    | Kind::Character
-                    | Kind::Logical
-                    | Kind::Date
-                    | Kind::Datetime
-                    | Kind::DatetimeTz
-                    | Kind::Handle
-                    | Kind::Rowid
-                    | Kind::Recid
-                    | Kind::Raw
-                    | Kind::Memptr
-                    | Kind::Longchar
-                    | Kind::Clob
-                    | Kind::Blob
-                    | Kind::ComHandle
-                    // Dataset / data-source keywords (unreserved)
-                    | Kind::Dataset
-                    | Kind::DatasetHandle
-                    | Kind::DataRelation
-                    | Kind::DataSource
-                    | Kind::NamespaceUri
-                    | Kind::NamespacePrefix
-                    | Kind::XmlNodeName
-                    | Kind::XmlNodeType
-                    | Kind::SerializeName
-                    | Kind::SerializeHidden
-                    | Kind::Serializable
-                    | Kind::NonSerializable
-                    | Kind::ReferenceOnly
-                    | Kind::RelationFields
-                    | Kind::Nested
-                    | Kind::ForeignKeyHidden
-                    | Kind::NotActive
-                    | Kind::Recursive
-                    | Kind::ParentIdRelation
-                    | Kind::ParentIdField
-                    | Kind::ParentFieldsBefore
-                    | Kind::ParentFieldsAfter
-                    | Kind::WidgetPool
-                    | Kind::UseWidgetPool
-                    | Kind::TableHandle
-                    | Kind::Bind
-                    | Kind::ByValue
-                    | Kind::Query
-                    | Kind::Reposition
-                    | Kind::RepositionToRow
-                    | Kind::RepositionBackward
-                    // Event system keywords (unreserved)
-                    | Kind::Publish
-                    | Kind::Subscribe
-                    | Kind::Unsubscribe
-                    | Kind::Anywhere
-                    | Kind::Event
-                    | Kind::Signature
-                    | Kind::RunProcedure
-                    // ON trigger keywords (unreserved)
-                    | Kind::Trigger
-                    | Kind::Triggers
-                    | Kind::Persistent
-                    | Kind::Revert
-                    | Kind::Choose
-                    | Kind::Endkey
-                    | Kind::Browse
-                    // BREAK BY group functions (callable, take a field argument)
-                    | Kind::FirstOf
-                    | Kind::LastOf
-                    // System handles and built-in functions used in expression position
-                    | Kind::FrameName // system variable returning the current frame's name
-                    | Kind::ThisProcedure
-                    | Kind::KwSelf
-                    | Kind::ThisObject
-                    | Kind::FileInfo
-                    | Kind::CanDo
-                    | Kind::Entry
-                    | Kind::NumEntries
-                    | Kind::Index
-                    | Kind::Yes
-                    | Kind::Session
-                    | Kind::ErrorStatus
-                    | Kind::Value
-                    | Kind::Locked
-                    | Kind::NoLock
-                    | Kind::Parameter
-                    | Kind::Table
-                    // Statement keywords that may also appear as identifiers/names
-                    | Kind::Empty
-                    | Kind::Form
-                    | Kind::Put
-                    | Kind::CopyLob
-                    | Kind::RawTransfer
-                    | Kind::OsDir
-                    | Kind::Update
-                    // Preprocessor references used as identifiers (e.g. {&table-name}, {&buffer})
-                    | Kind::Preprop
-                    | Kind::IncludeReference
-                    | Kind::IncludeArgReference
-                    // Handle attribute/method names (used after ':' in postfix access)
-                    | Kind::Available
-                    | Kind::QueryOffEnd
-                    // Iterator method names (e.g. iter:Next(), list:ListIterator())
-                    | Kind::Next
-                    // Lock/query option keywords passed as method arguments (e.g. GET-FIRST(NO-LOCK,NO-WAIT))
-                    | Kind::NoWait
-                    | Kind::ShareLock
-                    | Kind::ExclusiveLock
-                    // Object method names that are also reserved keywords
-                    // (e.g. dataset:clear(), query:query-close(), table:buffer-copy())
-                    | Kind::Clear
-                    | Kind::QueryClose
-                    | Kind::RepositionToRowid
-                    | Kind::RepositionForward
-                    | Kind::BufferCopy
-                    | Kind::BufferCompare
-                    | Kind::GetBufferHandle
-                    | Kind::Disconnect
-                    // JSON/socket/IO method names used as object methods
-                    | Kind::Add
-                    | Kind::Write
-                    | Kind::Save
-                    | Kind::Open
-                    | Kind::Close
-                    | Kind::Set
-                    // ABL dynamic invocation built-ins (usable in expression position)
-                    | Kind::DynamicEnum
-                    | Kind::DynamicInvoke
-                    // System handle keywords (property access via ':')
-                    | Kind::SecurityPolicy
-                    | Kind::Propath
-                    // System handles usable in expression position (#58 seed set)
-                    | Kind::AuditControl
-                    | Kind::AuditPolicy
-                    | Kind::DefaultWindow
-                    | Kind::Clipboard
-                    | Kind::Compiler
-                    | Kind::Debugger
-                    | Kind::Profiler
-                    | Kind::LogManager
-                    | Kind::RcodeInformation
-                    | Kind::CodebaseLocator
-                    // Memory manipulation functions (usable in assignment LHS / expression position)
-                    | Kind::PutByte
-                    | Kind::GetByte
-                    | Kind::GetCodepage
-                    | Kind::GetCodepages
-                    // Handle attribute names (e.g. builder:Library)
-                    | Kind::Library
-                    // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
-                    | Kind::PageTop
-                    | Kind::Blank
-                    // Unreserved keywords commonly used as variable/field names
-                    | Kind::Transaction
-                    | Kind::External
-                    // Frame handle attributes used as identifier names (e.g. frame-file, frame-field)
-                    | Kind::FrameFile
-                    | Kind::FrameField
-                    | Kind::FrameIndex
-                    // Aggregate phrase words and COPY-LOB's FILE (unreserved)
-                    | Kind::File
-                    | Kind::Total
-                    | Kind::Count
-                    | Kind::Average
-                    | Kind::Maximum
-                    | Kind::Minimum
-                    | Kind::SubTotal
-                    | Kind::SubCount
-                    | Kind::SubAverage
-                    | Kind::SubMaximum
-                    | Kind::SubMinimum
-                    // The PRINTER target of OUTPUT TO (unreserved)
-                    | Kind::Printer
-                    // Dynamic-object and widget type keywords of CREATE (unreserved)
-                    | Kind::Object
-                    | Kind::Widget
-                    | Kind::BufferName
-                    | Kind::XDocument
-                    | Kind::XNoderef
-                    | Kind::SaxReader
-                    | Kind::SaxWriter
-                    | Kind::SaxAttributes
-                    | Kind::Socket
-                    | Kind::ServerSocket
-                    | Kind::Server
-                    | Kind::SoapHeader
-                    | Kind::SoapHeaderEntryref
-                    | Kind::ClientPrincipal
-                    | Kind::Button
-                    | Kind::ComboBox
-                    | Kind::ControlFrame
-                    | Kind::DialogBox
-                    | Kind::Editor
-                    | Kind::FillIn
-                    | Kind::Image
-                    | Kind::Menu
-                    | Kind::MenuItem
-                    | Kind::RadioSet
-                    | Kind::SelectionList
-                    | Kind::Slider
-                    | Kind::SubMenu
-                    | Kind::ToggleBox
-                    // Widget/data keywords commonly used as class/type name components
-                    | Kind::Text
-                    | Kind::Rectangle
-                    | Kind::Size
-                    // Format-phrase item options (unreserved; stay valid names)
-                    | Kind::SizeChars
-                    | Kind::SizePixels
-                    | Kind::Row
-                    | Kind::Column
-                    | Kind::Bgcolor
-                    | Kind::Fgcolor
-                    | Kind::NoTabStop
-                    // UI/display keywords used as procedure/method names or frame attribute names
-                    | Kind::Header
-                    // Frame and Browse can appear as attribute names after ':' (e.g. frame1:frame)
-                    // and are also used as qualifier keywords in expression position
-                    | Kind::Frame
-                    // LAST-EVENT is a system handle used as an object (e.g. last-event:label)
-                    | Kind::LastEvent
-                    // CONNECT is a statement keyword but also used as an OO method name (e.g. hwsdl:CONNECT(...))
-                    | Kind::Connect
-                    // Handle attribute names used as member names after ':' (e.g. htable:BUFFER-FIELD(j):HELP)
-                    | Kind::Help
-                    // CURRENT-LANGUAGE is a system variable used in expression context
-                    | Kind::CurrentLanguage
-                    // CURRENT-WINDOW is a system handle used as RHS in assignments (e.g. {&WINDOW-NAME} = CURRENT-WINDOW.)
-                    | Kind::CurrentWindow
-                    // KEYS is a buffer/table attribute used as method name (e.g. b-table:keys)
-                    | Kind::Keys
-                    // FRAME-VALUE is an ABL built-in used in expression context (e.g. frame-value = "")
-                    | Kind::FrameValue
-                    // DBNAME is an ABL built-in function (returns the connected database name)
-                    | Kind::Dbname
-                    // AMBIGUOUS is a buffer attribute (e.g. hdbSource:Ambiguous)
-                    | Kind::Ambiguous
-                    // SEEK is an ABL built-in function (returns current stream position)
-                    | Kind::Seek
-                    // OVERLAY is an ABL built-in that can appear as lvalue in ASSIGN (e.g. OVERLAY(s,1,3) = "abc")
-                    | Kind::Overlay
-                    // TITLE is a widget attribute name (e.g. h-browse:title)
-                    | Kind::Title
-                    // ACTIVE-WINDOW is a system handle used as widget name in ON triggers (e.g. ON HELP OF ACTIVE-WINDOW)
-                    | Kind::ActiveWindow
-                    // FOCUS is a system handle for the currently focused widget (used in expression context)
-                    | Kind::Focus
-                    // TERMINAL is a system handle/variable (e.g. OUTPUT TO TERMINAL, v = terminal)
-                    | Kind::Terminal
-                    // GO-PENDING is a system variable (logical, true if GO key triggered)
-                    | Kind::GoPending
-                    // READ-EXACT-NUM is a socket read mode constant
-                    | Kind::ReadExactNum
-                    // BIG-ENDIAN / LITTLE-ENDIAN / HOST-BYTE-ORDER are byte-order constants
-                    | Kind::BigEndian
-                    | Kind::LittleEndian
-                    | Kind::HostByteOrder
-                    // WINDOW is a system object attribute name (e.g. lframes:window)
-                    | Kind::Window
-                    // SCREEN-LINES is an ABL system variable (number of screen rows)
-                    | Kind::ScreenLines
-                    // XREF / XREF-XML are COMPILE statement options used as member names (e.g. compile.xref)
-                    | Kind::Xref
-                    | Kind::XrefXml
-                    // COMPILE appears as an ordinary identifier in variable names (e.g. "comp" is a
-                    // valid variable name even though "comp" is the min abbreviation of COMPILE)
-                    | Kind::Compile
-                    // ENUM is a reserved keyword but appears as a field name in DEFINE TEMP-TABLE (field enum as int)
-                    | Kind::KwEnum
-                    // DATABASE appears in qualified class names like Progress.Database.TempTableInfo
-                    | Kind::Database
-                    // FILL is a Dataset method name (e.g. Dataset.Fill, Run Dataset.Fill)
-                    | Kind::Fill
-                    // Widget attribute names that are also ABL keywords (e.g. widget:font, widget:skip)
-                    | Kind::Font
-                    | Kind::Skip
-                    | Kind::Field
-                    // SQL keywords that can appear as identifier names (e.g. variable select)
-                    | Kind::Select
-                    | Kind::Insert
-            )
+            || Self::is_general_ident_keyword(kind)
+            || Self::is_oo_or_type_ident_keyword(kind)
+            || Self::is_dataset_or_event_ident_keyword(kind)
+            || Self::is_system_handle_ident_keyword(kind)
+            || Self::is_method_ident_keyword(kind)
+            || Self::is_widget_or_ui_ident_keyword(kind)
+    }
+
+    fn is_general_ident_keyword(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Buffer
+                | Kind::TempTable
+                | Kind::Initial
+                | Kind::Extent
+                | Kind::Primary
+                | Kind::Validate
+                | Kind::BeforeTable
+                | Kind::WordIndex
+                | Kind::Preselect
+                | Kind::Format
+                | Kind::Label
+                | Kind::ColumnLabel
+                | Kind::Ascending
+                | Kind::Descending
+                | Kind::Shared
+                | Kind::Global
+                // Statement keywords (unreserved, may appear as identifiers)
+                | Kind::Variable
+                | Kind::Function
+                | Kind::Catch
+                | Kind::Finally
+                | Kind::Stop
+                | Kind::Run
+                | Kind::Display
+                | Kind::Message
+                | Kind::Assign
+                | Kind::Find
+                | Kind::Procedure
+                // RETURNS is unreserved; used as field/variable name (e.g. field returns as log)
+                | Kind::Returns
+                // DB-operation keywords used as OO method names (e.g. model:create(), obj:delete())
+                | Kind::Create
+                | Kind::Delete
+                | Kind::Release
+                // Statement keywords that may also appear as identifiers/names
+                | Kind::Empty
+                | Kind::Form
+                | Kind::Put
+                | Kind::CopyLob
+                | Kind::RawTransfer
+                | Kind::OsDir
+                | Kind::Update
+                // Preprocessor references used as identifiers (e.g. {&table-name}, {&buffer})
+                | Kind::Preprop
+                | Kind::IncludeReference
+                | Kind::IncludeArgReference
+                // Unreserved keywords commonly used as variable/field names
+                | Kind::Transaction
+                | Kind::External
+                // SQL keywords that can appear as identifier names (e.g. variable select)
+                | Kind::Select
+                | Kind::Insert
+                | Kind::Field
+                // DATABASE appears in qualified class names like Progress.Database.TempTableInfo
+                | Kind::Database
+                // FILL is a Dataset method name (e.g. Dataset.Fill, Run Dataset.Fill)
+                | Kind::Fill
+                // COMPILE appears as an ordinary identifier in variable names (e.g. "comp" is a
+                // valid variable name even though "comp" is the min abbreviation of COMPILE)
+                | Kind::Compile
+                // ENUM is a reserved keyword but appears as a field name in DEFINE TEMP-TABLE (field enum as int)
+                | Kind::KwEnum
+        )
+    }
+
+    fn is_oo_or_type_ident_keyword(kind: Kind) -> bool {
+        matches!(
+            kind,
+            // OO-ABL keywords (all unreserved except SET which is already handled)
+            Kind::Class
+                | Kind::Interface
+                | Kind::Inherits
+                | Kind::Implements
+                | Kind::Method
+                | Kind::Constructor
+                | Kind::Destructor
+                | Kind::Property
+                | Kind::Public
+                | Kind::Private
+                | Kind::Protected
+                | Kind::PackagePrivate
+                | Kind::PackageProtected
+                | Kind::Ordinal
+                | Kind::Cdecl
+                | Kind::Pascal
+                | Kind::Stdcall
+                | Kind::Abstract
+                | Kind::Final
+                | Kind::Override
+                | Kind::KwStatic
+                | Kind::Void
+                | Kind::Get
+                // Data type keywords (unreserved)
+                | Kind::Integer
+                | Kind::Int64
+                | Kind::Decimal
+                | Kind::Character
+                | Kind::Logical
+                | Kind::Date
+                | Kind::Datetime
+                | Kind::DatetimeTz
+                | Kind::Handle
+                | Kind::Rowid
+                | Kind::Recid
+                | Kind::Raw
+                | Kind::Memptr
+                | Kind::Longchar
+                | Kind::Clob
+                | Kind::Blob
+                | Kind::ComHandle
+        )
+    }
+
+    fn is_dataset_or_event_ident_keyword(kind: Kind) -> bool {
+        matches!(
+            kind,
+            // Dataset / data-source keywords (unreserved)
+            Kind::Dataset
+                | Kind::DatasetHandle
+                | Kind::DataRelation
+                | Kind::DataSource
+                | Kind::NamespaceUri
+                | Kind::NamespacePrefix
+                | Kind::XmlNodeName
+                | Kind::XmlNodeType
+                | Kind::SerializeName
+                | Kind::SerializeHidden
+                | Kind::Serializable
+                | Kind::NonSerializable
+                | Kind::ReferenceOnly
+                | Kind::RelationFields
+                | Kind::Nested
+                | Kind::ForeignKeyHidden
+                | Kind::NotActive
+                | Kind::Recursive
+                | Kind::ParentIdRelation
+                | Kind::ParentIdField
+                | Kind::ParentFieldsBefore
+                | Kind::ParentFieldsAfter
+                | Kind::WidgetPool
+                | Kind::UseWidgetPool
+                | Kind::TableHandle
+                | Kind::Bind
+                | Kind::ByValue
+                | Kind::Query
+                | Kind::Reposition
+                | Kind::RepositionToRow
+                | Kind::RepositionBackward
+                // Event system keywords (unreserved)
+                | Kind::Publish
+                | Kind::Subscribe
+                | Kind::Unsubscribe
+                | Kind::Anywhere
+                | Kind::Event
+                | Kind::Signature
+                | Kind::RunProcedure
+                // ON trigger keywords (unreserved)
+                | Kind::Trigger
+                | Kind::Triggers
+                | Kind::Persistent
+                | Kind::Revert
+                | Kind::Choose
+                | Kind::Endkey
+                | Kind::Browse
+                // BREAK BY group functions (callable, take a field argument)
+                | Kind::FirstOf
+                | Kind::LastOf
+        )
+    }
+
+    fn is_system_handle_ident_keyword(kind: Kind) -> bool {
+        matches!(
+            kind,
+            // System handles and built-in functions used in expression position
+            // FRAME-NAME is a system variable returning the current frame's name
+            Kind::FrameName
+                | Kind::ThisProcedure
+                | Kind::KwSelf
+                | Kind::ThisObject
+                | Kind::FileInfo
+                | Kind::CanDo
+                | Kind::Entry
+                | Kind::NumEntries
+                | Kind::Index
+                | Kind::Yes
+                | Kind::Session
+                | Kind::ErrorStatus
+                | Kind::Value
+                | Kind::Locked
+                | Kind::NoLock
+                | Kind::Parameter
+                | Kind::Table
+                // System handle keywords (property access via ':')
+                | Kind::SecurityPolicy
+                | Kind::Propath
+                // System handles usable in expression position (#58 seed set)
+                | Kind::AuditControl
+                | Kind::AuditPolicy
+                | Kind::DefaultWindow
+                | Kind::Clipboard
+                | Kind::Compiler
+                | Kind::Debugger
+                | Kind::Profiler
+                | Kind::LogManager
+                | Kind::RcodeInformation
+                | Kind::CodebaseLocator
+                // CURRENT-LANGUAGE is a system variable used in expression context
+                | Kind::CurrentLanguage
+                // CURRENT-WINDOW is a system handle used as RHS in assignments (e.g. {&WINDOW-NAME} = CURRENT-WINDOW.)
+                | Kind::CurrentWindow
+                // FRAME-VALUE is an ABL built-in used in expression context (e.g. frame-value = "")
+                | Kind::FrameValue
+                // DBNAME is an ABL built-in function (returns the connected database name)
+                | Kind::Dbname
+                // TERMINAL is a system handle/variable (e.g. OUTPUT TO TERMINAL, v = terminal)
+                | Kind::Terminal
+                // GO-PENDING is a system variable (logical, true if GO key triggered)
+                | Kind::GoPending
+                // SCREEN-LINES is an ABL system variable (number of screen rows)
+                | Kind::ScreenLines
+        )
+    }
+
+    fn is_method_ident_keyword(kind: Kind) -> bool {
+        matches!(
+            kind,
+            // Handle attribute/method names (used after ':' in postfix access)
+            Kind::Available
+                | Kind::QueryOffEnd
+                // Iterator method names (e.g. iter:Next(), list:ListIterator())
+                | Kind::Next
+                // Lock/query option keywords passed as method arguments (e.g. GET-FIRST(NO-LOCK,NO-WAIT))
+                | Kind::NoWait
+                | Kind::ShareLock
+                | Kind::ExclusiveLock
+                // Object method names that are also reserved keywords
+                // (e.g. dataset:clear(), query:query-close(), table:buffer-copy())
+                | Kind::Clear
+                | Kind::QueryClose
+                | Kind::RepositionToRowid
+                | Kind::RepositionForward
+                | Kind::BufferCopy
+                | Kind::BufferCompare
+                | Kind::GetBufferHandle
+                | Kind::Disconnect
+                // JSON/socket/IO method names used as object methods
+                | Kind::Add
+                | Kind::Write
+                | Kind::Save
+                | Kind::Open
+                | Kind::Close
+                | Kind::Set
+                // ABL dynamic invocation built-ins (usable in expression position)
+                | Kind::DynamicEnum
+                | Kind::DynamicInvoke
+                // Memory manipulation functions (usable in assignment LHS / expression position)
+                | Kind::PutByte
+                | Kind::GetByte
+                | Kind::GetCodepage
+                | Kind::GetCodepages
+                // Handle attribute names (e.g. builder:Library)
+                | Kind::Library
+                // CONNECT is a statement keyword but also used as an OO method name (e.g. hwsdl:CONNECT(...))
+                | Kind::Connect
+                // KEYS is a buffer/table attribute used as method name (e.g. b-table:keys)
+                | Kind::Keys
+                // AMBIGUOUS is a buffer attribute (e.g. hdbSource:Ambiguous)
+                | Kind::Ambiguous
+                // SEEK is an ABL built-in function (returns current stream position)
+                | Kind::Seek
+                // OVERLAY is an ABL built-in that can appear as lvalue in ASSIGN (e.g. OVERLAY(s,1,3) = "abc")
+                | Kind::Overlay
+                // READ-EXACT-NUM is a socket read mode constant
+                | Kind::ReadExactNum
+                // BIG-ENDIAN / LITTLE-ENDIAN / HOST-BYTE-ORDER are byte-order constants
+                | Kind::BigEndian
+                | Kind::LittleEndian
+                | Kind::HostByteOrder
+                // XREF / XREF-XML are COMPILE statement options used as member names (e.g. compile.xref)
+                | Kind::Xref
+                | Kind::XrefXml
+        )
+    }
+
+    fn is_widget_or_ui_ident_keyword(kind: Kind) -> bool {
+        matches!(
+            kind,
+            // Frame/widget attribute names (e.g. frame hdr:page-top = false.)
+            Kind::PageTop
+                | Kind::Blank
+                // Frame handle attributes used as identifier names (e.g. frame-file, frame-field)
+                | Kind::FrameFile
+                | Kind::FrameField
+                | Kind::FrameIndex
+                // Aggregate phrase words and COPY-LOB's FILE (unreserved)
+                | Kind::File
+                | Kind::Total
+                | Kind::Count
+                | Kind::Average
+                | Kind::Maximum
+                | Kind::Minimum
+                | Kind::SubTotal
+                | Kind::SubCount
+                | Kind::SubAverage
+                | Kind::SubMaximum
+                | Kind::SubMinimum
+                // The PRINTER target of OUTPUT TO (unreserved)
+                | Kind::Printer
+                // Dynamic-object and widget type keywords of CREATE (unreserved)
+                | Kind::Object
+                | Kind::Widget
+                | Kind::BufferName
+                | Kind::XDocument
+                | Kind::XNoderef
+                | Kind::SaxReader
+                | Kind::SaxWriter
+                | Kind::SaxAttributes
+                | Kind::Socket
+                | Kind::ServerSocket
+                | Kind::Server
+                | Kind::SoapHeader
+                | Kind::SoapHeaderEntryref
+                | Kind::ClientPrincipal
+                | Kind::Button
+                | Kind::ComboBox
+                | Kind::ControlFrame
+                | Kind::DialogBox
+                | Kind::Editor
+                | Kind::FillIn
+                | Kind::Image
+                | Kind::Menu
+                | Kind::MenuItem
+                | Kind::RadioSet
+                | Kind::SelectionList
+                | Kind::Slider
+                | Kind::SubMenu
+                | Kind::ToggleBox
+                // Widget/data keywords commonly used as class/type name components
+                | Kind::Text
+                | Kind::Rectangle
+                | Kind::Size
+                // Format-phrase item options (unreserved; stay valid names)
+                | Kind::SizeChars
+                | Kind::SizePixels
+                | Kind::Row
+                | Kind::Column
+                | Kind::Bgcolor
+                | Kind::Fgcolor
+                | Kind::NoTabStop
+                // UI/display keywords used as procedure/method names or frame attribute names
+                | Kind::Header
+                // Frame and Browse can appear as attribute names after ':' (e.g. frame1:frame)
+                // and are also used as qualifier keywords in expression position
+                | Kind::Frame
+                // LAST-EVENT is a system handle used as an object (e.g. last-event:label)
+                | Kind::LastEvent
+                // Handle attribute names used as member names after ':' (e.g. htable:BUFFER-FIELD(j):HELP)
+                | Kind::Help
+                // TITLE is a widget attribute name (e.g. h-browse:title)
+                | Kind::Title
+                // ACTIVE-WINDOW is a system handle used as widget name in ON triggers (e.g. ON HELP OF ACTIVE-WINDOW)
+                | Kind::ActiveWindow
+                // FOCUS is a system handle for the currently focused widget (used in expression context)
+                | Kind::Focus
+                // WINDOW is a system object attribute name (e.g. lframes:window)
+                | Kind::Window
+                // Widget attribute names that are also ABL keywords (e.g. widget:font, widget:skip)
+                | Kind::Font
+                | Kind::Skip
+        )
     }
 
     /// Returns true if the given Kind is valid as the member/method name
@@ -1881,32 +2072,34 @@ impl<'a> Parser<'a> {
     /// Returns a single Identifier whose name contains dots (e.g., "Customer.CustNum").
     fn parse_qualified_identifier(&mut self) -> ParseResult<Identifier> {
         let first = self.parse_identifier()?;
-        let mut name = first.name;
         let start = first.span.start;
         let mut end = first.span.end;
+        let mut joined: Option<String> = None;
 
         // Consume .qualifier parts (same-line only — the period must not be a statement terminator)
         while self.check(Kind::Period) {
             // Peek past the period to see if there's an identifier on the same line
             let period_end = self.token_at(self.current).end;
-            let next_idx = self.current + 1;
-            if let Some(next_tok) = self.tokens.get(next_idx) {
-                if Self::can_be_identifier(next_tok.kind)
-                    && !self.source[period_end..next_tok.start].contains('\n')
-                {
-                    self.advance(); // consume '.'
-                    let next = self.advance().clone();
-                    name.push('.');
-                    name.push_str(&self.identifier_source(next.start, next.end));
-                    end = next.end as u32;
-                } else {
-                    break;
-                }
-            } else {
+            let Some(next_tok) = self.tokens.get(self.current + 1) else {
+                break;
+            };
+            if !Self::can_be_identifier(next_tok.kind)
+                || self.source[period_end..next_tok.start].contains('\n')
+            {
                 break;
             }
+            self.advance(); // consume '.'
+            let next = self.advance().clone();
+            let buf = joined.get_or_insert_with(|| self.names.get(first.name).to_owned());
+            buf.push('.');
+            buf.push_str(&self.identifier_source(next.start, next.end));
+            end = span_u32(next.end);
         }
 
+        let name = match joined {
+            Some(buf) => self.intern(&buf),
+            None => first.name,
+        };
         Ok(Identifier {
             span: Span { start, end },
             name,
@@ -1928,31 +2121,34 @@ impl<'a> Parser<'a> {
             });
         }
         let start_tok = self.advance().clone();
-        let start = start_tok.start as u32;
-        let mut end = start_tok.end as u32;
-        let mut name = self.identifier_source(start_tok.start, start_tok.end);
+        let start = span_u32(start_tok.start);
+        let mut end = span_u32(start_tok.end);
+        let first_name = self.intern_ident(start_tok.start, start_tok.end);
+        let mut joined: Option<String> = None;
 
         // Consume .qualifier parts (same-line only)
         while self.check(Kind::Period) {
             let period_end = self.token_at(self.current).end;
-            let next_idx = self.current + 1;
-            if let Some(next_tok) = self.tokens.get(next_idx) {
-                if Self::is_word_kind(next_tok.kind)
-                    && !self.source[period_end..next_tok.start].contains('\n')
-                {
-                    self.advance(); // consume '.'
-                    let next = self.advance().clone();
-                    name.push('.');
-                    name.push_str(&self.identifier_source(next.start, next.end));
-                    end = next.end as u32;
-                } else {
-                    break;
-                }
-            } else {
+            let Some(next_tok) = self.tokens.get(self.current + 1) else {
+                break;
+            };
+            if !Self::is_word_kind(next_tok.kind)
+                || self.source[period_end..next_tok.start].contains('\n')
+            {
                 break;
             }
+            self.advance(); // consume '.'
+            let next = self.advance().clone();
+            let buf = joined.get_or_insert_with(|| self.names.get(first_name).to_owned());
+            buf.push('.');
+            buf.push_str(&self.identifier_source(next.start, next.end));
+            end = span_u32(next.end);
         }
 
+        let name = match joined {
+            Some(buf) => self.intern(&buf),
+            None => first_name,
+        };
         Ok(Identifier {
             span: Span { start, end },
             name,
@@ -2048,10 +2244,10 @@ impl<'a> Parser<'a> {
 
         Ok(Identifier {
             span: Span {
-                start: start as u32,
-                end: end as u32,
+                start: span_u32(start),
+                end: span_u32(end),
             },
-            name: self.identifier_source(start, end),
+            name: self.intern_ident(start, end),
         })
     }
 
@@ -2068,10 +2264,7 @@ impl<'a> Parser<'a> {
     }
 
     fn current_span(&self) -> Span {
-        Span {
-            start: self.peek().start as u32,
-            end: self.peek().end as u32,
-        }
+        tok_span(self.peek())
     }
 
     /// Byte end offset of the most recently consumed non-comment token (KTD3).
@@ -2086,7 +2279,7 @@ impl<'a> Parser<'a> {
         while i > 0 {
             i -= 1;
             if self.tokens[i].kind != Kind::Comment {
-                return self.tokens[i].end as u32;
+                return span_u32(self.tokens[i].end);
             }
         }
         0
@@ -2151,268 +2344,176 @@ impl<'a> Parser<'a> {
 
         if !self.check(Kind::RightParen) {
             loop {
-                // Include file references (e.g. {inc/func-defs.i}) expand to
-                // a set of parameters at preprocessing time — skip them as a unit.
-                if self.check(Kind::IncludeReference) {
-                    self.advance();
-                    if !self.check(Kind::Comma) {
-                        break;
-                    }
-                    self.advance();
-                    continue;
+                if let Some(stmt) = self.parse_one_parenthesized_param(params.len())? {
+                    params.push(stmt);
                 }
-
-                let param_start = self.current_span().start;
-                let direction = match self.peek().kind {
-                    Kind::Output => {
-                        self.advance();
-                        ParameterDirection::Output
-                    }
-                    Kind::InputOutput => {
-                        self.advance();
-                        ParameterDirection::InputOutput
-                    }
-                    Kind::Input => {
-                        self.advance();
-                        ParameterDirection::Input
-                    }
-                    _ => ParameterDirection::Input,
-                };
-
-                // Include reference after direction keyword (e.g. INPUT {inc/func-defs.i})
-                // expands to one or more parameters at preprocessing time — skip as a unit.
-                if self.check(Kind::IncludeReference) {
-                    self.advance();
-                    if !self.check(Kind::Comma) {
-                        break;
-                    }
-                    self.advance();
-                    continue;
-                }
-
-                // TABLE [FOR] <name> [APPEND] [BIND] [BY-VALUE] [BY-REFERENCE]
-                if self.check(Kind::Table) {
-                    self.advance(); // consume TABLE
-                    // Optional FOR keyword: TABLE FOR ttablename passes by reference
-                    if self.check(Kind::KwFor) {
-                        self.advance();
-                    }
-                    let name = self.parse_identifier()?;
-                    // Consume optional passing modifiers
-                    while matches!(
-                        self.peek().kind,
-                        Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
-                    ) {
-                        self.advance();
-                    }
-                    params.push(self.param_stmt(
-                        param_start,
-                        StatementKind::DefineParameter {
-                            direction,
-                            param_type: ParameterType::Handle {
-                                kind: HandleParamKind::Table,
-                                name,
-                                passing: HandlePassingOptions::default(),
-                            },
-                        },
-                    ));
-                    if !self.check(Kind::Comma) {
-                        break;
-                    }
-                    self.advance();
-                    continue;
-                }
-
-                // BUFFER <buf-name> FOR <table-name> — buffer parameter (no AS/LIKE)
-                if self.check(Kind::Buffer) {
-                    self.advance(); // consume BUFFER
-                    let name = self.parse_identifier()?; // buffer name
-                    let mut target = name.clone();
-                    if self.check(Kind::KwFor) {
-                        self.advance(); // consume FOR
-                        // FOR TEMP-TABLE tt is the explicit spelling of FOR tt.
-                        if self.check(Kind::TempTable) {
-                            self.advance();
-                        }
-                        if let Ok(table) = self.parse_qualified_identifier() {
-                            target = table;
-                        }
-                    }
-                    params.push(self.param_stmt(
-                        param_start,
-                        StatementKind::DefineParameter {
-                            direction,
-                            param_type: ParameterType::Buffer { name, target },
-                        },
-                    ));
-                    if !self.check(Kind::Comma) {
-                        break;
-                    }
-                    self.advance();
-                    continue;
-                }
-
-                // DATASET <name> [APPEND] [BIND] [BY-VALUE] — dataset parameter (no AS/LIKE)
-                if self.check(Kind::Dataset) {
-                    self.advance(); // consume DATASET
-                    let name = self.parse_identifier()?;
-                    while matches!(
-                        self.peek().kind,
-                        Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
-                    ) {
-                        self.advance();
-                    }
-                    params.push(self.param_stmt(
-                        param_start,
-                        StatementKind::DefineParameter {
-                            direction,
-                            param_type: ParameterType::Handle {
-                                kind: HandleParamKind::Dataset,
-                                name,
-                                passing: HandlePassingOptions::default(),
-                            },
-                        },
-                    ));
-                    if !self.check(Kind::Comma) {
-                        break;
-                    }
-                    self.advance();
-                    continue;
-                }
-
-                // DATASET-HANDLE <name> [APPEND] [BIND] [BY-VALUE] — dataset handle parameter (no AS/LIKE)
-                if self.check(Kind::DatasetHandle) {
-                    self.advance(); // consume DATASET-HANDLE
-                    let name = self.parse_identifier()?;
-                    while matches!(
-                        self.peek().kind,
-                        Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
-                    ) {
-                        self.advance();
-                    }
-                    params.push(self.param_stmt(
-                        param_start,
-                        StatementKind::DefineParameter {
-                            direction,
-                            param_type: ParameterType::Handle {
-                                kind: HandleParamKind::DatasetHandle,
-                                name,
-                                passing: HandlePassingOptions::default(),
-                            },
-                        },
-                    ));
-                    if !self.check(Kind::Comma) {
-                        break;
-                    }
-                    self.advance();
-                    continue;
-                }
-
-                // TABLE-HANDLE <name> [APPEND] [BIND] [BY-VALUE] — table handle parameter (no AS/LIKE)
-                if self.check(Kind::TableHandle) {
-                    self.advance(); // consume TABLE-HANDLE
-                    let name = self.parse_identifier()?;
-                    while matches!(
-                        self.peek().kind,
-                        Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
-                    ) {
-                        self.advance();
-                    }
-                    params.push(self.param_stmt(
-                        param_start,
-                        StatementKind::DefineParameter {
-                            direction,
-                            param_type: ParameterType::Handle {
-                                kind: HandleParamKind::TableHandle,
-                                name,
-                                passing: HandlePassingOptions::default(),
-                            },
-                        },
-                    ));
-                    if !self.check(Kind::Comma) {
-                        break;
-                    }
-                    self.advance();
-                    continue;
-                }
-
-                // Type-only (unnamed) parameter — legal in FUNCTION prototypes:
-                //   (INPUT CHARACTER) FORWARD.
-                //   (CHARACTER, INTEGER) IN SUPER.
-                //   (INPUT CLASS Progress.Lang.Object) FORWARD.
-                // Named form keeps requiring AS/LIKE: (INPUT x AS CHARACTER).
-                if self.looks_like_type_only_param() {
-                    let type_start = self.current_span().start;
-                    let data_type = self.parse_data_type()?;
-                    let extent = self.parse_extent_clause();
-                    let no_undo = if self.check(Kind::NoUndo) {
-                        self.advance();
-                        true
-                    } else {
-                        false
-                    };
-                    // Synthetic name keeps the AST well-formed; prototypes discard
-                    // these statements, and named definitions never use this arm.
-                    let name = Identifier {
-                        name: format!("${}", params.len()),
-                        span: Span {
-                            start: type_start,
-                            end: self.prev_end(),
-                        },
-                    };
-                    params.push(self.param_stmt(
-                        param_start,
-                        StatementKind::DefineParameter {
-                            direction,
-                            param_type: ParameterType::Variable {
-                                name,
-                                type_source: TypeSource::Explicit(data_type),
-                                no_undo,
-                                extent,
-                            },
-                        },
-                    ));
-                    if !self.check(Kind::Comma) {
-                        break;
-                    }
-                    self.advance();
-                    continue;
-                }
-
-                let name = self.parse_identifier()?;
-                let (type_source, mut extent) = self.parse_type_source_with_extent()?;
-                if matches!(type_source, TypeSource::Like { .. }) {
-                    extent = self.parse_extent_clause();
-                }
-                let no_undo = if self.check(Kind::NoUndo) {
-                    self.advance();
-                    true
-                } else {
-                    false
-                };
-
-                params.push(self.param_stmt(
-                    param_start,
-                    StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Variable {
-                            name,
-                            type_source,
-                            no_undo,
-                            extent,
-                        },
-                    },
-                ));
-
                 if !self.check(Kind::Comma) {
                     break;
                 }
-                self.advance(); // consume comma
+                // consume comma
+                self.advance();
             }
         }
 
         self.expect_kind(Kind::RightParen, "Expected ')'")?;
         Ok(params)
+    }
+
+    fn parse_one_parenthesized_param(&mut self, index: usize) -> ParseResult<Option<Statement>> {
+        // Include file references (e.g. {inc/func-defs.i}) expand to
+        // a set of parameters at preprocessing time — skip them as a unit.
+        if self.check(Kind::IncludeReference) {
+            self.advance();
+            return Ok(None);
+        }
+
+        let param_start = self.current_span().start;
+        let direction = self.parse_param_direction();
+
+        // Include reference after direction keyword (e.g. INPUT {inc/func-defs.i})
+        // expands to one or more parameters at preprocessing time — skip as a unit.
+        if self.check(Kind::IncludeReference) {
+            self.advance();
+            return Ok(None);
+        }
+
+        let param_type = match self.peek().kind {
+            // TABLE [FOR] <name> [APPEND] [BIND] [BY-VALUE] [BY-REFERENCE]
+            Kind::Table => self.parse_handle_param_type(HandleParamKind::Table, true)?,
+            // DATASET <name> [APPEND] [BIND] [BY-VALUE] — dataset parameter (no AS/LIKE)
+            Kind::Dataset => self.parse_handle_param_type(HandleParamKind::Dataset, false)?,
+            // DATASET-HANDLE <name> [APPEND] [BIND] [BY-VALUE] — dataset handle parameter (no AS/LIKE)
+            Kind::DatasetHandle => {
+                self.parse_handle_param_type(HandleParamKind::DatasetHandle, false)?
+            }
+            // TABLE-HANDLE <name> [APPEND] [BIND] [BY-VALUE] — table handle parameter (no AS/LIKE)
+            Kind::TableHandle => {
+                self.parse_handle_param_type(HandleParamKind::TableHandle, false)?
+            }
+            // BUFFER <buf-name> FOR <table-name> — buffer parameter (no AS/LIKE)
+            Kind::Buffer => self.parse_buffer_param_type()?,
+            _ if self.looks_like_type_only_param() => self.parse_type_only_param_type(index)?,
+            _ => self.parse_named_var_param_type()?,
+        };
+        Ok(Some(self.param_stmt(
+            param_start,
+            StatementKind::DefineParameter {
+                direction,
+                param_type,
+            },
+        )))
+    }
+
+    fn parse_param_direction(&mut self) -> ParameterDirection {
+        match self.peek().kind {
+            Kind::Output => {
+                self.advance();
+                ParameterDirection::Output
+            }
+            Kind::InputOutput => {
+                self.advance();
+                ParameterDirection::InputOutput
+            }
+            Kind::Input => {
+                self.advance();
+                ParameterDirection::Input
+            }
+            _ => ParameterDirection::Input,
+        }
+    }
+
+    fn parse_handle_param_type(
+        &mut self,
+        kind: HandleParamKind,
+        allow_for: bool,
+    ) -> ParseResult<ParameterType> {
+        self.advance(); // consume TABLE / DATASET / DATASET-HANDLE / TABLE-HANDLE
+        // Optional FOR keyword: TABLE FOR ttablename passes by reference
+        if allow_for && self.check(Kind::KwFor) {
+            self.advance();
+        }
+        let name = self.parse_identifier()?;
+        // Consume optional passing modifiers
+        while matches!(
+            self.peek().kind,
+            Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
+        ) {
+            self.advance();
+        }
+        Ok(ParameterType::Handle {
+            kind,
+            name,
+            passing: HandlePassingOptions::default(),
+        })
+    }
+
+    fn parse_buffer_param_type(&mut self) -> ParseResult<ParameterType> {
+        self.advance(); // consume BUFFER
+        // buffer name
+        let name = self.parse_identifier()?;
+        let mut target = name;
+        if self.check(Kind::KwFor) {
+            self.advance(); // consume FOR
+            // FOR TEMP-TABLE tt is the explicit spelling of FOR tt.
+            if self.check(Kind::TempTable) {
+                self.advance();
+            }
+            if let Ok(table) = self.parse_qualified_identifier() {
+                target = table;
+            }
+        }
+        Ok(ParameterType::Buffer { name, target })
+    }
+
+    fn parse_type_only_param_type(&mut self, index: usize) -> ParseResult<ParameterType> {
+        // Type-only (unnamed) parameter — legal in FUNCTION prototypes:
+        //   (INPUT CHARACTER) FORWARD.
+        //   (CHARACTER, INTEGER) IN SUPER.
+        //   (INPUT CLASS Progress.Lang.Object) FORWARD.
+        // Named form keeps requiring AS/LIKE: (INPUT x AS CHARACTER).
+        let type_start = self.current_span().start;
+        let data_type = self.parse_data_type()?;
+        let extent = self.parse_extent_clause();
+        let no_undo = self.consume_if(Kind::NoUndo);
+        // Synthetic name keeps the AST well-formed; prototypes discard
+        // these statements, and named definitions never use this arm.
+        let name = Identifier {
+            name: self.intern(&format!("${index}")),
+            span: Span {
+                start: type_start,
+                end: self.prev_end(),
+            },
+        };
+        Ok(ParameterType::Variable {
+            name,
+            type_source: TypeSource::Explicit(data_type),
+            no_undo,
+            extent,
+        })
+    }
+
+    fn parse_named_var_param_type(&mut self) -> ParseResult<ParameterType> {
+        let name = self.parse_identifier()?;
+        let (type_source, mut extent) = self.parse_type_source_with_extent()?;
+        if matches!(type_source, TypeSource::Like { .. }) {
+            extent = self.parse_extent_clause();
+        }
+        let no_undo = self.consume_if(Kind::NoUndo);
+        Ok(ParameterType::Variable {
+            name,
+            type_source,
+            no_undo,
+            extent,
+        })
+    }
+
+    fn consume_if(&mut self, kind: Kind) -> bool {
+        if self.check(kind) {
+            self.advance();
+            true
+        } else {
+            false
+        }
     }
 
     /// True when the next tokens are a type-only (unnamed) parameter rather than
@@ -2505,10 +2606,7 @@ impl<'a> Parser<'a> {
         }
         self.advance();
         let tok = self.peek().clone();
-        let span = Span {
-            start: tok.start as u32,
-            end: tok.end as u32,
-        };
+        let span = tok_span(&tok);
         match tok.kind {
             Kind::IntegerLiteral => {
                 self.advance();
@@ -2764,16 +2862,10 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn parse_data_type(&mut self) -> ParseResult<DataType> {
-        let token = self.peek();
-        if !Self::is_data_type_keyword(token.kind)
-            && let Some(data_type) = self.short_data_type_at(0)
-        {
-            self.advance();
-            return Ok(data_type);
-        }
-        let data_type = match token.kind {
-            Kind::Integer => DataType::Integer,
+    fn primitive_data_type(kind: Kind) -> Option<DataType> {
+        Some(match kind {
+            // ABL allows "in" as abbreviation for "integer" (e.g. "def var x as in no-undo")
+            Kind::Integer | Kind::KwIn => DataType::Integer,
             Kind::Int64 => DataType::Int64,
             Kind::Decimal => DataType::Decimal,
             Kind::Character => DataType::Character,
@@ -2790,57 +2882,60 @@ impl<'a> Parser<'a> {
             Kind::Clob => DataType::Clob,
             Kind::Blob => DataType::Blob,
             Kind::ComHandle => DataType::Com,
+            _ => return None,
+        })
+    }
+
+    fn parse_class_or_generic_type(&mut self) -> ParseResult<DataType> {
+        let class_name = self.parse_class_qualified_name()?;
+        let arguments = self.parse_generic_type_args();
+        let owned = self.names.get(class_name.name).to_owned();
+        Ok(Self::class_data_type(owned, arguments))
+    }
+
+    fn parse_data_type(&mut self) -> ParseResult<DataType> {
+        let token = self.peek();
+        if !Self::is_data_type_keyword(token.kind)
+            && let Some(data_type) = self.short_data_type_at(0)
+        {
+            self.advance();
+            return Ok(data_type);
+        }
+        if let Some(data_type) = Self::primitive_data_type(token.kind) {
+            self.advance();
+            return Ok(data_type);
+        }
+        match token.kind {
             Kind::Class => {
-                self.advance(); // consume CLASS
-                let class_name = self.parse_class_qualified_name()?;
-                let arguments = self.parse_generic_type_args();
-                return Ok(Self::class_data_type(class_name.name, arguments));
+                // consume CLASS
+                self.advance();
+                self.parse_class_or_generic_type()
             }
             // ABL allows `AS ClassName` (without CLASS keyword) for class types.
             // Dotted names like `forms.sample_form` are class references.
-            Kind::Identifier => {
-                let class_name = self.parse_class_qualified_name()?;
-                let arguments = self.parse_generic_type_args();
-                return Ok(Self::class_data_type(class_name.name, arguments));
-            }
-            // ABL allows "in" as abbreviation for "integer" (e.g. "def var x as in no-undo")
-            Kind::KwIn => DataType::Integer,
-            // Unreserved keywords that are also legal class names (`AS Object`,
-            // `AS Socket`, `AS Server`).
-            kind if Self::is_unreserved_type_name_kind(kind) => {
-                let class_name = self.parse_class_qualified_name()?;
-                let arguments = self.parse_generic_type_args();
-                return Ok(Self::class_data_type(class_name.name, arguments));
-            }
             // Progress.* is a namespace prefix for built-in ABL classes
             // (e.g. "Progress.Json.ObjectModel.JsonObject")
-            Kind::Progress => {
-                let class_name = self.parse_class_qualified_name()?;
-                let arguments = self.parse_generic_type_args();
-                return Ok(Self::class_data_type(class_name.name, arguments));
-            }
+            Kind::Identifier | Kind::Progress => self.parse_class_or_generic_type(),
+            // Unreserved keywords that are also legal class names (`AS Object`,
+            // `AS Socket`, `AS Server`).
+            kind if Self::is_unreserved_type_name_kind(kind) => self.parse_class_or_generic_type(),
             // Reserved keywords used as namespace prefixes in OO-ABL class names.
             // ABL class files live in directories whose names may be reserved keywords
             // (e.g. `do.widgetobj` where `do` is Kind::Do). These must be followed
             // by a dot to be valid class references.
             _ if Self::is_word_kind(token.kind)
-                && self
+                && (self
                     .tokens
                     .get(self.current + 1)
-                    .is_some_and(|t| t.kind == Kind::Period) =>
+                    .is_some_and(|t| t.kind == Kind::Period)
+                    // A keyword-spelled short name imported by `USING` (e.g. `Method`).
+                    || self.is_imported_class(token)) =>
             {
-                let class_name = self.parse_class_qualified_name()?;
-                let arguments = self.parse_generic_type_args();
-                return Ok(Self::class_data_type(class_name.name, arguments));
-            }
-            // A keyword-spelled short name imported by `USING` (e.g. `Method`).
-            _ if Self::is_word_kind(token.kind) && self.is_imported_class(token) => {
-                let class_name = self.parse_class_qualified_name()?;
-                let arguments = self.parse_generic_type_args();
-                return Ok(Self::class_data_type(class_name.name, arguments));
+                self.parse_class_or_generic_type()
             }
             Kind::PreprocIf => {
-                self.advance(); // consume &IF
+                // consume &IF
+                self.advance();
                 let preproc = self.parse_preproc_if(1, &Self::parse_data_type)?;
                 if preproc.else_branch.is_none() {
                     return Err(ParseError {
@@ -2848,24 +2943,16 @@ impl<'a> Parser<'a> {
                         span: self.current_span(),
                     });
                 }
-                return Ok(DataType::PreprocIf(Box::new(preproc)));
+                Ok(DataType::PreprocIf(Box::new(preproc)))
             }
-            _ => {
-                return Err(ParseError {
-                    message: format!(
-                        "Unknown data type: {}",
-                        &self.source[token.start..token.end]
-                    ),
-                    span: Span {
-                        start: token.start as u32,
-                        end: token.end as u32,
-                    },
-                });
-            }
-        };
-
-        self.advance();
-        Ok(data_type)
+            _ => Err(ParseError {
+                message: format!(
+                    "Unknown data type: {}",
+                    &self.source[token.start..token.end]
+                ),
+                span: tok_span(token),
+            }),
+        }
     }
 }
 

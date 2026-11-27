@@ -43,3 +43,7 @@ oxabl_pipeline = { path = "../oxabl_pipeline", version = "5.0.0", features = [
 # `scripts/build-wasm.sh --verify` for a local verification build — never for the
 # release artifact.
 debug-panic = []
+
+# Not on the workspace lints yet: its counts are in tigerstyle-ratchet.txt
+# (docs/TIGER_STYLE.md). The empty table tells cargo that this is on purpose.
+[lints]

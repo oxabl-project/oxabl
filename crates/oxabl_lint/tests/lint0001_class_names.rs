@@ -36,7 +36,8 @@ END CLASS.";
 fn a_type_operand_is_not_a_value() {
     assert!(lint0001_with_index(SHIPPED_OPERANDS, &[]).is_empty());
     assert!(lint0001_without_index(SHIPPED_OPERANDS).is_empty());
-    let (_stmts, sem) = with_index(SHIPPED_OPERANDS, &[]);
+    let (program, sem) = with_index(SHIPPED_OPERANDS, &[]);
+    let _stmts = &program.statements;
     assert_eq!(
         unresolved_reasons(&sem, "jsonobject"),
         vec![UnresolvedReason::External; 3]
@@ -51,7 +52,8 @@ x = CAST(x, calc-base).
 MESSAGE TYPE-OF(x, orders.calc-base) VALID-OBJECT(GET-CLASS(calc-base)).
 ";
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
-    let (_stmts, sem) = with_index(source, &workspace);
+    let (program, sem) = with_index(source, &workspace);
+    let _stmts = &program.statements;
     let class = sole_symbol(&sem, "orders.calc-base");
     assert_eq!(sem.symbols.get(class).kind, SymbolKind::Class);
     let resolutions = sem
@@ -112,7 +114,8 @@ END CLASS.";
 fn a_name_under_a_parent_no_file_supplies_is_unknowable() {
     assert!(lint0001_with_index(ORPHAN, &[]).is_empty());
     assert!(lint0001_without_index(ORPHAN).is_empty());
-    let (_stmts, sem) = with_index(ORPHAN, &[]);
+    let (program, sem) = with_index(ORPHAN, &[]);
+    let _stmts = &program.statements;
     for name in ["doinheritedthing", "myinheritedprop"] {
         assert_eq!(
             unresolved_reasons(&sem, name),
@@ -188,7 +191,8 @@ CLASS orders.child INHERITS orders.gone:
     END METHOD.
 END CLASS.";
     let workspace = [(CALC_BASE_PATH, CALC_BASE)];
-    let (_stmts, sem) = with_index(source, &workspace);
+    let (program, sem) = with_index(source, &workspace);
+    let _stmts = &program.statements;
     assert_eq!(resolved_to(&sem, "orders.calc-base").len(), 1);
     assert!(lint0001_with_index(source, &workspace).is_empty());
 }

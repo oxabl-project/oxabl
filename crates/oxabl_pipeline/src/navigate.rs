@@ -272,6 +272,7 @@ impl<'a> LintPipeline<'a> {
     /// **Unguarded** like [`collect`](Self::collect).
     pub fn navigation_model(&self, expansion: &Expansion) -> Option<NavigationModel> {
         let expanded = expansion.expanded()?;
+        oxabl_common::test_tally::count(oxabl_common::test_tally::NAVIGATION_MODEL);
         let source_context = if self.file().is_some_and(is_include_fragment) {
             SourceContext::IncludeFragment
         } else {
@@ -1059,6 +1060,7 @@ impl Navigation<'_, '_> {
             let parsed = self.parsed();
             FileCalls::extract(
                 &parsed.program.statements,
+                &parsed.program.pools,
                 &self.expanded.text,
                 &parsed.tokens,
             )

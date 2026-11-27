@@ -1,0 +1,8 @@
+# Workspace-wide non-breaking clippy settings.
+# Full TigerStyle thresholds (including warn-by-default `too-many-arguments`
+# and `disallowed-methods`) live in `xtask/tigerstyle/clippy.toml` (used by
+# `cargo xtask tigerstyle`) and in each migrated crate's local `clippy.toml`.
+# See docs/TIGER_STYLE.md for the adoption ratchet.
+too-many-lines-threshold = 70
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

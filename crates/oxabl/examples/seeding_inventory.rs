@@ -58,7 +58,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use oxabl_ast::{Statement, StatementKind as SK};
+use oxabl_ast::{AstPools, Statement, StatementKind as SK};
 use oxabl_common::{SourceMap, catch_panic};
 use oxabl_lexer::{Kind, Token, tokenize};
 use oxabl_parser::Parser;
@@ -153,6 +153,7 @@ fn main() {
             tokens: &tokens,
             src: source.as_bytes(),
             file: &file_display,
+            pools: &program.pools,
         };
         walk_routines(&program.statements, None, false, &ctx, &mut rows);
     }
@@ -187,6 +188,7 @@ struct WalkCtx<'a> {
     /// Raw source bytes — for the whitespace-after-punctuation check.
     src: &'a [u8],
     file: &'a str,
+    pools: &'a AstPools,
 }
 
 /// Recursively walk statements, emitting one row per Procedure/Function/Method
@@ -202,16 +204,16 @@ fn walk_routines(
     for s in stmts {
         match &s.kind {
             SK::Class { name, body, .. } => {
-                walk_routines(body, Some(&name.name), false, ctx, out);
+                walk_routines(body, Some(ctx.pools.ident(*name)), false, ctx, out);
             }
             SK::Interface { name, body, .. } => {
-                walk_routines(body, Some(&name.name), true, ctx, out);
+                walk_routines(body, Some(ctx.pools.ident(*name)), true, ctx, out);
             }
             SK::Procedure { name, body, .. } => {
                 out.push(build_routine(
                     ctx,
                     "Procedure",
-                    &name.name,
+                    ctx.pools.ident(*name),
                     false,
                     in_interface,
                     s,
@@ -222,7 +224,7 @@ fn walk_routines(
                 out.push(build_routine(
                     ctx,
                     "Function",
-                    &name.name,
+                    ctx.pools.ident(*name),
                     false,
                     in_interface,
                     s,
@@ -236,8 +238,8 @@ fn walk_routines(
                 ..
             } => {
                 let span_name = match class_name {
-                    Some(c) => format!("{c}:{}", name.name),
-                    None => name.name.clone(),
+                    Some(c) => format!("{c}:{}", ctx.pools.ident(*name)),
+                    None => ctx.pools.ident(*name).to_owned(),
                 };
                 out.push(build_routine(
                     ctx,
@@ -799,6 +801,7 @@ mod tests {
             tokens: &tokens,
             src: src.as_bytes(),
             file: "fixture.p",
+            pools: &program.pools,
         };
         let mut rows = Vec::new();
         walk_routines(&program.statements, None, false, &ctx, &mut rows);

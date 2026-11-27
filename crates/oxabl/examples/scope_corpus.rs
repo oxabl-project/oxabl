@@ -113,7 +113,14 @@ fn main() {
         };
         print!(
             "{}",
-            oxabl_scope::analyze_file_with(&program.statements, text, schema, &options).dump(text)
+            oxabl_scope::analyze_file_with(
+                &program.statements,
+                &program.pools,
+                text,
+                schema,
+                &options
+            )
+            .dump(text)
         );
         return;
     }
@@ -205,7 +212,11 @@ fn run_file(
 
     let t = Instant::now();
     let analysed = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        oxabl_scope::analyze_tokens(&program.statements, &text, &tokens, schema, &options)
+        oxabl_scope::analyze_tokens(
+            oxabl_flow::FileInput::new(&program.statements, &program.pools, &text, &tokens),
+            schema,
+            &options,
+        )
     }));
     r.scope_time += t.elapsed();
     let scopes = match analysed {

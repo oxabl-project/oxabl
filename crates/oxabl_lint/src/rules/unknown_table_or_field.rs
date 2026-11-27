@@ -26,7 +26,7 @@
 //! string literal) resolves against the schema's sequences the same way: a name
 //! the loaded schema does not declare is reported as an unknown sequence.
 
-use oxabl_ast::{Expression, ExpressionKind, Statement, StatementKind, StreamOperation};
+use oxabl_ast::{ExprId, ExprList, ExpressionKind, Statement, StatementKind, StreamOperation};
 use oxabl_common::{Diagnostic, FileSpan};
 use oxabl_semantic::{AnalysisContext, Resolution, Semantic, UnresolvedReason, sequence_operand};
 
@@ -65,14 +65,12 @@ impl Visitor<'_> {
                 initial_value: Some(e),
                 ..
             } => {
-                self.walk_expression(e);
+                self.walk_expression(*e);
             }
             StatementKind::DefineTempTable { fields, .. } => {
                 for f in fields {
                     if let Some(init) = &f.initial_value {
-                        for e in init {
-                            self.walk_expression(e);
-                        }
+                        self.walk_exprs(*init);
                     }
                 }
             }
@@ -113,11 +111,9 @@ impl Visitor<'_> {
                 ..
             } => {
                 for e in [from, to, by, while_condition].into_iter().flatten() {
-                    self.walk_expression(e);
+                    self.walk_expression(*e);
                 }
-                for e in on_actions {
-                    self.walk_expression(e);
-                }
+                self.walk_exprs(*on_actions);
                 self.walk_block(body);
             }
             StatementKind::Repeat {
@@ -125,12 +121,8 @@ impl Visitor<'_> {
                 on_actions,
                 body,
             } => {
-                if let Some(e) = while_condition {
-                    self.walk_expression(e);
-                }
-                for e in on_actions {
-                    self.walk_expression(e);
-                }
+                self.walk_opt_expr(*while_condition);
+                self.walk_exprs(*on_actions);
                 self.walk_block(body);
             }
             StatementKind::ForEach {
@@ -139,12 +131,8 @@ impl Visitor<'_> {
                 body,
                 ..
             } => {
-                if let Some(w) = where_clause {
-                    self.walk_expression(w);
-                }
-                for e in on_actions {
-                    self.walk_expression(e);
-                }
+                self.walk_opt_expr(*where_clause);
+                self.walk_exprs(*on_actions);
                 self.walk_block(body);
             }
             StatementKind::Find {
@@ -152,19 +140,15 @@ impl Visitor<'_> {
                 where_clause,
                 ..
             } => {
-                if let Some(k) = key_value {
-                    self.walk_expression(k);
-                }
-                if let Some(w) = where_clause {
-                    self.walk_expression(w);
-                }
+                self.walk_opt_expr(*key_value);
+                self.walk_opt_expr(*where_clause);
             }
             StatementKind::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                self.walk_expression(condition);
+                self.walk_expression(*condition);
                 self.walk_statement(then_branch);
                 if let Some(eb) = else_branch {
                     self.walk_statement(eb);
@@ -175,11 +159,9 @@ impl Visitor<'_> {
                 when_branches,
                 otherwise,
             } => {
-                self.walk_expression(expression);
+                self.walk_expression(*expression);
                 for wb in when_branches {
-                    for v in &wb.values {
-                        self.walk_expression(v);
-                    }
+                    self.walk_exprs(wb.values);
                     self.walk_block(&wb.body);
                 }
                 if let Some(o) = otherwise {
@@ -191,35 +173,35 @@ impl Visitor<'_> {
             }
             StatementKind::Label { body, .. } => self.walk_statement(body),
             StatementKind::PreprocIf(pif) => {
-                self.walk_expression(&pif.condition);
+                self.walk_expression(pif.condition);
                 self.walk_block(&pif.then_branch);
                 for (c, br) in &pif.elseif_branches {
-                    self.walk_expression(c);
+                    self.walk_expression(*c);
                     self.walk_block(br);
                 }
                 if let Some(eb) = &pif.else_branch {
                     self.walk_block(eb);
                 }
             }
-            StatementKind::PreprocMessage { expression } => self.walk_expression(expression),
+            StatementKind::PreprocMessage { expression } => self.walk_expression(*expression),
             StatementKind::Assignment { target, value } => {
-                self.walk_expression(target);
-                self.walk_expression(value);
+                self.walk_expression(*target);
+                self.walk_expression(*value);
             }
             StatementKind::Assign { assignments } => {
                 for p in assignments {
-                    self.walk_expression(&p.target);
-                    self.walk_expression(&p.value);
+                    self.walk_expression(p.target);
+                    self.walk_expression(p.value);
                 }
             }
-            StatementKind::ExpressionStatement(e) => self.walk_expression(e),
-            StatementKind::Return(Some(e)) => self.walk_expression(e),
-            StatementKind::Throw(e) => self.walk_expression(e),
+            StatementKind::ExpressionStatement(e) => self.walk_expression(*e),
+            StatementKind::Return(Some(e)) => self.walk_expression(*e),
+            StatementKind::Throw(e) => self.walk_expression(*e),
             StatementKind::Display { items, .. } => {
                 for item in items {
-                    self.walk_expression(&item.expression);
+                    self.walk_expression(item.expression);
                     if let Some(w) = &item.when_condition {
-                        self.walk_expression(w);
+                        self.walk_expression(*w);
                     }
                 }
             }
@@ -231,9 +213,7 @@ impl Visitor<'_> {
             | StatementKind::Disable { items }
             | StatementKind::Hide { items, .. }
             | StatementKind::View { items, .. } => {
-                for e in items {
-                    self.walk_expression(e);
-                }
+                self.walk_exprs(*items);
             }
             StatementKind::Export {
                 delimiter, items, ..
@@ -243,9 +223,8 @@ impl Visitor<'_> {
                 targets: items,
                 ..
             } => {
-                for e in delimiter.iter().chain(items) {
-                    self.walk_expression(e);
-                }
+                self.walk_opt_expr(*delimiter);
+                self.walk_exprs(*items);
             }
             StatementKind::Update {
                 targets, options, ..
@@ -256,9 +235,8 @@ impl Visitor<'_> {
             | StatementKind::PromptFor {
                 targets, options, ..
             } => {
-                for e in targets.iter().chain(options) {
-                    self.walk_expression(e);
-                }
+                self.walk_exprs(*targets);
+                self.walk_exprs(*options);
             }
             StatementKind::Pause {
                 duration: a,
@@ -269,41 +247,35 @@ impl Visitor<'_> {
                 target: b,
             } => {
                 for e in a.iter().chain(b) {
-                    self.walk_expression(e);
+                    self.walk_expression(*e);
                 }
             }
             StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
-                if let Some(e) = lines {
-                    self.walk_expression(e);
-                }
+                self.walk_opt_expr(*lines);
             }
-            StatementKind::Get { query, .. } => self.walk_expression(query),
+            StatementKind::Get { query, .. } => self.walk_expression(*query),
             StatementKind::CopyLob {
                 source,
                 target,
                 options,
                 ..
             } => {
-                for e in [source, target].into_iter().chain(options) {
-                    self.walk_expression(e);
-                }
+                self.walk_expression(*source);
+                self.walk_expression(*target);
+                self.walk_exprs(*options);
             }
             StatementKind::Color { items, .. } => {
-                for e in items {
-                    self.walk_expression(e);
-                }
+                self.walk_exprs(*items);
             }
             StatementKind::Accumulate { expression, breaks } => {
-                for e in std::iter::once(expression).chain(breaks) {
-                    self.walk_expression(e);
-                }
+                self.walk_expression(*expression);
+                self.walk_exprs(*breaks);
             }
             StatementKind::Reposition {
                 query, operands, ..
             } => {
-                for e in std::iter::once(query).chain(operands) {
-                    self.walk_expression(e);
-                }
+                self.walk_expression(*query);
+                self.walk_exprs(*operands);
             }
             StatementKind::Close {
                 target,
@@ -312,17 +284,17 @@ impl Visitor<'_> {
                 ..
             } => {
                 for e in std::iter::once(target).chain(status).chain(handle) {
-                    self.walk_expression(e);
+                    self.walk_expression(*e);
                 }
             }
             StatementKind::Run {
                 arguments, target, ..
             } => {
                 if let oxabl_ast::RunTarget::Dynamic(e) = target {
-                    self.walk_expression(e);
+                    self.walk_expression(*e);
                 }
                 for arg in arguments {
-                    self.walk_expression(&arg.expression);
+                    self.walk_expression(arg.expression);
                 }
             }
             StatementKind::Publish {
@@ -330,38 +302,51 @@ impl Visitor<'_> {
                 arguments,
                 ..
             } => {
-                self.walk_expression(event_name);
+                self.walk_expression(*event_name);
                 for arg in arguments {
-                    self.walk_expression(&arg.expression);
+                    self.walk_expression(arg.expression);
                 }
             }
-            StatementKind::Subscribe { event_name, .. } => self.walk_expression(event_name),
+            StatementKind::Subscribe { event_name, .. } => self.walk_expression(*event_name),
             StatementKind::StreamIo { operation, .. } => match operation {
                 StreamOperation::From(target) | StreamOperation::To { target, .. } => {
-                    if let Some(e) = target.expression() {
-                        self.walk_expression(e);
-                    }
+                    self.walk_opt_expr(target.expression());
                 }
-                StreamOperation::Through(e) => self.walk_expression(e),
+                StreamOperation::Through(e) => self.walk_expression(*e),
                 StreamOperation::Close => {}
             },
             StatementKind::BufferCopy { assignments, .. } => {
                 for p in assignments {
-                    self.walk_expression(&p.target);
-                    self.walk_expression(&p.value);
+                    self.walk_expression(p.target);
+                    self.walk_expression(p.value);
                 }
             }
             _ => {}
         }
     }
 
-    fn walk_expression(&mut self, expr: &Expression) {
+    fn walk_exprs(&mut self, list: ExprList) {
+        let pools = self.ctx.pools;
+        for &e in pools.exprs(list) {
+            self.walk_expression(e);
+        }
+    }
+
+    fn walk_opt_expr(&mut self, e: Option<ExprId>) {
+        if let Some(e) = e {
+            self.walk_expression(e);
+        }
+    }
+
+    fn walk_expression(&mut self, id: ExprId) {
+        let pools = self.ctx.pools;
+        let expr = pools.expr(id);
         // Target is *field access*: the composite Expression's id carries the
         // field's resolution (NoSchema in v1 when schema isn't loaded;
         // NotInScope when schema is loaded but the field isn't found).
         if let ExpressionKind::FieldAccess { qualifier, field } = &expr.kind {
             // Walk children first (nested FieldAccess / complex qualifier).
-            self.walk_expression(qualifier);
+            self.walk_expression(*qualifier);
 
             if let Some(Resolution::Unresolved { reason, .. }) = self.sem.references.get(expr.id)
                 && matches!(
@@ -371,7 +356,7 @@ impl Visitor<'_> {
             {
                 self.diags.push(Diagnostic::error(
                     LINT0003,
-                    format!("unknown field `{}`", field.name),
+                    format!("unknown field `{}`", pools.ident(*field)),
                     FileSpan {
                         file: self.ctx.file_id,
                         span: field.span,
@@ -398,17 +383,17 @@ impl Visitor<'_> {
             | ExpressionKind::Begins(l, r)
             | ExpressionKind::Matches(l, r)
             | ExpressionKind::Contains(l, r) => {
-                self.walk_expression(l);
-                self.walk_expression(r);
+                self.walk_expression(*l);
+                self.walk_expression(*r);
             }
-            ExpressionKind::Negate(e) | ExpressionKind::Not(e) => self.walk_expression(e),
+            ExpressionKind::Negate(e) | ExpressionKind::Not(e) => self.walk_expression(*e),
             ExpressionKind::IfThenElse(c, t, f) => {
-                self.walk_expression(c);
-                self.walk_expression(t);
-                self.walk_expression(f);
+                self.walk_expression(*c);
+                self.walk_expression(*t);
+                self.walk_expression(*f);
             }
             ExpressionKind::FunctionCall { name, arguments } => {
-                if let Some(op) = sequence_operand(name, arguments)
+                if let Some(op) = sequence_operand(name, *arguments, pools)
                     && matches!(
                         self.sem.references.get(op.expr.id),
                         Some(Resolution::Unresolved {
@@ -426,45 +411,37 @@ impl Visitor<'_> {
                         },
                     ));
                 }
-                if sequence_operand(name, arguments).is_some_and(|op| op.is_static) {
+                if sequence_operand(name, *arguments, pools).is_some_and(|op| op.is_static) {
                     return;
                 }
-                for a in arguments {
-                    self.walk_expression(a);
-                }
+                self.walk_exprs(*arguments);
             }
             ExpressionKind::MethodCall {
                 object, arguments, ..
             } => {
-                self.walk_expression(object);
-                for a in arguments {
-                    self.walk_expression(a);
-                }
+                self.walk_expression(*object);
+                self.walk_exprs(*arguments);
             }
-            ExpressionKind::MemberAccess { object, .. } => self.walk_expression(object),
+            ExpressionKind::MemberAccess { object, .. } => self.walk_expression(*object),
             ExpressionKind::ArrayAccess { array, index } => {
-                self.walk_expression(array);
-                self.walk_expression(index);
+                self.walk_expression(*array);
+                self.walk_expression(*index);
             }
             ExpressionKind::New { arguments, .. } => {
-                for a in arguments {
-                    self.walk_expression(a);
-                }
+                self.walk_exprs(*arguments);
             }
             ExpressionKind::CanFind { where_clause, .. } => {
-                if let Some(w) = where_clause {
-                    self.walk_expression(w);
-                }
+                self.walk_opt_expr(*where_clause);
             }
             ExpressionKind::PreprocIf(pif) => {
-                self.walk_expression(&pif.condition);
-                self.walk_expression(&pif.then_branch);
+                self.walk_expression(pif.condition);
+                self.walk_expression(pif.then_branch);
                 for (c, br) in &pif.elseif_branches {
-                    self.walk_expression(c);
-                    self.walk_expression(br);
+                    self.walk_expression(*c);
+                    self.walk_expression(*br);
                 }
                 if let Some(eb) = &pif.else_branch {
-                    self.walk_expression(eb);
+                    self.walk_expression(*eb);
                 }
             }
             ExpressionKind::Identifier(_)
@@ -480,11 +457,11 @@ impl Visitor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::test_ast;
     use oxabl_ast::{
         BufferTarget, DataType, Expression, ExpressionKind, Identifier, NodeId, Span, Statement,
         StatementKind, TypeSource, XmlSerializeOptions,
     };
-    use oxabl_common::FileId;
     use oxabl_schema::Schema;
     use oxabl_semantic::analyze_file;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -499,7 +476,7 @@ mod tests {
                 start: 0,
                 end: n.len() as u32,
             },
-            name: n.into(),
+            name: test_ast::name(n),
         }
     }
     fn stmt_n(k: StatementKind) -> Statement {
@@ -514,24 +491,26 @@ mod tests {
 
     fn lint_with(stmts: Vec<Statement>, schema_loaded: bool) -> Vec<Diagnostic> {
         let schema = Schema::empty();
-        let mut ctx = AnalysisContext::new(FileId::UNKNOWN, "", &schema);
-        ctx.schema_loaded = schema_loaded;
-        let sem = analyze_file(&stmts, &ctx);
-        run(&stmts, &sem, &ctx)
+        test_ast::with_ctx("", &schema, |ctx| {
+            ctx.schema_loaded = schema_loaded;
+            let sem = analyze_file(&stmts, ctx);
+            run(&stmts, &sem, ctx)
+        })
     }
 
     use oxabl_schema::test_support::customer_schema as test_schema;
 
     fn lint_with_schema(stmts: Vec<Statement>, schema: &Schema) -> Vec<Diagnostic> {
-        let ctx = AnalysisContext::new(FileId::UNKNOWN, "", schema);
-        let sem = analyze_file(&stmts, &ctx);
-        run(&stmts, &sem, &ctx)
+        test_ast::with_ctx("", schema, |ctx| {
+            let sem = analyze_file(&stmts, ctx);
+            run(&stmts, &sem, ctx)
+        })
     }
 
     /// `DEFINE BUFFER bCust FOR Customer.` + `bCust.<field>`.
     fn buffer_customer_stmts(field_name: &str) -> Vec<Statement> {
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("bCust")),
+            qualifier: test_ast::expr(id_expr("bCust")),
             field: id(field_name),
         });
         vec![
@@ -547,7 +526,7 @@ mod tests {
                 is_shared: false,
                 is_new_global_shared: false,
             }),
-            stmt_n(StatementKind::ExpressionStatement(fa)),
+            stmt_n(StatementKind::ExpressionStatement(test_ast::expr(fa))),
         ]
     }
 
@@ -555,10 +534,15 @@ mod tests {
     fn skip_list_no_fire_when_schema_not_loaded() {
         // `Customer.CustNum` with no schema → rule emits nothing.
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("Customer")),
+            qualifier: test_ast::expr(id_expr("Customer")),
             field: id("CustNum"),
         });
-        let diags = lint_with(vec![stmt_n(StatementKind::ExpressionStatement(fa))], false);
+        let diags = lint_with(
+            vec![stmt_n(StatementKind::ExpressionStatement(test_ast::expr(
+                fa,
+            )))],
+            false,
+        );
         assert!(diags.is_empty());
     }
 
@@ -569,7 +553,7 @@ mod tests {
         // the field keeps the legacy External resolution, LINT0003 stays
         // silent (unverifiable fields are not flagged).
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("bCust")),
+            qualifier: test_ast::expr(id_expr("bCust")),
             field: id("CustNum"),
         });
         let diags = lint_with(
@@ -586,7 +570,7 @@ mod tests {
                     is_shared: false,
                     is_new_global_shared: false,
                 }),
-                stmt_n(StatementKind::ExpressionStatement(fa)),
+                stmt_n(StatementKind::ExpressionStatement(test_ast::expr(fa))),
             ],
             true,
         );
@@ -615,7 +599,7 @@ mod tests {
         // link, so LINT0003 stays silent even under a loaded schema.
         let schema = test_schema();
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("tt")),
+            qualifier: test_ast::expr(id_expr("tt")),
             field: id("f"),
         });
         let diags = lint_with_schema(
@@ -642,7 +626,7 @@ mod tests {
                     is_shared: false,
                     is_new_global_shared: false,
                 }),
-                stmt_n(StatementKind::ExpressionStatement(fa)),
+                stmt_n(StatementKind::ExpressionStatement(test_ast::expr(fa))),
             ],
             &schema,
         );
@@ -656,11 +640,13 @@ mod tests {
         // default buffer, field resolves — no LINT0003.
         let schema = test_schema();
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("Customer")),
+            qualifier: test_ast::expr(id_expr("Customer")),
             field: id("Name"),
         });
         let diags = lint_with_schema(
-            vec![stmt_n(StatementKind::ExpressionStatement(fa))],
+            vec![stmt_n(StatementKind::ExpressionStatement(test_ast::expr(
+                fa,
+            )))],
             &schema,
         );
         assert!(diags.is_empty());
@@ -672,11 +658,13 @@ mod tests {
         // schema table (stays NotInScope), field is NotInScope → fires.
         let schema = test_schema();
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("Ghost")),
+            qualifier: test_ast::expr(id_expr("Ghost")),
             field: id("Field"),
         });
         let diags = lint_with_schema(
-            vec![stmt_n(StatementKind::ExpressionStatement(fa))],
+            vec![stmt_n(StatementKind::ExpressionStatement(test_ast::expr(
+                fa,
+            )))],
             &schema,
         );
         assert_eq!(diags.len(), 1);
@@ -688,10 +676,15 @@ mod tests {
         // `Ghost.Field` with schema loaded — qualifier is NotInScope, field
         // surfaces as NotInScope → LINT0003 emits.
         let fa = expr_n(ExpressionKind::FieldAccess {
-            qualifier: Box::new(id_expr("Ghost")),
+            qualifier: test_ast::expr(id_expr("Ghost")),
             field: id("Field"),
         });
-        let diags = lint_with(vec![stmt_n(StatementKind::ExpressionStatement(fa))], true);
+        let diags = lint_with(
+            vec![stmt_n(StatementKind::ExpressionStatement(test_ast::expr(
+                fa,
+            )))],
+            true,
+        );
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code.0, LINT0003);
     }
@@ -703,7 +696,12 @@ mod tests {
             span: Span { start: 0, end: 1 },
             value: 42,
         })));
-        let diags = lint_with(vec![stmt_n(StatementKind::ExpressionStatement(lit))], true);
+        let diags = lint_with(
+            vec![stmt_n(StatementKind::ExpressionStatement(test_ast::expr(
+                lit,
+            )))],
+            true,
+        );
         assert!(diags.is_empty());
     }
 
@@ -724,7 +722,7 @@ mod tests {
                     is_shared: false,
                     is_new_global_shared: false,
                 }),
-                stmt_n(StatementKind::ExpressionStatement(u)),
+                stmt_n(StatementKind::ExpressionStatement(test_ast::expr(u))),
             ],
             true,
         );

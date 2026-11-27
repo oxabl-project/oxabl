@@ -40,3 +40,29 @@ oxabl-cache-client = "0.2.0"
 # against: the revision the client above was published from.
 [workspace.metadata.oxabl-cache]
 binaries-rev = "0adaa4899993205d48ba994799ed21b59d0529f9"
+
+# Target TigerStyle lint set (see docs/TIGER_STYLE.md). Crates opt in with
+# `[lints] workspace = true` once their findings reach zero under
+# `cargo xtask tigerstyle`.
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+too_many_lines = "deny"
+unwrap_used = "deny"
+expect_used = "warn"
+let_underscore_must_use = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"
+disallowed_methods = "deny"
+undocumented_unsafe_blocks = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+large_types_passed_by_value = "warn"
+fn_params_excessive_bools = "warn"
+collapsible_if = "allow"
+collapsible_else_if = "allow"

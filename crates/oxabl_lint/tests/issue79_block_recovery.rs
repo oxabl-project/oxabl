@@ -29,7 +29,7 @@ fn unused(source: &str) -> (Vec<String>, usize) {
     let program = parser.parse_program();
     let nerr = program.errors.len();
     let schema = Schema::empty();
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema, &program.pools);
     let sem = analyze_file(&program.statements, &ctx);
     let msgs = unused_variable::run(&program.statements, &sem, &ctx)
         .into_iter()

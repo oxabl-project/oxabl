@@ -2,7 +2,9 @@
 use std::env;
 use std::path::Path;
 
-fn main() {
+// Generated static atom list; length is bounded by the ABL keyword catalog.
+#[allow(clippy::too_many_lines)]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     string_cache_codegen::AtomType::new("oxabl_atom::OxablAtom", "atom!")
         .atoms(&[
             "&else",
@@ -708,6 +710,6 @@ fn main() {
             "{",
             "}",
         ])
-        .write_to_file(&Path::new(&env::var("OUT_DIR").unwrap()).join("oxabl_atom.rs"))
-        .unwrap();
+        .write_to_file(&Path::new(&env::var("OUT_DIR")?).join("oxabl_atom.rs"))?;
+    Ok(())
 }

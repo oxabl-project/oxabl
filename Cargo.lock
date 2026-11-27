@@ -2614,6 +2614,7 @@ name = "oxabl_ast"
 version = "7.0.0"
 dependencies = [
  "rust_decimal",
+ "rustc-hash",
  "serde",
  "smallvec",
 ]
@@ -2910,6 +2911,7 @@ dependencies = [
  "oxabl_semantic",
  "oxabl_style",
  "oxabl_workspace",
+ "rustc-hash",
  "serde",
  "serde_json",
  "tempfile",

@@ -8,7 +8,10 @@ use oxabl_ast::{ExpressionKind, FindType, LockType, Statement, StatementKind};
 use oxabl_parser::{Program, try_parse};
 
 fn parse(source: &str) -> Program {
-    try_parse(source).expect("the parser must not panic")
+    match try_parse(source) {
+        Ok(program) => program,
+        Err(err) => panic!("the parser must not panic: {err:?}"),
+    }
 }
 
 #[track_caller]
@@ -30,12 +33,12 @@ fn assert_errors(source: &str) {
     );
 }
 
-fn method_names(stmts: &[Statement]) -> Vec<&str> {
+fn method_names<'a>(program: &'a Program, stmts: &[Statement]) -> Vec<&'a str> {
     let mut names = Vec::new();
     for stmt in stmts {
         match &stmt.kind {
-            StatementKind::Method { name, .. } => names.push(name.name.as_str()),
-            StatementKind::Class { body, .. } => names.extend(method_names(body)),
+            StatementKind::Method { name, .. } => names.push(program.ident(*name)),
+            StatementKind::Class { body, .. } => names.extend(method_names(program, body)),
             _ => {}
         }
     }
@@ -47,7 +50,7 @@ fn procedure_names(program: &Program) -> Vec<&str> {
         .statements
         .iter()
         .filter_map(|s| match &s.kind {
-            StatementKind::Procedure { name, .. } => Some(name.name.as_str()),
+            StatementKind::Procedure { name, .. } => Some(program.ident(*name)),
             _ => None,
         })
         .collect()
@@ -78,7 +81,7 @@ fn reserved_keywords_are_method_names() {
          END CLASS.",
     );
     assert_eq!(
-        method_names(&program.statements),
+        method_names(&program, &program.statements),
         ["Clear", "View", "Any", "Check", "Add"]
     );
 }
@@ -262,15 +265,15 @@ fn a_stream_name_may_start_with_a_digit() {
     let StatementKind::DefineStream { name } = &program.statements[0].kind else {
         panic!("expected DEFINE STREAM");
     };
-    assert_eq!(name.name, "2dstream");
+    assert_eq!(program.ident(*name), "2dstream");
     let StatementKind::StreamIo { stream_name, .. } = &program.statements[1].kind else {
         panic!("expected a stream statement");
     };
-    assert_eq!(stream_name.as_ref().unwrap().name, "2dstream");
+    assert_eq!(program.ident(stream_name.unwrap()), "2dstream");
     let StatementKind::Put { stream_name, items } = &program.statements[2].kind else {
         panic!("expected PUT");
     };
-    assert_eq!(stream_name.as_ref().unwrap().name, "2dstream");
+    assert_eq!(program.ident(stream_name.unwrap()), "2dstream");
     assert_eq!(items.len(), 1);
 }
 
@@ -310,7 +313,7 @@ fn the_call_statement_is_a_statement() {
             program.statements[1].kind
         );
     };
-    assert!(names.iter().any(|n| n.name == "cArg"));
+    assert!(names.iter().any(|n| program.ident(*n) == "cArg"));
     assert!(matches!(
         program.statements[2].kind,
         StatementKind::Message { .. }
@@ -340,13 +343,14 @@ fn input_not_is_an_argument_in_every_call_form() {
          x = oObj:M(INPUT NOT lActive, OUTPUT y).",
     );
     let ExpressionKind::FunctionCall { arguments, .. } = (match &program.statements[0].kind {
-        StatementKind::ExpressionStatement(e) => &e.kind,
+        StatementKind::ExpressionStatement(e) => &program.expr(*e).kind,
         other => panic!("expected an expression statement, got {other:?}"),
     }) else {
         panic!("expected a call");
     };
-    assert_eq!(arguments.len(), 3);
-    assert!(matches!(arguments[2].kind, ExpressionKind::Not(_)));
+    let args = program.exprs(*arguments);
+    assert_eq!(args.len(), 3);
+    assert!(matches!(program.expr(args[2]).kind, ExpressionKind::Not(_)));
 }
 
 #[test]

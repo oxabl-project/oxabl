@@ -349,7 +349,7 @@ fn param_mode(direction: &ParameterDirection) -> Option<ParamMode> {
     }
 }
 
-fn param_name(statement: &Statement) -> Option<String> {
+fn param_name(source: &Source, statement: &Statement) -> Option<String> {
     let StatementKind::DefineParameter { param_type, .. } = &statement.kind else {
         return None;
     };
@@ -359,7 +359,8 @@ fn param_name(statement: &Statement) -> Option<String> {
         | ParameterType::Buffer { name, .. } => name,
     };
     // The parser names an unnamed prototype parameter `$N`.
-    (!name.name.starts_with('$')).then(|| name.name.clone())
+    let name = source.name(name);
+    (!name.starts_with('$')).then(|| name.to_string())
 }
 
 /// Whether the parameter lists of one declaration, read from its text, and
@@ -515,7 +516,12 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
     fn unit_sig(&self, name: VirtualSpan) -> Option<Sig> {
         let parsed = self.nav.parsed();
         let folding = self.nav.folding();
-        let source = Source::new(&self.nav.expanded.text, &parsed.tokens).folded(&folding);
+        let source = Source::new(
+            &self.nav.expanded.text,
+            &parsed.tokens,
+            &parsed.program.pools,
+        )
+        .folded(&folding);
         let found = find_declaration(&parsed.program.statements, name)?;
         sig_of(
             &source,
@@ -546,12 +552,12 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         let includes = &scan.includes;
         let view = loaded.view(self.nav, &path, includes.in_parameters)?;
         let source = view.source();
-        let (_, class, body) = class_of(view.statements)?;
+        let (_, class, body) = class_of(&source, view.statements)?;
         let declared: Vec<Sig> = body
             .iter()
             .filter(|member| {
                 matches!(&member.kind, StatementKind::Method { name: n, .. }
-                    if n.name.eq_ignore_ascii_case(name))
+                    if source.name(n).eq_ignore_ascii_case(name))
                     && view.written_here(member.span.start)
             })
             .filter_map(|member| sig_of(&source, member, &[], None, Some(class.as_str())))
@@ -643,7 +649,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
             }
             let view = loaded.view(self.nav, &path, includes.in_parameters)?;
             let source = view.source();
-            let (_, name, body) = class_of(view.statements)?;
+            let (_, name, body) = class_of(&source, view.statements)?;
             return constructors(
                 &source,
                 &name,
@@ -661,7 +667,12 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         }
         let parsed = self.nav.parsed();
         let folding = self.nav.folding();
-        let source = Source::new(&self.nav.expanded.text, &parsed.tokens).folded(&folding);
+        let source = Source::new(
+            &self.nav.expanded.text,
+            &parsed.tokens,
+            &parsed.program.pools,
+        )
+        .folded(&folding);
         let found = find_declaration(&parsed.program.statements, symbol.name_span)?;
         let StatementKind::Class { name, body, .. } = &found.statement.kind else {
             return None;
@@ -671,7 +682,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         }
         constructors(
             &source,
-            &name.name,
+            source.name(name),
             body,
             ConstructorAccess::Own,
             None,
@@ -690,7 +701,13 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
 
     /// The declared name of the class that the unit defines.
     fn caller_class(&self) -> Option<String> {
-        class_of(&self.nav.parsed().program.statements).map(|(_, name, _)| name)
+        let parsed = self.nav.parsed();
+        let source = Source::new(
+            &self.nav.expanded.text,
+            &parsed.tokens,
+            &parsed.program.pools,
+        );
+        class_of(&source, &parsed.program.statements).map(|(_, name, _)| name)
     }
 
     /// The constructors that `SUPER(` or `THIS-OBJECT(` may call.
@@ -711,13 +728,18 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         };
         if call.kind == CalleeKind::ThisObject {
             let folding = self.nav.folding();
-            let source = Source::new(&self.nav.expanded.text, &parsed.tokens).folded(&folding);
+            let source = Source::new(
+                &self.nav.expanded.text,
+                &parsed.tokens,
+                &parsed.program.pools,
+            )
+            .folded(&folding);
             if class_may_hide_members(&source, class, true) {
                 return None;
             }
             return constructors(
                 &source,
-                &name.name,
+                source.name(name),
                 body,
                 ConstructorAccess::Own,
                 None,
@@ -787,7 +809,11 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
             return None;
         };
         let loaded = self.load(path)?;
-        let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
+        let raw = Source::new(
+            &loaded.text,
+            &loaded.parsed.tokens,
+            &loaded.parsed.program.pools,
+        );
         let written = find_declaration(
             &loaded.parsed.program.statements,
             VirtualSpan::new(span.start, span.end),
@@ -807,7 +833,11 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
     fn program_sig(&self, path: &Path, written: &str) -> Option<Vec<Sig>> {
         let loaded = self.load(path)?;
         let statements = &loaded.parsed.program.statements;
-        let raw = Source::new(&loaded.text, &loaded.parsed.tokens);
+        let raw = Source::new(
+            &loaded.text,
+            &loaded.parsed.tokens,
+            &loaded.parsed.program.pools,
+        );
         if program_may_hide_parameters(&raw, statements, false) {
             return None;
         }
@@ -990,10 +1020,13 @@ fn constructors(
 
 /// The first class or interface in `statements`: the statement, its name and
 /// its body.
-fn class_of(statements: &[Statement]) -> Option<(&Statement, String, &[Statement])> {
+fn class_of<'s>(
+    source: &Source,
+    statements: &'s [Statement],
+) -> Option<(&'s Statement, String, &'s [Statement])> {
     statements.iter().find_map(|s| match &s.kind {
         StatementKind::Class { name, body, .. } | StatementKind::Interface { name, body, .. } => {
-            Some((s, name.name.clone(), body.as_slice()))
+            Some((s, source.name(name).to_string(), body.as_slice()))
         }
         _ => None,
     })
@@ -1020,7 +1053,7 @@ fn sig_of(
                 return_type,
                 ..
             } => (
-                name.name.clone(),
+                source.name(name).to_string(),
                 parameters_of(parameters),
                 match return_type {
                     None => Some("VOID".to_string()),
@@ -1028,17 +1061,14 @@ fn sig_of(
                 },
             ),
             StatementKind::Function {
-                name,
-                return_type,
-                body,
-                prototype_parameters,
+                name, return_type, ..
             } => {
                 if source.may_expand(statement.span.start, statement.span.end, &[], true) {
                     return None;
                 }
                 (
-                    name.name.clone(),
-                    function_parameters(statement, &name.name, body, prototype_parameters, scope),
+                    source.name(name).to_string(),
+                    function_parameters(source, statement, scope),
                     type_name(return_type),
                 )
             }
@@ -1046,7 +1076,7 @@ fn sig_of(
                 if source.may_expand(statement.span.start, statement.span.end, &[], true) {
                     return None;
                 }
-                (name.name.clone(), parameters_of(body), None)
+                (source.name(name).to_string(), parameters_of(body), None)
             }
             StatementKind::Constructor { parameters, .. } => {
                 (class?.to_string(), parameters_of(parameters), None)
@@ -1093,16 +1123,24 @@ fn accounts_for(sig: &Sig, includes: &[Span]) -> bool {
     })
 }
 
-/// The parameters of a function: those of its `FORWARD` (or `IN`) prototype,
-/// those its body defines, or, for a definition that leaves out its list after
-/// a `FORWARD` in `scope`, those of that prototype.
+/// The parameters of the function `statement`: those of its `FORWARD` (or
+/// `IN`) prototype, those its body defines, or, for a definition that leaves
+/// out its list after a `FORWARD` in `scope`, those of that prototype.
 fn function_parameters<'a>(
-    statement: &Statement,
-    name: &str,
-    body: &'a [Statement],
-    prototype: &'a [Statement],
+    source: &Source,
+    statement: &'a Statement,
     scope: &'a [Statement],
 ) -> Vec<&'a Statement> {
+    let StatementKind::Function {
+        name,
+        body,
+        prototype_parameters: prototype,
+        ..
+    } = &statement.kind
+    else {
+        return Vec::new();
+    };
+    let name = source.name(name);
     if !prototype.is_empty() {
         return parameters_of(prototype);
     }
@@ -1116,7 +1154,10 @@ fn function_parameters<'a>(
             body,
             prototype_parameters,
             ..
-        } if s.id != statement.id && body.is_empty() && other.name.eq_ignore_ascii_case(name) => {
+        } if s.id != statement.id
+            && body.is_empty()
+            && source.name(other).eq_ignore_ascii_case(name) =>
+        {
             Some(prototype_parameters)
         }
         _ => None,
@@ -1159,10 +1200,10 @@ fn signature(
             };
             width += 1;
             params.push(Param {
-                name: param_name(statement),
+                name: param_name(source, statement),
                 mode: Some(mode),
             });
-            call = match (call, call_param_of(statement)) {
+            call = match (call, call_param_of(statement, source.pools())) {
                 (Some(mut list), Some(param)) => {
                     list.push(param);
                     Some(list)

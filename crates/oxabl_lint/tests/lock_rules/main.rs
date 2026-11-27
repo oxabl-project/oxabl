@@ -119,9 +119,14 @@ fn run(
         program.errors
     );
     let empty = Schema::empty();
-    let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema.unwrap_or(&empty))
-        .with_parse_recovered(recovered)
-        .with_source_context(context);
+    let mut ctx = AnalysisContext::new(
+        FileId::UNKNOWN,
+        source,
+        schema.unwrap_or(&empty),
+        &program.pools,
+    )
+    .with_parse_recovered(recovered)
+    .with_source_context(context);
     ctx.schema_loaded = schema.is_some();
     let sem = analyze_file(&program.statements, &ctx);
     rule(&program.statements, &sem, &ctx)

@@ -9,17 +9,22 @@ use std::path::{Path, PathBuf};
 
 /// Resolve the workspace `resources/` directory.
 fn resources_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("resources")
+        .and_then(Path::parent)
+    else {
+        panic!("CARGO_MANIFEST_DIR must have two parent directories");
+    };
+    root.join("resources")
 }
 
 /// Load a fixture file from the workspace resources/ directory.
 fn load_fixture(name: &str) -> String {
-    fs::read_to_string(resources_dir().join(name)).unwrap()
+    let path = resources_dir().join(name);
+    match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) => panic!("failed to read fixture {}: {err}", path.display()),
+    }
 }
 
 /// Bench the full pipeline (preprocess → tokenize → parse) on a fixture
@@ -43,8 +48,16 @@ fn bench_pipeline_with_includes_in_memory(
 ) {
     let dir = PathBuf::from("/bench/resources");
     let mut fs = InMemoryFileSystem::new();
-    for entry in fs::read_dir(resources_dir()).unwrap() {
-        let file = entry.unwrap().file_name().to_string_lossy().into_owned();
+    let entries = match fs::read_dir(resources_dir()) {
+        Ok(entries) => entries,
+        Err(err) => panic!("failed to read resources dir: {err}"),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => panic!("failed to read resources entry: {err}"),
+        };
+        let file = entry.file_name().to_string_lossy().into_owned();
         if file.starts_with("bench_preprocessor_") {
             fs.insert(dir.join(&file), load_fixture(&file));
         }
@@ -53,10 +66,10 @@ fn bench_pipeline_with_includes_in_memory(
     let source = load_fixture(fixture);
     let expand = |fs: &dyn FileSystem, dir: PathBuf| {
         let paths = vec![dir];
-        Preprocessor::new(fs, &paths)
-            .process(FileId::new(1), &source)
-            .unwrap()
-            .to_text()
+        match Preprocessor::new(fs, &paths).process(FileId::new(1), &source) {
+            Ok(preprocessed) => preprocessed.to_text(),
+            Err(err) => panic!("preprocessing failed for {fixture}: {err:?}"),
+        }
     };
     assert_eq!(
         expand(&fs, dir.clone()),
@@ -79,7 +92,10 @@ fn bench_pipeline_on(
     group.bench_function(name, |b| {
         b.iter(|| {
             let pp = Preprocessor::new(fs, &include_paths);
-            let preprocessed = pp.process(FileId::new(1), black_box(&source)).unwrap();
+            let preprocessed = match pp.process(FileId::new(1), black_box(&source)) {
+                Ok(p) => p,
+                Err(err) => panic!("preprocessing failed for {fixture}: {err:?}"),
+            };
             let expanded = preprocessed.to_text();
             let tokens = tokenize(&expanded);
             let mut parser = Parser::new(&tokens, &expanded);

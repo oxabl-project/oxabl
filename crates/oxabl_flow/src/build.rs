@@ -10,7 +10,7 @@
 use std::mem;
 
 use oxabl_ast::{
-    FindType, LockType, NodeId, OnAction, OnKind, Span, Statement, StatementKind as SK,
+    AstPools, FindType, LockType, NodeId, OnAction, OnKind, Span, Statement, StatementKind as SK,
 };
 use oxabl_lexer::Token;
 use rustc_hash::FxHashMap;
@@ -33,13 +33,18 @@ pub struct FlowOptions {
 ///
 /// `source` must be the text the statements were parsed from (the expanded
 /// text when includes were expanded): block-header phrases are read from it.
-pub fn build_file(program: &[Statement], source: &str) -> FileFlow {
-    build_file_with(program, source, &FlowOptions::default())
+pub fn build_file(program: &[Statement], pools: &AstPools, source: &str) -> FileFlow {
+    build_file_with(program, pools, source, &FlowOptions::default())
 }
 
 /// [`build_file`] with options.
-pub fn build_file_with(program: &[Statement], source: &str, options: &FlowOptions) -> FileFlow {
-    build_file_tokens(program, source, &[], options)
+pub fn build_file_with(
+    program: &[Statement],
+    pools: &AstPools,
+    source: &str,
+    options: &FlowOptions,
+) -> FileFlow {
+    build_file_tokens(program, pools, source, &[], options)
 }
 
 /// [`build_file_with`] with the tokens the statements were parsed from
@@ -47,6 +52,7 @@ pub fn build_file_with(program: &[Statement], source: &str, options: &FlowOption
 /// instead of lexing each header again. Empty `tokens` lex as before.
 pub fn build_file_tokens(
     program: &[Statement],
+    pools: &AstPools,
     source: &str,
     tokens: &[Token],
     options: &FlowOptions,
@@ -56,7 +62,7 @@ pub fn build_file_tokens(
         tokens,
     };
     let directive = file_directive(program, src).max(options.default_directive);
-    let specs = unit_specs(program, source);
+    let specs = unit_specs(program, pools, source);
     let units = specs
         .iter()
         .enumerate()
@@ -81,14 +87,20 @@ pub struct UnitBuilder<'a> {
 impl<'a> UnitBuilder<'a> {
     /// Find the units of `program`, which was parsed from `source`. This walks
     /// the statements once and builds nothing.
-    pub fn new(program: &'a [Statement], source: &'a str, options: &FlowOptions) -> Self {
-        Self::with_tokens(program, source, &[], options)
+    pub fn new(
+        program: &'a [Statement],
+        pools: &'a AstPools,
+        source: &'a str,
+        options: &FlowOptions,
+    ) -> Self {
+        Self::with_tokens(program, pools, source, &[], options)
     }
 
     /// [`new`](Self::new) with the tokens the statements were parsed from, as
     /// [`build_file_tokens`] takes them.
     pub fn with_tokens(
         program: &'a [Statement],
+        pools: &'a AstPools,
         source: &'a str,
         tokens: &'a [Token],
         options: &FlowOptions,
@@ -98,7 +110,7 @@ impl<'a> UnitBuilder<'a> {
             tokens,
         };
         let directive = file_directive(program, src).max(options.default_directive);
-        let specs = unit_specs(program, source);
+        let specs = unit_specs(program, pools, source);
         let mut unit_of = FxHashMap::default();
         for (i, spec) in specs.iter().enumerate() {
             index_stmts(spec.body, UnitId(i as u32), &mut unit_of);
@@ -149,7 +161,7 @@ fn index_stmts(stmts: &[Statement], unit: UnitId, out: &mut FxHashMap<NodeId, Un
 }
 
 /// The main block and every nested unit, in source pre-order.
-fn unit_specs<'a>(program: &'a [Statement], source: &str) -> Vec<UnitSpec<'a>> {
+fn unit_specs<'a>(program: &'a [Statement], pools: &AstPools, source: &str) -> Vec<UnitSpec<'a>> {
     let main_kind = if program
         .iter()
         .any(|s| matches!(s.kind, SK::TriggerProcedure { .. }))
@@ -170,7 +182,7 @@ fn unit_specs<'a>(program: &'a [Statement], source: &str) -> Vec<UnitSpec<'a>> {
         body: program,
         header: None,
     }];
-    collect_units(program, UnitId(0), source, &mut specs);
+    collect_units(program, pools, UnitId(0), source, &mut specs);
     specs
 }
 
@@ -200,20 +212,22 @@ struct UnitSpec<'a> {
 /// Find every nested unit, in source pre-order.
 fn collect_units<'a>(
     stmts: &'a [Statement],
+    pools: &AstPools,
     parent: UnitId,
     src: &str,
     out: &mut Vec<UnitSpec<'a>>,
 ) {
+    let named = |name: &oxabl_ast::Identifier| Some(pools.ident(*name));
     for s in stmts {
         match &s.kind {
             SK::Procedure { name, body, .. } => {
-                let id = push_unit(out, s, parent, UnitKind::Procedure, Some(&name.name), body);
-                collect_units(body, id, src, out);
+                let id = push_unit(out, s, parent, UnitKind::Procedure, named(name), body);
+                collect_units(body, pools, id, src, out);
             }
             SK::Function { name, body, .. } => {
                 if !body.is_empty() || tokens::function_has_block(src, s.span) {
-                    let id = push_unit(out, s, parent, UnitKind::Function, Some(&name.name), body);
-                    collect_units(body, id, src, out);
+                    let id = push_unit(out, s, parent, UnitKind::Function, named(name), body);
+                    collect_units(body, pools, id, src, out);
                 }
             }
             SK::Method {
@@ -223,17 +237,17 @@ fn collect_units<'a>(
                 ..
             } => {
                 if !is_abstract {
-                    let id = push_unit(out, s, parent, UnitKind::Method, Some(&name.name), body);
-                    collect_units(body, id, src, out);
+                    let id = push_unit(out, s, parent, UnitKind::Method, named(name), body);
+                    collect_units(body, pools, id, src, out);
                 }
             }
             SK::Constructor { body, .. } => {
                 let id = push_unit(out, s, parent, UnitKind::Constructor, None, body);
-                collect_units(body, id, src, out);
+                collect_units(body, pools, id, src, out);
             }
             SK::Destructor { body } => {
                 let id = push_unit(out, s, parent, UnitKind::Destructor, None, body);
-                collect_units(body, id, src, out);
+                collect_units(body, pools, id, src, out);
             }
             SK::Property {
                 name,
@@ -246,12 +260,12 @@ fn collect_units<'a>(
                     (UnitKind::PropertySet, set_body),
                 ] {
                     if let Some(body) = body.as_deref().filter(|b| !b.is_empty()) {
-                        let id = push_unit(out, s, parent, kind, Some(&name.name), body);
-                        collect_units(body, id, src, out);
+                        let id = push_unit(out, s, parent, kind, named(name), body);
+                        collect_units(body, pools, id, src, out);
                     }
                 }
             }
-            SK::Class { body, .. } => collect_units(body, parent, src, out),
+            SK::Class { body, .. } => collect_units(body, pools, parent, src, out),
             SK::Interface { .. } => {}
             SK::On { kind } => {
                 if let Some(action) = trigger_block(kind) {
@@ -261,12 +275,12 @@ fn collect_units<'a>(
                     };
                     let id = push_unit(out, s, parent, UnitKind::Trigger, None, body);
                     out[id.index()].header = header;
-                    collect_units(body, id, src, out);
+                    collect_units(body, pools, id, src, out);
                 }
             }
             _ => {
                 for list in child_lists(s) {
-                    collect_units(list, parent, src, out);
+                    collect_units(list, pools, parent, src, out);
                 }
             }
         }

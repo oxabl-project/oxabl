@@ -110,7 +110,7 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
     let tokens = shared.tokens(ctx);
     let port_type = binds_port_type(calls, tokens);
     let mut diags = Vec::new();
-    for_each_run(program, calls, |stmt, site| {
+    for_each_run(program, ctx.pools, calls, |stmt, site| {
         let CallTarget::Program(name) = &site.target else {
             return;
         };
@@ -141,7 +141,7 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
         };
         let in_this = in_handle
             .as_ref()
-            .is_some_and(|h| is_this_procedure(tokens, h));
+            .is_some_and(|h| is_this_procedure(tokens, ctx.pools.expr(*h)));
         // An optional probe: a super procedure may supply the name.
         if in_this && *no_error {
             return;

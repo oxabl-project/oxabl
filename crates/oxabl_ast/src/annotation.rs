@@ -5,7 +5,7 @@
 //! [`associate_annotations`] pairs each run of annotations with the statement
 //! that follows it.
 
-use crate::{Identifier, Statement, StatementKind};
+use crate::{Identifier, NamePool, Statement, StatementKind};
 
 /// One annotation statement.
 ///
@@ -26,10 +26,10 @@ pub struct Annotation {
 
 impl Annotation {
     /// First attribute named `name`, compared ASCII case-insensitively.
-    pub fn attribute(&self, name: &str) -> Option<&AnnotationAttribute> {
+    pub fn attribute(&self, names: &NamePool, name: &str) -> Option<&AnnotationAttribute> {
         self.attributes
             .iter()
-            .find(|a| a.name.name.eq_ignore_ascii_case(name))
+            .find(|a| names.get(a.name.name).eq_ignore_ascii_case(name))
     }
 }
 
@@ -105,24 +105,24 @@ mod tests {
     use super::*;
     use crate::Span;
 
-    fn ident(name: &str) -> Identifier {
+    fn ident(names: &mut NamePool, name: &str) -> Identifier {
         Identifier {
             span: Span::DUMMY,
-            name: name.to_string(),
+            name: names.push(name),
         }
     }
 
-    fn annotation(name: &str) -> Statement {
+    fn annotation(names: &mut NamePool, name: &str) -> Statement {
         Statement::new(StatementKind::Annotation(Annotation {
-            name: ident(name),
+            name: ident(names, name),
             qualifier: None,
             attributes: Vec::new(),
         }))
     }
 
-    fn proc(name: &str) -> Statement {
+    fn proc(names: &mut NamePool, name: &str) -> Statement {
         Statement::new(StatementKind::Procedure {
-            name: ident(name),
+            name: ident(names, name),
             body: Vec::new(),
             is_prototype: false,
             is_external: false,
@@ -131,18 +131,19 @@ mod tests {
 
     #[test]
     fn pairs_a_run_with_the_next_statement() {
+        let mut names = NamePool::new();
         let stmts = [
-            annotation("A"),
-            annotation("B"),
-            proc("p"),
-            proc("q"),
-            annotation("C"),
-            proc("r"),
+            annotation(&mut names, "A"),
+            annotation(&mut names, "B"),
+            proc(&mut names, "p"),
+            proc(&mut names, "q"),
+            annotation(&mut names, "C"),
+            proc(&mut names, "r"),
         ];
         let pairs = associate_annotations(&stmts);
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0].annotations.len(), 2);
-        assert_eq!(pairs[0].annotations[1].name.name, "B");
+        assert_eq!(names.get(pairs[0].annotations[1].name.name), "B");
         assert_eq!(pairs[0].target, Some(&stmts[2]));
         assert_eq!(pairs[1].annotations.len(), 1);
         assert_eq!(pairs[1].target, Some(&stmts[5]));
@@ -150,10 +151,11 @@ mod tests {
 
     #[test]
     fn skips_empty_statements_between_annotation_and_target() {
+        let mut names = NamePool::new();
         let stmts = [
-            annotation("A"),
+            annotation(&mut names, "A"),
             Statement::new(StatementKind::Empty),
-            proc("p"),
+            proc(&mut names, "p"),
         ];
         let pairs = associate_annotations(&stmts);
         assert_eq!(pairs.len(), 1);
@@ -162,7 +164,8 @@ mod tests {
 
     #[test]
     fn a_trailing_run_has_no_target() {
-        let stmts = [proc("p"), annotation("A")];
+        let mut names = NamePool::new();
+        let stmts = [proc(&mut names, "p"), annotation(&mut names, "A")];
         let pairs = associate_annotations(&stmts);
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].target, None);
@@ -170,21 +173,23 @@ mod tests {
 
     #[test]
     fn no_annotations_no_pairs() {
-        assert!(associate_annotations(&[proc("p")]).is_empty());
+        let mut names = NamePool::new();
+        assert!(associate_annotations(&[proc(&mut names, "p")]).is_empty());
         assert!(associate_annotations(&[]).is_empty());
     }
 
     #[test]
     fn attribute_lookup_ignores_case() {
+        let mut names = NamePool::new();
         let a = Annotation {
-            name: ident("Test"),
+            name: ident(&mut names, "Test"),
             qualifier: None,
             attributes: vec![AnnotationAttribute {
-                name: ident("Expected"),
+                name: ident(&mut names, "Expected"),
                 value: AnnotationValue::String("X".into()),
             }],
         };
-        assert_eq!(a.attribute("expected").unwrap().value.as_str(), "X");
-        assert!(a.attribute("other").is_none());
+        assert_eq!(a.attribute(&names, "expected").unwrap().value.as_str(), "X");
+        assert!(a.attribute(&names, "other").is_none());
     }
 }

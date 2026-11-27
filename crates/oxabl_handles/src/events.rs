@@ -5,8 +5,8 @@
 //! [`Effect`]s, so supporting a new AST form is a change here.
 
 use oxabl_ast::{
-    CreateTarget, CreateTargetKind, DeleteObjectKind, Expression, ExpressionKind as EK, Identifier,
-    Literal, ParameterDirection, Span, Statement, StatementKind as SK,
+    AstPools, CreateTarget, CreateTargetKind, DeleteObjectKind, ExprId, ExpressionKind as EK,
+    Identifier, Literal, ParameterDirection, Span, Statement, StatementKind as SK,
 };
 use oxabl_lexer::{Kind, Lexer};
 use smallvec::SmallVec;
@@ -147,7 +147,7 @@ pub(crate) enum Receiver<'a> {
 pub(crate) type Effects<'a> = SmallVec<[Effect<'a>; 2]>;
 
 /// The effects of one statement, not counting nested statements.
-pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
+pub(crate) fn effects<'a>(s: &'a Statement, pools: &'a AstPools, src: &str) -> Effects<'a> {
     let mut out = Effects::new();
     match &s.kind {
         SK::Create {
@@ -164,27 +164,27 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
             no_error,
         } => {
             for e in [class, for_table, widget_pool].into_iter().flatten() {
-                scan(e, src, &mut out);
+                scan(*e, pools, src, &mut out);
             }
             for a in assignments {
-                scan(&a.value, src, &mut out);
+                scan(a.value, pools, src, &mut out);
             }
             let pool = match widget_pool {
-                Some(p) => PoolRef::Named(pool_name(p, src)),
+                Some(p) => PoolRef::Named(pool_name(*p, pools, src)),
                 None => PoolRef::Default,
             };
             out.push(Effect::Create {
                 kind: object_kind(*kind),
-                into: place_of(handle),
+                into: place_of(*handle, pools),
                 pool,
                 no_error: *no_error,
                 weak: false,
             });
             // `ASSIGN FRAME = f` or `PARENT = w`: the parent widget owns it.
-            if let Some(var) = var_of(handle)
+            if let Some(var) = var_of(*handle, pools)
                 && assignments
                     .iter()
-                    .any(|a| is_parent_attribute(&a.attribute.name))
+                    .any(|a| is_parent_attribute(pools.ident(a.attribute)))
             {
                 out.push(Effect::Escape {
                     var,
@@ -193,8 +193,8 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
             }
             // Any other attribute set to a handle stores it in the new widget.
             for a in assignments {
-                if let Some(var) = var_of(&a.value)
-                    && !is_parent_attribute(&a.attribute.name)
+                if let Some(var) = var_of(a.value, pools)
+                    && !is_parent_attribute(pools.ident(a.attribute))
                 {
                     out.push(Effect::Assign {
                         to: Place::Other(EscapeKind::Attribute),
@@ -206,11 +206,11 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
         SK::CreateWidgetPool {
             name, persistent, ..
         } => out.push(Effect::CreatePool {
-            name: name.as_ref().map(|n| pool_name(n, src)),
+            name: name.map(|n| pool_name(n, pools, src)),
             persistent: *persistent,
         }),
         SK::DeleteWidgetPool { name, .. } => out.push(Effect::DeletePool {
-            name: name.as_ref().map(|n| pool_name(n, src)),
+            name: name.map(|n| pool_name(n, pools, src)),
         }),
         SK::DeleteObject {
             kind,
@@ -223,22 +223,23 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                 DeleteObjectKind::Widget => FreeKind::DeleteWidget,
                 _ => FreeKind::DeleteObject,
             };
-            for t in std::iter::once(target).chain(extra_targets) {
-                scan(t, src, &mut out);
-                free_operand(t, kind, &mut out);
+            for &t in std::iter::once(target).chain(pools.exprs(*extra_targets)) {
+                scan(t, pools, src, &mut out);
+                free_operand(t, pools, kind, &mut out);
             }
         }
         SK::ReleaseObject { target, .. } => {
-            scan(target, src, &mut out);
-            free_operand(target, FreeKind::ReleaseObject, &mut out);
+            scan(*target, pools, src, &mut out);
+            free_operand(*target, pools, FreeKind::ReleaseObject, &mut out);
         }
         // By convention a persistent procedure deletes itself on CLOSE.
         SK::Apply {
             event: Some(event),
             target: Some(target),
         } => {
-            if let (EK::Literal(Literal::String(e)), Some(var)) = (&event.kind, identity_of(target))
-                && e.value.eq_ignore_ascii_case("CLOSE")
+            if let (EK::Literal(Literal::String(e)), Some(var)) =
+                (&pools.expr(*event).kind, identity_of(*target, pools))
+                && pools.name(e.value).eq_ignore_ascii_case("CLOSE")
             {
                 out.push(Effect::Free {
                     var,
@@ -257,9 +258,10 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
         } => {
             let dynamic = matches!(target, oxabl_ast::RunTarget::Dynamic(_));
             if let Some(h) = in_handle {
-                scan(h, src, &mut out);
-                if let (oxabl_ast::RunTarget::Literal { name, .. }, Some(var)) = (target, var_of(h))
-                    && (is_destroy_name(name) || is_dispatch_destroy(name, arguments))
+                scan(*h, pools, src, &mut out);
+                if let (oxabl_ast::RunTarget::Literal { name, .. }, Some(var)) =
+                    (target, var_of(*h, pools))
+                    && (is_destroy_name(name) || is_dispatch_destroy(name, arguments, pools))
                 {
                     out.push(Effect::Opaque {
                         var,
@@ -268,13 +270,13 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                 }
             }
             let callee = match (target, in_handle) {
-                (_, Some(h)) if !is_this_procedure(h) => Callee::External,
+                (_, Some(h)) if !is_this_procedure(*h, pools) => Callee::External,
                 (oxabl_ast::RunTarget::Literal { name, .. }, _) => Callee::Procedure(name),
                 _ => Callee::External,
             };
             for (pos, a) in arguments.iter().enumerate() {
-                scan(&a.expression, src, &mut out);
-                let Some(var) = identity_of(&a.expression) else {
+                scan(a.expression, pools, src, &mut out);
+                let Some(var) = identity_of(a.expression, pools) else {
                     continue;
                 };
                 if dynamic {
@@ -287,7 +289,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
                     // A table or dataset argument by value is a copy the callee
                     // cannot free; the parser drops that keyword.
                     ParameterDirection::Input
-                        if !dynamic && !copied_argument(src, a.expression.span) =>
+                        if !dynamic && !copied_argument(src, pools.expr(a.expression).span) =>
                     {
                         out.push(Effect::Pass { var, callee, pos })
                     }
@@ -307,29 +309,29 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
             if *persistent {
                 out.push(Effect::Create {
                     kind: ObjectKind::PersistentProcedure,
-                    into: persistent_handle.as_ref().and_then(place_of),
+                    into: persistent_handle.and_then(|h| place_of(h, pools)),
                     pool: PoolRef::Default,
                     no_error: *no_error,
                     weak: false,
                 });
             }
         }
-        SK::Assignment { target, value } => assignment(target, value, src, &mut out),
+        SK::Assignment { target, value } => assignment(*target, *value, pools, src, &mut out),
         SK::Assign { assignments } => {
             for pair in assignments {
-                assignment(&pair.target, &pair.value, src, &mut out);
+                assignment(pair.target, pair.value, pools, src, &mut out);
             }
         }
-        SK::ExpressionStatement(e) => scan(e, src, &mut out),
-        SK::If { condition, .. } => scan(condition, src, &mut out),
+        SK::ExpressionStatement(e) => scan(*e, pools, src, &mut out),
+        SK::If { condition, .. } => scan(*condition, pools, src, &mut out),
         SK::Return(Some(e)) => {
-            scan(e, src, &mut out);
-            if let Some(var) = identity_of(e) {
+            scan(*e, pools, src, &mut out);
+            if let Some(var) = identity_of(*e, pools) {
                 out.push(Effect::Escape {
                     var,
                     kind: EscapeKind::Return,
                 });
-            } else if let Some(var) = derived_root(e) {
+            } else if let Some(var) = derived_root(*e, pools) {
                 out.push(Effect::Escape {
                     var,
                     kind: EscapeKind::DerivedHandle,
@@ -338,8 +340,8 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
         }
         SK::Publish { arguments, .. } => {
             for a in arguments {
-                scan(&a.expression, src, &mut out);
-                if let Some(var) = var_of(&a.expression) {
+                scan(a.expression, pools, src, &mut out);
+                if let Some(var) = var_of(a.expression, pools) {
                     out.push(Effect::Escape {
                         var,
                         kind: EscapeKind::Published,
@@ -351,7 +353,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
             subscriber: Some(e),
             ..
         } => {
-            if let Some(var) = var_of(e) {
+            if let Some(var) = var_of(*e, pools) {
                 out.push(Effect::Escape {
                     var,
                     kind: EscapeKind::Subscriber,
@@ -365,13 +367,21 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
             no_error,
             ..
         } => out.push(Effect::CopyLob {
-            to: if *target_file { None } else { var_of(target) },
+            to: if *target_file {
+                None
+            } else {
+                var_of(*target, pools)
+            },
             no_error: *no_error,
         }),
         // An event of a waited-on object can run code that frees it
         // (`ON CLOSE OF THIS-PROCEDURE DO: DELETE PROCEDURE ...`).
         SK::WaitFor { widgets } => {
-            for var in widgets.iter().filter_map(var_of) {
+            for var in pools
+                .exprs(*widgets)
+                .iter()
+                .filter_map(|&w| var_of(w, pools))
+            {
                 out.push(Effect::Opaque {
                     var,
                     reason: OpaqueReason::SkippedStatement,
@@ -393,15 +403,21 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
 /// plain variable or literal to a plain variable, `RETURN` of one, a test
 /// (`IF`, `CASE`, `DO WHILE`, `REPEAT WHILE`) of variables and literals only,
 /// or a `DO i = a TO b [BY c]` header whose bounds are variables or literals.
-pub(crate) fn cannot_raise(s: &Statement) -> bool {
-    let simple = |e: &Expression| identity_of(e).is_some() || matches!(e.kind, EK::Literal(_));
+pub(crate) fn cannot_raise(s: &Statement, pools: &AstPools) -> bool {
+    let simple =
+        |e: ExprId| identity_of(e, pools).is_some() || matches!(pools.expr(e).kind, EK::Literal(_));
     match &s.kind {
-        SK::If { condition, .. } => plain_condition(condition),
+        SK::If { condition, .. } => plain_condition(*condition, pools),
         SK::Case {
             expression,
             when_branches,
             ..
-        } => simple(expression) && when_branches.iter().all(|w| w.values.iter().all(&simple)),
+        } => {
+            simple(*expression)
+                && when_branches
+                    .iter()
+                    .all(|w| pools.exprs(w.values).iter().copied().all(&simple))
+        }
         SK::Do {
             loop_var: None,
             from: None,
@@ -413,7 +429,7 @@ pub(crate) fn cannot_raise(s: &Statement) -> bool {
         | SK::Repeat {
             while_condition: Some(c),
             ..
-        } => plain_condition(c),
+        } => plain_condition(*c, pools),
         SK::Do {
             loop_var: Some(_),
             from: Some(from),
@@ -422,16 +438,16 @@ pub(crate) fn cannot_raise(s: &Statement) -> bool {
             while_condition,
             ..
         } => {
-            simple(from)
-                && simple(to)
-                && by.as_ref().is_none_or(simple)
-                && while_condition.as_ref().is_none_or(plain_condition)
+            simple(*from)
+                && simple(*to)
+                && by.is_none_or(simple)
+                && while_condition.is_none_or(|c| plain_condition(c, pools))
         }
-        SK::Assignment { target, value } => var_of(target).is_some() && simple(value),
+        SK::Assignment { target, value } => var_of(*target, pools).is_some() && simple(*value),
         SK::Assign { assignments } => assignments
             .iter()
-            .all(|p| var_of(&p.target).is_some() && simple(&p.value)),
-        SK::Return(value) => value.as_ref().is_none_or(simple),
+            .all(|p| var_of(p.target, pools).is_some() && simple(p.value)),
+        SK::Return(value) => value.is_none_or(simple),
         _ => false,
     }
 }
@@ -440,17 +456,18 @@ pub(crate) fn cannot_raise(s: &Statement) -> bool {
 /// `VALID-HANDLE(v)`, `VALID-OBJECT(v)` and `ERROR-STATUS:ERROR`, which read a
 /// value without raising: no other call, attribute, method, arithmetic or
 /// field.
-fn plain_condition(e: &Expression) -> bool {
-    match &e.kind {
+fn plain_condition(e: ExprId, pools: &AstPools) -> bool {
+    match &pools.expr(e).kind {
         EK::Literal(_) => true,
-        EK::Identifier(_) => var_of(e).is_some() || is_error_status(e),
-        EK::MemberAccess { .. } => is_error_status(e),
+        EK::Identifier(_) => var_of(e, pools).is_some() || is_error_status(e, pools),
+        EK::MemberAccess { .. } => is_error_status(e, pools),
         EK::FunctionCall { name, arguments } => {
-            is_validity_test(&name.name)
-                && arguments.len() == 1
-                && identity_of(&arguments[0]).is_some()
+            let args = pools.exprs(*arguments);
+            is_validity_test(pools.ident(*name))
+                && args.len() == 1
+                && identity_of(args[0], pools).is_some()
         }
-        EK::Not(a) => plain_condition(a),
+        EK::Not(a) => plain_condition(*a, pools),
         EK::And(a, b)
         | EK::Or(a, b)
         | EK::Equal(a, b)
@@ -458,7 +475,7 @@ fn plain_condition(e: &Expression) -> bool {
         | EK::LessThan(a, b)
         | EK::LessThanOrEqual(a, b)
         | EK::GreaterThan(a, b)
-        | EK::GreaterThanOrEqual(a, b) => plain_condition(a) && plain_condition(b),
+        | EK::GreaterThanOrEqual(a, b) => plain_condition(*a, pools) && plain_condition(*b, pools),
         _ => false,
     }
 }
@@ -470,22 +487,28 @@ pub(crate) fn creates(effects: &Effects) -> bool {
         .any(|e| matches!(e, Effect::Create { .. } | Effect::Collected))
 }
 
-fn assignment<'a>(target: &'a Expression, value: &'a Expression, src: &str, out: &mut Effects<'a>) {
-    if let EK::FunctionCall { name, arguments } = &target.kind
-        && name.name.eq_ignore_ascii_case("SET-SIZE")
+fn assignment<'a>(
+    target: ExprId,
+    value: ExprId,
+    pools: &'a AstPools,
+    src: &str,
+    out: &mut Effects<'a>,
+) {
+    if let EK::FunctionCall { name, arguments } = &pools.expr(target).kind
+        && pools.ident(*name).eq_ignore_ascii_case("SET-SIZE")
     {
-        scan(value, src, out);
-        let Some(m) = arguments.first() else {
+        scan(value, pools, src, out);
+        let Some(&m) = pools.exprs(*arguments).first() else {
             return;
         };
-        if is_zero(value) {
-            if let Some(var) = var_of(m) {
+        if is_zero(value, pools) {
+            if let Some(var) = var_of(m, pools) {
                 out.push(Effect::Free {
                     var,
                     kind: FreeKind::SetSizeZero,
                 });
             }
-        } else if let Some(into) = place_of(m) {
+        } else if let Some(into) = place_of(m, pools) {
             out.push(Effect::Create {
                 kind: ObjectKind::Memptr,
                 into: Some(into),
@@ -496,12 +519,12 @@ fn assignment<'a>(target: &'a Expression, value: &'a Expression, src: &str, out:
         }
         return;
     }
-    scan(value, src, out);
-    if let EK::MemberAccess { object, member } = &target.kind
-        && is_parent_attribute(&member.name)
+    scan(value, pools, src, out);
+    if let EK::MemberAccess { object, member } = &pools.expr(target).kind
+        && is_parent_attribute(pools.ident(*member))
     {
         // The value is the parent, which keeps its own owner.
-        if let Some(var) = var_of(object) {
+        if let Some(var) = var_of(*object, pools) {
             out.push(Effect::Escape {
                 var,
                 kind: EscapeKind::WidgetParent,
@@ -509,7 +532,8 @@ fn assignment<'a>(target: &'a Expression, value: &'a Expression, src: &str, out:
         }
         return;
     }
-    if let (Some(var), EK::MemberAccess { member, .. }) = (var_of(target), &value.kind)
+    if let (Some(var), EK::MemberAccess { member, .. }) =
+        (var_of(target, pools), &pools.expr(value).kind)
         && [
             "FIRST-PROCEDURE",
             "LAST-PROCEDURE",
@@ -517,16 +541,16 @@ fn assignment<'a>(target: &'a Expression, value: &'a Expression, src: &str, out:
             "PREV-SIBLING",
         ]
         .iter()
-        .any(|m| member.name.eq_ignore_ascii_case(m))
+        .any(|m| pools.ident(*member).eq_ignore_ascii_case(m))
     {
         out.push(Effect::ProcedureWalk { var });
     }
-    if let Some(to) = place_of(target) {
-        match derived_root(value) {
+    if let Some(to) = place_of(target, pools) {
+        match derived_root(value, pools) {
             Some(from) => out.push(Effect::DerivedAssign { to, from }),
             None => out.push(Effect::Assign {
                 to,
-                from: identity_of(value),
+                from: identity_of(value, pools),
             }),
         }
     }
@@ -540,25 +564,27 @@ fn is_destroy_name(name: &str) -> bool {
 }
 
 /// `RUN dispatch IN h ('destroy')`, the ADM form.
-fn is_dispatch_destroy(name: &str, arguments: &[oxabl_ast::RunArgument]) -> bool {
+fn is_dispatch_destroy(name: &str, arguments: &[oxabl_ast::RunArgument], pools: &AstPools) -> bool {
     name.eq_ignore_ascii_case("dispatch")
         && arguments.first().is_some_and(|a| {
-            matches!(&a.expression.kind, EK::Literal(Literal::String(s))
-                if s.value.eq_ignore_ascii_case("destroy"))
+            matches!(&pools.expr(a.expression).kind, EK::Literal(Literal::String(s))
+                if pools.name(s.value).eq_ignore_ascii_case("destroy"))
         })
 }
 
 /// The holder at the root of a chain whose last link yields a handle:
 /// `h:DEFAULT-BUFFER-HANDLE`, `h:HANDLE`, `h:GET-BUFFER-HANDLE(n)`, ...
-fn derived_root(e: &Expression) -> Option<&str> {
-    if identity_of(e).is_some() {
+fn derived_root(e: ExprId, pools: &AstPools) -> Option<&str> {
+    if identity_of(e, pools).is_some() {
         return None;
     }
-    let (root, last) = match &e.kind {
-        EK::Identifier(id) => split_chain(&id.name)?,
-        EK::FunctionCall { name, .. } => split_chain(&name.name)?,
-        EK::MemberAccess { object, member } => (chain_start(object)?, member.name.as_str()),
-        EK::MethodCall { object, method, .. } => (chain_start(object)?, method.name.as_str()),
+    let (root, last) = match &pools.expr(e).kind {
+        EK::Identifier(id) => split_chain(pools.ident(*id))?,
+        EK::FunctionCall { name, .. } => split_chain(pools.ident(*name))?,
+        EK::MemberAccess { object, member } => (chain_start(*object, pools)?, pools.ident(*member)),
+        EK::MethodCall { object, method, .. } => {
+            (chain_start(*object, pools)?, pools.ident(*method))
+        }
         _ => return None,
     };
     yields_handle(last).then_some(root)
@@ -571,11 +597,15 @@ fn split_chain(name: &str) -> Option<(&str, &str)> {
     (!root.is_empty() && !root.contains('.')).then_some((root, last))
 }
 
-fn chain_start(e: &Expression) -> Option<&str> {
-    match &e.kind {
-        EK::Identifier(id) => split_chain(&id.name).map(|(r, _)| r).or_else(|| var_of(e)),
-        EK::FunctionCall { name, .. } => split_chain(&name.name).map(|(r, _)| r),
-        EK::MemberAccess { object, .. } | EK::MethodCall { object, .. } => chain_start(object),
+fn chain_start(e: ExprId, pools: &AstPools) -> Option<&str> {
+    match &pools.expr(e).kind {
+        EK::Identifier(id) => split_chain(pools.ident(*id))
+            .map(|(r, _)| r)
+            .or_else(|| var_of(e, pools)),
+        EK::FunctionCall { name, .. } => split_chain(pools.ident(*name)).map(|(r, _)| r),
+        EK::MemberAccess { object, .. } | EK::MethodCall { object, .. } => {
+            chain_start(*object, pools)
+        }
         _ => None,
     }
 }
@@ -591,29 +621,30 @@ fn yields_handle(member: &str) -> bool {
 }
 
 /// Calls inside an expression that keep, free or hide a handle argument.
-fn scan<'a>(e: &'a Expression, src: &str, out: &mut Effects<'a>) {
-    match &e.kind {
+fn scan<'a>(e: ExprId, pools: &'a AstPools, src: &str, out: &mut Effects<'a>) {
+    match &pools.expr(e).kind {
         EK::FunctionCall { name, arguments } => {
-            let n = name.name.as_str();
+            let n = pools.ident(*name);
+            let args = pools.exprs(*arguments);
             if n.eq_ignore_ascii_case("DYNAMIC-NEW") {
                 out.push(Effect::Collected);
-                opaque_args(arguments.iter().skip(1), out);
+                opaque_args(args.iter().copied().skip(1), pools, out);
             } else if n.eq_ignore_ascii_case("DYNAMIC-FUNCTION") {
                 // `DYNAMIC-FUNCTION("f" IN h, ...)`: `h` is where the function
                 // runs, not an argument.
-                let skip = if dynamic_function_in(arguments, src) {
+                let skip = if dynamic_function_in(args, pools, src) {
                     2
                 } else {
                     1
                 };
-                opaque_args(arguments.iter().skip(skip), out);
+                opaque_args(args.iter().copied().skip(skip), pools, out);
             } else if n.eq_ignore_ascii_case("DYNAMIC-INVOKE") {
-                opaque_args(arguments.iter().skip(2), out);
+                opaque_args(args.iter().copied().skip(2), pools, out);
             } else if let Some(callee) = function_callee(n) {
-                pass_args(arguments, callee, out);
+                pass_args(args, pools, callee, out);
             }
-            for a in arguments {
-                scan(a, src, out);
+            for &a in args {
+                scan(a, pools, src, out);
             }
         }
         EK::MethodCall {
@@ -621,29 +652,33 @@ fn scan<'a>(e: &'a Expression, src: &str, out: &mut Effects<'a>) {
             method,
             arguments,
         } => {
-            scan(object, src, out);
-            for a in arguments {
-                scan(a, src, out);
+            let args = pools.exprs(*arguments);
+            scan(*object, pools, src, out);
+            for &a in args {
+                scan(a, pools, src, out);
             }
-            if method.name.eq_ignore_ascii_case("ADD-BUFFER") {
-                let recv = var_of(object);
-                for a in arguments {
-                    let var = match &a.kind {
+            let method_name = pools.ident(*method);
+            if method_name.eq_ignore_ascii_case("ADD-BUFFER") {
+                let recv = var_of(*object, pools);
+                for &a in args {
+                    let var = match &pools.expr(a).kind {
                         EK::MemberAccess { object, member }
-                            if member.name.eq_ignore_ascii_case("DEFAULT-BUFFER-HANDLE") =>
+                            if pools
+                                .ident(*member)
+                                .eq_ignore_ascii_case("DEFAULT-BUFFER-HANDLE") =>
                         {
-                            var_of(object)
+                            var_of(*object, pools)
                         }
-                        _ => var_of(a),
+                        _ => var_of(a, pools),
                     };
                     if let Some(var) = var {
                         out.push(Effect::Attach { recv, var });
                     }
                 }
             }
-            if method.name.eq_ignore_ascii_case("ADD-SUPER-PROCEDURE") {
-                for a in arguments {
-                    if let Some(var) = var_of(a) {
+            if method_name.eq_ignore_ascii_case("ADD-SUPER-PROCEDURE") {
+                for &a in args {
+                    if let Some(var) = var_of(a, pools) {
                         out.push(Effect::Escape {
                             var,
                             kind: EscapeKind::SuperProcedure,
@@ -652,19 +687,20 @@ fn scan<'a>(e: &'a Expression, src: &str, out: &mut Effects<'a>) {
                 }
             } else {
                 let callee = Callee::Method {
-                    name: &method.name,
-                    recv: receiver(object),
+                    name: method_name,
+                    recv: receiver(*object, pools),
                 };
-                pass_args(arguments, callee, out);
+                pass_args(args, pools, callee, out);
             }
         }
         EK::New { arguments, .. } => {
-            for a in arguments {
-                scan(a, src, out);
+            let args = pools.exprs(*arguments);
+            for &a in args {
+                scan(a, pools, src, out);
             }
             out.push(Effect::Collected);
-            for a in arguments {
-                if let Some(var) = var_of(a) {
+            for &a in args {
+                if let Some(var) = var_of(a, pools) {
                     out.push(Effect::Escape {
                         var,
                         kind: EscapeKind::ConstructorArgument,
@@ -688,28 +724,28 @@ fn scan<'a>(e: &'a Expression, src: &str, out: &mut Effects<'a>) {
         | EK::Contains(a, b)
         | EK::And(a, b)
         | EK::Or(a, b) => {
-            scan(a, src, out);
-            scan(b, src, out);
+            scan(*a, pools, src, out);
+            scan(*b, pools, src, out);
         }
-        EK::Negate(a) | EK::Not(a) => scan(a, src, out),
+        EK::Negate(a) | EK::Not(a) => scan(*a, pools, src, out),
         EK::IfThenElse(c, a, b) => {
-            scan(c, src, out);
-            scan(a, src, out);
-            scan(b, src, out);
+            scan(*c, pools, src, out);
+            scan(*a, pools, src, out);
+            scan(*b, pools, src, out);
         }
-        EK::MemberAccess { object, .. } => scan(object, src, out),
+        EK::MemberAccess { object, .. } => scan(*object, pools, src, out),
         EK::ArrayAccess { array, index } => {
-            scan(array, src, out);
-            scan(index, src, out);
+            scan(*array, pools, src, out);
+            scan(*index, pools, src, out);
         }
-        EK::FieldAccess { qualifier, .. } => scan(qualifier, src, out),
+        EK::FieldAccess { qualifier, .. } => scan(*qualifier, pools, src, out),
         EK::PreprocIf(p) => {
-            scan(&p.then_branch, src, out);
-            for (_, b) in &p.elseif_branches {
-                scan(b, src, out);
+            scan(p.then_branch, pools, src, out);
+            for &(_, b) in &p.elseif_branches {
+                scan(b, pools, src, out);
             }
-            if let Some(b) = &p.else_branch {
-                scan(b, src, out);
+            if let Some(b) = p.else_branch {
+                scan(b, pools, src, out);
             }
         }
         _ => {}
@@ -736,19 +772,19 @@ fn function_callee(name: &str) -> Option<Callee<'_>> {
 }
 
 /// What the object of a method call is.
-fn receiver(object: &Expression) -> Receiver<'_> {
-    if let Some(name) = var_of(object) {
+fn receiver<'a>(object: ExprId, pools: &'a AstPools) -> Receiver<'a> {
+    if let Some(name) = var_of(object, pools) {
         return Receiver::Name(name);
     }
-    let last = match &object.kind {
-        EK::Identifier(id) => split_chain(&id.name).map(|(_, last)| last),
-        EK::MemberAccess { member, .. } => Some(member.name.as_str()),
+    let last = match &pools.expr(object).kind {
+        EK::Identifier(id) => split_chain(pools.ident(*id)).map(|(_, last)| last),
+        EK::MemberAccess { member, .. } => Some(pools.ident(*member)),
         _ => None,
     };
     if last.is_some_and(is_handle_attribute) {
         return Receiver::Handle;
     }
-    chain_start(object).map_or(Receiver::Other, Receiver::Chain)
+    chain_start(object, pools).map_or(Receiver::Other, Receiver::Chain)
 }
 
 /// `HANDLE`, `DEFAULT-BUFFER-HANDLE`, `TABLE-HANDLE`, ...: the value is a
@@ -835,9 +871,9 @@ pub(crate) fn is_builtin_method(name: &str) -> bool {
         .any(|m| name.eq_ignore_ascii_case(m))
 }
 
-fn pass_args<'a>(args: &'a [Expression], callee: Callee<'a>, out: &mut Effects<'a>) {
-    for (pos, a) in args.iter().enumerate() {
-        if let Some(var) = identity_of(a) {
+fn pass_args<'a>(args: &[ExprId], pools: &'a AstPools, callee: Callee<'a>, out: &mut Effects<'a>) {
+    for (pos, &a) in args.iter().enumerate() {
+        if let Some(var) = identity_of(a, pools) {
             out.push(Effect::Pass { var, callee, pos });
         }
     }
@@ -871,19 +907,19 @@ fn copied_argument(src: &str, span: Span) -> bool {
             .any(|w| w.eq_ignore_ascii_case("BY-REFERENCE") || w.eq_ignore_ascii_case("BIND"))
 }
 
-fn is_this_procedure(e: &Expression) -> bool {
-    matches!(&e.kind, EK::Identifier(id) if id.name.eq_ignore_ascii_case("THIS-PROCEDURE"))
+fn is_this_procedure(e: ExprId, pools: &AstPools) -> bool {
+    matches!(&pools.expr(e).kind, EK::Identifier(id) if pools.ident(*id).eq_ignore_ascii_case("THIS-PROCEDURE"))
 }
 
 /// A `DELETE` or `RELEASE` operand: a free of the variable it is the same
 /// object as, else opaque for every variable it mentions.
-fn free_operand<'a>(t: &'a Expression, kind: FreeKind, out: &mut Effects<'a>) {
-    if let Some(var) = identity_of(t) {
+fn free_operand<'a>(t: ExprId, pools: &'a AstPools, kind: FreeKind, out: &mut Effects<'a>) {
+    if let Some(var) = identity_of(t, pools) {
         out.push(Effect::Free { var, kind });
         return;
     }
-    let mut names = SmallVec::<[&str; 4]>::new();
-    mentions(t, &mut names);
+    let mut names = SmallVec::<[&'a str; 4]>::new();
+    mentions(t, pools, &mut names);
     for var in names {
         out.push(Effect::Opaque {
             var,
@@ -893,44 +929,45 @@ fn free_operand<'a>(t: &'a Expression, kind: FreeKind, out: &mut Effects<'a>) {
 }
 
 /// The variables an expression names, by the root of each chain.
-fn mentions<'a>(e: &'a Expression, out: &mut SmallVec<[&'a str; 4]>) {
+fn mentions<'a>(e: ExprId, pools: &'a AstPools, out: &mut SmallVec<[&'a str; 4]>) {
     let root = |name: &'a str| name.split([':', '.']).next().filter(|r| !r.is_empty());
-    match &e.kind {
-        EK::Identifier(id) => out.extend(root(&id.name)),
+    match &pools.expr(e).kind {
+        EK::Identifier(id) => out.extend(root(pools.ident(*id))),
         EK::FunctionCall { name, arguments } => {
-            if name.name.contains(':') {
-                out.extend(root(&name.name));
+            let n = pools.ident(*name);
+            if n.contains(':') {
+                out.extend(root(n));
             }
-            for a in arguments {
-                mentions(a, out);
+            for &a in pools.exprs(*arguments) {
+                mentions(a, pools, out);
             }
         }
         EK::MethodCall {
             object, arguments, ..
         } => {
-            mentions(object, out);
-            for a in arguments {
-                mentions(a, out);
+            mentions(*object, pools, out);
+            for &a in pools.exprs(*arguments) {
+                mentions(a, pools, out);
             }
         }
-        EK::MemberAccess { object, .. } => mentions(object, out),
+        EK::MemberAccess { object, .. } => mentions(*object, pools, out),
         EK::ArrayAccess { array, index } => {
-            mentions(array, out);
-            mentions(index, out);
+            mentions(*array, pools, out);
+            mentions(*index, pools, out);
         }
-        EK::FieldAccess { qualifier, .. } => mentions(qualifier, out),
+        EK::FieldAccess { qualifier, .. } => mentions(*qualifier, pools, out),
         EK::Add(a, b) | EK::Minus(a, b) | EK::Multiply(a, b) | EK::Divide(a, b) => {
-            mentions(a, out);
-            mentions(b, out);
+            mentions(*a, pools, out);
+            mentions(*b, pools, out);
         }
-        EK::Negate(a) | EK::Not(a) => mentions(a, out),
+        EK::Negate(a) | EK::Not(a) => mentions(*a, pools, out),
         _ => {}
     }
 }
 
-fn opaque_args<'a>(args: impl Iterator<Item = &'a Expression>, out: &mut Effects<'a>) {
+fn opaque_args<'a>(args: impl Iterator<Item = ExprId>, pools: &'a AstPools, out: &mut Effects<'a>) {
     for a in args {
-        if let Some(var) = var_of(a) {
+        if let Some(var) = var_of(a, pools) {
             out.push(Effect::Opaque {
                 var,
                 reason: OpaqueReason::DynamicCall,
@@ -940,30 +977,33 @@ fn opaque_args<'a>(args: impl Iterator<Item = &'a Expression>, out: &mut Effects
 }
 
 /// Whether `IN` separates the first two arguments of a `DYNAMIC-FUNCTION`.
-fn dynamic_function_in(args: &[Expression], src: &str) -> bool {
-    let (Some(a), Some(b)) = (args.first(), args.get(1)) else {
+fn dynamic_function_in(args: &[ExprId], pools: &AstPools, src: &str) -> bool {
+    let (Some(&a), Some(&b)) = (args.first(), args.get(1)) else {
         return false;
     };
     let gap = Span {
-        start: a.span.end,
-        end: b.span.start,
+        start: pools.expr(a).span.end,
+        end: pools.expr(b).span.start,
     };
     tokens(src, gap).any(|k| k == Kind::KwIn)
 }
 
 /// The variable named by a plain identifier expression.
-pub(crate) fn var_of(e: &Expression) -> Option<&str> {
-    match &e.kind {
-        EK::Identifier(id) if !id.name.contains(['.', ':']) => Some(&id.name),
+pub(crate) fn var_of(e: ExprId, pools: &AstPools) -> Option<&str> {
+    match &pools.expr(e).kind {
+        EK::Identifier(id) => {
+            let name = pools.ident(*id);
+            (!name.contains(['.', ':'])).then_some(name)
+        }
         _ => None,
     }
 }
 
 /// The variable an expression is the same object as: `h`, or `h:HANDLE`.
-pub(crate) fn identity_of(e: &Expression) -> Option<&str> {
-    match &e.kind {
-        EK::Identifier(id) => match id.name.split_once(':') {
-            None => var_of(e),
+pub(crate) fn identity_of(e: ExprId, pools: &AstPools) -> Option<&str> {
+    match &pools.expr(e).kind {
+        EK::Identifier(id) => match pools.ident(*id).split_once(':') {
+            None => var_of(e, pools),
             Some((root, rest))
                 if rest.eq_ignore_ascii_case("HANDLE")
                     && !root.is_empty()
@@ -973,17 +1013,19 @@ pub(crate) fn identity_of(e: &Expression) -> Option<&str> {
             }
             _ => None,
         },
-        EK::MemberAccess { object, member } if member.name.eq_ignore_ascii_case("HANDLE") => {
-            var_of(object)
+        EK::MemberAccess { object, member }
+            if pools.ident(*member).eq_ignore_ascii_case("HANDLE") =>
+        {
+            var_of(*object, pools)
         }
         _ => None,
     }
 }
 
 /// Where an assignment target stores its value.
-fn place_of(e: &Expression) -> Option<Place<'_>> {
-    match &e.kind {
-        EK::Identifier(id) => Some(place_of_name(&id.name)),
+fn place_of<'a>(e: ExprId, pools: &'a AstPools) -> Option<Place<'a>> {
+    match &pools.expr(e).kind {
+        EK::Identifier(id) => Some(place_of_name(pools.ident(*id))),
         EK::ArrayAccess { .. } => Some(Place::Other(EscapeKind::ArrayElement)),
         EK::FieldAccess { .. } => Some(Place::Other(EscapeKind::Field)),
         EK::MemberAccess { .. } => Some(Place::Other(EscapeKind::Attribute)),
@@ -1001,8 +1043,8 @@ fn place_of_name(name: &str) -> Place<'_> {
     }
 }
 
-fn is_zero(e: &Expression) -> bool {
-    matches!(&e.kind, EK::Literal(Literal::Integer(i)) if i.value == 0)
+fn is_zero(e: ExprId, pools: &AstPools) -> bool {
+    matches!(&pools.expr(e).kind, EK::Literal(Literal::Integer(i)) if i.value == 0)
 }
 
 fn object_kind(k: CreateTargetKind) -> ObjectKind {
@@ -1035,10 +1077,11 @@ fn is_parent_attribute(name: &str) -> bool {
     name.eq_ignore_ascii_case("FRAME") || name.eq_ignore_ascii_case("PARENT")
 }
 
-fn pool_name(e: &Expression, src: &str) -> String {
-    match &e.kind {
-        EK::Literal(Literal::String(s)) => s.value.to_ascii_lowercase(),
-        _ => slice(src, e.span).trim().to_ascii_lowercase(),
+fn pool_name(e: ExprId, pools: &AstPools, src: &str) -> String {
+    let expr = pools.expr(e);
+    match &expr.kind {
+        EK::Literal(Literal::String(s)) => pools.name(s.value).to_ascii_lowercase(),
+        _ => slice(src, expr.span).trim().to_ascii_lowercase(),
     }
 }
 
@@ -1061,37 +1104,38 @@ pub(crate) type Guards<'a> = SmallVec<[Guard<'a>; 1]>;
 
 /// The guards of an `IF` condition: one for each holder a test names, and one
 /// for the error status.
-pub(crate) fn guards(cond: &Expression) -> Guards<'_> {
-    let mut vars: SmallVec<[Option<&str>; 2]> = SmallVec::new();
+pub(crate) fn guards<'a>(cond: ExprId, pools: &'a AstPools) -> Guards<'a> {
+    let mut vars: SmallVec<[Option<&'a str>; 2]> = SmallVec::new();
     let mut error = false;
-    collect_tested(cond, &mut vars, &mut error);
+    collect_tested(cond, pools, &mut vars, &mut error);
     if error {
         vars.push(None);
     }
     vars.into_iter()
         .filter_map(|var| {
-            let live = var.and_then(|v| eval(cond, Some(v), false));
-            let created = eval(cond, var, true);
+            let live = var.and_then(|v| eval(cond, pools, Some(v), false));
+            let created = eval(cond, pools, var, true);
             (live.is_some() || created.is_some()).then_some(Guard { var, live, created })
         })
         .collect()
 }
 
 fn collect_tested<'a>(
-    e: &'a Expression,
+    e: ExprId,
+    pools: &'a AstPools,
     vars: &mut SmallVec<[Option<&'a str>; 2]>,
     error: &mut bool,
 ) {
-    match &e.kind {
-        EK::Not(a) => collect_tested(a, vars, error),
+    match &pools.expr(e).kind {
+        EK::Not(a) => collect_tested(*a, pools, vars, error),
         EK::And(a, b) | EK::Or(a, b) => {
-            collect_tested(a, vars, error);
-            collect_tested(b, vars, error);
+            collect_tested(*a, pools, vars, error);
+            collect_tested(*b, pools, vars, error);
         }
         _ => {
-            if is_error_status(e) {
+            if is_error_status(e, pools) {
                 *error = true;
-            } else if let Some(v) = tested_var(e)
+            } else if let Some(v) = tested_var(e, pools)
                 && !vars.contains(&Some(v))
             {
                 vars.push(Some(v));
@@ -1101,18 +1145,23 @@ fn collect_tested<'a>(
 }
 
 /// The holder a validity or `?` comparison names.
-fn tested_var(e: &Expression) -> Option<&str> {
-    match &e.kind {
-        EK::FunctionCall { name, arguments }
-            if is_validity_test(&name.name) && arguments.len() == 1 =>
-        {
-            var_of(&arguments[0])
+fn tested_var(e: ExprId, pools: &AstPools) -> Option<&str> {
+    match &pools.expr(e).kind {
+        EK::FunctionCall { name, arguments } => {
+            let args = pools.exprs(*arguments);
+            if is_validity_test(pools.ident(*name)) && args.len() == 1 {
+                var_of(args[0], pools)
+            } else {
+                None
+            }
         }
-        EK::Equal(a, b) | EK::NotEqual(a, b) => match (&a.kind, &b.kind) {
-            (_, EK::Literal(Literal::Unknown(_))) => var_of(a),
-            (EK::Literal(Literal::Unknown(_)), _) => var_of(b),
-            _ => None,
-        },
+        EK::Equal(a, b) | EK::NotEqual(a, b) => {
+            match (&pools.expr(*a).kind, &pools.expr(*b).kind) {
+                (_, EK::Literal(Literal::Unknown(_))) => var_of(*a, pools),
+                (EK::Literal(Literal::Unknown(_)), _) => var_of(*b, pools),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -1121,13 +1170,13 @@ fn is_validity_test(name: &str) -> bool {
     name.eq_ignore_ascii_case("VALID-HANDLE") || name.eq_ignore_ascii_case("VALID-OBJECT")
 }
 
-fn is_error_status(e: &Expression) -> bool {
-    match &e.kind {
-        EK::Identifier(id) => id.name.eq_ignore_ascii_case("ERROR-STATUS:ERROR"),
+fn is_error_status(e: ExprId, pools: &AstPools) -> bool {
+    match &pools.expr(e).kind {
+        EK::Identifier(id) => pools.ident(*id).eq_ignore_ascii_case("ERROR-STATUS:ERROR"),
         EK::MemberAccess { object, member } => {
-            member.name.eq_ignore_ascii_case("ERROR")
-                && matches!(&object.kind, EK::Identifier(id)
-                    if id.name.eq_ignore_ascii_case("ERROR-STATUS"))
+            pools.ident(*member).eq_ignore_ascii_case("ERROR")
+                && matches!(&pools.expr(*object).kind, EK::Identifier(id)
+                    if pools.ident(*id).eq_ignore_ascii_case("ERROR-STATUS"))
         }
         _ => false,
     }
@@ -1135,27 +1184,34 @@ fn is_error_status(e: &Expression) -> bool {
 
 /// The value of `cond` when `var` holds a live object (valid, not unknown) and,
 /// if `error_clear`, `ERROR-STATUS:ERROR` is false; `None` when it varies.
-fn eval(cond: &Expression, var: Option<&str>, error_clear: bool) -> Option<bool> {
-    match &cond.kind {
-        EK::Not(a) => eval(a, var, error_clear).map(|v| !v),
-        EK::And(a, b) => match (eval(a, var, error_clear), eval(b, var, error_clear)) {
+fn eval(cond: ExprId, pools: &AstPools, var: Option<&str>, error_clear: bool) -> Option<bool> {
+    let kind = &pools.expr(cond).kind;
+    match kind {
+        EK::Not(a) => eval(*a, pools, var, error_clear).map(|v| !v),
+        EK::And(a, b) => match (
+            eval(*a, pools, var, error_clear),
+            eval(*b, pools, var, error_clear),
+        ) {
             (Some(false), _) | (_, Some(false)) => Some(false),
             (Some(true), Some(true)) => Some(true),
             _ => None,
         },
-        EK::Or(a, b) => match (eval(a, var, error_clear), eval(b, var, error_clear)) {
+        EK::Or(a, b) => match (
+            eval(*a, pools, var, error_clear),
+            eval(*b, pools, var, error_clear),
+        ) {
             (Some(true), _) | (_, Some(true)) => Some(true),
             (Some(false), Some(false)) => Some(false),
             _ => None,
         },
-        _ if is_error_status(cond) => error_clear.then_some(false),
+        _ if is_error_status(cond, pools) => error_clear.then_some(false),
         _ => {
             let v = var?;
-            if tested_var(cond)? != v {
+            if tested_var(cond, pools)? != v {
                 return None;
             }
             // Valid and not unknown: a validity test and `<> ?` hold.
-            Some(!matches!(cond.kind, EK::Equal(..)))
+            Some(!matches!(kind, EK::Equal(..)))
         }
     }
 }
