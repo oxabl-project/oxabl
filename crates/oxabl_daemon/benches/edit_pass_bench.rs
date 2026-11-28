@@ -124,9 +124,11 @@ impl Fixture {
         let key = path.to_string_lossy().into_owned();
         let host = SessionHost::new();
         host.with(|sessions| {
-            sessions
-                .for_root(&root)
-                .set_buffer(&key, file.text.clone(), Some(path.clone()));
+            let session = sessions.for_root(&root);
+            // An editor registers the watch of the files, so a pass after an
+            // edit keeps the list of files of the pass before.
+            session.watch_files();
+            session.set_buffer(&key, file.text.clone(), Some(path.clone()));
         });
         let fixture = Fixture {
             host,

@@ -56,6 +56,10 @@ name = "self_update"
 required-features = ["self-update"]
 
 [[test]]
+name = "daemon_pass_facts"
+required-features = ["cli"]
+
+[[test]]
 name = "build_remote_cache"
 required-features = ["remote-cache"]
 

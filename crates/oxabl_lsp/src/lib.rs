@@ -1077,6 +1077,9 @@ struct Negotiated {
     folding_range_limit: Option<usize>,
     /// Whether the client takes `window/workDoneProgress/create`.
     work_done_progress: bool,
+    /// Whether the client takes a dynamic registration of
+    /// `workspace/didChangeWatchedFiles`.
+    watches_files: bool,
 }
 
 fn serve_initialized(
@@ -1169,6 +1172,13 @@ fn finish_handshake(
         .as_ref()
         .and_then(|c| c.work_done_progress)
         .unwrap_or(false);
+    let watches_files = init
+        .capabilities
+        .workspace
+        .as_ref()
+        .and_then(|c| c.did_change_watched_files.as_ref())
+        .and_then(|c| c.dynamic_registration)
+        .unwrap_or(false);
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
@@ -1221,6 +1231,7 @@ fn finish_handshake(
             related_information,
             folding_range_limit,
             work_done_progress,
+            watches_files,
         },
         workspace_root,
     ))
@@ -1336,6 +1347,12 @@ struct Server<'c> {
     schema_requests: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Whether the client takes `window/workDoneProgress/create`.
     work_done_progress: bool,
+    /// Whether the client takes a dynamic registration of
+    /// `workspace/didChangeWatchedFiles`.
+    watches_files: bool,
+    /// Whether this server told its session that the client watches the files
+    /// (`Session::watch_files`), so that it takes the count back at the end.
+    file_watch_counted: bool,
     /// The `window/workDoneProgress/create` requests that wait for the client.
     progress_creations: std::sync::Arc<work_progress::Creations>,
 }
@@ -1366,6 +1383,9 @@ struct ComputeResult {
     config_generation: u64,
 }
 
+/// The id of the registration of the file watchers.
+const FILE_WATCH_ID: &str = "oxabl-file-watchers";
+
 impl<'c> Server<'c> {
     fn new(
         connection: &'c Connection,
@@ -1386,6 +1406,7 @@ impl<'c> Server<'c> {
             related_information,
             folding_range_limit,
             work_done_progress,
+            watches_files,
         } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         let (context_events, context_results) = crossbeam_channel::unbounded();
@@ -1427,6 +1448,8 @@ impl<'c> Server<'c> {
             references: references::InFlight::default(),
             schema_requests: Default::default(),
             work_done_progress,
+            watches_files,
+            file_watch_counted: false,
             progress_creations: Default::default(),
         }
     }
@@ -1560,6 +1583,7 @@ impl<'c> Server<'c> {
                             self.handle_notification(not);
                         }
                         Message::Response(response) => {
+                            self.file_watch_answered(&response);
                             self.progress_creations.answered(&response);
                         }
                     }
@@ -1962,7 +1986,13 @@ impl<'c> Server<'c> {
     /// The list comes from [`oxabl_workspace::ROOT_EXTENSIONS`] rather than being
     /// spelled out here, so the watch cannot drift from the one root-file policy
     /// the discovery walk and the index's own search both use.
-    fn register_file_watchers(&self) {
+    ///
+    /// A client that takes the registration is a watcher of the session: the
+    /// daemon keeps the file list of a workspace pass only while one is
+    /// attached (`Session::watch_files`). Only the extensions of
+    /// [`oxabl_workspace::ROOT_EXTENSIONS`] are watched, so the daemon walks
+    /// again when the configuration names another one.
+    fn register_file_watchers(&mut self) {
         let mut watchers = vec![
             serde_json::json!({ "globPattern": "**/*.i" }),
             serde_json::json!({ "globPattern": "**/*.df" }),
@@ -1975,7 +2005,7 @@ impl<'c> Server<'c> {
         );
         let params = serde_json::json!({
             "registrations": [{
-                "id": "oxabl-file-watchers",
+                "id": FILE_WATCH_ID,
                 "method": "workspace/didChangeWatchedFiles",
                 "registerOptions": {
                     "watchers": watchers
@@ -1983,11 +2013,34 @@ impl<'c> Server<'c> {
             }]
         });
         let request = Request {
-            id: RequestId::from("oxabl-file-watchers".to_string()),
+            id: RequestId::from(FILE_WATCH_ID.to_string()),
             method: "client/registerCapability".to_string(),
             params,
         };
         let _ = self.connection.sender.send(Message::Request(request));
+        if self.watches_files && !self.file_watch_counted {
+            self.file_watch_counted = true;
+            self.host.with(|sessions| {
+                sessions.for_root(&self.session_root).watch_files();
+            });
+        }
+    }
+
+    /// The client's answer to the watch registration. A client that refuses it
+    /// sends no events.
+    fn file_watch_answered(&mut self, response: &Response) {
+        if response.id == RequestId::from(FILE_WATCH_ID.to_string()) && response.error.is_some() {
+            self.file_watch_ended();
+        }
+    }
+
+    /// The client does not watch the files (any more).
+    fn file_watch_ended(&mut self) {
+        if std::mem::take(&mut self.file_watch_counted) {
+            self.host.with(|sessions| {
+                sessions.for_root(&self.session_root).unwatch_files();
+            });
+        }
     }
 
     /// Resolve the one [`PipelineConfig`] for a document `path` and install it in
@@ -2414,6 +2467,7 @@ impl<'c> Server<'c> {
             }
             session.detach(true);
         });
+        self.file_watch_ended();
     }
 
     /// Send a `textDocument/publishDiagnostics` notification.
@@ -2688,6 +2742,7 @@ mod tests {
                 related_information: false,
                 folding_range_limit: None,
                 work_done_progress: false,
+                watches_files: false,
             },
             std::time::Duration::from_millis(10),
             None,

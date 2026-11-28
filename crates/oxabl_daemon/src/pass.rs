@@ -795,6 +795,10 @@ impl KeptPass {
         // The list of this pass: every file of it is still there.
         let current: Option<HashSet<&PathBuf>> =
             (!Arc::ptr_eq(files, &self.files)).then(|| files.iter().collect());
+        debug_assert!(
+            current.is_some() || self.entries.len() == files.len(),
+            "a kept list has an entry for each of its files"
+        );
         let mut kept = KeptPass {
             config: self.config.clone(),
             table: Arc::clone(&self.table),

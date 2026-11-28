@@ -133,26 +133,54 @@ records are shared one by one, so a pass does not copy the paths or the stamps.
 
 ## The file list
 
-The files of a pass are the files that a walk of the workspace finds. Each pass
-before this change walked again. Now the list is part of the kept pass
-(`KeptPass::files`, shared with `Arc`), and a pass keeps the list of the pass
+The files of a pass are the files that a walk of the workspace finds. The list
+is part of the kept pass (`KeptPass::files`, shared with `Arc`). A pass that
+follows a move of the buffers (`Refresh::IfMoved`) keeps the list of the pass
 before when all of these are true:
 
-- the pass runs because the buffers moved (`Refresh::IfMoved`). A pass that the
-  freshness check asked for (`Refresh::Again`), and a full pass, walk;
-- no client said that a file was created, deleted or renamed since the pass
-  before. The language server tells the daemon about each such
-  `workspace/didChangeWatchedFiles` event (`Session::note_files_changed`), and
-  the next pass walks;
+- a client watches the files. The language server registers
+  `workspace/didChangeWatchedFiles` for a client that announced
+  `workspace.didChangeWatchedFiles.dynamicRegistration`, and counts the client
+  in its session (`Session::watch_files`). A client that cannot register a
+  watch sends no event, so nothing tells a pass that its list is stale, and
+  each pass walks. The count ends with the client, or when the client refuses
+  the registration;
+- the watch names every extension of the root files. It has one glob for each
+  of `oxabl_workspace::ROOT_EXTENSIONS`. A configuration with another
+  `root_extensions` entry makes each pass walk. The globs are the same for
+  every configuration, so a change of the configuration needs no new
+  registration;
+- no client said that a file was created or deleted since the pass before. The
+  language server counts each such event of `workspace/didChangeWatchedFiles`
+  (a created or deleted file, or a folder, whatever its name) in
+  `Session::note_files_changed`. A stored pass that was taken before the event
+  is not current, so the next request that checks for a current pass runs a
+  pass that walks, with no edit in between;
 - the pass reuses the configuration of the pass before (the same
   `Arc<PipelineConfig>`), so the extensions of the root files are the same. A
-  change of the configuration drops the stored pass.
+  change of the configuration walks. The configuration key decides whether the
+  pass is full;
+- the pass is not full.
 
-A file that came or went with no event is found by the freshness check: it
-walks, compares the count with the count of the pass, and asks for a pass that
-walks. So a pass that keeps the list can miss such a file until the next
-freshness check (the walk of the check runs at most once in each second). A
-file that went and is still in the list reads as an input that changed, and
+The first client that watches moves the epoch, because the daemon heard no
+event before it, so the pass that follows walks.
+
+A pass that `reference_graph` forces because its freshness check found the
+index stale (`Refresh::Again`) walks. Only the requests that call
+`reference_graph` check freshness: find references, the call hierarchy and the
+reference lenses. The other requests (`workspace/symbol`, `oxabl/impact` and
+the includer contexts) run `ensure_workspace` and read the pass as it is, so
+they see a file that came or went through an event only.
+
+A file that came or went with no event, from a client that watches the files,
+is not in the pass that follows a move of the buffers. It is found by the
+freshness check of a references request. A watch has a latency, so an event
+can arrive after the pass that an edit started: that pass keeps the old list,
+and the pass that the event makes stale walks. A file with an extension that
+differs from the glob in its letter case (`A.P`) is also in the walk and not in
+the watch of a client that matches globs by case.
+
+A file that went and is still in the list reads as an input that changed, and
 the pass analyses it again: it has no part.
 
 A kept list also makes the pass cheaper in two places. `incremental_pass`
@@ -268,7 +296,8 @@ about 17 ms after, on one thread):
 
 - the join of the graph from all the parts: 7 ms, now 2 ms;
 - the walk for the files of the workspace: 4 ms, now 0.7 ms, and a pass after
-  an edit of a buffer does not walk at all. The walk asks for
+  an edit of a buffer does not walk at all for a client that watches the files
+  (the bench runs one). The walk asks for
   the canonical path of each file only when it met a symbolic link, because
   without a link no file has a second spelling;
 - the rows of the symbol search are shared and no longer copied at each pass;
@@ -285,7 +314,7 @@ about 17 ms after, on one thread):
 `crates/oxabl/tests/incremental_pass_lsp.rs` runs the real `oxabl lsp`. A test
 build of the daemon writes one line to stderr for each pass when
 `OXABL_TEST_PASS_COUNTS` is set: `oxabl-test: workspace pass analysed <n> of
-<m> files, kept <bytes> bytes`. The tests check:
+<m> files, kept <bytes> bytes, file list <kept|walked>`. The tests check:
 
 - an open of a file with its disk text analyses no file;
 - an edit of a procedure file, a class and an include analyses at most four of
@@ -302,9 +331,18 @@ build of the daemon writes one line to stderr for each pass when
   facts of another thread, so the test fails when the sharing drops the
   observations;
 - a file created on disk and announced by `workspace/didChangeWatchedFiles` is
-  in the next pass that an edit of a buffer starts, and a file deleted is not.
-  The test asks `workspace/symbol`, which runs no walk of its own, and fails
-  when the daemon does not hear about the event.
+  in the next pass, and the rows of a file deleted, or of a deleted folder, are
+  not. The test asks `workspace/symbol`, which runs no walk of its own, with
+  the query of the file's own row, and fails when the daemon does not hear
+  about the event. An event with no edit after it runs the next pass;
+- a client that does not register a watch has each pass walk: a file that
+  came or went on disk only is seen. A pass logs whether its file list was
+  kept or walked, and the test reads it for a client that watches and for one
+  that does not;
+- `crates/oxabl/tests/daemon_pass_facts.rs` runs a pass on four threads in the
+  test process and reads the bytes that the parser counted: a program that 60
+  files run is parsed once for the facts of the pass, so it fails when the
+  pipelines of the threads stop sharing them.
 
 `crates/oxabl/tests/watched_files_scope_lsp.rs` sends the events of a sibling
 folder (a program, an include, a `.df` file and an `oxabl.toml`) and checks
