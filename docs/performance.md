@@ -136,10 +136,10 @@ compares the bytes that the returned `Program` keeps:
 | Stage | Allocations | Bytes | Kept |
 | --- | --- | --- | --- |
 | lex | 1 | 310,284 | |
-| parse | 891 | 1,767,618 | 1,186,642 |
+| parse | 890 | 1,280,178 | 1,024,162 |
 
 The kept bytes include the capacity that the vectors of the program do not use
-(274,418 bytes here): the parser sizes the pools from the number of tokens and
+(111,938 bytes here): the parser sizes the pools from the number of tokens and
 does not shrink them, and a shrink of the expression pool alone costs 4% of the
 instructions of this parse. The statement list is shrunk: it costs a few
 hundred instructions, and a file with one top-level statement, such as a class,
@@ -147,6 +147,15 @@ would otherwise keep the capacity of 64 statements. The counter counts the
 shrink, a `realloc`, as one more allocation and its new size as bytes
 requested, so the bytes of the `check` benches below read about 5% higher for
 it; their peak reads lower.
+
+The expression pool is sized at half the number of tokens. `lsp_bench.p` holds
+8,259 expressions for 20,311 tokens, more than the third that the pool once had.
+The vector then grew once, and a growth copies the whole pool unless the
+allocator can extend it in place. That depends on the layout of the heap, so the
+same parse cost 2% to 4% more or fewer instructions after an unrelated change
+of the allocations before it (`parser/large_mixed/lsp_bench` in CodSpeed). Keep
+the estimate above the density of `lsp_bench.p`, and check with callgrind that
+`RawVec<Expression>::grow_one` does not appear in its parse.
 
 The counts are the same on each run of one toolchain. The test fails when a
 number is more than 0.5% above its budget. It also fails when a number is more
