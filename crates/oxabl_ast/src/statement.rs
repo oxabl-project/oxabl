@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 ///
 /// Used as:
 /// - `Statement::PreprocIf(PreprocIf<Vec<Statement>>)` — statement level
-/// - `Expression::PreprocIf(Box<PreprocIf<Expression>>)` — expression level
+/// - `ExpressionKind::PreprocIf(PreprocIfId)` — expression level, stored in the `ExprPool`
 /// - `DataType::PreprocIf(Box<PreprocIf<DataType>>)` — data type level
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreprocIf<T> {
@@ -1186,8 +1186,7 @@ pub struct TypeArgument {
 
 /// The class names between the angle brackets of a generic type.
 ///
-/// A newtype so that a node can hold it behind an `Option<Box<_>>` and cost
-/// one word when it has none.
+/// A newtype so that a pool can store it and a node can hold a `TypeArgsId`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TypeArguments(pub Vec<TypeArgument>);
 
@@ -1242,7 +1241,7 @@ impl DataType {
 }
 
 /// ABL Record Lock Types
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockType {
     NoLock,
     ShareLock,
@@ -1257,7 +1256,7 @@ pub enum CloseKind {
 }
 
 /// ABL Find Type
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FindType {
     First,
     Last,
@@ -1570,8 +1569,6 @@ pub enum DataSourceKeys {
 // =============================================================================
 
 /// Target of a CREATE statement.
-// Boxing the payload would force every consumer to deref a field it matches on directly.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CreateTarget {
     /// CREATE buffer-name — record creation or any unrecognized CREATE.
@@ -1890,7 +1887,7 @@ mod skipped_tests {
                     name: pool.push(n),
                     span: Span {
                         start: span_start,
-                        end: span_start + n.len() as u32,
+                        end: span_start + u32::try_from(n.len()).expect("short test name"),
                     },
                 })
                 .collect(),

@@ -1084,8 +1084,8 @@ fn walk_expression(v: &mut impl Visitor, p: &AstPools, id: ExprId) {
             walk_expression(v, p, *object);
             walk_list(v, p, *arguments);
         }
-        ExpressionKind::PreprocIf(preproc) => {
-            walk_expression_preproc(v, p, preproc);
+        ExpressionKind::PreprocIf(id) => {
+            walk_expression_preproc(v, p, p.preproc_if(*id));
         }
         ExpressionKind::CanFind { where_clause, .. } => {
             walk_opt(v, p, *where_clause);

@@ -758,7 +758,8 @@ impl<'a> CheckWalker<'a> {
             | ExpressionKind::IncludeArgReference { .. }
             | ExpressionKind::PreprocReference(_) => ResolvedType::Unknown,
 
-            ExpressionKind::PreprocIf(pif) => {
+            ExpressionKind::PreprocIf(id) => {
+                let pif = self.pools.preproc_if(*id);
                 self.check_expression(pif.condition, scope);
                 let tt = self.check_expression(pif.then_branch, scope);
                 for (c, br) in &pif.elseif_branches {

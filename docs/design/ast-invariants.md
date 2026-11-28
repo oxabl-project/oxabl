@@ -175,7 +175,7 @@ should bottom out on the innermost non-postfix expression.
 ## 6. `PreprocIf<T>` never commits to preprocessor truth
 
 - `PreprocIf<T>` appears at three levels: `Statement::PreprocIf(PreprocIf<Vec<Statement>>)`,
-  `Expression::PreprocIf(Box<PreprocIf<ExprId>>)` (its branches are `ExprId`s, §14), and
+  `ExpressionKind::PreprocIf(PreprocIfId)` (its branches are `ExprId`s, §14), and
   (per the plan) a future `DataType::PreprocIf(Box<PreprocIf<DataType>>)`.
 - Every branch (`then_branch`, each `elseif_branches` branch, `else_branch` if present) is
   **parsed as though it were reachable**. The AST carries all branches; it does not evaluate
@@ -500,14 +500,19 @@ parse. The tree holds only handles into it.
 - **`NameId`** (4 bytes) is a handle into `NamePool`. `Identifier.name`, the value of a
   `StringLiteral` and the other names of the tree are `NameId`s. Read the text with
   `pools.name(id)` or `pools.ident(identifier)`. While it parses, the parser interns each
-  text once (`NameInterner`, case-sensitive); `finish` drops the hash table, so a kept tree
-  has no map.
+  text once (`NameInterner`, case-sensitive; a `hashbrown::HashTable` of ids that compares
+  against the pool); `finish` drops the table, so a kept tree has no map.
 - **`ExprId`** (4 bytes) is a handle into `ExprPool`. Every place that held an `Expression`,
   a `Box<Expression>` or an `Option<Expression>` holds an `ExprId` or an `Option<ExprId>`.
   Read the node with `pools.expr(id)`.
 - **`ExprList`** (8 bytes, a start and a length) is a run of `ExprId`s in the pool. Every
   place that held a `Vec<Expression>` holds an `ExprList`. Read it with `pools.exprs(list)`.
   An empty list is `ExprList::EMPTY` and holds no storage.
+- **`PreprocIfId`** and **`TypeArgsId`** (4 bytes each) are handles into side pools of
+  `ExprPool`, for the two payloads that own a `Vec`: the `PreprocIf<ExprId>` of a
+  mid-expression `&IF` (`pools.preproc_if(id)`) and the `TypeArguments` of a generic `NEW`
+  (`pools.type_args(id)`). They keep `ExpressionKind` and `Expression` `Copy`, with no drop
+  glue: a `const` assertion fails when a variant makes `Expression` need a drop.
 - **A handle is valid only with the pools of its own parse.** A handle from one `Program`
   read through the pools of another gives a wrong node or a panic. Code that keeps
   statements of several files (the workspace index, the daemon, a cross-file view) keeps each

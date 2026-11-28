@@ -744,7 +744,8 @@ impl Parser<'_> {
                 span: self.current_span(),
             });
         }
-        Ok(self.expr(ExpressionKind::PreprocIf(Box::new(preproc))))
+        let id = self.exprs.push_preproc_if(preproc);
+        Ok(self.expr(ExpressionKind::PreprocIf(id)))
     }
 
     fn parse_literal_primary(&mut self) -> ParseResult<ExprId> {
@@ -821,7 +822,8 @@ impl Parser<'_> {
 
         // Optional generic type args — `NEW List<String>(...)`.
         let type_arguments = self.parse_generic_type_args();
-        let type_arguments = (!type_arguments.0.is_empty()).then(|| Box::new(type_arguments));
+        let type_arguments =
+            (!type_arguments.0.is_empty()).then(|| self.exprs.push_type_args(type_arguments));
 
         // If no '(' follows, this is the logical NEW record-name test (boolean expression),
         // not an OO object constructor. Model it as `NEW(record)`, the shape

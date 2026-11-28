@@ -4378,6 +4378,7 @@ impl<'a> ResolveWalker<'a> {
                 let atom = fold_atom(class_name);
                 let span = VirtualSpan::new(expr.span.start, expr.span.end);
                 if let Some(type_arguments) = type_arguments {
+                    let type_arguments = self.ctx.pools.type_args(*type_arguments);
                     self.note_type_arguments(type_arguments, scope);
                 }
                 // A `NEW` operand is unambiguously a type name, so unlike a
@@ -4479,7 +4480,8 @@ impl<'a> ResolveWalker<'a> {
             ExpressionKind::IncludeReference { .. }
             | ExpressionKind::IncludeArgReference { .. }
             | ExpressionKind::PreprocReference(_) => {}
-            ExpressionKind::PreprocIf(pif) => {
+            ExpressionKind::PreprocIf(id) => {
+                let pif = self.ctx.pools.preproc_if(*id);
                 self.walk_expression(pif.condition, scope, AccessMode::Read);
                 self.walk_expression(pif.then_branch, scope, mode);
                 for (c, br) in &pif.elseif_branches {

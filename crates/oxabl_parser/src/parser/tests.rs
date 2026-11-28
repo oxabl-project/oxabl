@@ -7516,9 +7516,7 @@ fn a_new_expression_keeps_its_type_arguments() {
                 ..
             } => (
                 parser.name(*class_name).to_string(),
-                type_arguments
-                    .as_ref()
-                    .map(|args| render_args(&parser, args)),
+                type_arguments.map(|id| render_args(&parser, parser.exprs.type_args(id))),
             ),
             other => panic!("Expected New, got {other:?}"),
         }
@@ -8732,7 +8730,8 @@ fn preproc_if_expression() {
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
     match &parser.expr_node(expr).kind {
-        ExpressionKind::PreprocIf(preproc) => {
+        ExpressionKind::PreprocIf(id) => {
+            let preproc = parser.exprs.preproc_if(*id);
             assert!(matches!(
                 parser.expr_node(preproc.condition).kind,
                 ExpressionKind::Literal(_)
@@ -8770,7 +8769,8 @@ fn preproc_if_expression_with_function_call() {
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
     match &parser.expr_node(expr).kind {
-        ExpressionKind::PreprocIf(preproc) => {
+        ExpressionKind::PreprocIf(id) => {
+            let preproc = parser.exprs.preproc_if(*id);
             assert!(matches!(
                 parser.expr_node(preproc.condition).kind,
                 ExpressionKind::FunctionCall { .. }
@@ -8908,7 +8908,8 @@ fn preproc_if_expression_with_elseif() {
     let mut parser = Parser::new(&tokens, source);
     let expr = parser.parse_expression().expect("Expected expression");
     match &parser.expr_node(expr).kind {
-        ExpressionKind::PreprocIf(preproc) => {
+        ExpressionKind::PreprocIf(id) => {
+            let preproc = parser.exprs.preproc_if(*id);
             assert_eq!(preproc.elseif_branches.len(), 1);
             assert!(preproc.else_branch.is_some());
         }

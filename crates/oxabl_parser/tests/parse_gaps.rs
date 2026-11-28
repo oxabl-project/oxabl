@@ -385,12 +385,7 @@ fn can_find(source: &str) -> (FindType, LockType, bool, bool) {
     else {
         panic!("expected CAN-FIND, got {:?}", cond_expr.kind);
     };
-    (
-        find_type.clone(),
-        lock_type.clone(),
-        where_clause.is_some(),
-        *no_error,
-    )
+    (*find_type, *lock_type, where_clause.is_some(), *no_error)
 }
 
 #[test]

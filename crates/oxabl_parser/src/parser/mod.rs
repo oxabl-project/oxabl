@@ -319,9 +319,12 @@ impl<'a> Parser<'a> {
         };
         // Pre-size the expression and name pools proportionally to token count
         // to avoid geometric reallocs on medium/large files while keeping small
-        // snippet parses tiny.
+        // snippet parses tiny. A file of dense expressions holds one node for
+        // every 2.5 tokens, so `tok_count / 2` keeps the node vector from
+        // growing: a growth copies the whole pool unless the allocator can
+        // extend it in place, which depends on the layout of the heap.
         let tok_count = tokens.len();
-        let expr_cap = if tok_count >= 64 { tok_count / 3 } else { 0 };
+        let expr_cap = if tok_count >= 64 { tok_count / 2 } else { 0 };
         let list_cap = if tok_count >= 64 { tok_count / 8 } else { 0 };
         let name_cap = if tok_count >= 64 { tok_count / 12 } else { 0 };
         // The name text is sized from the text the tokens cover, not from the

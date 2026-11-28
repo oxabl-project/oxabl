@@ -128,9 +128,9 @@ fn parse_of_sp2k_df_stays_in_budget() {
 // its vectors do not use.
 const LEX_ALLOCATIONS: u64 = 1;
 const LEX_BYTES: u64 = 310_284;
-const PARSE_ALLOCATIONS: u64 = 891;
-const PARSE_BYTES: u64 = 1_792_194;
-const PARSE_RETAINED: u64 = 1_186_642;
+const PARSE_ALLOCATIONS: u64 = 890;
+const PARSE_BYTES: u64 = 1_280_178;
+const PARSE_RETAINED: u64 = 1_024_162;
 
 // The parse of `sp2k.df` (the strings the model keeps, and no string for a
 // keyword or an attribute word).
