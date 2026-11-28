@@ -1,7 +1,7 @@
 # One lexed and parsed unit for each text
 
-Issue #502 (part of #498). Status: design, and the first slice is done
-([Slices](#slices)).
+Issue #502 (part of #498). Status: design, and the first and the third slice
+are done ([Slices](#slices)).
 
 This design makes each run of oxabl lex and parse each distinct text one time.
 A run is one `oxabl check` (all its roots), one pass of `check --watch`, or one
@@ -31,6 +31,11 @@ the release binary at commit `89ab4c3`, with `-j 1`.
 | The expanded root | `ResolveWalker::receiver_is_no_class` (`names_after_widget_keywords`) | not parsed | The resolve pass, for a bare receiver that does not resolve in a file with a `USING` |
 | Each `RUN` target and class the root reaches | `Written::parse` (and the expanded text of the target, when its own text does not give its facts) | the same | `BatchIndex::facts_for`, one time for each **thread** that reaches the file |
 | Each `RUN` target the root reaches with arguments (`strict.calls`) | `program_signatures_at` | the same | `BatchIndex::signatures_of`, only when the parse of `facts_for` did not give the parameter lists: they are not whole in the text as written, or the target is a class |
+
+The table is the state before the first slice. Since the third slice, a root
+that expands to itself is one text: the format check and the analysis read the
+lex and the parse that the analysis made, and the two rows for the root as
+written and the expanded root are one lex and one parse.
 
 The floor is one lex and one parse of each distinct text: the expanded root,
 the root as written (the formatter must see the raw text, KTD4), and each
@@ -101,24 +106,87 @@ ExpandedUnit { expanded: Arc<ExpandedFile>, tokens: Vec<Token>, program: Program
 ```
 
 The unit is made by one function for each kind (`RawUnit::parse(text)`,
-`ExpandedUnit::parse(expanded)`) in `oxabl_pipeline`. The crates below the
-pipeline keep functions that take tokens and a tree
-(`oxabl_formatter::format_with_tokens` exists, #579;
-`collect_from_expanded_with_summaries` gets a sibling that takes the tokens and
-the program). They do not know the unit type.
+`ExpandedUnit::parse(expanded)`) in `oxabl_pipeline` (`src/unit.rs`). Each is
+`Send + Sync + 'static`, and a static assertion fails the build when a field
+stops being so. The crates below the pipeline keep functions that take tokens
+and a tree (`oxabl_formatter::format_with_tokens` exists, #579;
+`oxabl_analyze::collect_from_parsed` is the sibling of
+`collect_from_expanded_with_summaries` that takes the tokens and the program).
+They do not know the unit type.
+
+A `RawUnit` keeps the comment table of its parse, because the formatter needs
+it. The analysis does not read comments, and the statements and pools of a
+parse with the table are equal to those of a parse without it
+(`without_comments_skips_comment_table_but_keeps_identical_statements`), so the
+analysis can read a `RawUnit`.
+
+`oxabl_daemon::db` has an `ExpandedUnit` of its own, an inspection type for a
+debug request. It is a different type. Until slice 5 the daemon names the
+pipeline type by its path. Slice 5 renames the daemon's inspection type, so
+that its new `expanded_unit` query, the `compute_expanded_unit` function and the
+language server's `expanded_unit` module each have one meaning.
+
+`RawUnit::parse` and `ExpandedUnit::parse` never stop. A request that an edit
+may cancel makes its unit with `RawUnit::parse_between` or
+`ExpandedUnit::parse_between`. They call a checkpoint after the lex, before each
+top-level statement and after the parse, as `collect_from_expanded_with_summaries`
+does with `WorkspaceIndex::checkpoint`. The daemon must use them (slice 5):
+`edit_waits_lsp.rs` fails when a large root cannot be stopped.
+
+`LazyRawUnit` holds the text of a root and the `RawUnit` that a stage may make
+for it. See the next section for why the unit is not made up front.
 
 ### Who owns it: the command line
 
 `CheckPass::root` (`crates/oxabl/src/main.rs`) reads the source and owns the
-root's units on its worker thread. It makes the `RawUnit` one time and gives a
-borrow to the format check and to the index. It makes the `ExpandedUnit` in the
-lint run. Both are dropped when the root is done, before the worker takes the
-next root. No unit goes into a map that the run keeps.
+root's units on its worker thread. It holds a `LazyRawUnit` and gives it to the
+analysis (`LintPipeline::run_with_unit`) and, after it, to the format check
+(`FormatPipeline::format_unit`). The unit is dropped when the root is done,
+before the worker takes the next root. No unit goes into a map that the run
+keeps.
 
 When the expansion did not change the text (no include, no directive, no
-reference), the expanded text is the raw text. Then the analysis can use the
-tokens and the tree of the `RawUnit`. The preprocessor must say this at no cost
-(a flag that it sets when it copies the whole text as one chunk).
+reference), the expanded text is the raw text. Then the analysis makes the
+`RawUnit` and reads its tokens and its tree, and the format check finds the unit
+made. The expansion says this at no cost: `ExpandedFile::is_identity` is set
+where `expand_source_recording` copies the text. It is true when preprocessing
+is off, and when the expansion is one chunk that is the whole root. The analysis
+also checks that the text of the unit is the expanded text byte for byte
+(`RawUnit::serves`, rule 5), and falls back to its own lex and parse when it is
+not, or when the unit could not be made.
+
+The unit is made by the analysis, on demand, and not up front, for two reasons.
+A root with an include or a directive does not need the raw tokens until the
+format check. A unit made before the analysis would keep two token vectors and
+two trees alive during the analysis of such a root (rule 3). It would also copy
+the text of every root into the unit, which a root that expands to itself repays
+and any other root does not: on `lsp_bench.p` the copy alone was +0.6% of the
+instructions. So a root that expands to itself is lexed and parsed once, by the
+analysis, and any other root costs what it cost before: one lex and parse of the
+expansion, then one raw lex and parse for the format check. With the analysis
+off, the format check formats the text alone, once. The lexer or the parser can
+panic: `LazyRawUnit` keeps the contained panic. The analysis fails the run with
+it, and the format check reports it as an internal panic
+(`FormatPipeline::format_lazy`). Neither stage lexes the text again, because it
+would panic the same way. `check` then reports two failures and exits 1, and the
+default hook prints one panic message for the root. The test site
+`OXABL-TEST-PANIC:unit` in `RawUnit::parse_between` reaches this path.
+
+The raw unit parses with the comment table, and the analysis alone parsed
+without it. A panic that only the comment table causes now fails the analysis as
+well as the format check. This can only add failures, never remove one: every
+panic of the parse without comments also happens with them. It is accepted to
+avoid a second run.
+
+When the shared unit panics, the identity root still counts as known with no
+includes in the includers map. This is a true fact from a successful expansion.
+An analysis panic differs: it leaves the root unknown.
+
+The `ExpandedUnit` for a root with includes is not used by `check` yet. The
+analysis of such a root still lexes and parses its expansion inside
+`collect_from_expanded_with_summaries`, one time. Nothing else in the run reads
+the expansion's tokens, so the unit has no second reader here. The daemon has
+several (slice 5).
 
 ### The index: `facts_for`
 
@@ -236,11 +304,23 @@ their tokens cover. With `OXABL_TEST_LEX_PARSE` set, the `oxabl` binary prints
 the counts. `crates/oxabl/tests/check_lex_parse_counts.rs` runs `oxabl check`
 and fails when:
 
-- a root that is formatted is lexed more than two times, or parsed more than
-  two times (the analysis and the format check);
+- a root that expands to itself and is formatted is lexed more than once
+  (with the short texts that some passes lex alone, 1.5 times its size) or
+  parsed more than once;
+- the format candidate of such a root with drift is not lexed, or the root is
+  parsed more than once;
+- a root with an include is lexed or parsed more than once as expanded and once
+  as written (the raw text of the root is short in the fixture, and the test
+  checks that the include was expanded);
 - a `RUN` target that many roots reach is parsed more than one time for the
   run, at `-j 1` and at `-j 4`, with the default rules and with
   `strict.calls` and arguments on the `RUN` statements.
+
+`crates/oxabl_pipeline/tests/raw_unit.rs` tests the unit itself: that the stages
+of an identity root together lex it once, that their answers equal those of the
+separate stages, that a root with an include does not make its raw unit for the
+analysis, that a unit serves only its own text, and that the format through a
+unit equals the format of the text.
 
 The guard does not cover `check --watch`: a pass of the watch ends on a
 signal and prints no counts. `with_shared_facts` on the handles of
@@ -258,9 +338,13 @@ Each slice makes the bounds smaller.
 2. **The producer scan.** #581 (a token scan for `may_be_expanded`) and #582
    (one expansion, no barrier). After these, no stage parses a root for the
    scan.
-3. **The raw unit of a root.** `CheckPass::root` makes the `RawUnit` and gives
-   it to the format check (`format_with_tokens`) and, when the expansion did
-   not change the text, to the analysis.
+3. **Done, for the unit of a root that expands to itself.** `CheckPass::root`
+   holds a `LazyRawUnit`. The analysis makes the `RawUnit` when the expansion
+   did not change the text and reads its tokens and tree; the format check
+   (`format_with_tokens`) reads the unit when it is there. The `ExpandedUnit` of
+   a root with includes has no second reader in `check`, so `check` does not
+   make it. Slice 5 uses it. TX004 does its work for a root twice (see
+   [The TX004 pass](#the-tx004-pass)); that part of #251 is not done.
 4. **The facts of a root from its raw unit**, if the measure in
    [The index](#the-index-facts_for) says it pays.
 5. **The daemon units** (`expanded_unit`, `raw_unit`). One lex and one parse
@@ -268,6 +352,57 @@ Each slice makes the bounds smaller.
    the daemon bench of #499 (diagnostics, the outline and the links of one
    revision) first.
 6. **A token cache for include text**, only if the measure says it pays.
+
+## The TX004 pass
+
+#251 asks for the work of TX004 to be done once for each root. It is not, and
+the reason is the design, not a missing call. TX004 needs the transitive effects
+of each callee, so a first pass (`build_workspace_effect_summaries_parallel`,
+`oxabl_pipeline::effects::direct`) expands, lexes and parses every root,
+and builds its flow graphs, scopes and database effects, before the first root
+is linted. The lint run of the root then lexes and parses its text again and
+builds its flow graphs and scopes again for the rules that read them (TX001 to
+TX003 and TX005 read the scopes, and TX004 reads them to find the transaction
+around a `RUN`). The two passes have the same text and different results, and
+one of them is not over when the other starts.
+
+Callgrind, release binary, `-j 1 --no-format`, the generated `ci` workspace
+(300 roots, no `RUN` in a transaction), instructions:
+
+| Rules | Instructions |
+| --- | --- |
+| the default rules | 575 M |
+| `strict.transactions` without TX004 | 955 M |
+| TX004 alone | 1,674 M |
+| `strict.transactions` | 1,774 M |
+
+TX004 alone adds 1,099 M. The first pass is 881 M of the 1,674 M (its
+`direct` calls are 695 M, of which the effects and their scopes are 424 M), the
+lint run of the roots is 782 M, and the scopes that TX004's rule builds in the
+lint run are 289 M. Doing the flow graphs and scopes once would save about the
+289 M, which is 17% of the run. It would also save the lex, parse and expansion
+of the first pass, about the same again. To do it, one of these must hold:
+
+- **Keep the products.** The first pass keeps each root's tokens, tree, flow
+  graphs and scopes until the lint run of the root reads them. Their size is
+  the size of the workspace's analysis (rule 3 forbids it: the peak must not
+  grow with the number of roots), and the lint run of a root can start only
+  after the first pass ends for all roots.
+- **Order the work.** Lint a root when the summaries of its callees are done
+  (the strongly connected components of the call graph, as `oxabl build`
+  schedules compile jobs), and compute the direct effects of a root and its lint
+  run in one visit of its worker. A root's units then live from its direct
+  effects to its lint run, and not longer. Callers that wait for a callee hold
+  their products, and a cycle must be cut. This is a design of its own, with its
+  own memory rules and its own tests of the order of the output.
+- **Make the first pass smaller.** The effects need the scopes and the scopes need
+  the flow graphs, so there is no cheaper first pass than the one that exists.
+  A pass that kept only what the summaries read (a root's call sites and
+  their transaction blocks, a few spans) would let TX004 read them and need no
+  scopes in the lint run, but TX001 to TX003 and TX005 still need the scopes.
+
+None of these is a part of the raw unit. #251 stays open with this as its
+design.
 
 ## Measurements of the first slice
 
@@ -291,3 +426,30 @@ byte for byte, with the same exit code, on: `resources`, `crates`,
 `crates/oxabl/tests/fixtures`, `lsp_bench.p`, `big.p`, the generated `ci`
 (also with `--include-findings 100`) and `medium` workspaces, at `-j 1` and
 `-j 4`, and the real workspace at the default `-j`, at `-j 3` and with `--json`.
+
+## Measurements of the third slice
+
+Callgrind, release binary, instructions, `-j 1` for the walk. Base `edee92a0`.
+`check-big` is `big.p` of `scripts/bench/cli.sh` (1 MB, a root that expands to
+itself); `check-lsp` is `resources/lsp_bench.p` with its includes, so it does not
+expand to itself; the 300 roots of the `ci` workspace have includes for the most
+part (30 of them expand to themselves).
+
+| Run | Base | Slice 3 | Change |
+| --- | --- | --- | --- |
+| `check big.p` | 586.5 M | 484.9 M | −17.3% |
+| `check -j 1 src`, generated `ci` (300 roots) | 722.8 M | 714.6 M | −1.1% |
+| `check resources/lsp_bench.p -I resources` | 44.22 M | 44.18 M | −0.1% |
+| `format --check -j 1 src`, generated `ci` | 142.77 M | 142.77 M | 0 |
+
+`big.p` goes from 3 full lexes to 2 (the root once for both stages, and the
+format candidate, because `big.p` has drift). The 300 roots go from 837 to 807
+full lexes. A root that does not expand to itself is lexed and parsed exactly as
+it was. The change in `check-lsp` is below the noise of the hash maps.
+
+The output of `check` (text and `--json`, with and without `--no-preprocess`)
+is the same, byte for byte, with the same exit code, on: `resources`, `crates`,
+`crates/oxabl/tests/fixtures`, `lsp_bench.p`, the generated `ci` workspace, and
+the same workspace with `strict.transactions`, `strict.database`,
+`strict.calls` and `strict.handles` on (1,828 lines of findings), at `-j 1` and
+`-j 4`.

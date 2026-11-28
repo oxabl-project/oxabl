@@ -2395,14 +2395,25 @@ impl CheckPass<'_> {
             }
         };
 
+        // The analysis makes the raw unit when the root expands to itself, and
+        // the format check then reads it: the root is lexed and parsed once.
+        // Any other root makes no unit; the analysis lexes and parses its
+        // expansion and the format check its text, as ever. The unit lives to
+        // the end of this root.
+        let raw = oxabl_pipeline::LazyRawUnit::new(&source);
+
         if self.diagnostics {
-            self.diagnose(lint, texts, file, indexed_path, &source, &mut unit);
+            self.diagnose(lint, texts, file, indexed_path, &raw, &mut unit);
         }
 
         if !self.no_format {
             // The same `FormatPipeline` `oxabl format` drives, so `check`'s
-            // drift answer and `format --check`'s cannot disagree (KTD7).
-            let outcome = self.format.format(&source);
+            // drift answer and `format --check`'s cannot disagree (KTD7). With
+            // no unit (the root does not expand to itself, the analysis is
+            // off, or the lexer or the parser panicked) the text goes through
+            // `format`, whose own guard reports a panic. A unit that the
+            // analysis could not make reports its panic here too.
+            let outcome = self.format.format_lazy(&raw);
             if outcome.changed() {
                 unit.drifted = Some(display);
             } else if let Some(not_formatted) = outcome.not_formatted() {
@@ -2485,10 +2496,11 @@ impl CheckPass<'_> {
         texts: &mut IncludeFiles,
         file: &Path,
         indexed_path: &Path,
-        source: &str,
+        raw: &oxabl_pipeline::LazyRawUnit<'_>,
         unit: &mut Unit,
     ) {
         let display = file.display().to_string();
+        let source = raw.text();
         // The pipeline runs whatever `--no-lint` says (A1): it is the only source
         // of parse and semantic diagnostics too, and those gate regardless.
         //
@@ -2497,10 +2509,9 @@ impl CheckPass<'_> {
         // to the same file on disk would attribute it to itself as a foreign
         // dependency.
         let (result, origins) = if self.collect_includers {
-            lint.with_file(indexed_path)
-                .run_with_include_origins(source)
+            lint.with_file(indexed_path).run_with_unit(raw)
         } else {
-            (lint.with_file(indexed_path).run(source), None)
+            (lint.with_file(indexed_path).run_with_unit(raw).0, None)
         };
         let root = Lines::new(source);
         if let Some(origins) = origins {

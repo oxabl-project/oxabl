@@ -67,6 +67,11 @@
 //! fields, indexes and sequences, for an editor's schema browser, and
 //! [`schema_table`], one table as the browser and the hover show it.
 //!
+//! [`RawUnit`] and [`ExpandedUnit`] — a text lexed and parsed once, with its
+//! tokens and tree, for the stages that read it. [`LazyRawUnit`] makes the raw
+//! unit of a root on first use, so the format check and the analysis of an
+//! unexpanded root share one lex and one parse.
+//!
 //! [`document_syntax`] — the folding ranges and nested selection spans of the
 //! same raw source. One result lets a client share the parse between both
 //! requests. Include text never enters these ranges.
@@ -106,6 +111,7 @@ mod reverse;
 pub mod schema_hover;
 mod schema_view;
 mod syntax;
+mod unit;
 
 pub use config::{
     ConfigInputs, ConfigOverrides, ConfigWarning, ConfiguredInputs, PipelineConfig,
@@ -153,6 +159,7 @@ pub use reverse::{
     Subject, Unanalysed, UnnameableEdge, UnresolvedRow, dependency_section,
 };
 pub use syntax::{DocumentSyntax, Fold, FoldKind, document_syntax};
+pub use unit::{ExpandedUnit, LazyRawUnit, RawUnit};
 // Re-exported so a consumer of the reverse query need not also depend on
 // `oxabl_index` to name the edge kind every answer is grouped by.
 pub use oxabl_index::{

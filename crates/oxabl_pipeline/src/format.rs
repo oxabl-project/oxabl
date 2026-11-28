@@ -43,8 +43,11 @@
 //! [`NotFormattedKind::InternalPanic`] — its protection is the panic hook plus
 //! instance reinitialization, which lives outside this crate.
 
-use oxabl_formatter::{FormatFailure, try_format_source};
+use oxabl_common::{catch_panic, panic_if_injected, panic_sites};
+use oxabl_formatter::{FormatFailure, format_with_tokens, try_format_source};
 use oxabl_style::StyleGuide;
+
+use crate::{LazyRawUnit, RawUnit};
 
 /// The shared formatting decision — the one model every client renders (R5).
 ///
@@ -257,6 +260,36 @@ impl FormatPipeline {
             Ok(formatted) if formatted == source => FormatOutcome::Unchanged,
             Ok(formatted) => FormatOutcome::Reformatted(formatted),
             Err(failure) => FormatOutcome::DidNotFormat(failure.into()),
+        }
+    }
+
+    /// [`format`](Self::format) for a caller that holds the [`RawUnit`] of the
+    /// text: the text is not lexed or parsed again. The outcome is the one
+    /// `format(unit.text())` gives, and the panic guard is the same.
+    pub fn format_unit(&self, unit: &RawUnit) -> FormatOutcome {
+        let source = unit.text();
+        let formatted = catch_panic(|| {
+            panic_if_injected(panic_sites::FORMAT, source);
+            format_with_tokens(source, unit.tokens(), unit.program(), &self.style)
+        });
+        match formatted {
+            Ok(Ok(formatted)) if formatted == source => FormatOutcome::Unchanged,
+            Ok(Ok(formatted)) => FormatOutcome::Reformatted(formatted),
+            Ok(Err(bail)) => FormatOutcome::DidNotFormat(FormatFailure::Bail(bail).into()),
+            Err(panic) => FormatOutcome::DidNotFormat(FormatFailure::Panic(panic).into()),
+        }
+    }
+
+    /// [`format`](Self::format) for a caller whose other stage may have made
+    /// the unit of the text: a unit is read, a contained panic of its lex or
+    /// parse is the failure, and with no unit the text is formatted alone.
+    pub fn format_lazy(&self, raw: &LazyRawUnit<'_>) -> FormatOutcome {
+        match raw.made() {
+            Some(Ok(unit)) => self.format_unit(unit),
+            Some(Err(panic)) => {
+                FormatOutcome::DidNotFormat(FormatFailure::Panic(panic.clone()).into())
+            }
+            None => self.format(raw.text()),
         }
     }
 }

@@ -5,9 +5,12 @@
 //! so a full lex of a file of `n` bytes adds `n`, and the short texts that some
 //! passes lex alone add little.
 //!
-//! - A root is lexed for its analysis and for its format check, and parsed for
-//!   each. A root that is already formatted is not lexed a third time for the
-//!   format check's candidate.
+//! - A root that expands to itself (no include, directive or reference) is
+//!   lexed and parsed once, for its analysis and its format check together.
+//!   A root that is already formatted is not lexed again for the format
+//!   check's candidate.
+//! - A root that does not expand to itself is lexed and parsed as expanded, for
+//!   its analysis, and as written, for its format check.
 //! - A file that many roots `RUN` is read, parsed and declared once for the
 //!   run, whatever the number of threads.
 //!
@@ -95,7 +98,7 @@ fn format_in_place(dir: &Path, file: &str) {
 }
 
 #[test]
-fn a_root_is_lexed_and_parsed_once_for_its_analysis_and_once_for_its_format_check() {
+fn a_root_that_expands_to_itself_is_lexed_and_parsed_once_for_its_analysis_and_its_format_check() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("root.p"), program("r", 60)).unwrap();
     format_in_place(tmp.path(), "root.p");
@@ -103,31 +106,107 @@ fn a_root_is_lexed_and_parsed_once_for_its_analysis_and_once_for_its_format_chec
 
     let (counts, stdout) = counted(tmp.path(), &["check", "-j", "1", "root.p"]);
     assert!(
-        stdout.contains("checked 1 file: no findings, no drift"),
+        stdout
+            .lines()
+            .any(|line| line == "checked 1 file: no findings, no drift"),
         "the fixture must be clean: {stdout}"
     );
-    // Two lexes of the file, and the short texts the passes lex alone. A third
-    // lex of the file (the format check's candidate, or a pass that lexes the
-    // whole text again) passes the bound.
+    // One lex of the file for both stages, and the short texts the passes lex
+    // alone (about 30% of the file here). A second lex of the file (the format
+    // check on its own tokens, the analysis on the expanded text, or a pass
+    // that lexes the whole text again) passes the bound.
     assert!(
-        counts.lexed < 2 * size + size / 2,
-        "a root of {size} bytes, already formatted, was lexed more than two times: {counts:?}"
+        counts.lexed < size + size / 2,
+        "a root of {size} bytes that expands to itself, already formatted, was lexed more than \
+         once: {counts:?}"
     );
     assert!(
-        counts.parsed <= 2 * size,
-        "a root of {size} bytes was parsed more than two times: {counts:?}"
+        counts.parsed <= size,
+        "a root of {size} bytes that expands to itself was parsed more than once: {counts:?}"
     );
 
-    // A root with drift: its candidate is lexed too, so three lexes.
+    // A root with drift: its candidate is a new text and is lexed too.
     let drifted = fs::read_to_string(tmp.path().join("root.p"))
         .unwrap()
         .replace("\n    ", "\n");
     fs::write(tmp.path().join("root.p"), &drifted).unwrap();
     let (counts, _) = counted(tmp.path(), &["check", "-j", "1", "root.p"]);
-    let size = drifted.len();
     assert!(
-        counts.lexed > 2 * size + size / 2,
+        counts.lexed >= drifted.len() + size,
         "the candidate of a root with drift must be lexed: {counts:?}"
+    );
+    assert!(
+        counts.parsed <= drifted.len(),
+        "a root with drift was parsed more than once: {counts:?}"
+    );
+}
+
+#[test]
+fn a_root_is_lexed_and_parsed_once_for_either_stage_alone() {
+    let source = program("r", 60);
+    for (name, toml, summary) in [
+        (
+            "format only",
+            "[workspace]\nname = \"counts\"\n\n[workspace.features]\ndiagnostics = false\n",
+            "checked 1 file: diagnostics off, no drift",
+        ),
+        (
+            "analysis only",
+            "[workspace]\nname = \"counts\"\n\n[workspace.features]\nformat = false\n",
+            "checked 1 file: no findings, format off",
+        ),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("root.p"), &source).unwrap();
+        format_in_place(tmp.path(), "root.p");
+        fs::write(tmp.path().join("oxabl.toml"), toml).unwrap();
+        let size = fs::read(tmp.path().join("root.p")).unwrap().len();
+        let (counts, stdout) = counted(tmp.path(), &["check", "-j", "1", "root.p"]);
+        assert!(
+            stdout.lines().any(|line| line == summary),
+            "{name}: {stdout}"
+        );
+        assert!(
+            counts.lexed < size + size / 2 && counts.parsed <= size,
+            "{name}: a root of {size} bytes was lexed or parsed more than once: {counts:?}"
+        );
+    }
+}
+
+#[test]
+fn a_root_with_an_include_is_lexed_and_parsed_as_written_and_as_expanded() {
+    let tmp = TempDir::new().unwrap();
+    let include = program("i", 30);
+    fs::write(tmp.path().join("part.i"), &include).unwrap();
+    let root = "{part.i}\nMESSAGE \"done\".\n";
+    fs::write(tmp.path().join("root.p"), root).unwrap();
+    format_in_place(tmp.path(), "root.p");
+    let root = fs::read_to_string(tmp.path().join("root.p")).unwrap();
+
+    let (counts, stdout) = counted(tmp.path(), &["check", "-j", "1", "-I", ".", "root.p"]);
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "checked 1 file: no findings, no drift"),
+        "the root must be clean and formatted: {stdout}"
+    );
+    let expanded = include.len() + root.len();
+    // The raw text of the root is short; the expanded text is most of the
+    // count and is lexed and parsed once, by the analysis. The bounds are
+    // two-sided: when the include does not resolve, they say nothing.
+    assert!(
+        counts.parsed >= expanded,
+        "the include must be expanded and parsed: {counts:?}"
+    );
+    assert!(
+        counts.parsed <= expanded + root.len(),
+        "a root with an include was parsed more than once as expanded and once as written: \
+         {counts:?}"
+    );
+    assert!(
+        counts.lexed < expanded + root.len() + expanded / 2,
+        "a root with an include was lexed more than once as expanded and once as written: \
+         {counts:?}"
     );
 }
 

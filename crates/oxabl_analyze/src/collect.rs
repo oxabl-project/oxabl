@@ -40,8 +40,8 @@ use oxabl_ast::{AstPools, Span, Statement};
 use oxabl_common::{
     Diagnostic, FileId, FileSpan, LintSeverityMap, Severity, SourceMap, VirtualSpan,
 };
-use oxabl_lexer::{Token, tokenize};
-use oxabl_parser::Parser;
+use oxabl_lexer::{Kind, Token, tokenize};
+use oxabl_parser::{Parser, Program};
 use oxabl_preprocessor::{
     BranchState, DefineDirective, IfBranch, IncludeArguments, Preprocessor, ResolvedInclude,
     SkippedInclude, SkippedText, SpanNode, TextLoss, UnreadableInclude, UnresolvedInclude,
@@ -516,9 +516,20 @@ pub struct ExpandedFile {
     include_arguments: Vec<IncludeArguments>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
+    /// Whether `text` is the root's text as written: the expansion copied the
+    /// whole root as one chunk and changed nothing.
+    identity: bool,
 }
 
 impl ExpandedFile {
+    /// Whether the expanded text is the text that was expanded, byte for byte.
+    /// True when preprocessing was off, and when the expansion found no include,
+    /// directive or reference to act on. The tokens and the tree of the text as
+    /// written are then the tokens and the tree of this text.
+    pub fn is_identity(&self) -> bool {
+        self.identity
+    }
+
     /// Transitively included files this expansion read (R17 watcher input).
     pub fn dependencies(&self) -> &[FileId] {
         &self.dependencies
@@ -1249,6 +1260,7 @@ pub fn expand_source_recording(
             defines: Vec::new(),
             include_arguments: Vec::new(),
             root,
+            identity: true,
         });
     }
 
@@ -1396,8 +1408,20 @@ pub fn expand_source_recording(
                     skipped_sources.push((file, Arc::clone(source)));
                 }
             }
+            // One chunk that is the whole root: the text is a copy of `source`.
+            let identity = matches!(
+                chunks.as_slice(),
+                [only] if only.file == root.raw()
+                    && only.real_start == 0
+                    && only.len as usize == source.len()
+            ) || (chunks.is_empty() && source.is_empty());
+            let text = pf.to_text().to_string();
+            debug_assert!(
+                !identity || text == source,
+                "an identity expansion differs from its source"
+            );
             Ok(ExpandedFile {
-                text: pf.to_text().to_string(),
+                text,
                 chunks,
                 include_regions,
                 included,
@@ -1442,6 +1466,7 @@ pub fn expand_source_recording(
                     .collect(),
                 include_arguments: pf.include_arguments.clone(),
                 root,
+                identity,
             })
         }
         // A unit that reaches encrypted source is reported as that alone.
@@ -1928,6 +1953,68 @@ pub fn collect_from_expanded_with_summaries(
     selection: RuleSelection,
     summaries: Option<&dyn oxabl_lint::CalleeSummaries>,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
+    let tokens = tokenize(&expanded.text);
+    index.checkpoint();
+    let mut parser = Parser::new(&tokens, &expanded.text).without_comments();
+    let program = parser.parse_program_between(|| index.checkpoint());
+    index.checkpoint();
+    collect_from_parsed(
+        expanded,
+        &tokens,
+        &program,
+        index,
+        &CollectSettings {
+            schema,
+            schema_loaded,
+            lint_severities,
+            source_context,
+            selection,
+            summaries,
+        },
+    )
+}
+
+/// What a collection reads besides the expansion, the tokens, the tree and the
+/// index.
+pub struct CollectSettings<'a> {
+    pub schema: &'a Schema,
+    /// Whether `schema` came from files, so a miss in it is a fact.
+    pub schema_loaded: bool,
+    pub lint_severities: &'a LintSeverityMap,
+    pub source_context: SourceContext,
+    pub selection: RuleSelection,
+    pub summaries: Option<&'a dyn oxabl_lint::CalleeSummaries>,
+}
+
+/// [`collect_from_expanded_with_summaries`] for a caller that holds the tokens
+/// and the tree of `expanded.text`, so the text is not lexed or parsed again.
+///
+/// `tokens` must be `tokenize(&expanded.text)` and `program` the parse of them.
+/// The statements and pools of a parse that keeps its comment table equal those
+/// of a parse that drops it, so either one serves. The caller owns the proof
+/// that they belong to this text; the check here is only that the tokens end at
+/// the end of the text.
+pub fn collect_from_parsed(
+    expanded: &ExpandedFile,
+    tokens: &[Token],
+    program: &Program,
+    index: &dyn WorkspaceIndex,
+    settings: &CollectSettings<'_>,
+) -> (Option<Semantic>, CollectedDiagnostics) {
+    let CollectSettings {
+        schema,
+        schema_loaded,
+        lint_severities,
+        source_context,
+        selection,
+        summaries,
+    } = *settings;
+    assert!(
+        tokens
+            .last()
+            .is_some_and(|t| t.kind == Kind::Eof && t.end as usize == expanded.text.len()),
+        "the tokens do not end at the end of the expanded text"
+    );
     let root = expanded.root;
     let mut out = CollectedDiagnostics::default();
     let everything = selection == RuleSelection::All;
@@ -1939,16 +2026,11 @@ pub fn collect_from_expanded_with_summaries(
         });
     }
 
-    let tokens = tokenize(&expanded.text);
-    index.checkpoint();
-    let mut parser = Parser::new(&tokens, &expanded.text).without_comments();
-    let program = parser.parse_program_between(|| index.checkpoint());
     out.parse_recovered = !program.errors.is_empty();
-    index.checkpoint();
 
     let mut include_rows = IncludeRows::default();
     let mut include_maps = Vec::new();
-    for err in program.errors.into_iter().filter(|_| everything) {
+    for err in program.errors.iter().filter(|_| everything).cloned() {
         let at_end = err.span.start as usize >= expanded.text.len();
         let virt = err.into_diagnostic(root);
         let resolved = resolve_diagnostic(virt, expanded).or_else(|mut d| {
@@ -1992,7 +2074,7 @@ pub fn collect_from_expanded_with_summaries(
     let ctx = lint_context(
         expanded,
         &program.pools,
-        &tokens,
+        tokens,
         &include_spans,
         schema,
         schema_loaded,
@@ -2662,6 +2744,7 @@ mod tests {
             defines: Vec::new(),
             include_arguments: Vec::new(),
             root: ROOT,
+            identity: false,
         }
     }
 
@@ -3214,6 +3297,49 @@ mod tests {
             fs.insert(format!("/proj/{name}").into(), *content);
         }
         expand_source(ROOT, source, &fs, &["/proj".into()], true).expect("expansion succeeds")
+    }
+
+    // The flag says that the expansion copied the root and changed nothing, so
+    // the tokens and the tree of the root as written serve the analysis. It is
+    // false as soon as anything is expanded or removed, and the expanded text
+    // is the source exactly when it is true.
+    #[test]
+    fn an_expansion_is_the_identity_only_when_it_copied_the_root() {
+        let files = [("a.i", "MESSAGE \"a\".\n")];
+        let identical = [
+            "",
+            "MESSAGE \"hi\".\n",
+            "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n/* a comment */\nx = 1.\n",
+            "MESSAGE \"a ~~{ escaped brace\".\n",
+        ];
+        for source in identical {
+            let expanded = expand_in_proj(&files, source);
+            assert!(expanded.is_identity(), "{source:?}");
+            assert_eq!(expanded.text, source);
+        }
+        let changed = [
+            "{a.i}\nMESSAGE \"root\".\n",
+            "&SCOPED-DEFINE n 1\nMESSAGE \"{&n}\".\n",
+            "&SCOPED-DEFINE n 1\nMESSAGE \"hi\".\n",
+            "&IF 1 = 1 &THEN\nMESSAGE \"a\".\n&ENDIF\n",
+            "MESSAGE \"hi\".\n{a.i}",
+            "{missing.i}\nMESSAGE \"hi\".\n",
+        ];
+        for source in changed {
+            let expanded = expand_in_proj(&files, source);
+            assert!(!expanded.is_identity(), "{source:?}");
+            assert_ne!(expanded.text, source);
+        }
+    }
+
+    // With preprocessing off the text is the source by construction.
+    #[test]
+    fn an_expansion_with_preprocessing_off_is_the_identity() {
+        let fs = InMemoryFileSystem::new();
+        let source = "{a.i}\n&SCOPED-DEFINE n 1\n";
+        let expanded = expand_source(ROOT, source, &fs, &[], false).expect("no expansion fails");
+        assert!(expanded.is_identity());
+        assert_eq!(expanded.text, source);
     }
 
     fn direct_names(expanded: &ExpandedFile) -> Vec<String> {
