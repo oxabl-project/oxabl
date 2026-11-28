@@ -217,10 +217,13 @@ impl Engine<'_, '_, '_, '_> {
         let tree = &semantic.scope_tree;
         let symbols = &semantic.symbols;
         let atom = fold_atom(name);
+        // A name that no declaration of the file folds to is bound nowhere.
+        let folded = tree.names().lookup(name);
         for id in tree.ancestors(base::scope_at(base, virt)) {
             let held = tree.get(id);
             let members = matches!(held.kind(), ScopeKind::Class | ScopeKind::Interface);
-            let Some(sym) = held.get_in(NamespaceId::Buffers, &atom) else {
+            let Some(sym) = folded.and_then(|folded| held.get_in(NamespaceId::Buffers, folded))
+            else {
                 continue;
             };
             let symbol = symbols.get(sym);
@@ -394,8 +397,7 @@ impl Engine<'_, '_, '_, '_> {
                 if symbols.temp_table_fields(temp_table).is_some_and(|scope| {
                     semantic
                         .scope_tree
-                        .get(scope)
-                        .get_in(NamespaceId::Values, &fold_atom(name))
+                        .resolve_in_scope(scope, NamespaceId::Values, name)
                         .is_some()
                 }) {
                     return Some(true);
@@ -429,10 +431,10 @@ impl Engine<'_, '_, '_, '_> {
                 let semantic = &base.navigation.model.semantic;
                 let symbols = &semantic.symbols;
                 if let Some(scope) = symbols.temp_table_fields(temp_table)
-                    && let Some(sym) = semantic
-                        .scope_tree
-                        .get(scope)
-                        .get_in(NamespaceId::Values, &fold_atom(name))
+                    && let Some(sym) =
+                        semantic
+                            .scope_tree
+                            .resolve_in_scope(scope, NamespaceId::Values, name)
                 {
                     return symbols.get(sym).data_type.clone();
                 }

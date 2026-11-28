@@ -194,7 +194,7 @@ length of the source asks for 34,174 bytes for the slice.
 A `const` assertion holds the size of each type that a file has many of:
 `Token` (12 bytes), `NameId` (4), `ExprId` (4), `ExprList`
 (8), `Identifier` (12), `Literal` (32), `Expression` (48), `Statement` (192),
-`Scope` (48), `BindingMap` (144) and `Symbol` (64). A type that grows does not
+`Scope` (48), `BindingMap` (80) and `Symbol` (64), and `FoldedNameId` is 4. A type that grows does not
 compile. `Expression` is also `Copy` and has no drop glue. To see the sizes of the
 variants:
 
@@ -750,3 +750,69 @@ The rest of `Set::insert` comes from the names that the semantic passes fold
 and intern (`fold_atom`), and from `IndexName::new`. A cache of atoms in front
 of the set, for each thread or for the process, did not lower the CPU: its own
 lookup is a cache miss too, and the atoms it keeps make the lists longer.
+
+### Folded names
+
+The resolve and null passes look names up case-insensitively. They used to fold
+each name for each lookup: `fold_atom` in `oxabl_semantic` (a stack copy, a hash,
+a thread-local cache and an atom clone) and `lookup` in `oxabl_nulls` (a stack
+copy and a hash of a `String`). `FoldedNames` (`oxabl_ast`) folds names into a
+dense `FoldedNameId` backed by a sparse `NameId -> FoldedNameId` array. The
+scope tree is keyed by the id and a lookup of a declared `NameId` is an array
+index. The semantic table sits on the static table of the built-in handles
+(`FoldedNames::with_base`), so it does not copy it.
+
+In `oxabl_semantic`, the declare pass folds only declared identifiers on demand
+(`FoldedNames::intern_pool_str`) instead of folding every string in `NamePool`
+up front. Small tables (`<= 16` own names) scan linearly with a length and
+first-byte check without allocating a hash table; larger pools start directly in
+open-addressing mode sized once from the pool. Hashing uses an 8-byte SWAR
+lowercase pass (including a branchless 4/2/1-byte SWAR tail) that also reports
+whether the input was already lowercase, so `declare_pass` feeds already-folded
+text straight into `atom_from_folded` without re-folding or UTF-8 validation.
+The static system-handle base uses a 512-slot hash table (<10% load) plus a
+length/letter pre-filter for linear mode, and `builtins::seed` copies the 49
+built-in symbols in one allocation (`SymbolTable::seed_builtins`). The resolve
+pass uses a lazily allocated per-pass cache (`ResolveNameCache`) keyed by
+`NameId` for undeclared pool lookups and folded atoms, bypassing allocation on
+tiny pools (`<= 32` names).
+
+Warm per-pass callgrind instruction counts (release build, `--zero-before` /
+`--dump-after` on `declare_pass`, `resolve_pass`, `analyze_file`, and
+`nulls_bench`), comparing `master` (`b89fe4b0`), the initial eager table
+(`87b592b9`), and on-demand folding:
+
+| Bench | `master` | Eager (`87b592b9`) | Lazy (current) | vs `master` |
+| --- | ---: | ---: | ---: | ---: |
+| `semantic/tiny/declare` | 10,632 | 19,362 | 7,691 | −27.7% |
+| `semantic/medium/declare` | 16,918 | 23,348 | 16,256 | −3.9% |
+| `semantic/skipped/declare` | 13,560 | 22,158 | 12,248 | −9.7% |
+| `semantic/builtin_classes/declare` | 8,923 | 15,871 | 5,787 | −35.1% |
+| `semantic/class_members/declare` | 46,539 | 59,366 | 47,986 | +3.1% |
+| `semantic/class_members_indexed/declare` | 10,185 | 18,306 | 7,592 | −25.5% |
+| `semantic/schema_heavy/declare` | 11,792 | 20,481 | 8,900 | −24.5% |
+| `semantic/builtin_classes/analyze_file` | 67,563 | 83,076 | 68,636 | +1.6% |
+| `semantic/skipped/resolve` | 34,194 | 21,184 | 22,022 | −35.6% |
+| `semantic/large/lsp_bench/declare` | 576,535 | 625,069 | 527,075 | −8.6% |
+| `semantic/large/lsp_bench/resolve` | 3,038,512 | 2,079,251 | 2,102,418 | −30.8% |
+| `semantic/large/nested_blocks/declare` | 6,856,167 | 9,453,109 | 7,601,495 | +10.9% |
+| `semantic/large/nested_blocks/resolve` | 13,786,362 | 9,820,117 | 9,991,460 | −27.5% |
+| `nulls/wide_assign/unknown_in_comparison` | 40,633,845 | 32,397,876 | 32,515,452 | −20.0% |
+| `nulls/branchy/unknown_in_comparison` | 139,586,464 | 106,257,612 | 107,090,026 | −23.3% |
+
+On `nested_blocks`, all 4,001 names in the file are unique declared variables,
+so lazy folding still interns every name (+745 K Ir in `declare`, down from
++2.60 M Ir eager), while `resolve` saves 3.79 M Ir (−14.7% across
+`declare + resolve`). On `lsp_bench/declare`, allocations drop from 140 to 127
+and peak memory from 107 KB to 103 KB. The atoms that remain are the ones that
+the public API needs: a `Symbol` and a `Resolution` name a thing by
+`OxablAtom`, and so do the schema and the class index. The global atom set is
+still entered for each declared name and each miss, so this change does not
+close the issue of the lock on many cores.
+
+`oxabl_scope` is not on folded names. Its words come from tokens, not from the
+pool, so each reference word would be interned once for each use (hash, probe
+and compare) in place of a 32-byte inline copy. Measured on `hints/many_procedures`
+that cost 48 M more instructions in `collect` and saved 16 M in `resolve`, a net
+loss of 0.8%, so the words stay `Folded`. Making the resolve maps ids is the
+change that would pay for the interning.

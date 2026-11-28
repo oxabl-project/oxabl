@@ -380,3 +380,76 @@ n = x * 2.\n";
         "{found:?}"
     );
 }
+
+/// The analysis finds a local by its folded name: an assignment, a read and the
+/// question all name it in other cases, and a name of any length.
+#[test]
+fn a_local_is_one_variable_in_every_case_of_its_name() {
+    let long = format!("Order-{}-Total", "Line-".repeat(30));
+    assert!(long.len() > 120);
+    let source = format!(
+        "DEFINE VARIABLE Order-Total AS INTEGER INITIAL ? NO-UNDO.\n\
+DEFINE VARIABLE {long} AS INTEGER INITIAL ? NO-UNDO.\n\
+MESSAGE order-total {upper}.\n\
+ORDER-TOTAL = 1.\n\
+{lower} = 1.\n\
+MESSAGE Order-Total {long}.\n",
+        upper = long.to_ascii_uppercase(),
+        lower = long.to_ascii_lowercase(),
+    );
+    let tokens = oxabl_lexer::tokenize(&source);
+    let program = oxabl_parser::Parser::new(&tokens, &source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let flow = oxabl_flow::build_file_tokens(
+        &program.statements,
+        &program.pools,
+        &source,
+        &tokens,
+        &Default::default(),
+    );
+    let nulls = FileNulls::default().with_values(
+        oxabl_flow::FileInput::new(&program.statements, &program.pools, &source, &tokens),
+        &flow,
+        &NullOptions::default(),
+    );
+    let cfg = &flow.units()[0];
+    let messages: Vec<_> = cfg
+        .nodes()
+        .filter(|(_, n)| {
+            n.kind == NodeKind::Stmt
+                && source[n.span.start as usize..n.span.end as usize].starts_with("MESSAGE")
+        })
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(messages.len(), 2);
+    for spelling in ["order-total", "ORDER-TOTAL", "Order-Total"] {
+        assert_eq!(
+            nulls.value_before(cfg.id(), messages[0], spelling),
+            Some(ValueState::PossiblyUnknown),
+            "{spelling} before the assignment"
+        );
+        assert_eq!(
+            nulls.value_before(cfg.id(), messages[1], spelling),
+            Some(ValueState::Known),
+            "{spelling} after the assignment"
+        );
+    }
+    for spelling in [
+        long.clone(),
+        long.to_ascii_lowercase(),
+        long.to_ascii_uppercase(),
+    ] {
+        assert_eq!(
+            nulls.value_before(cfg.id(), messages[0], &spelling),
+            Some(ValueState::PossiblyUnknown)
+        );
+        assert_eq!(
+            nulls.value_before(cfg.id(), messages[1], &spelling),
+            Some(ValueState::Known)
+        );
+    }
+    assert_eq!(
+        nulls.value_before(cfg.id(), messages[0], "order-total-x"),
+        None
+    );
+}

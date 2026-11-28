@@ -8,9 +8,8 @@
 //! [`BindingMap`] for each namespace it binds a name in
 //! ([`ScopeBindings`]).
 
-use oxabl_ast::NodeId;
+use oxabl_ast::{FoldedNameId, FoldedNames, NodeId};
 use oxabl_common::VirtualSpan;
-use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
@@ -97,20 +96,23 @@ impl ScopeKind {
 
 /// Per-namespace bindings for one [`Scope`].
 ///
+/// A name is a [`FoldedNameId`] of the tree's [`FoldedNames`], so a lookup
+/// compares `u32`s and never folds or hashes text.
+///
 /// For ≤ `BINDING_MAP_SMALL_CAP` bindings — the overwhelming majority of ABL
 /// scopes per prototype measurement — a `SmallVec` with linear scan beats a
-/// `FxHashMap` for atom equality comparisons (no hash, no indirection).
+/// `FxHashMap` for id equality comparisons (no hash, no indirection).
 /// Spills to the hashmap variant past the threshold.
 #[derive(Debug, Clone)]
 pub enum BindingMap {
-    Small(SmallVec<[(OxablAtom, SymbolId); BINDING_MAP_SMALL_CAP]>),
-    Large(FxHashMap<OxablAtom, SymbolId>),
+    Small(SmallVec<[(FoldedNameId, SymbolId); BINDING_MAP_SMALL_CAP]>),
+    Large(FxHashMap<FoldedNameId, SymbolId>),
 }
 
 // Lock the size of a binding map deliberately: a scope holds one for each
 // namespace it binds a name in. Gated to 64-bit; bump the bound deliberately.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<BindingMap>() <= 144);
+const _: () = assert!(std::mem::size_of::<BindingMap>() <= 80);
 
 /// Inline capacity at which [`BindingMap::Small`] spills into
 /// [`BindingMap::Large`]. A map exists only for a namespace that binds a
@@ -124,24 +126,24 @@ impl Default for BindingMap {
 }
 
 impl BindingMap {
-    /// Case-insensitive name lookup. Atoms are already case-folded at
-    /// intern time, so this is a raw atom equality scan.
-    pub fn get(&self, name: &OxablAtom) -> Option<SymbolId> {
+    /// Case-insensitive name lookup. Names are already case-folded in the
+    /// table that issued the id, so this is a raw id equality scan.
+    pub fn get(&self, name: FoldedNameId) -> Option<SymbolId> {
         match self {
-            BindingMap::Small(vec) => vec.iter().find(|(n, _)| n == name).map(|(_, id)| *id),
-            BindingMap::Large(map) => map.get(name).copied(),
+            BindingMap::Small(vec) => vec.iter().find(|(n, _)| *n == name).map(|(_, id)| *id),
+            BindingMap::Large(map) => map.get(&name).copied(),
         }
     }
 
     /// Insert `(name, sym)`. If a binding for `name` already exists, the
     /// prior id is returned so the declare pass can raise `SEM0001`.
-    pub fn insert(&mut self, name: OxablAtom, sym: SymbolId) -> Option<SymbolId> {
+    pub fn insert(&mut self, name: FoldedNameId, sym: SymbolId) -> Option<SymbolId> {
         // Spill small → large once we grow past the inline cap.
         if let BindingMap::Small(vec) = self
             && vec.len() >= BINDING_MAP_SMALL_CAP
             && vec.iter().all(|(n, _)| *n != name)
         {
-            let mut map: FxHashMap<OxablAtom, SymbolId> =
+            let mut map: FxHashMap<FoldedNameId, SymbolId> =
                 FxHashMap::with_capacity_and_hasher(vec.len() + 1, Default::default());
             for (n, s) in vec.drain(..) {
                 map.insert(n, s);
@@ -190,18 +192,18 @@ pub struct BindingIter<'a>(BindingIterInner<'a>);
 
 #[derive(Clone)]
 enum BindingIterInner<'a> {
-    Small(std::slice::Iter<'a, (OxablAtom, SymbolId)>),
-    Large(std::collections::hash_map::Iter<'a, OxablAtom, SymbolId>),
+    Small(std::slice::Iter<'a, (FoldedNameId, SymbolId)>),
+    Large(std::collections::hash_map::Iter<'a, FoldedNameId, SymbolId>),
 }
 
 impl<'a> Iterator for BindingIter<'a> {
-    type Item = (&'a OxablAtom, SymbolId);
+    type Item = (FoldedNameId, SymbolId);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.0 {
-            BindingIterInner::Small(it) => it.next().map(|(n, s)| (n, *s)),
-            BindingIterInner::Large(it) => it.next().map(|(n, s)| (n, *s)),
+            BindingIterInner::Small(it) => it.next().map(|(n, s)| (*n, *s)),
+            BindingIterInner::Large(it) => it.next().map(|(n, s)| (*n, *s)),
         }
     }
 
@@ -309,14 +311,14 @@ impl Scope {
     /// Look up `name` in the requested namespace of this scope only — does
     /// not walk parents.
     #[inline]
-    pub fn get_in(&self, ns: NamespaceId, name: &OxablAtom) -> Option<SymbolId> {
+    pub fn get_in(&self, ns: NamespaceId, name: FoldedNameId) -> Option<SymbolId> {
         self.bindings.get(ns).and_then(|map| map.get(name))
     }
 
     /// Bind `name` to `sym` in namespace `ns` of this scope. Returns the prior
     /// binding of `name`, if any.
     #[inline]
-    pub fn bind(&mut self, ns: NamespaceId, name: OxablAtom, sym: SymbolId) -> Option<SymbolId> {
+    pub fn bind(&mut self, ns: NamespaceId, name: FoldedNameId, sym: SymbolId) -> Option<SymbolId> {
         self.bindings.get_or_insert(ns).insert(name, sym)
     }
 }
@@ -365,6 +367,10 @@ mod records {
             self.0.len()
         }
 
+        pub(super) fn reserve(&mut self, additional: usize) {
+            self.0.reserve(additional);
+        }
+
         #[inline]
         pub(super) fn get(&self, id: ScopeId) -> &Scope {
             count(1);
@@ -397,6 +403,9 @@ pub struct ScopeTree {
     /// The first scope pushed for each parent, owner node and kind, so a pass
     /// finds the scope of a statement without a scan.
     children: FxHashMap<(ScopeId, NodeId, ScopeKind), ScopeId>,
+    /// The folded names the bindings are keyed by. The declare pass fills it
+    /// before it binds a name, and the passes after it only read it.
+    names: FoldedNames,
 }
 
 impl ScopeTree {
@@ -411,7 +420,39 @@ impl ScopeTree {
                 VirtualSpan::new(0, u32::MAX),
             )),
             children: FxHashMap::default(),
+            names: FoldedNames::new(),
         }
+    }
+
+    /// The folded names that the bindings of this tree are keyed by.
+    #[inline]
+    pub fn names(&self) -> &FoldedNames {
+        &self.names
+    }
+
+    /// Mutable access to the folded names while the declare pass interns
+    /// declared identifiers on demand.
+    #[inline]
+    pub(crate) fn names_mut(&mut self) -> &mut FoldedNames {
+        &mut self.names
+    }
+
+    /// Pre-size the scope storage and child lookup map for a large program so
+    /// the declare pass avoids repeated hash-table rehashes.
+    pub(crate) fn reserve_for_large_program(&mut self, top_level_stmts: usize) {
+        let cap = top_level_stmts.min(4096);
+        self.scopes.reserve(cap);
+        self.children.reserve(cap);
+    }
+
+    /// Install the table that the bindings are keyed by. Call it before the
+    /// first binding: an id means something only for the table that issued it.
+    pub(crate) fn set_names(&mut self, names: FoldedNames) {
+        debug_assert!(
+            self.scopes.len() == 1,
+            "a name table replaced the keys of live bindings"
+        );
+        self.names = names;
     }
 
     /// Push a new scope under `parent` that covers `span`, and return its id.
@@ -506,7 +547,7 @@ impl ScopeTree {
 
     /// Resolve `name` in namespace `ns`, walking parents. Returns the first
     /// binding encountered (shadowing preserves ABL semantics).
-    pub fn resolve(&self, scope: ScopeId, ns: NamespaceId, name: &OxablAtom) -> Option<SymbolId> {
+    pub fn resolve(&self, scope: ScopeId, ns: NamespaceId, name: FoldedNameId) -> Option<SymbolId> {
         for id in self.ancestors(scope) {
             if let Some(sym) = self.scopes.get(id).get_in(ns, name) {
                 return Some(sym);
@@ -515,11 +556,23 @@ impl ScopeTree {
         None
     }
 
-    /// [`resolve`](Self::resolve) for a source spelling: folds `name` the way
-    /// the symbol table folds declared names. For a statement-position
+    /// The binding of `name` in `scope` alone, for a source spelling. It does
+    /// not walk the parents; see [`resolve_name`](Self::resolve_name) for that.
+    pub fn resolve_in_scope(
+        &self,
+        scope: ScopeId,
+        ns: NamespaceId,
+        name: &str,
+    ) -> Option<SymbolId> {
+        self.scopes.get(scope).get_in(ns, self.names.lookup(name)?)
+    }
+
+    /// [`resolve`](Self::resolve) for a source spelling: reads `name` in ASCII
+    /// lower case, as the table folds declared names. For a statement-position
     /// identifier, which carries no `NodeId` and so no `references` entry.
+    /// A spelling that no declared name folds to binds nothing.
     pub fn resolve_name(&self, scope: ScopeId, ns: NamespaceId, name: &str) -> Option<SymbolId> {
-        self.resolve(scope, ns, &crate::resolve::fold_atom(name))
+        self.resolve(scope, ns, self.names.lookup(name)?)
     }
 }
 
@@ -534,8 +587,12 @@ mod tests {
     use super::*;
     use oxabl_schema::Schema;
 
-    fn atom(s: &str) -> OxablAtom {
-        OxablAtom::from(s)
+    fn atom(s: &str) -> FoldedNameId {
+        thread_local! {
+            static NAMES: std::cell::RefCell<FoldedNames> =
+                const { std::cell::RefCell::new(FoldedNames::new()) };
+        }
+        NAMES.with(|names| names.borrow_mut().intern(s))
     }
 
     #[test]
@@ -598,8 +655,8 @@ mod tests {
         let prior = map.insert(atom("over"), SymbolId::new(99));
         assert!(prior.is_none());
         assert!(matches!(map, BindingMap::Large(_)));
-        assert_eq!(map.get(&atom("n0")), Some(SymbolId::new(0)));
-        assert_eq!(map.get(&atom("over")), Some(SymbolId::new(99)));
+        assert_eq!(map.get(atom("n0")), Some(SymbolId::new(0)));
+        assert_eq!(map.get(atom("over")), Some(SymbolId::new(99)));
     }
 
     #[test]
@@ -610,7 +667,7 @@ mod tests {
             map.insert(atom("x"), SymbolId::new(2)),
             Some(SymbolId::new(1))
         );
-        assert_eq!(map.get(&atom("x")), Some(SymbolId::new(2)));
+        assert_eq!(map.get(atom("x")), Some(SymbolId::new(2)));
     }
 
     #[test]
@@ -636,15 +693,15 @@ mod tests {
             .bind(NamespaceId::Values, atom("outer"), SymbolId::new(3));
 
         assert_eq!(
-            tree.resolve(b, NamespaceId::Values, &atom("outer")),
+            tree.resolve(b, NamespaceId::Values, atom("outer")),
             Some(SymbolId::new(3))
         );
         assert_eq!(
-            tree.resolve(b, NamespaceId::Values, &atom("inner")),
+            tree.resolve(b, NamespaceId::Values, atom("inner")),
             Some(SymbolId::new(2))
         );
         assert_eq!(
-            tree.resolve(ScopeId::ROOT, NamespaceId::Values, &atom("inner")),
+            tree.resolve(ScopeId::ROOT, NamespaceId::Values, atom("inner")),
             None
         );
     }

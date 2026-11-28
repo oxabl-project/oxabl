@@ -1,7 +1,10 @@
 //! Local unknown-value facts. Low-confidence operations produce Unknown.
+use std::sync::Arc;
+
 use oxabl_ast::{
-    AstPools, DataType, ExprId, ExpressionKind as E, Literal, NodeId, OnAction, OnKind,
-    ParameterDirection, ParameterType, Span, Statement, StatementKind as S, TypeSource,
+    AstPools, DataType, ExprId, ExpressionKind as E, FoldedNameId, FoldedNames, Literal, NameId,
+    NodeId, OnAction, OnKind, ParameterDirection, ParameterType, Span, Statement,
+    StatementKind as S, TypeSource,
 };
 use oxabl_flow::dataflow::{
     Analysis, BitSet, Direction, Limits, Solution, default_budget, solve_bounded,
@@ -84,14 +87,18 @@ pub enum ValueState {
 #[derive(Debug, Clone)]
 pub(crate) struct UnitValues {
     pub unit: UnitId,
-    names: FxHashMap<String, usize>,
+    /// The index of each local, by the folded id of its name in `table`.
+    names: FxHashMap<FoldedNameId, usize>,
+    /// The folded names of the program the units come from; the ids of
+    /// `names` are its ids.
+    table: Arc<FoldedNames>,
     before: Vec<Vec<u8>>,
     /// The solve ran out of its work budget: every local is Unknown.
     pub exhausted: bool,
 }
 impl UnitValues {
     pub fn before(&self, node: NodeIx, name: &str) -> Option<ValueState> {
-        let index = lookup(&self.names, name)?;
+        let index = *self.names.get(&self.table.lookup(name)?)?;
         if self.exhausted {
             return Some(ValueState::Unknown);
         }
@@ -113,6 +120,8 @@ struct Variable {
     name: String,
     /// Lowercase name of a local; unique key of a field.
     key: String,
+    /// The folded id of a local's name; `None` for a field.
+    folded: Option<FoldedNameId>,
     initial: u8,
     constant: Option<i64>,
     /// The declaration of a local.
@@ -126,7 +135,10 @@ struct Problem<'a> {
     pools: &'a AstPools,
     statements: FxHashMap<NodeId, &'a Statement>,
     variables: Vec<Variable>,
-    names: FxHashMap<String, usize>,
+    /// The index of each local, by the folded id of its name in `table`.
+    names: FxHashMap<FoldedNameId, usize>,
+    /// The folded names of the program; empty in a run over fields.
+    table: &'a FoldedNames,
     elided: &'a [u32],
     /// The loop variable of each `REPEAT var = ... TO ...`, which the AST does
     /// not keep.
@@ -396,25 +408,41 @@ const WORK_LIMIT: usize = 1_000_000;
 /// about once each, as the solve does, with a test per use.
 const SEARCH_LIMIT: usize = 2 * WORK_LIMIT;
 
-/// The keys of the locals, or of the fields given by `spans`, that a
+/// The locals (by folded id), or the fields given by `spans` (by key), that a
 /// condition, comparison or loop limit reads.
+#[derive(Default)]
+struct Tested {
+    locals: FxHashSet<FoldedNameId>,
+    fields: FxHashSet<String>,
+}
+
+impl Tested {
+    fn contains(&self, v: &Variable) -> bool {
+        match v.folded {
+            Some(id) => self.locals.contains(&id),
+            None => self.fields.contains(&v.key),
+        }
+    }
+}
+
 fn tested_names<'a>(
     pools: &AstPools,
+    table: &FoldedNames,
     statements: impl Iterator<Item = &'a Statement>,
     spans: Option<&FxHashMap<(u32, u32), String>>,
-) -> FxHashSet<String> {
-    let mut out = FxHashSet::default();
+) -> Tested {
+    let mut out = Tested::default();
     let mut collect = |e: ExprId| {
         walk(pools, e, &mut |e| {
             let expr = pools.expr(e);
             match (spans, &expr.kind) {
                 (Some(spans), E::Identifier(_) | E::FieldAccess { .. }) => {
                     if let Some(key) = spans.get(&(expr.span.start, expr.span.end)) {
-                        out.insert(key.clone());
+                        out.fields.insert(key.clone());
                     }
                 }
                 (None, E::Identifier(i)) => {
-                    out.insert(pools.ident(*i).to_ascii_lowercase());
+                    out.locals.extend(table.try_id_of(i.name));
                 }
                 _ => {}
             }
@@ -690,10 +718,18 @@ impl Problem<'_> {
             return None;
         }
         if let E::Identifier(i) = &expr.kind {
-            lookup(&self.names, self.pools.ident(*i))
+            self.local(i.name)
         } else {
             None
         }
+    }
+    /// The index of the local that the program's name `name` spells.
+    fn local(&self, name: NameId) -> Option<usize> {
+        self.names.get(&self.table.try_id_of(name)?).copied()
+    }
+    /// The index of the local that `name`, a spelling from the source, names.
+    fn local_named(&self, name: &str) -> Option<usize> {
+        self.names.get(&self.table.lookup(name)?).copied()
     }
     fn eval(&self, e: ExprId, f: &Fact) -> u8 {
         if f.dead() {
@@ -1353,7 +1389,7 @@ impl Problem<'_> {
                 loop_var: Some(name),
                 ..
             } => {
-                if let Some(i) = lookup(&self.names, self.pools.ident(*name)) {
+                if let Some(i) = self.local(name.name) {
                     f.forget(i, UNKNOWN);
                 }
             }
@@ -1361,7 +1397,7 @@ impl Problem<'_> {
                 if let Some(i) = self
                     .repeat_vars
                     .get(&s.id)
-                    .and_then(|n| lookup(&self.names, n))
+                    .and_then(|n| self.local_named(n))
                 {
                     f.forget(i, UNKNOWN);
                 }
@@ -1416,7 +1452,7 @@ impl Problem<'_> {
                     self.forget_calls(e, f);
                 }
                 for target in set_targets {
-                    if let Some(i) = lookup(&self.names, self.pools.ident(*target)) {
+                    if let Some(i) = self.local(target.name) {
                         f.forget(i, UNKNOWN);
                     }
                 }
@@ -1815,7 +1851,7 @@ impl Problem<'_> {
         if self.fields_only {
             self.field_spans.get(&(u.at.start, u.at.end)).copied()
         } else {
-            lookup(&self.names, &u.name)
+            self.local_named(&u.name)
         }
     }
 
@@ -2447,10 +2483,19 @@ fn analyze_inspect(
     };
     // The locals are not read in a field run.
     let local_all: &[&Statement] = if fields.is_some() { &[] } else { &all };
-    let mut written = FxHashSet::default();
+    // The names of the locals are folded once for the program. A run over
+    // fields looks no local up.
+    let table = Arc::new(if fields.is_some() {
+        FoldedNames::new()
+    } else {
+        FoldedNames::from_pool(&pools.names)
+    });
+    let mut written: FxHashSet<FoldedNameId> = FxHashSet::default();
     let mut write = |e: ExprId| {
-        if let E::Identifier(i) = &pools.expr(e).kind {
-            written.insert(pools.ident(*i).to_ascii_lowercase());
+        if let E::Identifier(i) = &pools.expr(e).kind
+            && let Some(id) = table.try_id_of(i.name)
+        {
+            written.insert(id);
         }
     };
     for s in local_all {
@@ -2484,18 +2529,18 @@ fn analyze_inspect(
             _ => {}
         }
     }
-    written.extend(repeat_vars.values().cloned());
+    written.extend(repeat_vars.values().filter_map(|name| table.lookup(name)));
     for s in local_all {
         match &s.kind {
             S::Do {
                 loop_var: Some(name),
                 ..
             } => {
-                written.insert(pools.ident(*name).to_ascii_lowercase());
+                written.extend(table.try_id_of(name.name));
             }
             S::Message { set_targets, .. } => {
                 for name in set_targets {
-                    written.insert(pools.ident(*name).to_ascii_lowercase());
+                    written.extend(table.try_id_of(name.name));
                 }
             }
             _ => {}
@@ -2537,7 +2582,7 @@ fn analyze_inspect(
                 } => name,
                 _ => return None,
             };
-            Some((*owners.get(&s.id)?, pools.ident(*name).to_ascii_lowercase()))
+            Some((*owners.get(&s.id)?, table.try_id_of(name.name)?))
         })
         .collect();
     let mut nonlocal = FxHashSet::default();
@@ -2546,11 +2591,11 @@ fn analyze_inspect(
             continue;
         };
         let mut record = |e: ExprId| {
-            if let E::Identifier(i) = &pools.expr(e).kind {
-                let name = pools.ident(*i).to_ascii_lowercase();
-                if !declared.contains(&(unit, name.clone())) {
-                    nonlocal.insert(name);
-                }
+            if let E::Identifier(i) = &pools.expr(e).kind
+                && let Some(name) = table.try_id_of(i.name)
+                && !declared.contains(&(unit, name))
+            {
+                nonlocal.insert(name);
             }
         };
         match &s.kind {
@@ -2608,6 +2653,7 @@ fn analyze_inspect(
             statements,
             variables: Vec::new(),
             names: FxHashMap::default(),
+            table: &table,
             elided,
             repeat_vars: &repeat_vars,
             call_writes: Vec::new(),
@@ -2642,6 +2688,7 @@ fn analyze_inspect(
             p.variables.push(Variable {
                 name: v.name.clone(),
                 key: v.key.clone(),
+                folded: None,
                 initial: FIELD,
                 constant: None,
                 declared: None,
@@ -2693,10 +2740,13 @@ fn analyze_inspect(
             if let Some((name, initial)) = declaration {
                 let name_str = pools.ident(*name);
                 let key = name_str.to_ascii_lowercase();
-                p.names.insert(key.clone(), p.variables.len());
+                let folded = table.try_id_of(name.name);
+                if let Some(id) = folded {
+                    p.names.insert(id, p.variables.len());
+                }
                 p.variables.push(Variable {
                     name: name_str.to_string(),
-                    constant: if written.contains(&key) {
+                    constant: if folded.is_some_and(|id| written.contains(&id)) {
                         None
                     } else {
                         match &s.kind {
@@ -2713,6 +2763,7 @@ fn analyze_inspect(
                         }
                     },
                     key,
+                    folded,
                     initial,
                     declared: Some(s.span),
                     entry: None,
@@ -2724,19 +2775,20 @@ fn analyze_inspect(
         }
         // Tested locals first: a source records which of them must be `?`.
         let spans = own_fields.flatten().map(|u| &u.spans);
-        let tested = tested_names(pools, p.statements.values().copied(), spans);
+        let tested = tested_names(pools, &table, p.statements.values().copied(), spans);
         let (mut first, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut p.variables)
             .into_iter()
-            .partition(|v| tested.contains(&v.key));
+            .partition(|v| tested.contains(v));
         p.tracked = first.len().min(TRACKED_LIMIT);
         first.extend(rest);
-        let indexed: FxHashMap<String, usize> = first
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (v.key.clone(), i))
-            .collect();
         p.variables = first;
         if let Some(uf) = own_fields.flatten() {
+            let indexed: FxHashMap<String, usize> = p
+                .variables
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (v.key.clone(), i))
+                .collect();
             p.field_spans = uf
                 .spans
                 .iter()
@@ -2750,7 +2802,12 @@ fn analyze_inspect(
                 .map(|v| indexed[&v.key])
                 .collect();
         } else {
-            p.names = indexed;
+            p.names = p
+                .variables
+                .iter()
+                .enumerate()
+                .filter_map(|(i, v)| Some((v.folded?, i)))
+                .collect();
         }
         let mut buffers = FxHashMap::default();
         for s in p.statements.values() {
@@ -2792,6 +2849,7 @@ fn analyze_inspect(
             facts.push(UnitValues {
                 unit: cfg.id(),
                 names: p.names,
+                table: table.clone(),
                 before: Vec::new(),
                 exhausted: true,
             });
@@ -2830,6 +2888,7 @@ fn analyze_inspect(
         facts.push(UnitValues {
             unit: cfg.id(),
             names: p.names,
+            table: table.clone(),
             before: cfg
                 .nodes()
                 .map(|(n, _)| solution.before(n).values.clone())
@@ -2888,6 +2947,8 @@ mod tests {
             };
             let repeat_vars = FxHashMap::default();
             let when_values = FxHashSet::default();
+            let mut table = FoldedNames::from_pool(&program.pools.names);
+            let (a, b) = (table.intern("a"), table.intern("b"));
             let p = Problem {
                 pools: &program.pools,
                 statements: FxHashMap::default(),
@@ -2895,6 +2956,7 @@ mod tests {
                     Variable {
                         name: "a".into(),
                         key: "a".into(),
+                        folded: Some(a),
                         initial: UNKNOWN,
                         constant: None,
                         declared: None,
@@ -2903,13 +2965,15 @@ mod tests {
                     Variable {
                         name: "b".into(),
                         key: "b".into(),
+                        folded: Some(b),
                         initial: UNKNOWN,
                         constant: None,
                         declared: None,
                         entry: None,
                     },
                 ],
-                names: [("a".into(), 0), ("b".into(), 1)].into_iter().collect(),
+                names: [(a, 0), (b, 1)].into_iter().collect(),
+                table: &table,
                 elided: &[],
                 repeat_vars: &repeat_vars,
                 call_writes: Vec::new(),

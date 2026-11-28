@@ -681,6 +681,19 @@ impl SymbolTable {
         id
     }
 
+    /// Populate the arena with the precomputed built-in handles in one
+    /// allocation, avoiding repeated growth during [`crate::builtins::seed`].
+    pub(crate) fn seed_builtins(&mut self, builtins: &[Symbol]) {
+        debug_assert!(
+            self.arena.is_empty(),
+            "seed_builtins requires an empty table"
+        );
+        // Round up to a power of two (64 for 49 handles) so small files do not
+        // reallocate immediately on their first user declaration.
+        self.arena.reserve(builtins.len().next_power_of_two());
+        self.arena.extend_from_slice(builtins);
+    }
+
     pub fn get(&self, id: SymbolId) -> &Symbol {
         &self.arena[id.raw() as usize]
     }

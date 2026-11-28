@@ -112,6 +112,13 @@ impl NamePool {
         self.len() == 0
     }
 
+    /// Total UTF-8 length of the stored strings, so a pass that copies them
+    /// can size its buffer once.
+    #[inline]
+    pub fn byte_len(&self) -> usize {
+        self.bytes.len()
+    }
+
     /// Append `text` without deduplication and return its [`NameId`].
     ///
     /// Prefer [`NameInterner::intern`] during parsing; this method is convenient

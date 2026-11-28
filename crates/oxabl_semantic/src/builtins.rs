@@ -12,7 +12,7 @@
 
 use std::sync::LazyLock;
 
-use oxabl_ast::NodeId;
+use oxabl_ast::{FoldedNameId, FoldedNames, NodeId};
 use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 
@@ -92,8 +92,9 @@ pub static SYSTEM_HANDLES: &[&str] = &[
 ];
 
 /// Precomputed seed state: the built-in `Symbol` records (arena order =
-/// `SYSTEM_HANDLES` order, so ids are `0..len`) plus the root `Values`
-/// binding map pointing at those ids.
+/// `SYSTEM_HANDLES` order, so ids are `0..len`), the folded-name table that
+/// starts with those names (so the folded id of `SYSTEM_HANDLES[i]` is `i`),
+/// and the root `Values` binding map pointing at those ids.
 ///
 /// `seed` runs on every declare pass; interning 49 atoms (string_cache
 /// dynamic-set insert + hash) and re-driving the `BindingMap` small→large
@@ -102,14 +103,21 @@ pub static SYSTEM_HANDLES: &[&str] = &[
 /// allocation-light while producing byte-identical results.
 struct SeedData {
     symbols: Vec<Symbol>,
+    names: FoldedNames,
     bindings: BindingMap,
 }
 
 static SEED: LazyLock<SeedData> = LazyLock::new(|| {
     let mut seeded = Vec::with_capacity(SYSTEM_HANDLES.len());
     let mut bindings = BindingMap::default();
+    let mut names = FoldedNames::new();
+    // Size the static base to 512 slots (2 KiB, <10% load) so probes from
+    // per-program tables hit an empty slot on the first L1 load.
+    names.reserve_base_slots(512);
     for (idx, name) in SYSTEM_HANDLES.iter().enumerate() {
         let atom = OxablAtom::from(*name);
+        let folded = names.intern(name);
+        debug_assert_eq!(folded.index(), idx, "a system handle appears twice");
         seeded.push(Symbol {
             name: atom.clone(),
             namespace: NamespaceId::Values,
@@ -123,15 +131,33 @@ static SEED: LazyLock<SeedData> = LazyLock::new(|| {
             flags: SymbolFlags::empty(),
             table_id: None,
         });
-        bindings.insert(atom, SymbolId::new(idx as u32));
+        bindings.insert(folded, SymbolId::new(idx as u32));
     }
     SeedData {
         symbols: seeded,
+        names,
         bindings,
     }
 });
 
-/// Seed the ABL system handles into the file scope.
+/// The pre-interned atom of a system handle when `id` belongs to the base
+/// table (`0..SYSTEM_HANDLES.len()`), or `None` for any program-declared name.
+#[inline]
+pub(crate) fn system_handle_atom(names: &FoldedNames, id: FoldedNameId) -> Option<OxablAtom> {
+    let idx = id.index();
+    if idx < names.base_len() && names.base_len() == SYSTEM_HANDLES.len() {
+        debug_assert_eq!(names.text(id), SEED.symbols[idx].name.as_ref());
+        Some(SEED.symbols[idx].name.clone())
+    } else {
+        None
+    }
+}
+
+/// Seed the ABL system handles into the file scope, and give the tree a
+/// folded-name table sitting on top of the static system-handle table.
+///
+/// Program declarations are folded on demand during the declare pass instead of
+/// folding the whole `NamePool` up front.
 ///
 /// Must be called on a freshly constructed `SymbolTable`/`ScopeTree`: the
 /// precomputed binding map assumes the built-ins occupy symbol ids
@@ -146,9 +172,8 @@ pub(crate) fn seed(tree: &mut ScopeTree, symbols: &mut SymbolTable) {
             .is_none_or(BindingMap::is_empty),
         "seed() requires an empty root Values binding map"
     );
-    for sym in &data.symbols {
-        symbols.insert(sym.clone());
-    }
+    tree.set_names(FoldedNames::with_base(&data.names));
+    symbols.seed_builtins(&data.symbols);
     *tree
         .get_mut(ScopeId::ROOT)
         .bindings
@@ -168,8 +193,10 @@ mod tests {
         assert_eq!(symbols.len(), SYSTEM_HANDLES.len());
         let root = tree.get(ScopeId::ROOT);
         for name in SYSTEM_HANDLES {
-            let sym = root
-                .get_in(NamespaceId::Values, &OxablAtom::from(*name))
+            let sym = tree
+                .names()
+                .lookup(name)
+                .and_then(|id| root.get_in(NamespaceId::Values, id))
                 .unwrap_or_else(|| panic!("{name} should be seeded"));
             assert_eq!(symbols.get(sym).kind, SymbolKind::BuiltIn);
         }
@@ -183,7 +210,9 @@ mod tests {
         let root = tree.get(ScopeId::ROOT);
         for name in ["this-procedure", "current-window", "web-context"] {
             assert!(
-                root.get_in(NamespaceId::Values, &OxablAtom::from(name))
+                tree.names()
+                    .lookup(name)
+                    .and_then(|id| root.get_in(NamespaceId::Values, id))
                     .is_some(),
                 "{name} should be seeded"
             );

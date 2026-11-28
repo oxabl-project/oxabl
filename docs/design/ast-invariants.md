@@ -502,6 +502,14 @@ parse. The tree holds only handles into it.
   `pools.name(id)` or `pools.ident(identifier)`. While it parses, the parser interns each
   text once (`NameInterner`, case-sensitive; a `hashbrown::HashTable` of ids that compares
   against the pool); `finish` drops the table, so a kept tree has no map.
+- **`FoldedNameId`** (4 bytes) is a handle into a `FoldedNames` table, which a pass builds
+  from the program's `NamePool` (`FoldedNames::from_pool`). Each name is folded to ASCII
+  lower case once, so two `NameId`s that differ only in the case of ASCII letters have the
+  same `FoldedNameId`, and comparing two names is comparing two integers. The table maps a
+  `NameId` to its id with an array index, finds the id of a spelling that is not in the pool
+  with `lookup`, and keeps no global state. Only ASCII letters fold: `Ä` and `ä` are two
+  names, as the keywords and the schema's atoms have always been. An id is valid only with
+  the table that issued it; the semantic and null analyses each build their own (semantic folds declarations lazily on demand, and nulls folds the unit's pool).
 - **`ExprId`** (4 bytes) is a handle into `ExprPool`. Every place that held an `Expression`,
   a `Box<Expression>` or an `Option<Expression>` holds an `ExprId` or an `Option<ExprId>`.
   Read the node with `pools.expr(id)`.
