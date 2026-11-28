@@ -266,7 +266,7 @@ pub fn declare_pass(
     program: &[Statement],
     ctx: &AnalysisContext,
 ) -> (ScopeTree, SymbolTable, Vec<Diagnostic>, SchemaRevision) {
-    let mut walker = Walker::new(ctx);
+    let mut walker = Walker::new(ctx, program.len());
     walker.walk_block(program, ScopeId::ROOT);
     let declare_revision = ctx.schema.revision();
     (
@@ -307,38 +307,113 @@ struct Walker<'a> {
     /// dataset of the scope), so a direction repeated where both can compile
     /// still reports a duplicate.
     table_params: FxHashMap<SymbolId, (HandleParamKind, Vec<(u32, ArmPath)>)>,
-    /// The atom of each folded name a symbol was made for.
-    atoms: AtomCache,
 }
 
-/// The folded atom of each name of a table, made once. The names that the
-/// scope tree binds are ids, but a `Symbol` and a `Resolution` name a thing by
-/// atom, and a program names few things many times.
-///
-/// One word, boxed on first use: a file that makes no atom pays no allocation,
-/// and `ResolveWalker` stays in its pinned size.
-#[derive(Default)]
-struct AtomCache(std::cell::OnceCell<Box<std::cell::RefCell<Vec<Option<OxablAtom>>>>>);
+/// Cached outcome of looking up an undeclared `NameId` in the scope tree's
+/// `FoldedNames` table during the resolve pass.
+#[derive(Clone, Copy)]
+enum CachedPoolLookup {
+    Unset,
+    Absent,
+    Found(FoldedNameId),
+}
 
-impl AtomCache {
-    fn get(&self, names: &FoldedNames, id: FoldedNameId) -> OxablAtom {
-        let slots = self.0.get_or_init(Box::default);
-        let mut slots = slots.borrow_mut();
-        let at = id.index();
-        if at >= slots.len() {
-            slots.resize(at + 1, None);
+#[derive(Default)]
+struct ResolveNameCacheInner {
+    /// Lookup results for pool names that were not declared by `declare_pass`
+    /// (system handles, different-case references, or undeclared names).
+    by_name: Vec<CachedPoolLookup>,
+    /// Folded atom per `NameId::index()`, covering declared names, system
+    /// handles, and undeclared names (schema fields, tables, classes) alike.
+    atoms: Vec<Option<OxablAtom>>,
+}
+
+/// Lazily allocated per-pass caches for [`ResolveWalker`]: folded-name lookups
+/// for undeclared `NameId`s, and folded atoms keyed by `NameId`.
+///
+/// One word, boxed on first use: a file whose references all hit declared
+/// `NameId`s and need no atom pays no allocation, and `ResolveWalker` stays in
+/// its pinned size.
+#[derive(Default)]
+struct ResolveNameCache(std::cell::OnceCell<Box<std::cell::RefCell<ResolveNameCacheInner>>>);
+
+impl ResolveNameCache {
+    #[inline(never)]
+    fn lookup_pool_name(
+        &self,
+        names: &FoldedNames,
+        pool: &oxabl_ast::NamePool,
+        name: oxabl_ast::NameId,
+    ) -> Option<FoldedNameId> {
+        if name == oxabl_ast::NameId::DUMMY {
+            return None;
         }
-        slots[at]
-            .get_or_insert_with(|| fold_atom(names.text(id)))
+        let idx = name.index();
+        let cell = self.0.get_or_init(Box::default);
+        let mut inner = cell.borrow_mut();
+        match inner.by_name.get(idx).copied() {
+            Some(CachedPoolLookup::Found(id)) => return Some(id),
+            Some(CachedPoolLookup::Absent) => return None,
+            Some(CachedPoolLookup::Unset) | None => {}
+        }
+        let found = names.lookup(pool.get(name));
+        if idx >= inner.by_name.len() {
+            let new_len = pool.len().min(64).max(idx + 1);
+            inner.by_name.resize(new_len, CachedPoolLookup::Unset);
+        }
+        inner.by_name[idx] = match found {
+            Some(id) => CachedPoolLookup::Found(id),
+            None => CachedPoolLookup::Absent,
+        };
+        found
+    }
+
+    fn atom_of(
+        &self,
+        names: &FoldedNames,
+        pool: &oxabl_ast::NamePool,
+        name: oxabl_ast::NameId,
+        folded: Option<FoldedNameId>,
+    ) -> OxablAtom {
+        if name == oxabl_ast::NameId::DUMMY {
+            return OxablAtom::from("");
+        }
+        // On tiny files (<= 32 pool names), allocating and dropping a per-pass
+        // atom vector costs more than folding directly (inline for <= 7 bytes,
+        // thread-local cache above that).
+        if pool.len() <= 32 {
+            return match folded {
+                Some(fid) => builtins::system_handle_atom(names, fid)
+                    .unwrap_or_else(|| atom_from_folded(names.text(fid))),
+                None => fold_atom(pool.get(name)),
+            };
+        }
+        let idx = name.index();
+        let cell = self.0.get_or_init(Box::default);
+        let mut inner = cell.borrow_mut();
+        if idx >= inner.atoms.len() {
+            inner.atoms.resize(idx + 1, None);
+        }
+        inner.atoms[idx]
+            .get_or_insert_with(|| match folded {
+                Some(fid) => builtins::system_handle_atom(names, fid)
+                    .unwrap_or_else(|| atom_from_folded(names.text(fid))),
+                None => fold_atom(pool.get(name)),
+            })
             .clone()
     }
 }
 
 impl<'a> Walker<'a> {
-    fn new(ctx: &'a AnalysisContext<'a>) -> Self {
+    fn new(ctx: &'a AnalysisContext<'a>, top_level_stmts: usize) -> Self {
         let mut tree = ScopeTree::new();
         let mut symbols = SymbolTable::new();
-        builtins::seed(&mut tree, &mut symbols, &ctx.pools.names);
+        builtins::seed(&mut tree, &mut symbols);
+        // Large files with many top-level procedures/declarations otherwise
+        // rehash ScopeTree::children repeatedly during the walk.
+        if top_level_stmts >= 64 {
+            tree.reserve_for_large_program(top_level_stmts);
+        }
         Walker {
             ctx,
             tree,
@@ -347,20 +422,25 @@ impl<'a> Walker<'a> {
             arm_path: Vec::new(),
             decl_arms: FxHashMap::default(),
             table_params: FxHashMap::default(),
-            atoms: AtomCache::default(),
         }
     }
 
-    /// The folded id of an identifier of the program being analysed.
+    /// Look up the folded id of `id` without interning it. Returns `None` when
+    /// no declared name or system handle folds to it, so it cannot be bound.
     #[inline]
-    fn fid(&self, id: &Identifier) -> FoldedNameId {
-        self.tree.names().id_of(id.name)
+    fn lookup_fid(&self, id: &Identifier) -> Option<FoldedNameId> {
+        let names = self.tree.names();
+        names
+            .try_id_of(id.name)
+            .or_else(|| names.lookup(self.ctx.pools.ident(*id)))
     }
 
-    /// The atom of a folded name, for the symbol that records it.
+    /// Fold and intern a declared identifier's name into the scope tree's table.
+    /// Also reports whether `raw` is known to be already ASCII-lowercased.
     #[inline]
-    fn atom_of(&self, id: FoldedNameId) -> OxablAtom {
-        self.atoms.get(self.tree.names(), id)
+    fn declare_fid(&mut self, id: &Identifier, raw: &str) -> (FoldedNameId, bool) {
+        let pool = &self.ctx.pools.names;
+        self.tree.names_mut().intern_pool_str(pool, id.name, raw)
     }
 
     /// The text a scope that `stmt` owns covers: the statement, or up to the
@@ -438,11 +518,9 @@ impl<'a> Walker<'a> {
                 let routine = self.tree.var_binding_scope(scope);
                 // The compiler accepts a stream defined twice in one scope, as
                 // when the file and an include both define it.
-                let folded = self.fid(name);
                 if self
-                    .tree
-                    .get(routine)
-                    .get_in(NamespaceId::Streams, folded)
+                    .lookup_fid(name)
+                    .and_then(|folded| self.tree.get(routine).get_in(NamespaceId::Streams, folded))
                     .is_none()
                 {
                     self.declare_simple(
@@ -857,10 +935,9 @@ impl<'a> Walker<'a> {
                     // counter to that outer symbol (bumping its use), so
                     // declaring a shadow here would leave the real variable
                     // looking unused (false LINT0002).
-                    let folded = self.fid(id);
                     if self
-                        .tree
-                        .resolve(scope, NamespaceId::Values, folded)
+                        .lookup_fid(id)
+                        .and_then(|folded| self.tree.resolve(scope, NamespaceId::Values, folded))
                         .is_none()
                     {
                         self.declare(
@@ -894,8 +971,11 @@ impl<'a> Walker<'a> {
                 // to this block, so bind that same symbol here. Only a name no
                 // buffer answers to is a schema table's default buffer, which is
                 // minted at block scope.
-                let folded = self.fid(buffer);
-                if let Some(existing) = self.tree.resolve(scope, NamespaceId::Buffers, folded) {
+                if let Some((folded, existing)) = self.lookup_fid(buffer).and_then(|folded| {
+                    self.tree
+                        .resolve(scope, NamespaceId::Buffers, folded)
+                        .map(|sym| (folded, sym))
+                }) {
                     self.tree
                         .get_mut(bs)
                         .bind(NamespaceId::Buffers, folded, existing);
@@ -1097,10 +1177,9 @@ impl<'a> Walker<'a> {
     /// as the same field in a second frame does.
     fn declare_frame_fields(&mut self, stmt: &Statement, scope: ScopeId, fields: &[FrameField]) {
         for field in fields {
-            let folded = self.fid(&field.name);
             if self
-                .tree
-                .resolve(scope, NamespaceId::Values, folded)
+                .lookup_fid(&field.name)
+                .and_then(|folded| self.tree.resolve(scope, NamespaceId::Values, folded))
                 .is_some_and(|sym| self.symbols.get(sym).kind != SymbolKind::BuiltIn)
             {
                 continue;
@@ -1203,7 +1282,9 @@ impl<'a> Walker<'a> {
         kind: &HandleParamKind,
         dir_flag: SymbolFlags,
     ) -> bool {
-        let folded = self.fid(name);
+        let Some(folded) = self.lookup_fid(name) else {
+            return false;
+        };
         let Some(prior) = self.tree.get(scope).get_in(NamespaceId::Values, folded) else {
             return false;
         };
@@ -1339,8 +1420,8 @@ impl<'a> Walker<'a> {
     /// visible from `scope` wins over a schema table of the same name, as in
     /// ABL.
     fn record_source_of(&self, table: &Identifier, scope: ScopeId) -> Option<RecordSource> {
-        let folded = self.fid(table);
-        if let Some(sym) = self.tree.resolve(scope, NamespaceId::Buffers, folded)
+        if let Some(folded) = self.lookup_fid(table)
+            && let Some(sym) = self.tree.resolve(scope, NamespaceId::Buffers, folded)
             && self.symbols.get(sym).kind == SymbolKind::TempTable
         {
             return Some(RecordSource::TempTable(sym));
@@ -1376,7 +1457,7 @@ impl<'a> Walker<'a> {
         table_id: Option<TableId>,
     ) -> Option<crate::SymbolId> {
         let raw_name = self.ctx.pools.ident(*name);
-        let folded = self.fid(name);
+        let (folded, is_lower) = self.declare_fid(name, raw_name);
         let name_span = VirtualSpan::new(name.span.start, name.span.end);
 
         // Duplicate check — same scope + same namespace only. Shadowing
@@ -1419,8 +1500,13 @@ impl<'a> Walker<'a> {
             }
         }
 
+        let folded_str = if is_lower {
+            raw_name
+        } else {
+            self.tree.names().text(folded)
+        };
         let symbol = Symbol {
-            name: self.atom_of(folded),
+            name: atom_from_folded(folded_str),
             namespace: ns,
             kind,
             declared_in: scope,
@@ -1452,30 +1538,42 @@ impl<'a> Walker<'a> {
         flags: SymbolFlags,
     ) -> Option<SymbolId> {
         let raw_name = self.ctx.pools.ident(*name);
-        let folded = self.fid(name);
+        let (folded, is_lower) = self.declare_fid(name, raw_name);
         let signature = method_signature(parameters, self.ctx.pools);
         let param_decls: Option<Arc<[MemberParam]>> =
             crate::signature::member_params(parameters, self.ctx.pools).map(Into::into);
         let name_span = VirtualSpan::new(name.span.start, name.span.end);
 
         let Some(anchor) = self.tree.get(scope).get_in(NamespaceId::Functions, folded) else {
-            let sym = self.declare(
-                stmt,
-                scope,
-                name,
-                NamespaceId::Functions,
-                SymbolKind::Function,
+            let folded_str = if is_lower {
+                raw_name
+            } else {
+                self.tree.names().text(folded)
+            };
+            let sym = self.symbols.insert(Symbol {
+                name: atom_from_folded(folded_str),
+                namespace: NamespaceId::Functions,
+                kind: SymbolKind::Function,
+                declared_in: scope,
+                declaration: stmt.id,
+                name_span,
                 data_type,
+                read_count: 0,
+                write_count: 0,
                 flags,
-                None,
-            );
-            if let Some(sym) = sym {
-                self.symbols.record_method_signature(sym, signature);
-                if let Some(params) = param_decls {
-                    self.symbols.record_method_param_decls(sym, params);
-                }
+                table_id: None,
+            });
+            self.tree
+                .get_mut(scope)
+                .bind(NamespaceId::Functions, folded, sym);
+            if !self.arm_path.is_empty() {
+                self.decl_arms.insert(sym, self.arm_path.clone());
             }
-            return sym;
+            self.symbols.record_method_signature(sym, signature);
+            if let Some(params) = param_decls {
+                self.symbols.record_method_param_decls(sym, params);
+            }
+            return Some(sym);
         };
 
         let members: Vec<SymbolId> = self
@@ -1509,8 +1607,13 @@ impl<'a> Walker<'a> {
         // Preserve the declaration in the arena, but deliberately do not
         // replace the scope binding: ordinary lookup continues to return the
         // stable anchor and consumers can ask whether it represents a set.
+        let symbol_name = if is_lower {
+            atom_from_folded(raw_name)
+        } else {
+            atom_from_folded(self.tree.names().text(folded))
+        };
         let sym = self.symbols.insert(Symbol {
-            name: self.atom_of(folded),
+            name: symbol_name,
             namespace: NamespaceId::Functions,
             kind: SymbolKind::Function,
             declared_in: scope,
@@ -1792,9 +1895,9 @@ struct ResolveWalker<'a> {
     /// `None` is indistinguishable from empty at every read site (see
     /// [`Self::cross_file`]), so the resolution answers are identical either way.
     cross_file: Option<Box<CrossFileState>>,
-    /// The atom of each folded name that the pass records or asks the schema
-    /// for.
-    atoms: AtomCache,
+    /// Per-pass folded-name lookup cache (for undeclared `NameId`s) and folded
+    /// atom cache (for long declared names).
+    cache: ResolveNameCache,
 }
 
 /// Lazily allocated side caches for [`ResolveWalker`]. Kept behind one
@@ -1984,9 +2087,9 @@ const COMPUTED_TARGET: &str = "";
 /// [`CrossFileState`] (or a `SymbolTable` side map) for anything the common
 /// single-file run does not touch; raise the bound only with a measurement.
 ///
-/// The bound went from 320 to 328 bytes for the one word of [`AtomCache`]: the
-/// cache removes more instructions (an atom per name instead of per use) than
-/// the word costs.
+/// The bound went from 320 to 328 bytes for the one word of [`ResolveNameCache`]:
+/// the cache removes more instructions (one lookup/atom per name instead of per
+/// use) than the word costs.
 const _: () = assert!(
     std::mem::size_of::<ResolveWalker<'_>>() <= 328,
     "ResolveWalker grew: see the note above this assertion before raising the bound"
@@ -2143,21 +2246,35 @@ impl<'a> ResolveWalker<'a> {
             // attached: the first cross-file write creates it, so the cost is
             // paid by the run that has something to put in it.
             cross_file: None,
-            atoms: AtomCache::default(),
+            cache: ResolveNameCache::default(),
         }
     }
 
-    /// The folded id of an identifier of the program being analysed.
+    /// The folded id of an identifier of the program, or `None` when no
+    /// declared name or system handle folds to it (so it is bound nowhere).
     #[inline]
-    fn fid(&self, id: &Identifier) -> FoldedNameId {
-        self.tree.names().id_of(id.name)
+    fn fid(&self, id: &Identifier) -> Option<FoldedNameId> {
+        if let Some(fid) = self.tree.names().try_id_of(id.name) {
+            return Some(fid);
+        }
+        self.cache
+            .lookup_pool_name(self.tree.names(), &self.ctx.pools.names, id.name)
     }
 
-    /// The atom of a folded name, for what the pass records or asks the
-    /// schema, whose names are atoms.
+    /// The folded atom of `id`, reusing its pre-folded id when already known.
     #[inline]
-    fn atom_of(&self, id: FoldedNameId) -> OxablAtom {
-        self.atoms.get(self.tree.names(), id)
+    fn atom_of_ident(&self, id: &Identifier, folded: Option<FoldedNameId>) -> OxablAtom {
+        self.cache
+            .atom_of(self.tree.names(), &self.ctx.pools.names, id.name, folded)
+    }
+
+    /// The folded atom of `id`, for what the pass records or asks the schema,
+    /// whose names are atoms.
+    #[inline]
+    fn atom_of(&self, id: &Identifier) -> OxablAtom {
+        let folded = self.tree.names().try_id_of(id.name);
+        self.cache
+            .atom_of(self.tree.names(), &self.ctx.pools.names, id.name, folded)
     }
 
     /// The id of a name that did not come from an identifier, or `None` when
@@ -2905,7 +3022,7 @@ impl<'a> ResolveWalker<'a> {
                     let anchor = self
                         .tree
                         .get(scope)
-                        .get_in(NamespaceId::Functions, self.fid(name))?;
+                        .get_in(NamespaceId::Functions, self.fid(name)?)?;
                     let decl_sym = self
                         .symbols
                         .method_overloads(anchor)
@@ -3042,7 +3159,7 @@ impl<'a> ResolveWalker<'a> {
         decl_ns: NamespaceId,
         decl_name: &Identifier,
     ) -> Option<ClassTypedDecl> {
-        let decl_name_id = self.fid(decl_name);
+        let decl_name_id = self.fid(decl_name)?;
         let decl_sym = self.tree.get(scope).get_in(decl_ns, decl_name_id)?;
         self.class_upgrade_of(class_name, scope, decl_sym, decl_name)
     }
@@ -3297,8 +3414,9 @@ impl<'a> ResolveWalker<'a> {
                     let outer = self.current_class;
                     // Not gated on the index: a single-file run reads it too, to
                     // tell whether the class inherits a parent it never reads.
-                    self.current_class =
-                        self.tree.resolve(scope, NamespaceId::Types, self.fid(name));
+                    self.current_class = self
+                        .fid(name)
+                        .and_then(|fid| self.tree.resolve(scope, NamespaceId::Types, fid));
                     // An include that did not arrive in the body may declare
                     // more members.
                     if let Some(class) = self.current_class
@@ -4575,19 +4693,21 @@ impl<'a> ResolveWalker<'a> {
         mode: AccessMode,
     ) {
         let folded = self.fid(id);
-        for &ns in namespaces {
-            if let Some(sym) = self.tree.resolve(scope, ns, folded) {
-                self.references.insert(expr_id, Resolution::Resolved(sym));
-                self.bump_count(sym, mode);
-                if self.track_block_vars {
-                    self.note_block_var_use(sym, scope, mode);
+        if let Some(folded) = folded {
+            for &ns in namespaces {
+                if let Some(sym) = self.tree.resolve(scope, ns, folded) {
+                    self.references.insert(expr_id, Resolution::Resolved(sym));
+                    self.bump_count(sym, mode);
+                    if self.track_block_vars {
+                        self.note_block_var_use(sym, scope, mode);
+                    }
+                    return;
                 }
-                return;
             }
         }
         // Everything below asks the class index, the built-ins or the schema,
         // which name things by atom, and a miss records its name as one.
-        let atom = self.atom_of(folded);
+        let atom = self.atom_of_ident(id, folded);
         // Inherited members, from a superclass or an implemented interface the
         // workspace index could answer for. Tried *after* the scope chain and
         // never before it: a member the class declares itself shadows the one it
@@ -5162,7 +5282,7 @@ impl<'a> ResolveWalker<'a> {
             return;
         };
         let folded = self.fid(member);
-        let atom = self.atom_of(folded);
+        let atom = self.atom_of_ident(member, folded);
         let Some(sym) = self.lookup_member(class, role, folded, &atom, namespaces, member) else {
             self.references.insert(
                 expr_id,
@@ -5197,7 +5317,7 @@ impl<'a> ResolveWalker<'a> {
         &mut self,
         class: SymbolId,
         role: ReceiverRole,
-        folded: FoldedNameId,
+        folded: Option<FoldedNameId>,
         atom: &OxablAtom,
         namespaces: &[NamespaceId],
         use_site: &Identifier,
@@ -5209,10 +5329,11 @@ impl<'a> ResolveWalker<'a> {
         let public = |symbols: &SymbolTable, sym: SymbolId| {
             !outside || symbols.get(sym).flags.contains(SymbolFlags::PUBLIC)
         };
-        let own = match (local, role) {
+        let own = match (local, role, folded) {
             (
                 Some(scope),
                 ReceiverRole::Instance | ReceiverRole::TypeName | ReceiverRole::ThisObject,
+                Some(folded),
             ) => namespaces
                 .iter()
                 .find_map(|&ns| self.tree.get(scope).get_in(ns, folded))
@@ -5321,7 +5442,7 @@ impl<'a> ResolveWalker<'a> {
         if !self.symbols.is_method(sym) {
             return;
         }
-        let atom = self.atom_of(self.fid(name));
+        let atom = self.atom_of(name);
         if !self.symbols.get(sym).flags.contains(SymbolFlags::INHERITED) {
             self.gather_inherited(class, sym, &atom, name, false);
         }
@@ -5721,7 +5842,7 @@ impl<'a> ResolveWalker<'a> {
     ///   at or beyond its level is [`BareField::Unknown`].
     fn resolve_bare_block_field(
         &mut self,
-        name: FoldedNameId,
+        name: Option<FoldedNameId>,
         atom: &OxablAtom,
         id: &Identifier,
         scope: ScopeId,
@@ -5742,7 +5863,13 @@ impl<'a> ResolveWalker<'a> {
                 .entry(sid)
                 .or_insert_with(|| build_scope_bare_fields(self.tree, self.symbols, sid));
             opaque |= entry.opaque;
-            let found = lookup_bare_in_scope(entry, name, self.ctx.schema, self.tree, self.symbols);
+            let found = lookup_bare_in_scope(
+                entry,
+                (name, atom),
+                self.ctx.schema,
+                self.tree,
+                self.symbols,
+            );
             match found {
                 ScopeBareMatch::None => continue,
                 ScopeBareMatch::Unique(record, hit) => {
@@ -6098,7 +6225,7 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
     ) -> Option<SymbolId> {
         let class = self.current_class?;
-        let atom = self.atom_of(self.fid(id));
+        let atom = self.atom_of(id);
         match self.lookup_inherited(class, &atom, namespaces, id) {
             InheritedLookup::Member(sym) => Some(sym),
             InheritedLookup::Inaccessible | InheritedLookup::Absent => None,
@@ -6111,8 +6238,10 @@ impl<'a> ResolveWalker<'a> {
     /// The declare pass cannot see a superclass, so it linked the buffer to a
     /// schema table of that name, or to none.
     fn link_inherited_record(&mut self, owner: NodeId, id: &Identifier, block: ScopeId) {
-        let folded = self.fid(id);
         let Some(class) = self.current_class else {
+            return;
+        };
+        let Some(folded) = self.fid(id) else {
             return;
         };
         // A buffer an enclosing declaration bound here is not this statement's.
@@ -6123,7 +6252,7 @@ impl<'a> ResolveWalker<'a> {
             return;
         }
         let namespaces = [NamespaceId::Buffers, NamespaceId::Tables];
-        let atom = self.atom_of(folded);
+        let atom = self.atom_of_ident(id, Some(folded));
         if let InheritedLookup::Member(member) =
             self.lookup_inherited(class, &atom, &namespaces, id)
         {
@@ -6228,7 +6357,9 @@ impl<'a> ResolveWalker<'a> {
         if !self.ctx.record_sites {
             return;
         }
-        let name = self.fid(id);
+        let Some(name) = self.fid(id) else {
+            return;
+        };
         let dataset = self.tree.ancestors(scope).find_map(|at| {
             let sym = self.tree.get(at).get_in(NamespaceId::Values, name)?;
             (self.symbols.get(sym).kind == SymbolKind::Dataset).then_some(sym)
@@ -6415,7 +6546,7 @@ impl<'a> ResolveWalker<'a> {
         scope: ScopeId,
         namespaces: &[NamespaceId],
     ) -> Option<SymbolId> {
-        let name = self.fid(id);
+        let name = self.fid(id)?;
         namespaces
             .iter()
             .find_map(|&ns| self.tree.resolve(scope, ns, name))
@@ -6544,7 +6675,12 @@ impl<'a> ResolveWalker<'a> {
     /// target resolves to the buffer being declared and credits it a read for
     /// existing — which would silence every count-gated rule for that symbol.
     fn credit_buffer_target(&mut self, buffer: &Identifier, target: &Identifier, scope: ScopeId) {
-        if self.fid(buffer) == self.fid(target) {
+        if self
+            .ctx
+            .pools
+            .ident(*buffer)
+            .eq_ignore_ascii_case(self.ctx.pools.ident(*target))
+        {
             return;
         }
         let resolved = self.resolve_statement_ident(
@@ -6601,10 +6737,11 @@ impl<'a> ResolveWalker<'a> {
         let qfolded = self.fid(qid);
         // 1. Try Buffers (DEFINE BUFFER, FOR EACH implicit, schema default
         //    buffer), then Tables.
-        let qresolved = self
-            .tree
-            .resolve(scope, NamespaceId::Buffers, qfolded)
-            .or_else(|| self.tree.resolve(scope, NamespaceId::Tables, qfolded));
+        let qresolved = qfolded.and_then(|qfolded| {
+            self.tree
+                .resolve(scope, NamespaceId::Buffers, qfolded)
+                .or_else(|| self.tree.resolve(scope, NamespaceId::Tables, qfolded))
+        });
 
         match qresolved {
             Some(qsym) => {
@@ -6620,7 +6757,7 @@ impl<'a> ResolveWalker<'a> {
                 self.references.insert(expr_id, resolution);
             }
             None => {
-                let qatom = self.atom_of(qfolded);
+                let qatom = self.atom_of_ident(qid, qfolded);
                 // An inherited buffer or temp-table, tried after the scope
                 // chain and before the schema, as on the bare-name path.
                 if let Some(class) = self.current_class {
@@ -6639,10 +6776,9 @@ impl<'a> ResolveWalker<'a> {
                             return;
                         }
                         InheritedLookup::Inaccessible => {
-                            for (id, name) in [
-                                (qualifier.id, qatom),
-                                (expr_id, self.atom_of(self.fid(field))),
-                            ] {
+                            for (id, name) in
+                                [(qualifier.id, qatom), (expr_id, self.atom_of(field))]
+                            {
                                 self.references.insert(
                                     id,
                                     Resolution::Unresolved {
@@ -6689,7 +6825,7 @@ impl<'a> ResolveWalker<'a> {
                         reason,
                     },
                 );
-                let field_atom = self.atom_of(self.fid(field));
+                let field_atom = self.atom_of(field);
                 self.references.insert(
                     expr_id,
                     Resolution::Unresolved {
@@ -6762,18 +6898,20 @@ impl<'a> ResolveWalker<'a> {
         // A name that is bound in this scope is a real symbol, not a
         // database: `b.field.attribute` must keep its current meaning.
         let db_name = self.fid(db);
-        let bound = [
-            NamespaceId::Buffers,
-            NamespaceId::Tables,
-            NamespaceId::Values,
-        ]
-        .iter()
-        .any(|ns| self.tree.resolve(scope, *ns, db_name).is_some());
+        let bound = db_name.is_some_and(|db_name| {
+            [
+                NamespaceId::Buffers,
+                NamespaceId::Tables,
+                NamespaceId::Values,
+            ]
+            .iter()
+            .any(|ns| self.tree.resolve(scope, *ns, db_name).is_some())
+        });
         if bound {
             return false;
         }
 
-        let table_atom = self.atom_of(self.fid(table));
+        let table_atom = self.atom_of(table);
         let Some(tid) = self.ctx.schema.resolve_table(&table_atom) else {
             return false;
         };
@@ -6814,7 +6952,7 @@ impl<'a> ResolveWalker<'a> {
         self.references.insert(
             db_expr.id,
             Resolution::Unresolved {
-                name: self.atom_of(db_name),
+                name: self.atom_of_ident(db, db_name),
                 reason: UnresolvedReason::External,
             },
         );
@@ -6870,7 +7008,7 @@ impl<'a> ResolveWalker<'a> {
         field: &Identifier,
         mode: AccessMode,
     ) -> Resolution {
-        let field_atom = self.atom_of(self.fid(field));
+        let field_atom = self.atom_of(field);
         match self.symbols.get(qsym).table_id {
             Some(tid) if self.ctx.schema_loaded => {
                 // `ctx.schema` is a shared reference copied out of `self`,
@@ -8422,10 +8560,10 @@ fn temp_table_declares_field(
     false
 }
 
-/// Look up bare field `name` against a scope's precomputed buffer index.
+/// Look up bare field `(name, atom)` against a scope's precomputed buffer index.
 fn lookup_bare_in_scope(
     entry: &ScopeBareFields,
-    name: FoldedNameId,
+    (name, atom): (Option<FoldedNameId>, &OxablAtom),
     schema: &oxabl_schema::Schema,
     tree: &ScopeTree,
     symbols: &SymbolTable,
@@ -8435,11 +8573,10 @@ fn lookup_bare_in_scope(
     let mut prefix_count: u8 = 0;
     let mut prefix_hit: Option<(RecordSource, FieldHit)> = None;
     let mut prefix_ambiguous = false;
-    // The schema names its fields by atom.
-    let atom = fold_atom(tree.names().text(name));
-    let atom = &atom;
 
-    if let Some(tt_hit) = entry.tt_fields.get(&name) {
+    if let Some(name) = name
+        && let Some(tt_hit) = entry.tt_fields.get(&name)
+    {
         match *tt_hit {
             TempFieldEntry::Unique(tt, sym) => {
                 exact_count = 1;
@@ -8454,7 +8591,7 @@ fn lookup_bare_in_scope(
     if exact_count < 2 {
         for &(tt, tid) in &entry.tt_like_schema {
             if let Some(field) = schema.get_by_id(tid).and_then(|t| t.get_field(atom))
-                && !temp_table_declares_field(tree, symbols, tt, name)
+                && !name.is_some_and(|n| temp_table_declares_field(tree, symbols, tt, n))
             {
                 exact_count = exact_count.saturating_add(1);
                 if exact_count == 1 {
@@ -8513,6 +8650,51 @@ fn lookup_bare_in_scope(
     }
 }
 
+/// Intern a string that is already ASCII-lowercased (from [`FoldedNames::text`]),
+/// avoiding the stack copy, lowercasing loop, and UTF-8 check of [`fold_atom`].
+#[inline]
+fn atom_from_folded(folded: &str) -> OxablAtom {
+    debug_assert!(
+        !folded.bytes().any(|b| b.is_ascii_uppercase()),
+        "atom_from_folded expects ASCII-lowercased text: {folded:?}"
+    );
+    if folded.len() <= MAX_INLINE_ATOM_LEN {
+        return OxablAtom::from(folded);
+    }
+    atom_from_folded_cached(folded)
+}
+
+#[inline(never)]
+fn atom_from_folded_cached(folded: &str) -> OxablAtom {
+    let bytes = folded.as_bytes();
+    const INLINE: usize = 64;
+    if bytes.len() <= INLINE {
+        use std::hash::{Hash, Hasher};
+        let mut hash = rustc_hash::FxHasher::default();
+        folded.hash(&mut hash);
+        let slot = usize::try_from(hash.finish() & 1023).unwrap_or(0);
+        FOLDED.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(entry) = &cache[slot]
+                && entry.bytes[..entry.len] == *bytes
+            {
+                return entry.atom.clone();
+            }
+            let atom = OxablAtom::from(folded);
+            let mut buf = [0u8; INLINE];
+            buf[..bytes.len()].copy_from_slice(bytes);
+            cache[slot] = Some(FoldedAtom {
+                bytes: buf,
+                len: bytes.len(),
+                atom: atom.clone(),
+            });
+            atom
+        })
+    } else {
+        OxablAtom::from(folded)
+    }
+}
+
 /// Case-fold and intern an identifier. Shared with [`crate::index`], whose
 /// keys must fold identically to the symbol table's names.
 #[inline]
@@ -8549,7 +8731,7 @@ fn fold_atom_cached(s: &str) -> OxablAtom {
         use std::hash::{Hash, Hasher};
         let mut hash = rustc_hash::FxHasher::default();
         folded.hash(&mut hash);
-        let slot = hash.finish() as usize % 1024;
+        let slot = usize::try_from(hash.finish() & 1023).unwrap_or(0);
         FOLDED.with(|cache| {
             let mut cache = cache.borrow_mut();
             if let Some(entry) = &cache[slot]

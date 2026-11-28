@@ -367,6 +367,10 @@ mod records {
             self.0.len()
         }
 
+        pub(super) fn reserve(&mut self, additional: usize) {
+            self.0.reserve(additional);
+        }
+
         #[inline]
         pub(super) fn get(&self, id: ScopeId) -> &Scope {
             count(1);
@@ -424,6 +428,21 @@ impl ScopeTree {
     #[inline]
     pub fn names(&self) -> &FoldedNames {
         &self.names
+    }
+
+    /// Mutable access to the folded names while the declare pass interns
+    /// declared identifiers on demand.
+    #[inline]
+    pub(crate) fn names_mut(&mut self) -> &mut FoldedNames {
+        &mut self.names
+    }
+
+    /// Pre-size the scope storage and child lookup map for a large program so
+    /// the declare pass avoids repeated hash-table rehashes.
+    pub(crate) fn reserve_for_large_program(&mut self, top_level_stmts: usize) {
+        let cap = top_level_stmts.min(4096);
+        self.scopes.reserve(cap);
+        self.children.reserve(cap);
     }
 
     /// Install the table that the bindings are keyed by. Call it before the

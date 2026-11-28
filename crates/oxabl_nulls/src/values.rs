@@ -2781,13 +2781,14 @@ fn analyze_inspect(
             .partition(|v| tested.contains(v));
         p.tracked = first.len().min(TRACKED_LIMIT);
         first.extend(rest);
-        let indexed: FxHashMap<String, usize> = first
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (v.key.clone(), i))
-            .collect();
         p.variables = first;
         if let Some(uf) = own_fields.flatten() {
+            let indexed: FxHashMap<String, usize> = p
+                .variables
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (v.key.clone(), i))
+                .collect();
             p.field_spans = uf
                 .spans
                 .iter()

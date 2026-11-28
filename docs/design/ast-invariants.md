@@ -509,7 +509,7 @@ parse. The tree holds only handles into it.
   `NameId` to its id with an array index, finds the id of a spelling that is not in the pool
   with `lookup`, and keeps no global state. Only ASCII letters fold: `Ä` and `ä` are two
   names, as the keywords and the schema's atoms have always been. An id is valid only with
-  the table that issued it; the semantic, scope and null analyses each build their own.
+  the table that issued it; the semantic and null analyses each build their own (semantic folds declarations lazily on demand, and nulls folds the unit's pool).
 - **`ExprId`** (4 bytes) is a handle into `ExprPool`. Every place that held an `Expression`,
   a `Box<Expression>` or an `Option<Expression>` holds an `ExprId` or an `Option<ExprId>`.
   Read the node with `pools.expr(id)`.

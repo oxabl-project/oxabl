@@ -117,7 +117,7 @@ oxabl_scope clippy::let_underscore_must_use 20
 oxabl_scope clippy::too_many_arguments 8
 oxabl_scope clippy::too_many_lines 10
 oxabl_semantic allow:clippy::too_many_arguments 1
-oxabl_semantic clippy::cast_possible_truncation 13
+oxabl_semantic clippy::cast_possible_truncation 12
 oxabl_semantic clippy::expect_used 2
 oxabl_semantic clippy::too_many_arguments 18
 oxabl_semantic clippy::too_many_lines 14

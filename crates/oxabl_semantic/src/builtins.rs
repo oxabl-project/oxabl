@@ -12,7 +12,7 @@
 
 use std::sync::LazyLock;
 
-use oxabl_ast::{FoldedNames, NamePool, NodeId};
+use oxabl_ast::{FoldedNameId, FoldedNames, NodeId};
 use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 
@@ -111,6 +111,9 @@ static SEED: LazyLock<SeedData> = LazyLock::new(|| {
     let mut seeded = Vec::with_capacity(SYSTEM_HANDLES.len());
     let mut bindings = BindingMap::default();
     let mut names = FoldedNames::new();
+    // Size the static base to 512 slots (2 KiB, <10% load) so probes from
+    // per-program tables hit an empty slot on the first L1 load.
+    names.reserve_base_slots(512);
     for (idx, name) in SYSTEM_HANDLES.iter().enumerate() {
         let atom = OxablAtom::from(*name);
         let folded = names.intern(name);
@@ -137,14 +140,29 @@ static SEED: LazyLock<SeedData> = LazyLock::new(|| {
     }
 });
 
-/// Seed the ABL system handles into the file scope, and give the tree the
-/// folded names of the system handles followed by those of `pool`, the pool
-/// of the program being analysed.
+/// The pre-interned atom of a system handle when `id` belongs to the base
+/// table (`0..SYSTEM_HANDLES.len()`), or `None` for any program-declared name.
+#[inline]
+pub(crate) fn system_handle_atom(names: &FoldedNames, id: FoldedNameId) -> Option<OxablAtom> {
+    let idx = id.index();
+    if idx < names.base_len() && names.base_len() == SYSTEM_HANDLES.len() {
+        debug_assert_eq!(names.text(id), SEED.symbols[idx].name.as_ref());
+        Some(SEED.symbols[idx].name.clone())
+    } else {
+        None
+    }
+}
+
+/// Seed the ABL system handles into the file scope, and give the tree a
+/// folded-name table sitting on top of the static system-handle table.
+///
+/// Program declarations are folded on demand during the declare pass instead of
+/// folding the whole `NamePool` up front.
 ///
 /// Must be called on a freshly constructed `SymbolTable`/`ScopeTree`: the
 /// precomputed binding map assumes the built-ins occupy symbol ids
 /// `0..SYSTEM_HANDLES.len()` and replaces the root `Values` bindings.
-pub(crate) fn seed(tree: &mut ScopeTree, symbols: &mut SymbolTable, pool: &NamePool) {
+pub(crate) fn seed(tree: &mut ScopeTree, symbols: &mut SymbolTable) {
     let data = &*SEED;
     debug_assert!(symbols.is_empty(), "seed() requires an empty symbol table");
     debug_assert!(
@@ -154,12 +172,8 @@ pub(crate) fn seed(tree: &mut ScopeTree, symbols: &mut SymbolTable, pool: &NameP
             .is_none_or(BindingMap::is_empty),
         "seed() requires an empty root Values binding map"
     );
-    let mut names = FoldedNames::with_base(&data.names);
-    names.extend_from_pool(pool);
-    tree.set_names(names);
-    for sym in &data.symbols {
-        symbols.insert(sym.clone());
-    }
+    tree.set_names(FoldedNames::with_base(&data.names));
+    symbols.seed_builtins(&data.symbols);
     *tree
         .get_mut(ScopeId::ROOT)
         .bindings
@@ -175,7 +189,7 @@ mod tests {
     fn seeds_all_system_handles_into_root() {
         let mut tree = ScopeTree::new();
         let mut symbols = SymbolTable::new();
-        seed(&mut tree, &mut symbols, &NamePool::new());
+        seed(&mut tree, &mut symbols);
         assert_eq!(symbols.len(), SYSTEM_HANDLES.len());
         let root = tree.get(ScopeId::ROOT);
         for name in SYSTEM_HANDLES {
@@ -192,7 +206,7 @@ mod tests {
     fn corpus_headline_handles_are_seeded() {
         let mut tree = ScopeTree::new();
         let mut symbols = SymbolTable::new();
-        seed(&mut tree, &mut symbols, &NamePool::new());
+        seed(&mut tree, &mut symbols);
         let root = tree.get(ScopeId::ROOT);
         for name in ["this-procedure", "current-window", "web-context"] {
             assert!(
