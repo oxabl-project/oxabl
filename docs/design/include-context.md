@@ -93,7 +93,7 @@ result for the file is dropped.
 source oxabl parsed for that file, after preprocessing: for a root file, the
 root; for an include, its selected root, or the include alone in fragment mode.
 It reads through the open buffers, like the root context, and runs
-`oxabl_daemon::db::compute_expanded_unit` on a worker snapshot.
+`oxabl_daemon::db::compute_expansion_inspection` on a worker snapshot.
 
 - `text`: a header comment (the root, `complete`, `reduced` or `failed`, and
   each problem), then the expanded text. A marker line `/* ▼ name path (from

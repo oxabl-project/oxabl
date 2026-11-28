@@ -1,7 +1,7 @@
 # One lexed and parsed unit for each text
 
-Issue #502 (part of #498). Status: design, and the first and the third slice
-are done ([Slices](#slices)).
+Issue #502 (part of #498). Status: design, and the first, the third and the
+fifth slice are done ([Slices](#slices)).
 
 This design makes each run of oxabl lex and parse each distinct text one time.
 A run is one `oxabl check` (all its roots), one pass of `check --watch`, or one
@@ -77,6 +77,9 @@ and no tree. Each feature lexes and parses again:
 The diagnostics and the navigation model also run the semantic passes two
 times on one expansion.
 
+The table is the state before the fifth slice. Since then, each feature of the
+table reads the unit of the revision ([The daemon](#the-daemon)).
+
 ## Rules
 
 1. **One unit for each distinct text in a run.** A stage that needs the tokens
@@ -120,11 +123,11 @@ parse with the table are equal to those of a parse without it
 (`without_comments_skips_comment_table_but_keeps_identical_statements`), so the
 analysis can read a `RawUnit`.
 
-`oxabl_daemon::db` has an `ExpandedUnit` of its own, an inspection type for a
-debug request. It is a different type. Until slice 5 the daemon names the
-pipeline type by its path. Slice 5 renames the daemon's inspection type, so
-that its new `expanded_unit` query, the `compute_expanded_unit` function and the
-language server's `expanded_unit` module each have one meaning.
+The daemon's inspection type for a debug request (the editor command that
+shows the expanded compilation unit) is `oxabl_daemon::db::ExpansionInspection`,
+made by `compute_expansion_inspection`. Before slice 5 it was also called
+`ExpandedUnit`; slice 5 renamed it, so `ExpandedUnit` names only the pipeline
+type and the daemon's `expanded_unit` query reads it.
 
 `RawUnit::parse` and `ExpandedUnit::parse` never stop. A request that an edit
 may cancel makes its unit with `RawUnit::parse_between` or
@@ -271,25 +274,65 @@ carry the observations of the read that made them
 open buffers in salsa (the file and revision key) are another cache and
 unchanged.
 
-The daemon is the only crate that knows salsa. Two tracked queries:
+The daemon is the only crate that knows salsa. Two tracked queries
+(`crates/oxabl_daemon/src/db.rs`):
 
 ```text
 #[salsa::tracked(returns(clone), no_eq, lru = 16)]
-fn expanded_unit(db, buffer) -> Arc<ExpandedUnit>   // reads expanded_text
+fn expanded_unit(db, buffer) -> Option<Arc<ExpandedUnit>>  // reads expanded_text
 #[salsa::tracked(returns(clone), no_eq, lru = 16)]
-fn raw_unit(db, buffer) -> Arc<RawUnit>             // reads buffer.text
+fn raw_unit(db, buffer) -> Option<Arc<RawUnit>>            // reads buffer.text
 ```
 
-- Salsa keeps a value that is `Send` and `Sync`. The tokens and the tree hold
-  atoms and owned values. Add a static assertion on both unit types in that
-  slice, so a field that is not `Sync` does not compile.
-- `no_eq`: a unit is never compared. The queries that read it (diagnostics,
-  outline) are compared and back-date as today.
+- Salsa keeps a value that is `Send` and `Sync`. A static assertion in
+  `unit.rs` fails the build when a field of a unit stops being so.
+- Each query makes its unit with `parse_between` and the checkpoint
+  `unwind_if_revision_cancelled`, so an edit stops a long parse at the next
+  statement (`crates/oxabl/tests/edit_waits_lsp.rs`). A lex or a parse that
+  panics gives `None`; the reader then runs on the text alone, and its own
+  guard reports the panic as before. `catch_panic` lets salsa's `Cancelled`
+  unwind pass, because its payload is not a message.
+- `no_eq`: a unit is never compared. The queries that read it (diagnostics)
+  are compared and back-date as before.
+- **The identity.** When the expansion is the identity, `expanded_unit` makes a
+  `RawUnit` of the expanded text, with its comment table, and gives it through
+  `ExpandedUnit::of_raw`. `raw_unit` then gives that raw unit when its text is
+  the buffer's text. So a buffer that expands to itself is lexed and parsed
+  once. The dependency goes from `raw_unit` to `expanded_unit`, not the other
+  way: `expanded_unit` reads only `expanded_text`, so an edit that leaves the
+  expansion equal (a byte-identical edit) runs neither it nor the diagnostics
+  (`byte_identical_edit_skips_the_collect_phase`). For any other buffer,
+  `raw_unit` reads `expanded_text` to see that it is not the identity, and
+  lexes and parses the text alone; it does not make the expanded unit.
 - The same `lru` as `expanded_text`, so the daemon keeps a unit for the 16 most
-  recent buffers.
-- Diagnostics, the navigation model, the effect summaries, the inlay hints read
-  `expanded_unit`. The outline, folding and Format Document read `raw_unit`.
-  Completion keeps its own bases (`oxabl_daemon::completion`).
+  recent buffers (`set_buffer_capacity`).
+- **Readers of `expanded_unit`:** the diagnostics (`LintPipeline::collect_unit`),
+  the navigation model (`navigation_model_of`) and each navigation over it
+  (`navigation_with_unit`: semantic tokens, document links, highlights, and the
+  parameter-name hints of a file read alone, `compute_buffer_parameter_hints`),
+  the effect summaries of the buffer (`build_effect_summaries_of`, also for the
+  effect lenses), and the database inlay hints of a file read alone. The
+  inlay hint worker holds no snapshot while it analyses, so it reads the unit
+  on a short snapshot (`buffer_unit`) and analyses it after the snapshot is
+  dropped (`HintSource::hints_over`, `database_hints_of`).
+- **Readers of `raw_unit`:** the outline (and the reference lenses that read
+  it), the folding and selection ranges, and Format Document. The language
+  server computes them on its main loop with its own cache for each document
+  version; it reads the unit through `buffer_raw_unit` on a snapshot of its own,
+  and uses it only when the buffer holds the same text (`RawUnits` in
+  `crates/oxabl_lsp/src/lib.rs`). The pipeline entry points are `outline_of`,
+  `document_syntax_of` and `FormatPipeline::format_unit`.
+- Completion keeps its own bases (`oxabl_daemon::completion`).
+- **Not shared, and why.** The diagnostics run the typed semantic pass with no
+  navigation sites, and the navigation model runs the untyped pass with its
+  sites; the database hints build the scopes of the strict rules. They are three
+  different analyses of one tree, and one pass for all of them is a change of
+  `oxabl_semantic`. Go to definition, hover and signature help analyse the root
+  anew on each request (`with_navigation`), because they read the open buffers
+  of its includes (dropping the AST right after semantic analysis keeps
+  `navigation/definitions` peak heap low). A file
+  read in a selected include context analyses its root, not its own buffer, and
+  reads no unit.
 
 ### Memory
 
@@ -299,7 +342,10 @@ fn raw_unit(db, buffer) -> Arc<RawUnit>             // reads buffer.text
 - `SharedFacts` keeps one copy of the facts of each indexed file. Before, each
   thread kept its own copy. On a real workspace (16 threads) the peak RSS of
   `oxabl check` went from 886–932 MB to 701–719 MB.
-- The daemon keeps at most 16 units of each kind, as `expanded_text`.
+- The daemon keeps at most 16 units of each kind, as `expanded_text`. An
+  `ExpandedUnit` holds a copy of the `ExpandedFile` of its `Expansion`, so the
+  expanded text of a buffer is kept twice; the tokens and the tree are the
+  larger part of a unit.
 
 ### The guard
 
@@ -328,6 +374,14 @@ separate stages, that a root with an include does not make its raw unit for the
 analysis, that a unit serves only its own text, and that the format through a
 unit equals the format of the text.
 
+`crates/oxabl/tests/lex_parse_counts_lsp.rs` guards the daemon. A test build
+answers the request `oxabl/testLexParseCounts` with the counts of the daemon's
+process. The test opens a buffer and asks, one and three times, for the
+outline, folding and selection ranges, semantic tokens (full and range),
+document links, highlights, inlay hints and Format Document, and fails when the
+buffer is lexed or parsed more than once (a buffer that expands to itself), or
+more than once as written and once expanded (a buffer with an include).
+
 The guard does not cover `check --watch`: a pass of the watch ends on a
 signal and prints no counts. `with_shared_facts` on the handles of
 `crates/oxabl/src/watch.rs` has no test of its own.
@@ -355,10 +409,11 @@ Each slice makes the bounds smaller.
    [The TX004 pass](#the-tx004-pass)); that part of #251 is not done.
 4. **The facts of a root from its raw unit**, if the measure in
    [The index](#the-index-facts_for) says it pays.
-5. **The daemon units** (`expanded_unit`, `raw_unit`). One lex and one parse
-   of the buffer for each revision, for any number of feature requests. Add
-   the daemon bench of #499 (diagnostics, the outline and the links of one
-   revision) first.
+5. **Done.** The daemon units (`expanded_unit`, `raw_unit`). One lex and one
+   parse of the buffer for each revision, for any number of feature requests
+   (one more, of the text as written, when the expansion is not the identity).
+   The bench is `daemon_cycle/features_on_one_revision`; see
+   [Measurements of the fifth slice](#measurements-of-the-fifth-slice).
 6. **A token cache for include text**, only if the measure says it pays.
 
 ## The TX004 pass
@@ -461,3 +516,17 @@ is the same, byte for byte, with the same exit code, on: `resources`, `crates`,
 the same workspace with `strict.transactions`, `strict.database`,
 `strict.calls` and `strict.handles` on (1,828 lines of findings), at `-j 1` and
 `-j 4`.
+
+## Measurements of the fifth slice
+
+Criterion and counting-allocator numbers, release build, base `2c64985f` (PR #648) vs slice 5:
+
+| Benchmark | Base | Slice 5 | Change |
+| --- | ---: | ---: | ---: |
+| `daemon_cycle/features_on_one_revision` (time) | 12.85 ms | 10.26 ms | −20.1% |
+| `daemon_cycle/features_on_one_revision` (allocations) | 19,801 | 17,093 | −13.7% |
+| `daemon_cycle/features_on_one_revision` (bytes requested) | 20.72 MB | 16.02 MB | −22.7% |
+| `daemon_cycle/features_on_one_revision` (peak heap) | 4.29 MB | 1.47 MB | −65.7% |
+| `signature/parameter_hints` (time) | 16.46 ms | 10.78 ms | −34.5% |
+
+`lex_parse_counts_lsp` verifies through `oxabl lsp` that a buffer expanding to itself is lexed and parsed once across diagnostics, outline (`includes = true` and `false`), folding, selection ranges, full and range semantic tokens, document links, document highlights, parameter and database inlay hints, effect code lenses, and Format Document (1 and 3 rounds), and that a buffer with an include is lexed and parsed once as written, once expanded, and once for the include outline.

@@ -15,8 +15,10 @@
 //! (`settings.oxabl.inlayHints`).
 //!
 //! One worker thread answers the requests in order and sends each answer
-//! itself. The database hints hold no database snapshot, so an edit never
-//! waits for them and no edit of another file cancels them. The parameter-name
+//! itself. The database hints hold no database snapshot while they analyse, so
+//! an edit never waits for the analysis and no edit of another file cancels
+//! it. For a file read alone they first read the expanded unit of its buffer
+//! on a short snapshot, whose parse stops when an edit waits. The parameter-name
 //! hints read other files, so the worker takes a snapshot for them: a write
 //! waits until it is dropped, and a write cancels the analysis that holds it.
 //! The analysis then runs again on a new snapshot, with the open buffers read
@@ -40,13 +42,16 @@ use lsp_types::{
     InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, InlayHintTooltip,
     PositionEncodingKind, Uri,
 };
-use oxabl_daemon::db::{HintSource, compute_parameter_hints};
-use oxabl_pipeline::HintKinds;
+use oxabl_daemon::SessionHost;
+use oxabl_daemon::db::{
+    Buffer, HintSource, buffer_unit, compute_buffer_parameter_hints, compute_parameter_hints,
+};
+use oxabl_pipeline::{ExpandedUnit, HintKinds};
 use serde_json::Value;
 
 use crate::Server;
+use crate::navigation::reads_unsaved_include;
 use crate::position::{byte_to_position, position_to_byte};
-use oxabl_daemon::SessionHost;
 
 /// What the client said about inlay hints.
 pub(crate) struct Options {
@@ -188,43 +193,52 @@ impl Server<'_> {
         let root_version = root.as_ref().and_then(|r| self.inlay.shared.version_of(r));
         let shared = Arc::clone(&self.inlay.shared);
         let version = doc.version;
-        let Some((config, generations, overlay, parameter_work)) = self.host.with(|sessions| {
-            let session = sessions.get(&self.session_root)?;
-            let generations = (session.config_generation(), session.schema_revision());
-            let parameter_work = parameters.then(|| {
-                let key = ParameterKey {
-                    version,
-                    root: root.clone(),
-                    root_version,
-                    config: generations.0,
-                    schema: generations.1,
-                    buffers: session.buffer_generation(),
-                    disk: shared.disk.load(Ordering::SeqCst),
-                };
-                let kept = lock(&shared.parameters)
-                    .get(&uri)
-                    .filter(|(kept, _)| *kept == key)
-                    .map(|(_, hints)| Arc::clone(hints));
-                match kept {
-                    Some(hints) => ParameterWork::Ready(hints),
-                    None => ParameterWork::Compute(Box::new(ParameterSource {
-                        key,
-                        host: self.host.clone(),
-                        session_root: self.session_root.clone(),
-                        root: root
-                            .clone()
-                            .unwrap_or_else(|| oxabl_daemon::canonical_path(&path)),
-                        file: oxabl_daemon::canonical_path(&path),
-                    })),
-                }
-            });
-            Some((
-                session.database().config().clone(),
-                generations,
-                root.as_ref().map(|_| session.buffer_overlay()),
-                parameter_work,
-            ))
-        }) else {
+        let Some((config, generations, overlay, parameter_work, buffer)) =
+            self.host.with(|sessions| {
+                let session = sessions.get(&self.session_root)?;
+                let generations = (session.config_generation(), session.schema_revision());
+                // A file read in a context is analysed in its root, not in its buffer.
+                let buffer = root
+                    .is_none()
+                    .then(|| session.buffer(uri.as_str()))
+                    .flatten();
+                let parameter_work = parameters.then(|| {
+                    let key = ParameterKey {
+                        version,
+                        root: root.clone(),
+                        root_version,
+                        config: generations.0,
+                        schema: generations.1,
+                        buffers: session.buffer_generation(),
+                        disk: shared.disk.load(Ordering::SeqCst),
+                    };
+                    let kept = lock(&shared.parameters)
+                        .get(&uri)
+                        .filter(|(kept, _)| *kept == key)
+                        .map(|(_, hints)| Arc::clone(hints));
+                    match kept {
+                        Some(hints) => ParameterWork::Ready(hints),
+                        None => ParameterWork::Compute(Box::new(ParameterSource {
+                            key,
+                            host: self.host.clone(),
+                            session_root: self.session_root.clone(),
+                            root: root
+                                .clone()
+                                .unwrap_or_else(|| oxabl_daemon::canonical_path(&path)),
+                            file: oxabl_daemon::canonical_path(&path),
+                            buffer,
+                        })),
+                    }
+                });
+                Some((
+                    session.database().config().clone(),
+                    generations,
+                    root.as_ref().map(|_| session.buffer_overlay()),
+                    parameter_work,
+                    buffer,
+                ))
+            })
+        else {
             return self.respond(none());
         };
         let rope = doc.rope.clone();
@@ -250,6 +264,12 @@ impl Server<'_> {
                 text: Arc::from(doc.text()),
                 context: root.zip(overlay),
             },
+            unit: buffer.map(|buffer| UnitSource {
+                host: self.host.clone(),
+                session_root: self.session_root.clone(),
+                buffer,
+                config_generation: generations.0,
+            }),
             key,
             parameters: parameter_work,
             range: from..=to,
@@ -409,6 +429,37 @@ struct ParameterSource {
     root: PathBuf,
     /// The file the hints are for.
     file: PathBuf,
+    /// The open buffer of `file` when it is read alone: its cached analysis
+    /// serves while it reads no unsaved include.
+    buffer: Option<Buffer>,
+}
+
+/// The open buffer of a file read alone, whose expanded unit the database hints
+/// read. The snapshot is taken when the worker reaches the request, as for
+/// [`ParameterSource`].
+struct UnitSource {
+    host: SessionHost,
+    session_root: PathBuf,
+    buffer: Buffer,
+    config_generation: u64,
+}
+
+impl UnitSource {
+    /// The expansion and the unit of the buffer when its text is `text` and
+    /// the session's configuration has not changed since the job was built.
+    /// The snapshot is dropped before the caller analyses them, so an edit
+    /// waits at most for the parse of the unit, which stops at the next
+    /// statement.
+    fn unit(&self, text: &str) -> Option<(oxabl_pipeline::Expansion, Arc<ExpandedUnit>)> {
+        let snapshot = self.host.with(|sessions| {
+            let session = sessions.get(&self.session_root)?;
+            if session.config_generation() != self.config_generation {
+                return None;
+            }
+            Some(session.database().clone())
+        })?;
+        buffer_unit(&snapshot, self.buffer, text)
+    }
 }
 
 /// How many times the analysis of the parameter-name hints runs for one
@@ -447,6 +498,8 @@ struct Job {
     /// The version of the selected root, when it is open.
     root_version: Option<i32>,
     source: HintSource,
+    /// Where the expanded unit of the open buffer is, for a file read alone.
+    unit: Option<UnitSource>,
     key: Key,
     /// The parameter-name hints, when the client wants them.
     parameters: Option<ParameterWork>,
@@ -590,7 +643,11 @@ fn database_hints(shared: &Shared, job: &Job) -> Hints {
         .filter(|c| c.key == key && c.overlay == job.source.overlay_fingerprint(&c.read))
         .map(|c| Arc::clone(&c.hints));
     cached.unwrap_or_else(|| {
-        let (hints, read) = job.source.hints(key.kinds);
+        let unit = job
+            .unit
+            .as_ref()
+            .and_then(|unit| unit.unit(&job.source.text));
+        let (hints, read) = job.source.hints_over(key.kinds, unit);
         let read: Vec<PathBuf> = read
             .iter()
             .map(|p| oxabl_daemon::canonical_path(p))
@@ -640,7 +697,13 @@ fn parameter_hints(
         &job.source.text,
         || signal_hold(sender, oxabl_common::panic_sites::LSP_PARAMETER_HINTS),
     );
-    let hints = compute_parameter_hints(&snapshot, schema, &source.root, &source.file, overlay)?;
+    let cached = source
+        .buffer
+        .filter(|buffer| !reads_unsaved_include(&snapshot, *buffer, &source.root, &overlay));
+    let hints = match cached {
+        Some(buffer) => compute_buffer_parameter_hints(&snapshot, buffer, schema, overlay)?,
+        None => compute_parameter_hints(&snapshot, schema, &source.root, &source.file, overlay)?,
+    };
     let hints = Arc::new(hints.unwrap_or_default());
     let key = ParameterKey {
         buffers,

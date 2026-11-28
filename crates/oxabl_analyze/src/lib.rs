@@ -66,12 +66,13 @@ mod collect;
 pub use collect::{
     CollectSettings, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
     ExpandOptions, ExpandedFile, IncludeExpansion, IncludeFinding, IncludeOccurrence,
-    IncludeOrigin, IncludeOriginDiagnostic, IncludeStep, LabelFile, PlacedDefine, PreprocessMode,
-    RuleSelection, analyze_for_navigation, analyze_for_navigation_checked, analyze_from_expanded,
-    analyze_from_expanded_inspecting, collect_diagnostics, collect_from_expanded,
-    collect_from_expanded_selecting, collect_from_expanded_with_source_context,
-    collect_from_expanded_with_summaries, collect_from_parsed, collect_with_model,
-    database_hints_from_expanded, expand_source, expand_source_recording, expand_source_tracking,
+    IncludeOrigin, IncludeOriginDiagnostic, IncludeStep, LabelFile, ParsedExpanded, PlacedDefine,
+    PreprocessMode, RuleSelection, analyze_for_navigation, analyze_for_navigation_checked,
+    analyze_for_navigation_parsed, analyze_from_expanded, analyze_from_expanded_inspecting,
+    collect_diagnostics, collect_from_expanded, collect_from_expanded_selecting,
+    collect_from_expanded_with_source_context, collect_from_expanded_with_summaries,
+    collect_from_parsed, collect_with_model, database_hints_from_expanded,
+    database_hints_from_parsed, expand_source, expand_source_recording, expand_source_tracking,
     expand_source_with, is_loud,
 };
 // Re-exported so a consumer of an expansion need not also depend on the

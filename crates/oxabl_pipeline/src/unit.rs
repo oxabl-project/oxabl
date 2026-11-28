@@ -16,12 +16,9 @@
 //! of the daemon). The command line keeps a unit only for the root that its
 //! worker is checking.
 //!
-//! # Names
-//!
-//! `oxabl_daemon::db` has an `ExpandedUnit` of its own: an inspection type that
-//! holds a root's expansion for a debug request. It is not this type. This
-//! crate sits beneath the daemon, so the daemon names this one with its path
-//! until the slice that gives the daemon these units renames the daemon type.
+//! The daemon keeps one unit of each kind for each revision of a buffer, in
+//! salsa queries (`oxabl_daemon::db`). Its inspection type for a debug request
+//! is `ExpansionInspection`, so `ExpandedUnit` names only this type.
 //!
 //! # Cancellation
 //!
@@ -117,9 +114,19 @@ impl RawUnit {
 /// An expansion with the tokens and the tree of its expanded text.
 pub struct ExpandedUnit {
     expanded: Arc<ExpandedFile>,
-    tokens: Vec<Token>,
-    program: Program,
+    parse: ExpandedParse,
     map: OnceLock<SourceMap>,
+}
+
+/// Where the tokens and the tree of an [`ExpandedUnit`] are.
+enum ExpandedParse {
+    /// Lexed and parsed for this unit.
+    Own {
+        tokens: Vec<Token>,
+        program: Box<Program>,
+    },
+    /// The raw unit of the same text: the expansion is the identity.
+    Raw(Arc<RawUnit>),
 }
 
 impl ExpandedUnit {
@@ -142,9 +149,31 @@ impl ExpandedUnit {
         between();
         ExpandedUnit {
             expanded,
-            tokens,
-            program,
+            parse: ExpandedParse::Own {
+                tokens,
+                program: Box::new(program),
+            },
             map: OnceLock::new(),
+        }
+    }
+
+    /// The unit of `expanded` that reads the tokens and the tree of `raw`,
+    /// with no lex or parse of its own. `None` unless `raw`
+    /// [serves](RawUnit::serves) `expanded`.
+    pub fn of_raw(expanded: Arc<ExpandedFile>, raw: Arc<RawUnit>) -> Option<Self> {
+        raw.serves(&expanded).then(|| ExpandedUnit {
+            expanded,
+            parse: ExpandedParse::Raw(raw),
+            map: OnceLock::new(),
+        })
+    }
+
+    /// The raw unit that this unit reads, when it was made with
+    /// [`of_raw`](Self::of_raw).
+    pub fn raw(&self) -> Option<&Arc<RawUnit>> {
+        match &self.parse {
+            ExpandedParse::Own { .. } => None,
+            ExpandedParse::Raw(raw) => Some(raw),
         }
     }
 
@@ -155,12 +184,19 @@ impl ExpandedUnit {
 
     /// The tokens of the expanded text, ending in the `Eof` token.
     pub fn tokens(&self) -> &[Token] {
-        &self.tokens
+        match &self.parse {
+            ExpandedParse::Own { tokens, .. } => tokens,
+            ExpandedParse::Raw(raw) => raw.tokens(),
+        }
     }
 
-    /// The tree of the expanded text.
+    /// The tree of the expanded text. When the unit reads a raw unit, the
+    /// tree has the comment table of that parse too.
     pub fn program(&self) -> &Program {
-        &self.program
+        match &self.parse {
+            ExpandedParse::Own { program, .. } => program,
+            ExpandedParse::Raw(raw) => raw.program(),
+        }
     }
 
     /// The line table of the expanded text, built on the first call.
@@ -219,6 +255,17 @@ impl<'t> LazyRawUnit<'t> {
     pub fn made(&self) -> Option<Result<&RawUnit, &InternalPanic>> {
         self.unit.get().map(Result::as_ref)
     }
+}
+
+/// `(lexed bytes, parses, parsed bytes)` in this process, in a build of the
+/// lexer and the parser with their test-only `test-counters` feature, and
+/// `None` in any other build. A test of the language server reads it through
+/// the daemon, to see that one revision of a buffer is lexed and parsed once.
+#[doc(hidden)]
+pub fn lex_parse_counts() -> Option<(usize, usize, usize)> {
+    let (_, lexed, _) = oxabl_lexer::lex_counts_if_counted()?;
+    let (parses, parsed) = oxabl_parser::parse_counts()?;
+    Some((lexed, parses, parsed))
 }
 
 // A client keeps a unit where its threads share it, so a field that is not

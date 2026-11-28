@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use oxabl_pipeline::{LintPipeline, PipelineConfig};
+use oxabl_pipeline::{ExpandedUnit, LintPipeline, PipelineConfig};
 use oxabl_workspace::InMemoryFileSystem;
 
 const PROCEDURES: usize = 700;
@@ -56,14 +56,15 @@ fn bench_signature(c: &mut Criterion) {
     let handle = run.with_file(&path);
     let expansion = handle.expand(&source);
     let none = |_| None;
-    let model = Arc::new(
-        handle
-            .navigation_model(&expansion)
-            .expect("the unit preprocesses"),
-    );
+    // The daemon keeps the unit of a buffer for its revision, so each request
+    // reads its tokens and tree and does not lex or parse the text again.
+    let unit = Arc::new(ExpandedUnit::parse(Arc::new(
+        expansion.expanded().expect("the unit preprocesses").clone(),
+    )));
+    let model = Arc::new(handle.navigation_model_of(&unit));
     let navigation = || {
         handle
-            .navigation_with(&expansion, Arc::clone(&model), &none)
+            .navigation_with_unit(&expansion, &unit, Arc::clone(&model), &none)
             .expect("the unit preprocesses")
     };
     let hints = navigation().parameter_hints(&path);

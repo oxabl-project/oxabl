@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
-use oxabl_analyze::{ExpandedFile, analyze_for_navigation_checked};
+use oxabl_analyze::{ExpandedFile, analyze_for_navigation_parsed};
 use oxabl_ast::{NodeId, Span};
 use oxabl_common::{FileId, VirtualSpan};
 use oxabl_index::calls::{
@@ -36,7 +36,7 @@ use oxabl_semantic::{
 };
 use oxabl_workspace::is_include_fragment;
 
-use crate::{Expansion, LintPipeline, OutlineKind, OutlineSymbol, outline};
+use crate::{ExpandedUnit, Expansion, LintPipeline, OutlineKind, OutlineSymbol, outline};
 
 mod folding;
 pub(crate) mod hover;
@@ -154,9 +154,8 @@ pub struct Navigation<'s, 'a> {
     search_base: Option<PathBuf>,
     pub(crate) model: Arc<NavigationModel>,
     file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
-    /// The expanded unit lexed and parsed again, on the first request that
-    /// needs its statements.
-    parsed: OnceCell<Parsed>,
+    /// The tokens and the tree of the expanded text.
+    parse: NavigationParse,
     /// The identity of each symbol a highlight asked about.
     identities: RefCell<HashMap<SymbolId, Option<Identity>>>,
     /// The outline of each file read for an answer, by path. `None` when the
@@ -235,6 +234,21 @@ impl SpanIndex {
     }
 }
 
+/// Where a [`Navigation`] reads the tokens and the tree of its expanded text.
+enum NavigationParse {
+    /// The caller's unit.
+    Unit(Arc<ExpandedUnit>),
+    /// Lexed and parsed again, on the first request that needs them.
+    Lazy(OnceCell<Box<Parsed>>),
+}
+
+/// The tokens and the tree of a text, owned or borrowed from a unit.
+#[derive(Clone, Copy)]
+pub(crate) struct ParsedView<'p> {
+    pub(crate) tokens: &'p [oxabl_lexer::Token],
+    pub(crate) program: &'p oxabl_parser::Program,
+}
+
 /// One text lexed and parsed.
 struct Parsed {
     tokens: Vec<oxabl_lexer::Token>,
@@ -274,6 +288,24 @@ impl<'a> LintPipeline<'a> {
     /// **Unguarded** like [`collect`](Self::collect).
     pub fn navigation_model(&self, expansion: &Expansion) -> Option<NavigationModel> {
         let expanded = expansion.expanded()?;
+        let parsed = Parsed::of(&expanded.text);
+        Some(self.model_over(expanded, &parsed.tokens, &parsed.program))
+    }
+
+    /// [`navigation_model`](Self::navigation_model) over the tokens and the
+    /// tree of `unit`, which is not lexed or parsed again.
+    ///
+    /// **Unguarded** like [`collect`](Self::collect).
+    pub fn navigation_model_of(&self, unit: &ExpandedUnit) -> NavigationModel {
+        self.model_over(unit.expanded(), unit.tokens(), unit.program())
+    }
+
+    fn model_over(
+        &self,
+        expanded: &ExpandedFile,
+        tokens: &[oxabl_lexer::Token],
+        program: &oxabl_parser::Program,
+    ) -> NavigationModel {
         oxabl_common::test_tally::count(oxabl_common::test_tally::NAVIGATION_MODEL);
         let source_context = if self.file().is_some_and(is_include_fragment) {
             SourceContext::IncludeFragment
@@ -281,26 +313,67 @@ impl<'a> LintPipeline<'a> {
             SourceContext::CompilationUnit
         };
         let (semantic, recovered) = self.with_run_index(|index| {
-            analyze_for_navigation_checked(
-                expanded,
+            analyze_for_navigation_parsed(
+                oxabl_analyze::ParsedExpanded {
+                    expanded,
+                    tokens,
+                    program,
+                },
                 &self.config().schema,
                 self.config().schema_loaded,
                 index,
                 source_context,
             )
         });
-        Some(NavigationModel {
+        NavigationModel {
             semantic,
             recovered,
             calls: OnceLock::new(),
-        })
+        }
     }
 
     /// A [`Navigation`] over a `model` that [`navigation_model`](Self::navigation_model)
-    /// made from this `expansion`. `None` when its preprocessing failed.
+    /// made from this `expansion`. `None` when its preprocessing failed. The
+    /// navigation lexes and parses the expanded text again when a request
+    /// needs its statements; [`navigation_with_unit`](Self::navigation_with_unit)
+    /// does not.
     pub fn navigation_with<'s>(
         &'s self,
         expansion: &'s Expansion,
+        model: Arc<NavigationModel>,
+        file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
+    ) -> Option<Navigation<'s, 'a>> {
+        self.navigation_over(
+            expansion,
+            NavigationParse::Lazy(OnceCell::new()),
+            model,
+            file_of,
+        )
+    }
+
+    /// [`navigation_with`](Self::navigation_with) that reads the tokens and
+    /// the tree of `unit`, the unit of this `expansion`, and does not lex or
+    /// parse the expanded text again.
+    pub fn navigation_with_unit<'s>(
+        &'s self,
+        expansion: &'s Expansion,
+        unit: &Arc<ExpandedUnit>,
+        model: Arc<NavigationModel>,
+        file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
+    ) -> Option<Navigation<'s, 'a>> {
+        let expanded = expansion.expanded()?;
+        assert!(
+            unit.expanded().text == expanded.text,
+            "the unit is not the unit of the expansion"
+        );
+        let parse = NavigationParse::Unit(Arc::clone(unit));
+        self.navigation_over(expansion, parse, model, file_of)
+    }
+
+    fn navigation_over<'s>(
+        &'s self,
+        expansion: &'s Expansion,
+        parse: NavigationParse,
         model: Arc<NavigationModel>,
         file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
     ) -> Option<Navigation<'s, 'a>> {
@@ -311,7 +384,7 @@ impl<'a> LintPipeline<'a> {
             search_base: expansion.search_base().map(Path::to_path_buf),
             model,
             file_of,
-            parsed: OnceCell::new(),
+            parse,
             identities: RefCell::new(HashMap::new()),
             outlines: RefCell::new(HashMap::new()),
             routines: OnceCell::new(),
@@ -802,9 +875,21 @@ impl Navigation<'_, '_> {
             .min_by_key(|(sym, symbol)| (symbol.name_span.end - symbol.name_span.start, sym.raw()))
     }
 
-    /// The expanded unit, lexed and parsed once.
-    fn parsed(&self) -> &Parsed {
-        self.parsed.get_or_init(|| Parsed::of(&self.expanded.text))
+    /// The tokens and the tree of the expanded text.
+    fn parsed(&self) -> ParsedView<'_> {
+        match &self.parse {
+            NavigationParse::Unit(unit) => ParsedView {
+                tokens: unit.tokens(),
+                program: unit.program(),
+            },
+            NavigationParse::Lazy(parsed) => {
+                let parsed = parsed.get_or_init(|| Box::new(Parsed::of(&self.expanded.text)));
+                ParsedView {
+                    tokens: &parsed.tokens,
+                    program: &parsed.program,
+                }
+            }
+        }
     }
 
     /// The navigation sites, indexed by start once.
@@ -1064,7 +1149,7 @@ impl Navigation<'_, '_> {
                 &parsed.program.statements,
                 &parsed.program.pools,
                 &self.expanded.text,
-                &parsed.tokens,
+                parsed.tokens,
             )
         })
     }

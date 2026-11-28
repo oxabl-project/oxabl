@@ -89,7 +89,40 @@ use oxabl_analyze::{
     expand_source_recording, expand_source_with,
 };
 
-use crate::unit::LazyRawUnit;
+use crate::unit::{ExpandedUnit, LazyRawUnit};
+
+/// The unit that a collection may read instead of a lex and a parse of its
+/// own.
+fn resolve_units<'a>(
+    expanded: &oxabl_analyze::ExpandedFile,
+    units: Units<'a, '_>,
+) -> Result<
+    Option<(&'a [oxabl_lexer::Token], &'a oxabl_parser::Program)>,
+    oxabl_common::InternalPanic,
+> {
+    match units {
+        Units::None => Ok(None),
+        Units::Raw(raw) => match expanded.is_identity().then_some(raw).map(LazyRawUnit::make) {
+            Some(Ok(unit)) => Ok(Some(unit)
+                .filter(|unit| unit.serves(expanded))
+                .map(|unit| (unit.tokens(), unit.program()))),
+            // The lex or the parse of the text panicked: the analysis of the
+            // same text would panic the same way.
+            Some(Err(panic)) => Err(panic.clone()),
+            None => Ok(None),
+        },
+        Units::Expanded(unit) => Ok(Some((unit.tokens(), unit.program()))),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Units<'u, 't> {
+    None,
+    /// The text as written, read when the expansion is the identity.
+    Raw(&'u LazyRawUnit<'t>),
+    /// The unit of the expansion.
+    Expanded(&'u ExpandedUnit),
+}
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
@@ -1716,7 +1749,21 @@ impl<'a> LintPipeline<'a> {
     /// **Unguarded on purpose** (KTD6), for the same reason as
     /// [`expand`](Self::expand).
     pub fn collect(&self, expansion: &Expansion) -> LintResult {
-        self.collect_selecting(expansion, RuleSelection::All, None)
+        self.collect_selecting(expansion, RuleSelection::All, Units::None)
+    }
+
+    /// [`collect`](Self::collect) over the tokens and the tree of `unit`, the
+    /// unit of `expansion`, which is not lexed or parsed again.
+    ///
+    /// **Unguarded on purpose** (KTD6), like [`collect`](Self::collect).
+    pub fn collect_unit(&self, expansion: &Expansion, unit: &ExpandedUnit) -> LintResult {
+        if let Ok(expanded) = &expansion.inner {
+            assert!(
+                unit.expanded().text == expanded.text,
+                "the unit is not the unit of the expansion"
+            );
+        }
+        self.collect_selecting(expansion, RuleSelection::All, Units::Expanded(unit))
     }
 
     /// Phase two without the findings: parse and analyze an [`Expansion`] into a
@@ -1812,7 +1859,8 @@ impl<'a> LintPipeline<'a> {
     pub fn run_context_free(&self, source: &str) -> LintResult {
         match catch_panic(|| {
             let expansion = self.expand(source);
-            let result = self.collect_selecting(&expansion, RuleSelection::ContextFree, None);
+            let result =
+                self.collect_selecting(&expansion, RuleSelection::ContextFree, Units::None);
             lower_includer_dependent(result, source, &expansion, self.fs)
         }) {
             Ok(result) => result,
@@ -1830,20 +1878,14 @@ impl<'a> LintPipeline<'a> {
         &self,
         expansion: &Expansion,
         selection: RuleSelection,
-        raw: Option<&LazyRawUnit<'_>>,
+        units: Units<'_, '_>,
     ) -> LintResult {
         let dependency_paths = expansion.dependency_paths().to_vec();
         match &expansion.inner {
             Ok(expanded) => {
-                let unit = match raw
-                    .filter(|_| expanded.is_identity())
-                    .map(LazyRawUnit::make)
-                {
-                    Some(Ok(unit)) => Some(unit).filter(|unit| unit.serves(expanded)),
-                    // The lex or the parse of the text panicked: the analysis
-                    // of the same text would panic the same way.
-                    Some(Err(panic)) => return LintResult::failed(panic.clone()),
-                    None => None,
+                let unit = match resolve_units(expanded, units) {
+                    Ok(unit) => unit,
+                    Err(panic) => return LintResult::failed(panic),
                 };
                 let source_context = if self.file().is_some_and(is_include_fragment) {
                     SourceContext::IncludeFragment
@@ -1863,10 +1905,10 @@ impl<'a> LintPipeline<'a> {
                     .and_then(|s| s.file(self.file().unwrap_or(Path::new(""))))
                     .map(|f| f as &dyn oxabl_lint::CalleeSummaries);
                 let (semantic, diagnostics) = self.with_run_index(|index| match unit {
-                    Some(unit) => collect_from_parsed(
+                    Some((tokens, program)) => collect_from_parsed(
                         expanded,
-                        unit.tokens(),
-                        unit.program(),
+                        tokens,
+                        program,
                         index,
                         &CollectSettings {
                             schema: &self.config.schema,
@@ -1959,7 +2001,8 @@ impl<'a> LintPipeline<'a> {
     ) -> (LintResult, Option<Vec<IncludeOrigin>>) {
         match catch_panic(|| {
             let expansion = self.expand(source);
-            let result = self.collect_selecting(&expansion, RuleSelection::All, raw);
+            let units = raw.map_or(Units::None, Units::Raw);
+            let result = self.collect_selecting(&expansion, RuleSelection::All, units);
             let result = if self.file().is_some_and(is_include_fragment) {
                 lower_includer_dependent(result, source, &expansion, self.fs)
             } else {

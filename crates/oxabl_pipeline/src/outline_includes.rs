@@ -14,8 +14,10 @@ use oxabl_analyze::{ExpandedFile, IncludeExpansion};
 use oxabl_ast::Span;
 use oxabl_common::{FileId, FileSpan, InternalPanic};
 
-use crate::Expansion;
-use crate::outline::{MAX_DEPTH, OutlineKind, OutlineSymbol, outline, outline_recovered};
+use crate::outline::{
+    MAX_DEPTH, OutlineKind, OutlineSymbol, outline, outline_of, outline_recovered,
+};
+use crate::{Expansion, RawUnit};
 
 /// The most symbols that the includes of one buffer add. An include that
 /// would pass it is a marked symbol with no children.
@@ -143,7 +145,25 @@ pub fn outline_with_includes(
     source: &str,
     expansion: &Expansion,
 ) -> Result<IncludeOutline, InternalPanic> {
-    let mut symbols: Vec<OutlineNode> = outline(source)?
+    with_includes(source, outline(source)?, expansion)
+}
+
+/// [`outline_with_includes`] for a caller that holds the [`RawUnit`] of the
+/// root's text: the root is not lexed or parsed again. The include files are
+/// outlined as before.
+pub fn outline_with_includes_of(
+    unit: &RawUnit,
+    expansion: &Expansion,
+) -> Result<IncludeOutline, InternalPanic> {
+    with_includes(unit.text(), outline_of(unit)?, expansion)
+}
+
+fn with_includes(
+    source: &str,
+    root: Vec<OutlineSymbol>,
+    expansion: &Expansion,
+) -> Result<IncludeOutline, InternalPanic> {
+    let mut symbols: Vec<OutlineNode> = root
         .into_iter()
         .map(|symbol| OutlineNode::from_symbol(symbol, None))
         .collect();

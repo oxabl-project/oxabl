@@ -132,10 +132,10 @@ pub use navigate::{
     Highlight, Hover, Link, Navigation, NavigationModel, SemanticKind, SemanticModifiers,
     SemanticToken, SignatureHelp, SignatureInfo, Target, close_open_call,
 };
-pub use outline::{OutlineKind, OutlineSymbol, outline};
+pub use outline::{OutlineKind, OutlineSymbol, outline, outline_of};
 pub use outline_includes::{
     IncludeFile, IncludeOutline, MAX_INCLUDED_SYMBOLS, OutlineNode, marker as outline_marker,
-    outline_with_includes,
+    outline_with_includes, outline_with_includes_of,
 };
 // Re-exported so a client of navigation and the call hierarchy can name the
 // byte spans their answers carry.
@@ -158,8 +158,8 @@ pub use reverse::{
     AnalysedPart, Degraded, Dependent, Dependents, FileEdge, FilePart, GraphFileId, ReverseGraph,
     Subject, Unanalysed, UnnameableEdge, UnresolvedRow, dependency_section,
 };
-pub use syntax::{DocumentSyntax, Fold, FoldKind, document_syntax};
-pub use unit::{ExpandedUnit, LazyRawUnit, RawUnit};
+pub use syntax::{DocumentSyntax, Fold, FoldKind, document_syntax, document_syntax_of};
+pub use unit::{ExpandedUnit, LazyRawUnit, RawUnit, lex_parse_counts};
 // Re-exported so a consumer of the reverse query need not also depend on
 // `oxabl_index` to name the edge kind every answer is grouped by.
 pub use oxabl_index::{

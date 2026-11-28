@@ -16,7 +16,9 @@ use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::Uri;
 use oxabl_daemon::canonical_path;
 use oxabl_daemon::db::AnalysisConfig;
-use oxabl_pipeline::{IncludeOutline, LintPipeline, outline_with_includes};
+use oxabl_pipeline::{
+    IncludeOutline, LintPipeline, outline_with_includes, outline_with_includes_of,
+};
 use oxabl_workspace::FileSystem;
 use serde_json::Value;
 
@@ -78,19 +80,36 @@ impl FileSystem for OverlayFs {
 
 /// The outline of `text`, the content of the file at `path`, with its includes.
 /// `None` when `stop` said that nobody needs the answer.
+/// `unit` is the raw unit of `text` when the session has it.
+struct ComputeSource<'a> {
+    text: &'a str,
+    uri: &'a Uri,
+    units: &'a crate::RawUnits,
+    path: &'a Path,
+}
+
 fn compute(
-    text: &str,
-    path: &Path,
+    source: ComputeSource<'_>,
     config: &AnalysisConfig,
     overlay: HashMap<PathBuf, Arc<str>>,
     stop: &dyn Fn() -> bool,
 ) -> Option<Result<IncludeOutline, String>> {
+    let ComputeSource {
+        text,
+        uri,
+        units,
+        path,
+    } = source;
     oxabl_common::hold_if_injected(oxabl_common::panic_sites::OUTLINE_INCLUDES, text);
     let fs = OverlayFs {
         overlay,
         inner: Arc::clone(&config.fs),
     };
     let computed = oxabl_common::catch_panic(|| {
+        if stop() {
+            return None;
+        }
+        let unit = units.of(uri, text);
         if stop() {
             return None;
         }
@@ -101,7 +120,10 @@ fn compute(
         if stop() {
             return None;
         }
-        Some(outline_with_includes(text, &expansion))
+        Some(match unit.as_deref() {
+            Some(unit) => outline_with_includes_of(unit, &expansion),
+            None => outline_with_includes(text, &expansion),
+        })
     });
     match computed {
         Ok(None) => None,
@@ -159,13 +181,24 @@ impl Server<'_> {
             .clone()
             .map(|root| canonical_path(&root));
         let sender = self.connection.sender.clone();
+        let units = self.raw_units();
         let spawned = oxabl_common::stack::builder()
             .name("oxabl-outline".to_string())
             .spawn({
                 let id = id.clone();
                 move || {
                     let computed = slot.get_or_compute(&cancelled, |stop| {
-                        compute(&text, &path, &config, overlay, stop)
+                        compute(
+                            ComputeSource {
+                                text: &text,
+                                uri: &uri,
+                                units: &units,
+                                path: &path,
+                            },
+                            &config,
+                            overlay,
+                            stop,
+                        )
                     });
                     let response = match computed {
                         Computed::Stopped if cancelled.load(Ordering::SeqCst) => Response::new_err(
