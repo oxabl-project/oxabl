@@ -148,7 +148,7 @@ and the run reads them many times.
   expansion, and the slot keeps the answer for the run. This second read is
   left work: one more parse for each such target, one time for the run.
   Every index computes the lists from the facts parse, also where nothing
-  reads them: an index with no `SharedFacts` (the daemon) drops them and reads
+  reads them: an index with no `SharedFacts` (the daemon's feature queries) drops them and reads
   the target again when it asks, and a run without `strict.calls` keeps them
   in the slot until the end of the run. This is left work too; the cost is
   small (one walk of the top-level statements of each file).
@@ -190,12 +190,18 @@ boundary is high.
 
 ### The daemon
 
-The workspace pass of the daemon (`oxabl_daemon::methods`, the workspace
-snapshot) builds the call graph with `ReverseGraph::build_with`, one
-`LintPipeline` for each thread, and gives its indexes no `SharedFacts`. It
-has the cost that `check` had before the first slice. A slice for it must share
-the facts of the pass across its threads. The salsa inputs give the key (file
-and revision) that the run key of `check` assumes away.
+The workspace pass of the daemon (`oxabl_daemon::pass`, the workspace
+snapshot) analyses its files with `ReverseGraph::analyse_parts`, one
+`LintPipeline` for each thread. Each pipeline shares one `SharedFacts` for the
+pass, as `check` does (the first slice): a file that many analyses reach is
+indexed once for the pass and not once for each thread. The pass makes the
+`SharedFacts` and drops it at its end, so the key is the path, as in `check`:
+the pass reads each file once, through `Stamping`, which keeps the first read.
+Each analysis still lists the files it took its facts from, because the facts
+carry the observations of the read that made them
+(`docs/design/workspace-pass.md`, "The facts of the pass"). The facts of the
+open buffers in salsa (the file and revision key) are another cache and
+unchanged.
 
 The daemon is the only crate that knows salsa. Two tracked queries:
 
@@ -255,6 +261,8 @@ Each slice makes the bounds smaller.
    a candidate that is the source. The resolve pass reads the tokens of its
    context, and does not lex the expanded text again. The counters and the
    guard. Each change can merge alone, and the three are one pull request.
+   The workspace pass of the daemon shares the facts of its files across its
+   threads in the same way (#607).
 2. **The producer scan.** #581 (a token scan for `may_be_expanded`) and #582
    (one expansion, no barrier). After these, no stage parses a root for the
    scan.

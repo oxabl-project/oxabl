@@ -2092,6 +2092,24 @@ impl<'c> Server<'c> {
             .send(Message::Notification(notification));
     }
 
+    /// A file came or went: the next workspace pass walks for its files, and
+    /// does not keep the list of the pass before.
+    fn note_files_that_came_or_went(&self, params: &DidChangeWatchedFilesParams) {
+        let came_or_went = params.changes.iter().any(|event| {
+            matches!(
+                event.typ,
+                lsp_types::FileChangeType::CREATED | lsp_types::FileChangeType::DELETED
+            )
+        });
+        if came_or_went {
+            self.host.with(|sessions| {
+                if let Some(session) = sessions.get_mut(&self.session_root) {
+                    session.note_files_changed();
+                }
+            });
+        }
+    }
+
     /// React to `workspace/didChangeWatchedFiles`: `.df` changes hot-reload the
     /// schema (R16); `oxabl.toml` changes re-resolve include paths + `[lint]`
     /// config (R17); `*.i` changes re-trigger the buffers that depend on them
@@ -2118,6 +2136,7 @@ impl<'c> Server<'c> {
         }
         // A file on disk changed: no session generation says so.
         self.reference_cache.clear();
+        self.note_files_that_came_or_went(&params);
         oxabl_daemon::hierarchy::forget_subtype_index(&self.host, &self.session_root);
         let mut schema_changed = false;
         let mut config_changed = false;

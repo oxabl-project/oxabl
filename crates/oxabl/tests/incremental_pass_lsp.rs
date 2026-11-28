@@ -481,6 +481,94 @@ fn a_file_changed_on_disk_is_analysed_again() {
     );
 }
 
+/// The threads of a pass share the facts of the files they reach, so most
+/// analyses of a program that many files run take its facts from another
+/// thread's read. Each of them still has to list the program as an input.
+#[test]
+fn a_program_that_many_files_run_is_analysed_again_for_each_of_them() {
+    const CALLERS: usize = 60;
+    let mut ws = Workspace::new();
+    for n in 0..CALLERS {
+        let path = ws.path(&format!("caller/c{n}.p"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("RUN lib/util.p.\nMESSAGE \"{n}\".\n")).unwrap();
+    }
+    let mut session = start(&ws);
+    session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+    let _ = answers_in(&mut session, &ws, &["main.p"]);
+    let seen = passes(&session).len();
+
+    let text = format!("{}PROCEDURE extra:\nEND PROCEDURE.\n", UTIL);
+    std::fs::write(ws.path("lib/util.p"), &text).unwrap();
+    ws.texts.insert("lib/util.p", text);
+    let changed = answers_in(&mut session, &ws, &["main.p"]);
+
+    let runs = passes(&session);
+    let &(analysed, _) = runs[seen..].last().expect("the change ran a pass");
+    // The program, its two callers in the base workspace and the new callers.
+    assert_eq!(
+        analysed,
+        CALLERS + 3,
+        "every file that runs the program was analysed again: {runs:?}"
+    );
+    assert_same(
+        &changed,
+        &fresh_answers_in(&ws, &["main.p"]),
+        "a change of a program that many files run",
+    );
+}
+
+/// The names of the workspace symbols that match `query`.
+fn symbol_names(session: &mut Session, query: &str) -> Vec<String> {
+    let answer = session.request("workspace/symbol", json!({"query": query}));
+    assert!(answer.get("error").is_none(), "symbol gave {answer}");
+    answer["result"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|row| row["name"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// The client says that a file came (`1`) or went (`3`).
+fn watched(session: &mut Session, ws: &Workspace, name: &str, kind: u8) {
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeWatchedFiles",
+        "params": {"changes": [{"uri": file_uri(&ws.path(name)), "type": kind}]}
+    }));
+}
+
+/// A pass after an edit of a buffer keeps the list of files of the pass
+/// before, so a file that came or went is in the next pass only when the
+/// client said so. `workspace/symbol` asks for a pass and checks no walk of
+/// its own.
+#[test]
+fn a_file_that_the_client_says_came_or_went_is_in_the_next_pass() {
+    let mut ws = Workspace::new();
+    let mut session = start(&ws);
+    session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+    assert!(symbol_names(&mut session, "newProc").is_empty());
+
+    let new = "PROCEDURE newProc:\nEND PROCEDURE.\n";
+    std::fs::create_dir_all(ws.path("fresh")).unwrap();
+    std::fs::write(ws.path("fresh/new.p"), new).unwrap();
+    watched(&mut session, &ws, "fresh/new.p", 1);
+    // An edit of the open file makes the next request run a pass.
+    let text = format!("{}MESSAGE \"one\".\n", ws.texts["main.p"]);
+    edit(&mut session, &mut ws, "main.p", text, 2);
+    assert_eq!(symbol_names(&mut session, "newProc"), ["newProc"]);
+
+    std::fs::remove_file(ws.path("fresh/new.p")).unwrap();
+    watched(&mut session, &ws, "fresh/new.p", 3);
+    let text = format!("{}MESSAGE \"two\".\n", ws.texts["main.p"]);
+    edit(&mut session, &mut ws, "main.p", text, 3);
+    assert!(
+        symbol_names(&mut session, "newProc").is_empty(),
+        "the symbols of a file that is gone are gone"
+    );
+}
+
 #[test]
 fn a_file_that_cannot_be_read_is_analysed_again_until_it_reads() {
     use std::os::unix::fs::PermissionsExt;

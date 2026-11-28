@@ -49,6 +49,9 @@ its file, keep every event. Without this filter, a `.df` or `oxabl.toml` event
 of a sibling folder re-resolved the configuration, republished the diagnostics
 of every open buffer and made the next pass full.
 
+The list of the files of the workspace comes from a walk (below, "The file
+list"), or from the pass before.
+
 A pass that completes after a buffer moved is not dropped when the pass read
 every file as the buffers give it now.
 
@@ -128,9 +131,37 @@ paths before it checks the inputs and when it ends, so:
 The table is shared between passes while no path comes or goes, and the
 records are shared one by one, so a pass does not copy the paths or the stamps.
 
+## The file list
+
+The files of a pass are the files that a walk of the workspace finds. Each pass
+before this change walked again. Now the list is part of the kept pass
+(`KeptPass::files`, shared with `Arc`), and a pass keeps the list of the pass
+before when all of these are true:
+
+- the pass runs because the buffers moved (`Refresh::IfMoved`). A pass that the
+  freshness check asked for (`Refresh::Again`), and a full pass, walk;
+- no client said that a file was created, deleted or renamed since the pass
+  before. The language server tells the daemon about each such
+  `workspace/didChangeWatchedFiles` event (`Session::note_files_changed`), and
+  the next pass walks;
+- the pass reuses the configuration of the pass before (the same
+  `Arc<PipelineConfig>`), so the extensions of the root files are the same. A
+  change of the configuration drops the stored pass.
+
+A file that came or went with no event is found by the freshness check: it
+walks, compares the count with the count of the pass, and asks for a pass that
+walks. So a pass that keeps the list can miss such a file until the next
+freshness check (the walk of the check runs at most once in each second). A
+file that went and is still in the list reads as an input that changed, and
+the pass analyses it again: it has no part.
+
+A kept list also makes the pass cheaper in two places. `incremental_pass`
+compares the new list with the old one by pointer, and `KeptPass::start` does
+not look up each kept entry in the new list.
+
 ## The next pass
 
-1. Walk the workspace for its files.
+1. Take the list of files: walk the workspace, or keep the list (above).
 2. For each input of a kept part, find out whether it changed:
    - a path that a buffer holds: compare the hash of the buffer;
    - a path on disk with the same stamp: not changed;
@@ -149,6 +180,21 @@ records are shared one by one, so a pass does not copy the paths or the stamps.
 5. Join the parts. When no file was analysed and the file list is the same,
    the daemon keeps the graph and the symbol rows that it has. A reference lens
    that holds the pass (`references::Pass`) then stays current.
+
+## The facts of the pass
+
+The analyses of a pass run on many threads, and each thread has an index of
+its own. The pass gives the indexes one `SharedFacts` (the same type that
+`oxabl check` uses, `docs/design/shared-unit.md`), so a file that many analyses
+reach (an include, a program that many files run, a class) is read, parsed and
+declared once for the pass, by the first thread that reaches it. The facts keep
+what their first read observed, and each analysis that takes them adds those
+observations to its own inputs, so the inputs of a part are the same as without
+the sharing. A pass makes its `SharedFacts` and drops it at its end, because a
+file can change between two passes. On the generated `medium` preset (1,357
+files, 12 threads) a full pass takes 677 ms and 7.0 CPU seconds, against
+780 ms and 8.1 CPU seconds without the sharing, and the pass after an edit of
+a hot include 572 ms against 637 ms.
 
 ## What follows a pass
 
@@ -221,7 +267,8 @@ The parts of it, on the `edit_pass` bench (`crates/oxabl_daemon/benches/edit_pas
 about 17 ms after, on one thread):
 
 - the join of the graph from all the parts: 7 ms, now 2 ms;
-- the walk for the files of the workspace: 4 ms, now 0.7 ms. The walk asks for
+- the walk for the files of the workspace: 4 ms, now 0.7 ms, and a pass after
+  an edit of a buffer does not walk at all. The walk asks for
   the canonical path of each file only when it met a symbolic link, because
   without a link no file has a second spelling;
 - the rows of the symbol search are shared and no longer copied at each pass;
@@ -249,7 +296,15 @@ build of the daemon writes one line to stderr for each pass when
   analyse no file;
 - a file changed on disk, and an include that could not be read and then
   reads, give the answers of a new daemon;
-- a pass after a change of `oxabl.toml` that no client reported is full.
+- a pass after a change of `oxabl.toml` that no client reported is full;
+- a program that 60 files run, changed on disk, makes the pass analyse each of
+  the 60 files again. Most of them take the facts of the program from the
+  facts of another thread, so the test fails when the sharing drops the
+  observations;
+- a file created on disk and announced by `workspace/didChangeWatchedFiles` is
+  in the next pass that an edit of a buffer starts, and a file deleted is not.
+  The test asks `workspace/symbol`, which runs no walk of its own, and fails
+  when the daemon does not hear about the event.
 
 `crates/oxabl/tests/watched_files_scope_lsp.rs` sends the events of a sibling
 folder (a program, an include, a `.df` file and an `oxabl.toml`) and checks

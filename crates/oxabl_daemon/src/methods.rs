@@ -751,12 +751,24 @@ fn ensure_workspace(
             // installs or discards as it would have; what it no longer does is keep
             // this request waiting on a slot a poller can re-win forever.
             let progress = session.begin_workspace_pass();
+            let previous = session.workspace().filter(|_| refresh != Refresh::Full);
+            // Only a pass that follows a move of the buffers keeps the list of
+            // files. A pass that the freshness check asked for walks, because
+            // that check may have seen a file come or go.
+            let list = FileList {
+                keep: refresh == Refresh::IfMoved
+                    && previous
+                        .as_ref()
+                        .is_some_and(|previous| previous.files_epoch == session.files_epoch()),
+                epoch: session.files_epoch(),
+            };
             WorkspacePreparation::Build(
                 session.root().to_path_buf(),
                 session.buffer_overlay(),
                 session.generations(),
                 progress,
-                session.workspace().filter(|_| refresh != Refresh::Full),
+                previous,
+                list,
             )
         });
 
@@ -771,7 +783,7 @@ fn ensure_workspace(
                 parked = true;
                 parks += 1;
             }
-            WorkspacePreparation::Build(root, overlay, generations, progress, previous) => {
+            WorkspacePreparation::Build(root, overlay, generations, progress, previous, list) => {
                 attempts += 1;
                 let attempt = PassAttempt {
                     number: attempts,
@@ -784,7 +796,10 @@ fn ensure_workspace(
                     generations,
                     progress,
                     attempt,
-                    previous.as_ref(),
+                    PassStart {
+                        previous: previous.as_ref(),
+                        list,
+                    },
                 )? {
                     return Ok(workspace);
                 }
@@ -867,9 +882,9 @@ fn run_claimed_pass(
     generations: SessionGenerations,
     progress: WorkspaceProgress,
     attempt: PassAttempt,
-    previous: Option<&WorkspaceSnapshot>,
+    start: PassStart<'_>,
 ) -> Result<Option<WorkspaceSnapshot>, MethodError> {
-    let outcome = match build_workspace_from(root, overlay, generations, &progress, previous) {
+    let outcome = match build_workspace_from(root, overlay, generations, &progress, start) {
         Ok(mut workspace) => {
             progress.complete();
             host.with(|sessions| {
@@ -981,13 +996,14 @@ fn run_claimed_workspace_pass(
     root: &Path,
     progress: WorkspaceProgress,
 ) -> Result<Option<WorkspaceSnapshot>, MethodError> {
-    let (owned_root, overlay, generations, previous) = host.with(|sessions| {
+    let (owned_root, overlay, generations, previous, epoch) = host.with(|sessions| {
         let session = sessions.for_root(root);
         (
             session.root().to_path_buf(),
             session.buffer_overlay(),
             session.generations(),
             session.workspace(),
+            session.files_epoch(),
         )
     });
     // Never the final attempt. This pass is started by a freshness poll and
@@ -1004,7 +1020,11 @@ fn run_claimed_workspace_pass(
             number: 1,
             is_final: false,
         },
-        previous.as_ref(),
+        PassStart {
+            previous: previous.as_ref(),
+            // A poll found the workspace stale: walk for the files.
+            list: FileList::walk(epoch),
+        },
     )
 }
 
@@ -1026,7 +1046,40 @@ enum WorkspacePreparation {
         SessionGenerations,
         WorkspaceProgress,
         Option<WorkspaceSnapshot>,
+        FileList,
     ),
+}
+
+/// What a pass starts from: the pass before it, if any, and where it takes
+/// its list of files from.
+struct PassStart<'p> {
+    previous: Option<&'p WorkspaceSnapshot>,
+    list: FileList,
+}
+
+/// Where a pass takes its list of files from.
+///
+/// A walk of the workspace costs a directory listing for each directory, and a
+/// pass after an edit of a buffer finds the same files as the pass before it.
+/// So that pass keeps the list. It walks when the pass is asked for by the
+/// freshness check, when a client said that files came or went
+/// ([`Session::note_files_changed`](crate::Session::note_files_changed)), when
+/// the configuration changed, and when it is full. A file that came with no
+/// such event is found by the freshness check, which walks and compares the
+/// count with the one of the pass.
+#[derive(Debug, Clone, Copy)]
+struct FileList {
+    /// Take the list of the pass before, if its configuration is the same.
+    keep: bool,
+    /// The [`Session::files_epoch`](crate::Session) the pass is claimed at.
+    epoch: u64,
+}
+
+impl FileList {
+    /// A pass that walks for its files.
+    fn walk(epoch: u64) -> Self {
+        FileList { keep: false, epoch }
+    }
 }
 
 /// The thread count a workspace pass is limited to; 0 means no limit.
@@ -1059,7 +1112,16 @@ fn build_workspace(
     generations: SessionGenerations,
     progress: &WorkspaceProgress,
 ) -> Result<WorkspaceSnapshot, MethodError> {
-    build_workspace_from(root, overlay, generations, progress, None)
+    build_workspace_from(
+        root,
+        overlay,
+        generations,
+        progress,
+        PassStart {
+            previous: None,
+            list: FileList::walk(0),
+        },
+    )
 }
 
 type PassOutput = (
@@ -1074,13 +1136,13 @@ type PassOutput = (
 fn run_pass(
     context: &pass::PassContext<'_>,
     previous: Option<&WorkspaceSnapshot>,
-    files: Vec<PathBuf>,
+    files: Arc<Vec<PathBuf>>,
     overlay: &HashMap<PathBuf, Arc<str>>,
     disk: &oxabl_workspace::EncodedFileSystem,
 ) -> PassOutput {
     let refreshed = match previous {
         Some(previous) => {
-            pass::incremental_pass(context, &previous.kept, files.clone(), overlay, disk)
+            pass::incremental_pass(context, &previous.kept, Arc::clone(&files), overlay, disk)
         }
         None => pass::Refreshed::Full,
     };
@@ -1154,11 +1216,22 @@ fn build_workspace_from(
     overlay: HashMap<PathBuf, Arc<str>>,
     generations: SessionGenerations,
     progress: &WorkspaceProgress,
-    previous: Option<&WorkspaceSnapshot>,
+    start: PassStart<'_>,
 ) -> Result<WorkspaceSnapshot, MethodError> {
+    let PassStart { previous, list } = start;
     let started = Instant::now();
     let (config, config_stamps, reused_config) = resolve_pass_config(root, generations, previous);
-    let files = discover_path_in(root, &config.root_extensions).map_err(MethodError::internal)?;
+    // The same configuration gives the same extensions, so the list of the
+    // pass before is the list of a walk, unless a file came or went.
+    let kept_list = previous
+        .filter(|previous| list.keep && reused_config && Arc::ptr_eq(&previous.config, &config))
+        .map(|previous| Arc::clone(previous.kept.files()));
+    let files = match kept_list {
+        Some(files) => files,
+        None => Arc::new(
+            discover_path_in(root, &config.root_extensions).map_err(MethodError::internal)?,
+        ),
+    };
     let discovered_files = files.len();
     let disk = config.file_system();
     let fs = pass::pass_file_system(overlay.clone(), config.file_system());
@@ -1194,6 +1267,7 @@ fn build_workspace_from(
         generations,
         pass_millis: started.elapsed().as_millis() as u64,
         root: root.to_path_buf(),
+        files_epoch: list.epoch,
         // The count discovery produced, captured before the pipeline widened it with
         // include targets from outside the tree.
         discovered_files,
@@ -1993,6 +2067,115 @@ mod tests {
         let _ = parked.join();
     }
 
+    /// The files of a pass, by name.
+    fn names(workspace: &WorkspaceSnapshot) -> Vec<String> {
+        workspace
+            .kept
+            .files()
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_pass_keeps_the_file_list_until_it_is_asked_to_walk() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let root = dir.path();
+        std::fs::write(
+            root.join("oxabl.toml"),
+            "[workspace]\nname = \"test\"\n[workspace.sources]\ninclude_paths = [\".\"]\n",
+        )
+        .expect("write oxabl.toml");
+        std::fs::write(root.join("a.p"), "MESSAGE \"one\".\n").expect("write a.p");
+        let host = SessionHost::new();
+        let generations = host.with(|sessions| sessions.for_root(root).generations());
+        let pass = |previous: Option<&WorkspaceSnapshot>, list: FileList, generations| {
+            build_workspace_from(
+                root,
+                HashMap::new(),
+                generations,
+                &WorkspaceProgress::default(),
+                PassStart { previous, list },
+            )
+            .expect("the pass succeeds")
+        };
+        let first = pass(None, FileList::walk(0), generations);
+        assert_eq!(names(&first), ["a.p"]);
+
+        // A file that came, and a pass that keeps the list: the list is the
+        // one of the pass before, shared and not copied.
+        std::fs::write(root.join("b.p"), "MESSAGE \"two\".\n").expect("write b.p");
+        let keep = FileList {
+            keep: true,
+            epoch: 0,
+        };
+        let kept = pass(Some(&first), keep, generations);
+        assert!(Arc::ptr_eq(first.kept.files(), kept.kept.files()));
+        assert_eq!(kept.discovered_files, 1);
+
+        // The same pass, asked to walk: it finds the file, and it records the
+        // epoch it was asked at.
+        let walked = pass(Some(&kept), FileList::walk(1), generations);
+        assert_eq!(names(&walked), ["a.p", "b.p"]);
+        assert_eq!(walked.discovered_files, 2);
+        assert_eq!(walked.files_epoch, 1);
+
+        // A new configuration generation is not a configuration to keep a list
+        // under, whatever the pass is asked.
+        std::fs::write(root.join("c.p"), "MESSAGE \"three\".\n").expect("write c.p");
+        let moved = SessionGenerations {
+            config: generations.config + 1,
+            ..generations
+        };
+        let reconfigured = pass(Some(&walked), keep, moved);
+        assert_eq!(names(&reconfigured), ["a.p", "b.p", "c.p"]);
+    }
+
+    /// `ensure_workspace` hands a pass the list of the pass before it only
+    /// while no client said that files came or went.
+    #[test]
+    fn an_event_about_files_makes_the_next_pass_walk() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let root = crate::session::canonical_root(dir.path()).expect("the root exists");
+        std::fs::write(
+            root.join("oxabl.toml"),
+            "[workspace]\nname = \"test\"\n[workspace.sources]\ninclude_paths = [\".\"]\n",
+        )
+        .expect("write oxabl.toml");
+        let a = root.join("a.p");
+        std::fs::write(&a, "MESSAGE \"one\".\n").expect("write a.p");
+        let key = a.to_string_lossy().into_owned();
+        let host = SessionHost::new();
+        let edit = |text: &str| {
+            host.with(|sessions| {
+                sessions
+                    .for_root(&root)
+                    .set_buffer(&key, text.to_string(), Some(a.clone()));
+            });
+        };
+        edit("MESSAGE \"one\".\n");
+        let first = ensure_workspace(&host, &root, Refresh::IfMoved).expect("a pass");
+        assert_eq!(names(&first), ["a.p"]);
+
+        std::fs::write(root.join("b.p"), "MESSAGE \"two\".\n").expect("write b.p");
+        edit("MESSAGE \"edit 1\".\n");
+        let second = ensure_workspace(&host, &root, Refresh::IfMoved).expect("a pass");
+        assert!(
+            Arc::ptr_eq(first.kept.files(), second.kept.files()),
+            "an edit of a buffer keeps the list of files"
+        );
+
+        host.with(|sessions| sessions.for_root(&root).note_files_changed());
+        edit("MESSAGE \"edit 2\".\n");
+        let third = ensure_workspace(&host, &root, Refresh::IfMoved).expect("a pass");
+        assert_eq!(names(&third), ["a.p", "b.p"]);
+
+        // The list is kept again until the next event.
+        edit("MESSAGE \"edit 3\".\n");
+        let fourth = ensure_workspace(&host, &root, Refresh::IfMoved).expect("a pass");
+        assert!(Arc::ptr_eq(third.kept.files(), fourth.kept.files()));
+    }
+
     #[test]
     fn incremental_pass_reuses_config_until_config_or_schema_changes() {
         let dir = tempfile::tempdir().expect("a temporary directory");
@@ -2018,7 +2201,10 @@ mod tests {
             HashMap::new(),
             generations,
             &WorkspaceProgress::default(),
-            None,
+            PassStart {
+                previous: None,
+                list: FileList::walk(0),
+            },
         )
         .expect("first pass succeeds");
         assert!(first.config.schema.table("Customer").is_some());
@@ -2031,7 +2217,10 @@ mod tests {
             overlay,
             generations,
             &WorkspaceProgress::default(),
-            Some(&first),
+            PassStart {
+                previous: Some(&first),
+                list: FileList::walk(0),
+            },
         )
         .expect("second pass succeeds");
         assert!(
@@ -2052,7 +2241,10 @@ mod tests {
             HashMap::new(),
             generations,
             &WorkspaceProgress::default(),
-            Some(&second),
+            PassStart {
+                previous: Some(&second),
+                list: FileList::walk(0),
+            },
         )
         .expect("third pass succeeds");
         assert!(

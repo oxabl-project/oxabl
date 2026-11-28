@@ -44,7 +44,9 @@ use std::sync::{Arc, Mutex};
 use oxabl_common::LintSeverityMap;
 use oxabl_daemon_protocol::SymbolRow;
 use oxabl_index::{DeferredProducers, SharedProducers};
-use oxabl_pipeline::{Expansion, FilePart, LintPipeline, LintResult, PipelineConfig, ReverseGraph};
+use oxabl_pipeline::{
+    Expansion, FilePart, LintPipeline, LintResult, PipelineConfig, ReverseGraph, SharedFacts,
+};
 use oxabl_semantic::IndexName;
 use oxabl_workspace::{
     DirEntry, EncodedFileSystem, FeaturesConfig, FileSystem, Observations, ObservingFileSystem,
@@ -291,8 +293,9 @@ pub(crate) struct KeptPass {
     table: Arc<PathTable>,
     /// The record of each path of `table`, by id.
     inputs: Vec<Arc<Input>>,
-    /// The discovered files, in the order of discovery.
-    files: Vec<PathBuf>,
+    /// The discovered files, in the order of discovery. A pass that keeps the
+    /// list of the one before shares it.
+    files: Arc<Vec<PathBuf>>,
     entries: HashMap<PathBuf, Entry>,
     /// Whether the `SHARED` producer map was built, and so each entry has its
     /// `shared` names. When it was not, no analysis read it.
@@ -476,15 +479,21 @@ impl PassContext<'_> {
         producers: &Producers<'_>,
     ) -> Vec<(FilePart, Vec<SymbolRow>, Observations)> {
         let fs: &dyn FileSystem = self.fs;
+        // One set of facts for the pass: a file that many analyses reach is
+        // indexed once, by the first thread that reaches it, and not once for
+        // each thread. The facts carry what their read observed, so each
+        // analysis still lists the files it took them from.
+        let facts = SharedFacts::default();
         ReverseGraph::analyse_parts(
             files,
             self.jobs,
             || {
                 let run = LintPipeline::new(self.config, self.fs);
-                match producers {
+                let run = match producers {
                     Producers::Known(map) => run.with_shared_producers(map),
                     Producers::Lazy(map) => run.with_deferred_producers(map),
-                }
+                };
+                run.with_shared_facts(&facts)
             },
             |path, expansion, result| {
                 let rows = (self.collect)(path, expansion, result, fs);
@@ -564,7 +573,7 @@ fn parallel<T: Send>(files: &[PathBuf], jobs: usize, work: impl Fn(&Path) -> T +
 }
 
 /// Analyse every file of `files`.
-pub(crate) fn full_pass(context: &PassContext<'_>, files: Vec<PathBuf>) -> Built {
+pub(crate) fn full_pass(context: &PassContext<'_>, files: Arc<Vec<PathBuf>>) -> Built {
     context.progress.set_total(files.len());
     let (producers, sink) = context.lazy_producers(&files);
     let analysed = context.analyse(&files, &Producers::Lazy(&producers));
@@ -587,12 +596,17 @@ impl KeptPass {
             config,
             table: Arc::new(PathTable::default()),
             inputs: Vec::new(),
-            files: Vec::new(),
+            files: Arc::new(Vec::new()),
             entries: HashMap::new(),
             scanned: false,
             tables: Arc::from([]),
             graph: None,
         }
+    }
+
+    /// The files of the pass: the list that the next pass may keep.
+    pub fn files(&self) -> &Arc<Vec<PathBuf>> {
+        &self.files
     }
 
     /// Whether a pass over `config` can start from this one.
@@ -717,14 +731,11 @@ impl KeptPass {
             return;
         }
         self.scanned = true;
-        let files = self.files.clone();
-        for path in files {
-            let (names, observed) = scans.get(&path).expect("the scan covers every file");
-            let scan_ids = self.absorb(&path, [observed], seen);
-            let entry = self
-                .entries
-                .get_mut(&path)
-                .expect("every file has an entry");
+        let files = Arc::clone(&self.files);
+        for path in files.iter() {
+            let (names, observed) = scans.get(path).expect("the scan covers every file");
+            let scan_ids = self.absorb(path, [observed], seen);
+            let entry = self.entries.get_mut(path).expect("every file has an entry");
             let mut ids = entry.inputs.to_vec();
             ids.extend(scan_ids);
             ids.sort_unstable();
@@ -780,17 +791,23 @@ impl KeptPass {
 
     /// A pass that starts from this one over `files`: the entries of the files
     /// that are still there, and a table cut to what they read.
-    fn start(&self, files: &[PathBuf]) -> KeptPass {
-        let current: HashSet<&PathBuf> = files.iter().collect();
+    fn start(&self, files: &Arc<Vec<PathBuf>>) -> KeptPass {
+        // The list of this pass: every file of it is still there.
+        let current: Option<HashSet<&PathBuf>> =
+            (!Arc::ptr_eq(files, &self.files)).then(|| files.iter().collect());
         let mut kept = KeptPass {
             config: self.config.clone(),
             table: Arc::clone(&self.table),
             inputs: self.inputs.clone(),
-            files: Vec::new(),
+            files: Arc::new(Vec::new()),
             entries: self
                 .entries
                 .iter()
-                .filter(|(path, _)| current.contains(path))
+                .filter(|(path, _)| {
+                    current
+                        .as_ref()
+                        .is_none_or(|current| current.contains(path))
+                })
                 .map(|(path, entry)| (path.clone(), entry.clone()))
                 .collect(),
             scanned: self.scanned,
@@ -1038,14 +1055,14 @@ pub(crate) enum Refreshed {
 pub(crate) fn incremental_pass(
     context: &PassContext<'_>,
     previous: &KeptPass,
-    files: Vec<PathBuf>,
+    files: Arc<Vec<PathBuf>>,
     overlay: &Overlay,
     disk: &EncodedFileSystem,
 ) -> Refreshed {
     let mut kept = previous.start(&files);
     let changed = kept.changed_inputs(overlay, disk);
     let again = kept.to_analyse(&files, &changed);
-    if again.is_empty() && files == previous.files {
+    if again.is_empty() && (Arc::ptr_eq(&files, &previous.files) || files == previous.files) {
         kept.files = files;
         kept.graph = previous.graph.clone();
         return Refreshed::Same(Arc::new(kept));
