@@ -224,7 +224,7 @@ its use.
 | What the requests of a base learned about other classes (`ClassMemo`: the descriptor and the members of each class the walk of a surface read, also a miss) | The `classes` of each `Base` | Any watched file created, changed or deleted, or a change of the configuration or schema (the base keeps no answer of an older epoch). An edit of a class in an open buffer is not read until it is saved and the client sends `workspace/didChangeWatchedFiles`: this needs the file watchers that the server registers, so a client that does not register them shows the old class until the base is replaced (an edit of the document) |
 | The class listing of the include paths | One per session (`ClassListing`) | A watched `.cls` file created or deleted, a change of `oxabl.toml` or of the include paths, or 60 seconds for directories outside the watched folders |
 | The bases that resolve may read | The two newest bases of each document, by base id | When a newer base replaces them |
-| The directory listings of `RUN` and `{` | `Listings` in `oxabl_daemon::completion`, at most 256 directories | A watched file created, changed or deleted in the directory (`workspace/didChangeWatchedFiles`), a change of the configuration or schema, or 3 seconds. A listing found older than that is freed and read again, never used |
+| The directory listings of `RUN` and `{` | `ListingCache` in `oxabl_pipeline::completion` (one per session, in `oxabl_daemon::completion::Bases`), at most 256 directories, the oldest goes first | A watched file created, changed or deleted in the directory (`workspace/didChangeWatchedFiles`), a change of the configuration or schema, or 3 seconds. A listing found older than that is freed and read again, never used |
 | Keyword tables and snippets | Static data | Never |
 
 ## Find the context
@@ -758,12 +758,12 @@ and the item has an `additionalTextEdits` entry that adds
   Names that start with `.` are not offered.
 - The cost is bound. A request lists each directory once, and an include
   path entry that is named twice is read once. The daemon keeps each listing
-  for three seconds (`Listings` in `oxabl_daemon::completion`, at most 256
-  directories, dropped with the bases), so the requests of the next keys do
+  for three seconds (`ListingCache` of `oxabl_pipeline::completion`, at most 256
+  directories, the oldest dropped first, dropped with the bases), so the requests of the next keys do
   not read the disk again. A file event drops the listing of the directory
   of the file and the listings under it at once, so a created or deleted
   file shows in the next answer. A change that no event reports shows after
-  three seconds. Each insert frees the listings that expired. The entries are
+  three seconds. Each insert frees the listings that expired, and the oldest listing goes when the cap is reached. The entries are
   filtered by the last part of the word before items are made. At most 1000
   matches of one directory are offered, and they are the best ranked ones
   (the order of the final list, with the name order to break a tie), not the
@@ -1064,8 +1064,10 @@ It is measured in two ways:
   | `qualified`: after `DISPLAY Customer.`, the fields | 0.02 ms | 0.5 ms |
   | `where`: after `WHERE Customer.CustNum > `, fields and values, with the check for a field another record has | 0.7 ms | 1.2 ms |
   | `run`: after `RUN `, 721 procedures and 40 programs | 0.2 ms | 0.7 ms |
-  | `run_large`: after `RUN ` in a small file, with an include path entry of 20,000 programs named three times; no listing cache | 8.7 ms | |
-  | `run_large_word`: the same after `RUN prog1` | 8.7 ms | |
+  | `run_large`: after `RUN ` in a small file, with an include path entry of 20,000 programs named three times; the directory is listed for each request (`FreshListing`, the CLI) | 8.5 ms | |
+  | `run_large_word`: the same after `RUN prog1` | 9.2 ms | |
+  | `warm/run_large`: as `run_large` with the daemon's listing cache warm (what the editor sees) | 0.9 ms | |
+  | `warm/run_large_word`: as `run_large_word` with the cache warm | 1.2 ms | |
 
   The `members` benches use their own fixture: three classes of 120 members
   each (a property, a data member and a method in two overloads), each class

@@ -17,15 +17,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::{Duration, Instant};
 
 use oxabl_pipeline::completion::{
-    ClassMemo, CompletionBase, CompletionList, CompletionRequest, DirListing, Prior, Token,
-    complete, keyword_documentation, lex, member_documentation, path_documentation, sorted_listing,
-    symbol_documentation, table_documentation, wants_base,
+    CachedListing, ClassMemo, CompletionBase, CompletionList, CompletionRequest, DirListing,
+    ListingCache, Prior, Token, complete, keyword_documentation, lex, member_documentation,
+    path_documentation, symbol_documentation, table_documentation, wants_base,
 };
 use oxabl_pipeline::{Expansion, LintPipeline, Navigation, NavigationModel};
-use oxabl_workspace::{DirEntry, FileSystem};
+use oxabl_workspace::FileSystem;
 
 use crate::db::{AnalysisConfig, OverlayFs, spelled_as_expanded};
 use crate::session::canonical_path;
@@ -98,79 +97,11 @@ struct Slot {
     refreshing: Option<u64>,
 }
 
-/// How long a directory listing of `RUN` and `{` is kept. A request comes at
-/// each key, and the same directory is listed for each. A file event drops
-/// the listings it changes at once; a change with no event (a directory, or
-/// a file the client does not watch) shows after this.
-const LISTING_TTL: Duration = Duration::from_secs(3);
-
-/// The most directory listings kept.
-const MAX_LISTINGS: usize = 256;
-
-/// The directory listings of the recent requests, each kept for
-/// [`LISTING_TTL`].
-#[derive(Default)]
-struct Listings(Mutex<ListingMap>);
-
-#[derive(Default)]
-struct ListingMap {
-    /// Counts the drops, so a listing that a drop overtook is not kept.
-    epoch: u64,
-    listed: HashMap<PathBuf, Listed>,
-}
-
-/// When a directory was listed, and its entries (`None`: it cannot be listed).
-type Listed = (Instant, Option<Arc<[DirEntry]>>);
-
-/// A [`DirListing`] that reads [`Listings`] before the file system.
-struct CachedListing<'c> {
-    fs: &'c dyn FileSystem,
-    cache: &'c Listings,
-}
-
-impl DirListing for CachedListing<'_> {
-    fn list(&self, dir: &Path) -> Option<Arc<[DirEntry]>> {
-        let now = Instant::now();
-        let epoch;
-        {
-            let mut cache = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
-            match cache.listed.get(dir) {
-                Some((at, listing)) if now.duration_since(*at) < LISTING_TTL => {
-                    return listing.clone();
-                }
-                // Freed when found expired.
-                Some(_) => {
-                    cache.listed.remove(dir);
-                }
-                None => {}
-            }
-            epoch = cache.epoch;
-        }
-        // Listed with no lock held: a slow directory does not stop the others.
-        let listing = sorted_listing(self.fs, dir);
-        let mut cache = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.epoch != epoch {
-            return listing;
-        }
-        // Every insert frees the other listings that expired.
-        cache
-            .listed
-            .retain(|_, (at, _)| now.duration_since(*at) < LISTING_TTL);
-        if cache.listed.len() >= MAX_LISTINGS {
-            cache.listed.clear();
-        }
-        cache
-            .listed
-            .insert(dir.to_path_buf(), (now, listing.clone()));
-        listing
-    }
-}
-
 /// The completion bases of one session.
 #[derive(Default)]
 pub struct Bases {
     slots: Mutex<HashMap<BaseKey, Slot>>,
-    listings: Listings,
+    listings: ListingCache,
     /// Numbers the bases in the order their analysis started.
     sequence: AtomicU64,
     /// Counts the changes of files on disk, which make the answers about
@@ -200,22 +131,14 @@ impl Bases {
         // A class file that changed, or came, or went: no base keeps what it
         // learned about classes.
         self.class_epoch.fetch_add(1, Ordering::SeqCst);
-        let mut cache = self.listings.0.lock().unwrap_or_else(|e| e.into_inner());
-        cache.epoch += 1;
-        cache.listed.retain(|dir, _| {
-            !paths
-                .iter()
-                .any(|path| dir.starts_with(path) || path.parent() == Some(dir.as_path()))
-        });
+        self.listings.forget(paths);
     }
 
     /// Drop every base and listing: the configuration or the schema changed.
     pub fn clear(&self) {
         self.class_epoch.fetch_add(1, Ordering::SeqCst);
         self.slots().clear();
-        let mut cache = self.listings.0.lock().unwrap_or_else(|e| e.into_inner());
-        cache.epoch += 1;
-        cache.listed.clear();
+        self.listings.clear();
     }
 
     /// The newest base of `key` that was made under `generation`.
