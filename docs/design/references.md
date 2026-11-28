@@ -45,7 +45,8 @@ The code is in `oxabl_pipeline::references` (one compilation unit) and
 | A member of a class (method, property, event, data member, enum member) | The class file, each file that names the class, and each file that names a class in this set, again and again: a class that names the class can inherit the member |
 
 The edges come from the workspace dependency graph (`ReverseGraph`), the graph
-of `oxabl/impact`. The unit that asks is analysed first, on its own snapshot.
+of `oxabl/impact`. A search reads the edges by file id and turns the files it
+lists into paths at the end (`docs/design/workspace-pass.md`). The unit that asks is analysed first, on its own snapshot.
 Then, only when other files can name the referent, the request waits for a
 current workspace pass, and analyses each other file on a worker thread with a
 fresh snapshot, with the open buffers over the disk. No snapshot is held while

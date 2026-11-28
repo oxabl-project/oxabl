@@ -57,6 +57,16 @@ of rows is shared with the earlier graph. The graph is equal to the one that
 them after 300 edits). When two files have one normalised path, the join is the
 whole join.
 
+The graph names each file by a `GraphFileId`: the place of its path in one
+table of the graph, which is sorted in the order of `cmp_paths` and has no
+repeats. The order of two ids is therefore the order of their paths, and the
+rows of a subject, the sets of a search and the sorts of an answer work on
+integers. A path appears only when the graph answers a caller
+(`ReverseGraph::file_path`, `ReverseGraph::dependents`). The lists of rows are
+shared with the earlier graph only when both graphs have one table of files.
+When a file is added or removed, `updated` gives each row the id of the same
+path in the new table, and drops the rows of a file that the new table lacks.
+
 ### The map of `SHARED` producers
 
 A pass builds the map of `SHARED` producers on the first question of any

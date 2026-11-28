@@ -568,6 +568,47 @@ fn a_file_removed_from_the_list_stops_being_a_dependent() {
     );
 }
 
+// The ids of a graph follow the order of the paths ("app/x.p" is below
+// "app-old/x.p", though `-` is below `/` as a byte), whatever the order of the
+// list, so a sort of ids is a sort of paths, and every id gives its path back.
+#[test]
+fn file_ids_follow_the_order_of_the_paths() {
+    let ws = Workspace::new(&[
+        ("base.i", "DEFINE VARIABLE v-base AS INTEGER NO-UNDO.\n"),
+        ("z.p", "{base.i}\nMESSAGE v-base.\n"),
+        ("app-old/x.p", "{base.i}\nMESSAGE v-base.\n"),
+        ("app.p", "{base.i}\nMESSAGE v-base.\n"),
+        ("app/x.p", "{base.i}\nMESSAGE v-base.\n"),
+    ]);
+    let config = ws.config();
+    let mut listed = ws.files.clone();
+    listed.reverse();
+    let graph = ws.graph_over(&config, &listed);
+
+    let ids: Vec<_> = listed
+        .iter()
+        .map(|path| graph.file_id(path).expect("a listed file has an id"))
+        .collect();
+    for (path, id) in listed.iter().zip(&ids) {
+        assert_eq!(graph.file_path(*id), path.as_path());
+    }
+    for (a, ida) in listed.iter().zip(&ids) {
+        for (b, idb) in listed.iter().zip(&ids) {
+            assert_eq!(ida.cmp(idb), a.cmp(b), "{a:?} against {b:?}");
+        }
+    }
+    assert_eq!(graph.file_id(&proj("nowhere.p")), None);
+
+    let by_id: Vec<PathBuf> = graph
+        .file_edges(&Subject::file(proj("base.i")))
+        .iter()
+        .map(|edge| graph.file_path(edge.file).to_path_buf())
+        .collect();
+    let mut sorted = listed.clone();
+    sorted.sort();
+    assert_eq!(by_id, sorted);
+}
+
 // A dependent carries the site of the reference, so a client can open an editor at
 // the line that creates the dependency.
 #[test]

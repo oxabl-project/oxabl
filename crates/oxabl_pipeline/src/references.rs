@@ -27,7 +27,7 @@ use oxabl_semantic::{SiteTarget, SymbolFlags};
 use oxabl_workspace::is_include_fragment;
 
 use crate::navigate::{Key, is_member_kind};
-use crate::{Navigation, OutlineKind, OutlineSymbol, ReverseGraph, Subject, Target};
+use crate::{GraphFileId, Navigation, OutlineKind, OutlineSymbol, ReverseGraph, Subject, Target};
 
 /// What a references or call hierarchy request is about: every declaration,
 /// file or undeclared procedure the name at the cursor refers to.
@@ -373,24 +373,23 @@ impl Referent {
     /// declare it come first, so a cut at `limit` keeps them.
     pub fn search(&self, graph: &ReverseGraph, origin: &Path, limit: usize) -> Search {
         let origin = search::normalize_lexically(origin);
+        let origin_id = graph.file_id(&origin);
         let mut own: Vec<PathBuf> = Vec::new();
-        let mut units: FxHashSet<PathBuf> = FxHashSet::default();
+        // Every unit that the search finds is a file of the graph, so the sets
+        // and the final order are by id.
+        let mut units: FxHashSet<GraphFileId> = FxHashSet::default();
         let mut unresolved = 0usize;
-        let mut add = |subject: &Subject, kinds: &[EdgeKind], units: &mut FxHashSet<PathBuf>| {
-            let dependents = graph.dependents(subject);
-            let mut found = Vec::new();
-            for dependent in dependents.all() {
-                if kinds.contains(&dependent.kind) && units.insert(dependent.file.clone()) {
-                    found.push(dependent.file.clone());
+        let mut add =
+            |subject: &Subject, kinds: &[EdgeKind], units: &mut FxHashSet<GraphFileId>| {
+                let mut found = Vec::new();
+                for edge in graph.file_edges(subject) {
+                    if kinds.contains(&edge.kind) && units.insert(edge.file) {
+                        found.push(edge.file);
+                    }
                 }
-            }
-            unresolved += dependents
-                .unresolved()
-                .iter()
-                .filter(|row| kinds.contains(&row.reference.kind))
-                .count();
-            found
-        };
+                unresolved += graph.unresolved_naming_count(subject, kinds);
+                found
+            };
         let mut handles = false;
         let dynamic = graph.dynamic_calls();
         let unknown_calls = graph.dynamic_calls_unknown();
@@ -494,8 +493,9 @@ impl Referent {
                             &mut units,
                         );
                         for file in found {
-                            if is_class_file(&file) && seen.insert(file.clone()) {
-                                classes.push_back(file);
+                            let file = graph.file_path(file);
+                            if is_class_file(file) && seen.insert(file.to_path_buf()) {
+                                classes.push_back(file.to_path_buf());
                             }
                         }
                     }
@@ -509,6 +509,7 @@ impl Referent {
                     // A routine or member written in the include is the
                     // includer's own: search where the includer's are found.
                     for includer in includers {
+                        let includer = graph.file_path(includer).to_path_buf();
                         let derived = match kind {
                             OutlineKind::Procedure | OutlineKind::Function
                                 if !is_class_file(&includer) =>
@@ -536,17 +537,22 @@ impl Referent {
             .into_iter()
             .filter(|file| !is_include_fragment(file) && *file != origin)
             .collect();
-        let first: FxHashSet<PathBuf> = ordered.iter().cloned().collect();
-        let mut rest: Vec<PathBuf> = units
-            .into_iter()
-            .filter(|unit| *unit != origin && !first.contains(unit))
+        let first: FxHashSet<GraphFileId> = ordered
+            .iter()
+            .filter_map(|file| graph.file_id(file))
             .collect();
-        rest.sort_unstable_by(|a, b| oxabl_common::cmp_paths(a, b));
-        ordered.extend(rest);
+        let mut rest: Vec<GraphFileId> = units
+            .into_iter()
+            .filter(|unit| Some(*unit) != origin_id && !first.contains(unit))
+            .collect();
+        // The order of the ids is the order of the paths.
+        rest.sort_unstable();
         let mut gaps = Vec::new();
-        let found = ordered.len();
+        let found = ordered.len() + rest.len();
+        ordered.truncate(limit);
+        rest.truncate(limit - ordered.len());
+        ordered.extend(rest.into_iter().map(|id| graph.file_path(id).to_path_buf()));
         if found > limit {
-            ordered.truncate(limit);
             gaps.push(Gap::of_referent(format!(
                 "the search stopped after {limit} of the {found} files that can name `{}`",
                 self.name
