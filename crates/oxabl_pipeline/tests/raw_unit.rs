@@ -256,3 +256,36 @@ fn a_unit_made_with_a_checkpoint_calls_it_and_an_unwind_stops_the_parse() {
     assert!(stopped.is_err(), "the checkpoint stops the parse");
     assert_eq!(seen, 3);
 }
+
+/// The expanded form calls its checkpoint at the same places.
+#[test]
+fn an_expanded_unit_made_with_a_checkpoint_calls_it_and_an_unwind_stops_the_parse() {
+    let _guard = COUNTERS.lock().unwrap_or_else(|e| e.into_inner());
+    let fs = InMemoryFileSystem::new();
+    let config = PipelineConfig::default();
+    let run = LintPipeline::new(&config, &fs);
+    let handle = run.with_file(Path::new("/ws/root.p"));
+    let expansion = handle.expand("MESSAGE \"a\".\nMESSAGE \"b\".\nMESSAGE \"c\".\n");
+    let expanded = Arc::new(expansion.expanded().expect("a clean expansion").clone());
+
+    let mut calls = 0;
+    let unit = ExpandedUnit::parse_between(Arc::clone(&expanded), || calls += 1);
+    assert_eq!(unit.program().statements.len(), 3);
+    assert_eq!(
+        calls,
+        1 + 3 + 1,
+        "after the lex, before each statement, after the parse"
+    );
+
+    let mut seen = 0;
+    let stopped = quietly(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ExpandedUnit::parse_between(Arc::clone(&expanded), || {
+                seen += 1;
+                assert!(seen < 3, "cancelled");
+            })
+        }))
+    });
+    assert!(stopped.is_err(), "the checkpoint stops the parse");
+    assert_eq!(seen, 3);
+}

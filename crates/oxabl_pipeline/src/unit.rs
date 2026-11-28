@@ -183,6 +183,11 @@ impl ExpandedUnit {
 /// When the lexer or the parser panics, the unit keeps the contained
 /// [`InternalPanic`]. Each stage reports it as its own failure and none lexes
 /// or parses the text again: the text would panic the same way.
+///
+/// The raw unit parses with the comment table, which the analysis alone did
+/// not. A panic that only the comment table causes now fails the analysis as
+/// well as the format check. This can only add failures, never remove one, and
+/// it is accepted to avoid a second lex and parse.
 pub struct LazyRawUnit<'t> {
     text: &'t str,
     unit: OnceLock<Result<RawUnit, InternalPanic>>,

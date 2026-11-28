@@ -192,13 +192,38 @@ fn a_lex_or_parse_panic_in_an_identity_root_fails_both_stages_and_panics_once() 
         panicking(panic_sites::ANALYZE)
     );
     let (_dir2, other) = one_file("panics.p", &both);
-    let (exit2, stdout2, _stderr2) = run(&[s("check"), s("--json"), other.as_os_str()]);
+    let (exit2, stdout2, stderr2) = run(&[s("check"), s("--json"), other.as_os_str()]);
     assert_eq!(exit2, exit);
     let other_report: serde_json::Value = serde_json::from_str(&stdout2).unwrap();
     assert_eq!(
         other_report["failures"].as_array().map(Vec::len),
         report["failures"].as_array().map(Vec::len)
     );
+    assert_eq!(
+        stage_prefixes(&stderr2),
+        stage_prefixes(&stderr),
+        "the same stages fail"
+    );
+    assert_eq!(
+        stage_prefixes(&stderr),
+        ["analysis failed", "formatting failed"]
+    );
+}
+
+/// The sorted stage prefixes (`analysis failed`, `formatting failed`) of the
+/// `error:` lines of a `check` run. The JSON reasons do not name the stage.
+fn stage_prefixes(stderr: &str) -> Vec<&str> {
+    let mut prefixes: Vec<&str> = stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("error: "))
+        .filter_map(|l| {
+            ["analysis failed", "formatting failed"]
+                .into_iter()
+                .find(|p| l.starts_with(p))
+        })
+        .collect();
+    prefixes.sort_unstable();
+    prefixes
 }
 
 /// And the walk really does continue: a panicking file plus a clean one still

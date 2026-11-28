@@ -172,6 +172,16 @@ would panic the same way. `check` then reports two failures and exits 1, and the
 default hook prints one panic message for the root. The test site
 `OXABL-TEST-PANIC:unit` in `RawUnit::parse_between` reaches this path.
 
+The raw unit parses with the comment table, and the analysis alone parsed
+without it. A panic that only the comment table causes now fails the analysis as
+well as the format check. This can only add failures, never remove one: every
+panic of the parse without comments also happens with them. It is accepted to
+avoid a second run.
+
+When the shared unit panics, the identity root still counts as known with no
+includes in the includers map. This is a true fact from a successful expansion.
+An analysis panic differs: it leaves the root unknown.
+
 The `ExpandedUnit` for a root with includes is not used by `check` yet. The
 analysis of such a root still lexes and parses its expansion inside
 `collect_from_expanded_with_summaries`, one time. Nothing else in the run reads
