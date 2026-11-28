@@ -37,6 +37,25 @@ WSL window is open. See [Windows and WSL](#windows-and-wsl).
 
 After this, the extension updates itself.
 
+## Several folders in one window
+
+A window with two or more workspace folders starts one language server for
+each folder. Each server reads the `oxabl.toml` of its own folder, so the
+include paths and the schema of one folder never leak into another.
+
+- A folder that lies inside another folder of the window has no server of its
+  own. The outer folder serves its files.
+- A server starts the first time you open an ABL file of its folder. A folder
+  whose files you never open costs no server. Opening a folder in the **ABL
+  Schema** view also starts its server.
+- A file outside every workspace folder has no language server in such a
+  window. The `oxabl` output channel names each of these files once. Highlighting
+  still works. Go to definition from a folder into such a file works.
+- Removing a folder from the window stops its server.
+
+A window with one folder, or none, has one server for all ABL files, started
+when the extension activates.
+
 ## What works without the oxabl binary
 
 Install the extension and open an ABL file. These features need nothing else:

@@ -271,7 +271,9 @@ From `clients/vscode`:
   a fake `oxabl` (see [The build loop](#the-build-loop)), the outline (Outline
   view, breadcrumbs and "Go to Symbol in File") and the ABL Schema view from a
   real `oxabl` binary, and screenshots. The `outline` scenario needs `OXABL_E2E_OXABL` and
-  `OXABL_E2E_RUNTIME` and fails without them. It removes every `oxabl` from
+  `OXABL_E2E_RUNTIME` and fails without them. Build the binary with
+  `cargo build -p oxabl --locked --features oxabl_common/test-panics`: the `multi-root` scenario
+  needs the test hooks of that feature and fails with a plain build. It removes every `oxabl` from
   `PATH` and sets `VSCODE_CLI=1` (otherwise VS Code reads the login shell's
   `PATH` and starts a real language server), and fails when a scenario leaves
   a process running.
@@ -305,7 +307,103 @@ The **ABL Schema** view in the Explorer shows the `.df` files of
 `[workspace.schema]` from the language server's `oxabl/schema` request, with a
 filter, "Open in .df", copy commands and a details page per table. It asks the
 server only after it is visible for the first time, so activation does not
-read the schema. See [schema-browser.md](schema-browser.md).
+read the schema. See [schema-browser.md](schema-browser.md). In a window with
+several folders it has one node for each owning folder (below).
+
+## Workspace folders and language servers
+
+`oxabl lsp` takes the first folder of `workspaceFolders` as its root, and it
+reads only the `oxabl.toml` of that root. So a window with several folders
+needs one server for each folder. The extension decides this with the number
+of workspace folders. The rules are in `src/folders.ts`, which has no `vscode`
+import. `src/clients.ts` holds the clients.
+
+- **Mode.** A window with zero or one folder is in single mode: one client,
+  the selector `{ scheme: "file", language: "abl" }`, no `workspaceFolder`
+  option, and a start at activation. A window with two or more folders is in
+  multi-folder mode. A change of the folders that switches the mode stops all
+  clients and starts again with the rules of the new mode.
+- **Owning folders.** A folder inside another folder of the window owns
+  nothing. The outermost folder owns its files. The paths compare by path
+  segment, so `/x/code` does not hold `/x/code2`. Of two folders with the same
+  path, the first owns.
+- **One client for each owning folder.** Its selector is
+  `{ scheme: "file", language: "abl", pattern: RelativePattern(folder, "**/*") }`
+  and its `workspaceFolder` option is the folder. With that option
+  `vscode-languageclient` sends only that folder as the root, so the server
+  reads that folder's `oxabl.toml`, and it does not register the
+  workspace-folders feature. The name is `oxabl (<folder name>)`, and the
+  output channel is the shared `oxabl` channel. The file
+  watchers of the client (`**/oxabl.toml`, `**/*.df`, `**/*.i`) are relative to
+  its folder. Every client has the id `oxabl`, so each reads
+  `oxabl.trace.server` itself. The id registers nothing twice: the clients
+  add no command (the server has no `executeCommandProvider`) and an unnamed
+  diagnostic collection each. `vscode-languageclient` writes trace lines with
+  no client name, so while `oxabl.trace.server` is not `off` each folder client
+  has its own trace channel, `oxabl (<folder name>) trace`; a change of the
+  setting restarts the clients. The one client of single mode traces into the
+  `oxabl` channel.
+  The daemon keeps one session for each root: two folders mean two
+  `oxabl lsp` processes and two daemons.
+- **Lazy start.** The extension activates on `workspaceContains:**/oxabl.toml`,
+  so activation alone starts nothing in this mode. A folder's client starts
+  the first time an ABL `file:` document of that folder is open: at
+  activation the extension reads `workspace.textDocuments`, and after that it
+  listens to `onDidOpenTextDocument`. A folder whose files never open has no
+  client and no daemon. A client that failed to start is not tried again
+  until a restart, or until the person opens its node in the schema view.
+- **Files outside every owning folder** get no server. The extension writes one
+  log line for each path. Go to definition *into* such a file still works,
+  because the server of the folder answers it. A window in single mode still
+  serves a file outside its folder.
+- **Stop during a start.** A client that is still starting cannot stop:
+  `vscode-languageclient` refuses until `initialize` has an answer, and
+  `oxabl lsp` answers after its daemon is ready. The client also sets its
+  state to running before it registers its providers, so a stop must wait for
+  the current start of the client in every state, not for the state (the
+  library starts a client again after a crash, and that makes a new start);
+  a start that already ended makes the wait return at once. A stop waits for that
+  promise (at most 70 s), then stops the client. A restart and a folder change
+  run one at a time and wait for a start under way, and a folder change also
+  waits for the starts it causes (a start ends after the daemon is ready), so
+  each can wait that long with no message. The schema view follows a folder
+  change before those starts. Deactivation waits at most 3 s, because VS Code does not
+  wait long for an extension to end; a client still starting then ends with the
+  extension host, and its server reads end of input. A start that ends after a
+  stop, a folder change or a restart that did not wait long enough stops its
+  own client. The stop line of a folder is written after its client stopped.
+  A folder removed and added back during a start gets a new client: the
+  removal drops its pending start.
+- **Folder changes.** A removed folder, and a folder that is now inside another
+  folder, lose their client. A folder that now owns an open file gets a client.
+- **Callers.** The expanded unit, the include context, go to super method and
+  the snippets use the client that serves the document (the active editor's
+  document). The extension's own snippets step back only where the server of
+  that document completes. Inactive regions attach once for each client, and
+  a stopped client drops only the regions and include selections of the
+  documents it served. Configuration notifications go to every client.
+  Restart, stop and the binary version check act on all clients. A restart
+  waits for the one before it, then starts the folders with an open ABL
+  document and the folders whose schema node shows an answer. A binary version that differs from the version
+  of any client restarts all of them.
+- **The schema view.** In single mode the tree is the answer of the one client.
+  In multi-folder mode the top level has one node for each owning folder,
+  named for the folder. Opening a node is an explicit action: it starts the
+  client of that folder when none runs, and shows the `oxabl/schema` answer
+  below the node. A folder whose request failed shows the failure and is not asked
+  again by itself: Refresh, or a collapse and an expand of the node, asks
+  again. Refresh asks the folders that were opened. The watchers for
+  schema directories outside the workspace folders work with the answers of
+  every folder.
+- **Log lines.** The `oxabl` output channel has these info lines. A test reads
+  them, so keep the text:
+  - `starting the language server of folder "<name>" (<fsPath>)`
+  - `stopped the language server of folder "<name>"` (the folder left the
+    window or is now nested)
+  - `<fsPath> is outside every workspace folder; no language server serves it`
+
+`src/folders.test.ts` tests the rules: nested folders, a sibling with a common
+prefix, a file outside every folder, one folder and no folder.
 
 ## Snippets
 
@@ -502,9 +600,10 @@ thin layer holds the editor calls. Pure: `host.ts` (which hosts get a binary),
 `server.ts` (where the binary is), `net.ts` (HTTP to GitHub, shared with the
 self-update), `install.ts` (download, verify, install), `cli.ts` (calls to the
 binary), `scheduler.ts` (coalescing), `progress.ts` (events and status text),
-`roots.ts` (which root owns a path). Editor layer: `binary.ts` (prompts and
-progress of the install), `builds.ts` (processes, watchers, status bar,
-diagnostics) and `extension.ts`.
+`roots.ts` (which root owns a path), `folders.ts` (which workspace folder
+serves a file). Editor layer: `binary.ts` (prompts and progress of the
+install), `builds.ts` (processes, watchers, status bar, diagnostics),
+`clients.ts` (the language clients) and `extension.ts`.
 
 ### Where it runs
 

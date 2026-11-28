@@ -31,7 +31,7 @@ export class IncluderContexts implements vscode.Disposable {
   private readonly subscriptions: vscode.Disposable[];
 
   constructor(
-    private readonly client: () => LanguageClient | undefined,
+    private readonly client: (uri: vscode.Uri | undefined) => LanguageClient | undefined,
     private readonly selectedChanged: (uri: vscode.Uri) => void = () => {},
   ) {
     this.item.name = "oxabl include context";
@@ -46,15 +46,22 @@ export class IncluderContexts implements vscode.Disposable {
     ];
   }
 
-  /** Forget every selection: the server that held them stopped. */
-  reset(): void {
-    this.selected.clear();
+  /**
+   * Forget the selections of the documents that `serves` accepts (every
+   * document without it): the server that held them stopped.
+   */
+  reset(serves?: (uri: vscode.Uri) => boolean): void {
+    for (const uri of [...this.selected.keys()]) {
+      if (!serves || serves(vscode.Uri.parse(uri))) {
+        this.selected.delete(uri);
+      }
+    }
     this.show();
   }
 
   show(): void {
     const document = vscode.window.activeTextEditor?.document;
-    if (!this.client() || !isInclude(document)) {
+    if (!this.client(document?.uri) || !isInclude(document)) {
       this.item.hide();
       return;
     }
@@ -72,7 +79,7 @@ export class IncluderContexts implements vscode.Disposable {
 
   async select(): Promise<void> {
     const document = vscode.window.activeTextEditor?.document;
-    const client = this.client();
+    const client = this.client(document?.uri);
     if (!client) {
       void vscode.window.showInformationMessage("oxabl: the language server is not running.");
       return;

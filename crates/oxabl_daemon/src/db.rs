@@ -373,6 +373,14 @@ impl IndexHandle {
         guard.by_id.get(index).copied()
     }
 
+    /// Whether a lookup reached `path`, as an indexed file or as an include
+    /// some indexed file was read through: the files [`bump`](Self::bump) acts on.
+    pub fn has_read(&self, path: &Path) -> bool {
+        let key = search::normalize_lexically(path);
+        let registry = self.registry();
+        registry.by_path.contains_key(&key) || registry.includes.contains_key(&key)
+    }
+
     /// Bump the disk revision of the inputs for `path`, invalidating exactly the
     /// queries that read that file — and nothing else (R10).
     ///

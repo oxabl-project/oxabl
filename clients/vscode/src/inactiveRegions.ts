@@ -76,9 +76,16 @@ export class InactiveRegions implements vscode.Disposable {
     client.onNotification(METHOD, (params: InactiveRegionsParams) => this.receive(params));
   }
 
-  /** Forget every region: the server that sent them stopped. */
-  reset(): void {
-    this.regions.clear();
+  /**
+   * Forget the regions of the documents that `serves` accepts (every document
+   * without it): the client that sent them stopped.
+   */
+  reset(serves?: (uri: vscode.Uri) => boolean): void {
+    if (serves) {
+      this.regions.deleteWhere((uri) => serves(vscode.Uri.parse(uri)));
+    } else {
+      this.regions.clear();
+    }
     this.paintAll();
   }
 

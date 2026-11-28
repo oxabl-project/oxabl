@@ -56,6 +56,7 @@ mod references;
 mod schema;
 mod semantic_tokens;
 mod signature_help;
+mod watch_scope;
 mod work_progress;
 mod workspace_symbol;
 
@@ -1233,10 +1234,10 @@ fn finish_handshake(
 /// declares a non-`file:` URI, leaves the server on its previous behavior of
 /// anchoring to the first opened document.
 ///
-/// Only the **first** folder is taken. A multi-root session gets one anchor, which
-/// is the same single `oxabl.toml` resolution the server has always performed;
-/// resolving per folder would mean more than one configuration alive at once, and
-/// nothing in the server can hold two yet.
+/// Only the **first** folder is taken: a session has one root and one
+/// configuration. The VS Code extension starts one server for each workspace
+/// folder and sends only that folder, so each server gets its own root. Another
+/// editor that sends several folders still gets only the first.
 fn declared_workspace_root(init: &InitializeParams) -> Option<PathBuf> {
     #[allow(deprecated)] // `root_uri` is how a large share of clients still speak.
     init.workspace_folders
@@ -1284,6 +1285,9 @@ struct Server<'c> {
     /// first-opened-document anchor, so configuration and the file watch describe
     /// the project rather than one directory inside it.
     workspace_root: Option<PathBuf>,
+    /// The places whose watched-file events the session needs, rebuilt with each
+    /// resolution of the configuration.
+    watch_scope: watch_scope::WatchScope,
     /// The format pipeline, rebuilt whenever configuration is resolved so a
     /// formatting request costs no style resolution and no `StyleGuide` clone.
     formatter: FormatPipeline,
@@ -1398,6 +1402,7 @@ impl<'c> Server<'c> {
             config_resolved: false,
             workspace_anchor: None,
             workspace_root,
+            watch_scope: watch_scope::WatchScope::All,
             formatter,
             // Off until a resolved configuration says otherwise.
             features: FeaturesConfig::OFF,
@@ -1730,7 +1735,6 @@ impl<'c> Server<'c> {
                 | "textDocument/didChange"
                 | "textDocument/didSave"
                 | "textDocument/didClose"
-                | "workspace/didChangeWatchedFiles"
         ) {
             self.lenses.invalidate();
         }
@@ -1836,9 +1840,16 @@ impl<'c> Server<'c> {
                 if let Ok(params) =
                     serde_json::from_value::<DidChangeWatchedFilesParams>(not.params)
                 {
-                    self.handle_watched_files(params);
-                    self.schedule_lens_refresh();
-                    self.inlay_disk_changed();
+                    // An event that the filter empties costs nothing: no cache
+                    // invalidated, no refresh asked of the client.
+                    let mut params = params;
+                    self.drop_events_of_other_folders(&mut params);
+                    if !params.changes.is_empty() {
+                        self.lenses.invalidate();
+                        self.handle_watched_files(params);
+                        self.schedule_lens_refresh();
+                        self.inlay_disk_changed();
+                    }
                 }
             }
             "workspace/didChangeConfiguration" => {
@@ -1994,9 +2005,14 @@ impl<'c> Server<'c> {
     /// editor's diagnostics *silently* while the CLI printed a `warning:` line
     /// for the same file.
     fn resolve_config_from(&mut self, path: &Path) {
-        let (resolved, warnings) =
-            PipelineConfig::resolve_for_editor(path, &ConfigOverrides::default());
+        let (resolved, warnings, inputs) =
+            PipelineConfig::resolve_for_editor_with_inputs(path, &ConfigOverrides::default());
         self.report_config_warnings(&warnings);
+        self.watch_scope = watch_scope::WatchScope::new(
+            self.workspace_root.as_deref(),
+            &resolved.include_paths,
+            &inputs,
+        );
         self.install_config(resolved);
     }
 
@@ -2082,6 +2098,10 @@ impl<'c> Server<'c> {
     /// (R17); a **root source file** or include change invalidates that one
     /// file's index inputs (R10). Re-triggering bumps the buffer's salsa input so the coarse
     /// expansion memo recomputes and re-reads the changed file.
+    ///
+    /// The caller has dropped the events for files the session does not read
+    /// (`drop_events_of_other_folders`, see [`watch_scope`]): another workspace
+    /// folder's files, which the client's globs also match, cost nothing.
     fn handle_watched_files(&mut self, params: DidChangeWatchedFilesParams) {
         self.outlines.invalidate_includes();
         let now = std::time::Instant::now();
@@ -2175,6 +2195,66 @@ impl<'c> Server<'c> {
         // An include can also be what an indexed file's facts were read through.
         changed_sources.extend(changed_includes);
         self.invalidate_indexed_sources(&changed_sources, now);
+    }
+
+    /// Keep the events for files the session reads (see [`watch_scope`]). The
+    /// client's globs match every workspace folder, so the others' events reach
+    /// this server too.
+    fn drop_events_of_other_folders(&self, params: &mut DidChangeWatchedFilesParams) {
+        if self.watch_scope.keeps_all() {
+            return;
+        }
+        // No session means nothing was read: keep every event, and make no
+        // session here.
+        let Some(index) = self.host.with(|sessions| {
+            sessions
+                .get(&self.session_root)
+                .map(|session| std::sync::Arc::clone(&session.database().config().index))
+        }) else {
+            return;
+        };
+        // What the session has read, collected on the first event that no place
+        // holds: open buffers and the directories they sit in, and their includes.
+        let mut known: Option<std::collections::HashSet<PathBuf>> = None;
+        let mut directories = HashMap::new();
+        params.changes.retain(|event| {
+            let Some(path) = uri_to_path(&event.uri) else {
+                return false;
+            };
+            self.watch_scope
+                .keeps(&path, &mut directories, &mut |candidate| {
+                    let known = known.get_or_insert_with(|| self.read_paths());
+                    index.has_read(candidate)
+                        || known.contains(candidate)
+                        || candidate.parent().is_some_and(|dir| known.contains(dir))
+                })
+        });
+    }
+
+    /// The open buffers, the directories they sit in, and the includes they read,
+    /// each as written and with the links resolved.
+    fn read_paths(&self) -> std::collections::HashSet<PathBuf> {
+        let mut paths = std::collections::HashSet::new();
+        let mut add = |path: PathBuf| {
+            if let Ok(real) = std::fs::canonicalize(&path) {
+                paths.insert(real);
+            }
+            paths.insert(path);
+        };
+        for uri in self.documents.uris() {
+            if let Some(path) = uri_to_path(uri) {
+                if let Some(dir) = path.parent() {
+                    add(dir.to_path_buf());
+                }
+                add(path);
+            }
+        }
+        for dependencies in self.dependencies.values() {
+            for path in dependencies {
+                add(path.clone());
+            }
+        }
+        paths
     }
 
     /// Invalidate the index inputs for changed workspace source files, and

@@ -594,9 +594,19 @@ fn vscode_e2e(context: &Context) -> Job {
         "vscode-e2e",
         vec![
             // The outline scenario runs the real language server.
+            // The test hooks (`OXABL-TEST-HOLD`, `OXABL-TEST-PANIC` in a path) are on in
+            // this binary: the `multi-root` scenario holds and breaks a daemon start
+            // with them.
             step(
                 "build oxabl",
-                Command::cargo(&["build", "-p", "oxabl", "--locked"]),
+                Command::cargo(&[
+                    "build",
+                    "-p",
+                    "oxabl",
+                    "--locked",
+                    "--features",
+                    "oxabl_common/test-panics",
+                ]),
             ),
             pnpm("install", &["install", "--frozen-lockfile"]),
             // The packaged VSIX in a real VS Code. The suite downloads the pinned VS Code.

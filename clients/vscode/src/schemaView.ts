@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { LanguageClient } from "vscode-languageclient/node";
 
+import type { Clients, FolderInfo } from "./clients";
 import {
   type Range,
   type SchemaAnswer,
@@ -34,14 +35,34 @@ const FILTER_DELAY = 200;
 const errorCode = (err: unknown): number | undefined =>
   typeof err === "object" && err !== null && typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : undefined;
 
+/**
+ * A node. `scope` names the language client that answered: `""` in a window
+ * with one client, the folder key when each folder has its own.
+ */
 type Node =
-  | { kind: "database"; db: SchemaDatabase }
-  | { kind: "problem"; db: SchemaDatabase; problem: SchemaProblem; at: number }
-  | { kind: "table"; db: SchemaDatabase; table: SchemaTable }
-  | { kind: "field"; db: SchemaDatabase; table: SchemaTable; field: SchemaField }
-  | { kind: "index"; db: SchemaDatabase; table: SchemaTable; index: SchemaIndex }
-  | { kind: "sequences"; db: SchemaDatabase }
-  | { kind: "sequence"; db: SchemaDatabase; sequence: SchemaSequence };
+  | { kind: "folder"; folder: FolderInfo }
+  | { kind: "notice"; scope: string; text: string }
+  | { kind: "database"; scope: string; db: SchemaDatabase }
+  | { kind: "problem"; scope: string; db: SchemaDatabase; problem: SchemaProblem; at: number }
+  | { kind: "table"; scope: string; db: SchemaDatabase; table: SchemaTable }
+  | { kind: "field"; scope: string; db: SchemaDatabase; table: SchemaTable; field: SchemaField }
+  | { kind: "index"; scope: string; db: SchemaDatabase; table: SchemaTable; index: SchemaIndex }
+  | { kind: "sequences"; scope: string; db: SchemaDatabase }
+  | { kind: "sequence"; scope: string; db: SchemaDatabase; sequence: SchemaSequence };
+
+/** What one language client answered, and how it shows. */
+interface Scope {
+  answer?: SchemaAnswer;
+  failure?: string;
+  shown: SchemaDatabase[];
+  /** Whether a filtered tree opens its tables: only when there are few. */
+  expandTables: boolean;
+  /** Counts requests, so an answer to an older one never replaces a newer one. */
+  requested: number;
+  /** Whether an answer arrived once. */
+  loaded: boolean;
+  pending?: Promise<void>;
+}
 
 /** Where "Open in .df" goes: a `.df` URI and the range of the name. */
 interface Place {
@@ -65,28 +86,28 @@ const markdown = (rows: [string, string | number | null | undefined][]): vscode.
  * The schema view: the configured `.df` files as databases, tables, fields,
  * indexes and sequences, from `oxabl/schema`. It asks the server when it first
  * shows, when a `.df` or `oxabl.toml` changes, when the server restarts, and
- * on Refresh. A table's detail page asks `oxabl/schemaTable`.
+ * on Refresh. A table's detail page asks `oxabl/schemaTable`. In a window with
+ * one folder or none, the tree lists the databases of the one client. In a
+ * window with several folders, it has one node for each owning folder, and
+ * opening a node starts the client of that folder and lists its databases.
  */
 export class SchemaBrowser implements vscode.TreeDataProvider<Node>, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
   private readonly view: vscode.TreeView<Node>;
   private readonly subscriptions: vscode.Disposable[];
-  private readonly panels = new Map<string, { panel: vscode.WebviewPanel; db: string; table: string; requested: number }>();
+  private readonly panels = new Map<
+    string,
+    { panel: vscode.WebviewPanel; scope: string; db: string; table: string; requested: number }
+  >();
   /** Watchers outside the workspace folders, by directory and glob. */
   private readonly outside = new Map<string, vscode.FileSystemWatcher>();
-  private answer: SchemaAnswer | undefined;
-  private shown: SchemaDatabase[] = [];
+  private readonly scopes = new Map<string, Scope>();
   private filter = "";
-  /** Whether a filtered tree opens its tables: only when there are few. */
-  private expandTables = false;
-  /** Counts requests, so an answer to an older one never replaces a newer one. */
-  private requested = 0;
-  private loaded = false;
   private timer: NodeJS.Timeout | undefined;
   private filterTimer: NodeJS.Timeout | undefined;
 
-  constructor(private readonly client: () => LanguageClient | undefined) {
+  constructor(private readonly clients: Clients) {
     this.view = vscode.window.createTreeView(VIEW, { treeDataProvider: this, showCollapseAll: true });
     const df = vscode.workspace.createFileSystemWatcher(`**/${DF_GLOB}`);
     const config = vscode.workspace.createFileSystemWatcher("**/oxabl.toml");
@@ -102,8 +123,14 @@ export class SchemaBrowser implements vscode.TreeDataProvider<Node>, vscode.Disp
       config.onDidChange(later),
       config.onDidCreate(later),
       config.onDidDelete(later),
+      this.view.onDidCollapseElement((event) => {
+        const scope = event.element.kind === "folder" ? this.scopes.get(event.element.folder.key) : undefined;
+        if (scope && !scope.answer) {
+          scope.failure = undefined;
+        }
+      }),
       this.view.onDidChangeVisibility((event) => {
-        if (event.visible && !this.loaded) {
+        if (event.visible && this.single && !this.scopes.get("")?.loaded) {
           void this.refresh();
         }
       }),
@@ -116,63 +143,159 @@ export class SchemaBrowser implements vscode.TreeDataProvider<Node>, vscode.Disp
       vscode.commands.registerCommand("oxabl.schema.showTable", (node?: Node) => this.showTable(node)),
     ];
     void vscode.commands.executeCommand("setContext", "oxabl.schema.available", true);
-    if (this.view.visible) {
+    if (this.view.visible && this.single) {
       void this.refresh();
     }
   }
 
-  /** The language server changed: ask again when the view has been shown. */
-  serverChanged(): void {
-    if (this.loaded || this.view.visible) {
+  /** Whether the window has one client for all files (see `Clients.mode`). */
+  private get single(): boolean {
+    return this.clients.mode === "single";
+  }
+
+  /** A client started or failed to start (`folder` is `undefined` for the one client): ask again when its answer was shown. */
+  serverChanged(folder: FolderInfo | undefined): void {
+    const scope = this.scopes.get(folder?.key ?? "");
+    if (folder ? scope : scope?.loaded || this.view.visible) {
+      void this.refreshScope(folder?.key ?? "", false);
+    }
+  }
+
+  /** The keys of the folders whose node shows an answer. */
+  loadedFolders(): string[] {
+    return [...this.scopes].filter(([key, scope]) => key !== "" && scope.loaded).map(([key]) => key);
+  }
+
+  /** The folders or the mode changed: drop what no longer has a client, and list again. */
+  layoutChanged(): void {
+    const keys = this.single ? [""] : this.clients.owning().map((folder) => folder.key);
+    for (const key of [...this.scopes.keys()]) {
+      if (!keys.includes(key)) {
+        this.scopes.delete(key);
+      }
+    }
+    for (const [key, entry] of [...this.panels]) {
+      if (!keys.includes(entry.scope)) {
+        entry.panel.dispose();
+        this.panels.delete(key);
+      }
+    }
+    this.watchOutside();
+    this.updateMessage();
+    this.changed.fire(undefined);
+    if (this.single && this.view.visible) {
       void this.refresh();
     }
   }
 
   private refreshSoon(): void {
-    if (!this.loaded) {
+    if (this.single ? !this.scopes.get("")?.loaded : this.scopes.size === 0) {
       return;
     }
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => void this.refresh(), 300);
+    this.timer = setTimeout(() => void this.refresh(false), 300);
   }
 
-  async refresh(): Promise<void> {
-    const client = this.client();
-    const requested = ++this.requested;
+  /**
+   * Ask again. With several folders, only the folders that were opened are
+   * asked; `start` lets the command start a client that is not running.
+   */
+  async refresh(start = true): Promise<void> {
+    if (this.single) {
+      await this.refreshScope("", false);
+    } else {
+      await Promise.all([...this.scopes.keys()].map((key) => this.refreshScope(key, start)));
+    }
+  }
+
+  private scope(key: string): Scope {
+    let scope = this.scopes.get(key);
+    if (!scope) {
+      scope = { shown: [], expandTables: false, requested: 0, loaded: false };
+      this.scopes.set(key, scope);
+    }
+    return scope;
+  }
+
+  /** The client that answers for `key`, started first when `start` is set and the folder has none. */
+  private async clientOf(key: string, start: boolean): Promise<LanguageClient | undefined> {
+    if (key === "") {
+      return this.clients.forUri(undefined);
+    }
+    const folder = this.clients.owning().find((owner) => owner.key === key);
+    if (!folder) {
+      return undefined;
+    }
+    return start ? this.clients.startFolder(folder) : this.clients.forFolder(folder);
+  }
+
+  private refreshScope(key: string, start: boolean): Promise<void> {
+    const scope = this.scope(key);
+    const run = this.ask(key, scope, start).finally(() => {
+      if (scope.pending === run) {
+        scope.pending = undefined;
+      }
+    });
+    scope.pending = run;
+    return run;
+  }
+
+  private async ask(key: string, scope: Scope, start: boolean): Promise<void> {
+    const requested = ++scope.requested;
+    const client = await this.clientOf(key, start);
+    // A start tells `serverChanged`, which asks again while this ask still waits for its start: the
+    // newer ask answers, and this one must neither send a second request (the server drops the
+    // older of two) nor overwrite the scope.
+    if (requested !== scope.requested || this.scopes.get(key) !== scope) {
+      return;
+    }
     if (!client) {
-      this.install(undefined, "The oxabl language server is not running.");
+      this.install(scope, undefined, "The oxabl language server is not running.");
       return;
     }
     let answer: SchemaAnswer;
     try {
       answer = await client.sendRequest<SchemaAnswer>("oxabl/schema", {});
     } catch (err) {
-      if (requested === this.requested) {
-        this.install(undefined, failureText("The schema", errorCode(err), err instanceof Error ? err.message : String(err)));
+      if (requested === scope.requested) {
+        this.install(scope, undefined, failureText("The schema", errorCode(err), err instanceof Error ? err.message : String(err)));
       }
       return;
     }
-    if (requested !== this.requested) {
+    if (requested !== scope.requested) {
       return;
     }
-    this.loaded = true;
-    this.install(answer);
-    this.watchOutside(answer);
-    for (const key of this.panels.keys()) {
-      void this.renderPanel(key);
+    scope.loaded = true;
+    this.install(scope, answer);
+    this.watchOutside();
+    for (const [panelKey, panel] of this.panels) {
+      if (panel.scope === key) {
+        void this.renderPanel(panelKey);
+      }
     }
   }
 
-  private install(answer: SchemaAnswer | undefined, failure?: string): void {
-    this.answer = answer;
-    this.shown = filterSchema(answer?.databases ?? [], this.filter);
-    this.expandTables = this.filter !== "" && this.shown.reduce((n, d) => n + d.tables.length, 0) <= EXPAND_AT_MOST;
-    this.view.message = this.message(failure);
+  private install(scope: Scope, answer: SchemaAnswer | undefined, failure?: string): void {
+    scope.answer = answer;
+    scope.failure = failure;
+    this.filterScope(scope);
+    this.updateMessage();
     this.changed.fire(undefined);
   }
 
-  private message(failure?: string): string | undefined {
-    return viewMessage(this.answer, this.shown, this.filter, failure);
+  private filterScope(scope: Scope): void {
+    scope.shown = filterSchema(scope.answer?.databases ?? [], this.filter);
+    scope.expandTables = this.filter !== "" && scope.shown.reduce((n, d) => n + d.tables.length, 0) <= EXPAND_AT_MOST;
+  }
+
+  /** The view message of a window with one client. A folder shows its own as a row. */
+  private updateMessage(): void {
+    const scope = this.scopes.get("");
+    this.view.message = this.single && scope ? this.message(scope) : undefined;
+  }
+
+  private message(scope: Scope): string | undefined {
+    return viewMessage(scope.answer, scope.shown, this.filter, scope.failure);
   }
 
   /**
@@ -180,9 +303,14 @@ export class SchemaBrowser implements vscode.TreeDataProvider<Node>, vscode.Disp
    * directory outside them (also one that holds no `.df` yet), and an
    * `oxabl.toml` above them, gets a watcher.
    */
-  private watchOutside(answer: SchemaAnswer): void {
+  private watchOutside(): void {
     const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
-    const wanted = new Map(outsideWatches(answer, folders).map((w) => [`${w.dir}\u0000${w.glob}`, w]));
+    const wanted = new Map<string, { dir: string; glob: string }>();
+    for (const scope of this.scopes.values()) {
+      for (const w of scope.answer ? outsideWatches(scope.answer, folders) : []) {
+        wanted.set(`${w.dir}\u0000${w.glob}`, w);
+      }
+    }
     for (const [key, watcher] of this.outside) {
       if (!wanted.has(key)) {
         watcher.dispose();
@@ -232,39 +360,92 @@ export class SchemaBrowser implements vscode.TreeDataProvider<Node>, vscode.Disp
   private setFilter(value: string): void {
     this.filter = value.trim();
     void vscode.commands.executeCommand("setContext", "oxabl.schema.filtered", this.filter !== "");
-    this.install(this.answer);
+    for (const scope of this.scopes.values()) {
+      this.filterScope(scope);
+    }
+    this.updateMessage();
+    this.changed.fire(undefined);
   }
 
-  getChildren(node?: Node): Node[] {
+  getChildren(node?: Node): Node[] | Promise<Node[]> {
     if (!node) {
-      return this.shown.map((db) => ({ kind: "database", db }));
+      return this.single
+        ? this.databases("")
+        : this.clients.owning().map((folder): Node => ({ kind: "folder", folder }));
     }
     switch (node.kind) {
+      case "folder":
+        return this.folderChildren(node.folder);
       case "database": {
-        const { db } = node;
-        const children: Node[] = db.problems.map((problem, at) => ({ kind: "problem", db, problem, at }));
-        children.push(...db.tables.map((table): Node => ({ kind: "table", db, table })));
+        const { scope, db } = node;
+        const children: Node[] = db.problems.map((problem, at) => ({ kind: "problem", scope, db, problem, at }));
+        children.push(...db.tables.map((table): Node => ({ kind: "table", scope, db, table })));
         if (db.sequences.length) {
-          children.push({ kind: "sequences", db });
+          children.push({ kind: "sequences", scope, db });
         }
         return children;
       }
       case "table":
         return [
-          ...node.table.fields.map((field): Node => ({ kind: "field", db: node.db, table: node.table, field })),
-          ...node.table.indexes.map((index): Node => ({ kind: "index", db: node.db, table: node.table, index })),
+          ...node.table.fields.map((field): Node => ({ kind: "field", scope: node.scope, db: node.db, table: node.table, field })),
+          ...node.table.indexes.map((index): Node => ({ kind: "index", scope: node.scope, db: node.db, table: node.table, index })),
         ];
       case "sequences":
-        return node.db.sequences.map((sequence) => ({ kind: "sequence", db: node.db, sequence }));
+        return node.db.sequences.map((sequence) => ({ kind: "sequence", scope: node.scope, db: node.db, sequence }));
       default:
         return [];
     }
   }
 
+  private databases(key: string): Node[] {
+    return (this.scopes.get(key)?.shown ?? []).map((db): Node => ({ kind: "database", scope: key, db }));
+  }
+
+  /**
+   * The rows of a folder. Opening the folder is the explicit action that
+   * starts its client, so a folder whose files are never opened costs no
+   * daemon until then.
+   */
+  private async folderChildren(folder: FolderInfo): Promise<Node[]> {
+    const scope = this.scope(folder.key);
+    // A start makes the client tell `serverChanged`, which asks once more: wait for the last request.
+    const settled = async () => {
+      while (scope.pending) {
+        await scope.pending;
+      }
+    };
+    await settled();
+    // A failure is shown, not asked again: an answer that fails fires a tree change, which lists
+    // this node again, so asking here would loop. Refresh, or collapse and expand, asks again.
+    if (!scope.answer && !scope.failure) {
+      await this.refreshScope(folder.key, true);
+      await settled();
+    }
+    const message = this.message(scope);
+    const notice: Node[] = message ? [{ kind: "notice", scope: folder.key, text: message }] : [];
+    return [...notice, ...this.databases(folder.key)];
+  }
+
   getTreeItem(node: Node): vscode.TreeItem {
-    const expanded = this.expandTables ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed;
+    if (node.kind === "folder") {
+      const item = new vscode.TreeItem(node.folder.name, vscode.TreeItemCollapsibleState.Collapsed);
+      item.id = node.folder.key;
+      item.tooltip = node.folder.fsPath;
+      item.iconPath = new vscode.ThemeIcon("root-folder");
+      item.contextValue = "folder";
+      return item;
+    }
+    if (node.kind === "notice") {
+      const item = new vscode.TreeItem(node.text, vscode.TreeItemCollapsibleState.None);
+      item.id = [node.scope, "notice", node.text].join("\u0000");
+      item.iconPath = new vscode.ThemeIcon("info");
+      return item;
+    }
+    const expanded = this.scopes.get(node.scope)?.expandTables
+      ? vscode.TreeItemCollapsibleState.Expanded
+      : vscode.TreeItemCollapsibleState.Collapsed;
     // The filter is part of the id, so a filtered tree opens expanded.
-    const id = (...parts: string[]) => [this.filter, node.db.path, ...parts].join("\u0000");
+    const id = (...parts: string[]) => [this.filter, node.scope, node.db.path, ...parts].join("\u0000");
     switch (node.kind) {
       case "database": {
         const { db } = node;
@@ -392,6 +573,9 @@ export class SchemaBrowser implements vscode.TreeDataProvider<Node>, vscode.Disp
     if (!("kind" in target)) {
       return target;
     }
+    if (target.kind === "folder" || target.kind === "notice") {
+      return undefined;
+    }
     const uri = target.db.uri;
     if (!uri) {
       return undefined;
@@ -459,7 +643,7 @@ export class SchemaBrowser implements vscode.TreeDataProvider<Node>, vscode.Disp
     if (!node || (node.kind !== "table" && node.kind !== "field" && node.kind !== "index") || !node.db.uri) {
       return;
     }
-    const key = `${node.db.uri}\u0000${node.table.name.toLowerCase()}`;
+    const key = `${node.scope}\u0000${node.db.uri}\u0000${node.table.name.toLowerCase()}`;
     const open = this.panels.get(key);
     if (open) {
       open.panel.reveal();
@@ -471,17 +655,17 @@ export class SchemaBrowser implements vscode.TreeDataProvider<Node>, vscode.Disp
       { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
       { enableScripts: false, enableCommandUris: ["oxabl.schema.open"], localResourceRoots: [] },
     );
-    this.panels.set(key, { panel, db: node.db.uri, table: node.table.name, requested: 0 });
+    this.panels.set(key, { panel, scope: node.scope, db: node.db.uri, table: node.table.name, requested: 0 });
     panel.onDidDispose(() => this.panels.delete(key));
     await this.renderPanel(key);
   }
 
   private async renderPanel(key: string): Promise<void> {
     const entry = this.panels.get(key);
-    const client = this.client();
     if (!entry) {
       return;
     }
+    const client = await this.clientOf(entry.scope, false);
     const csp = `default-src 'none'; style-src ${entry.panel.webview.cspSource} 'unsafe-inline';`;
     const requested = ++entry.requested;
     // A newer request, or a closed page, makes this answer stale.

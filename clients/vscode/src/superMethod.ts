@@ -9,9 +9,9 @@ import { isSuperMethodAnswer, planSuperMethod } from "./superMethodModel";
  * it. Several methods are listed in a peek view. A reason the answer can be
  * short is always shown.
  */
-export async function goToSuperMethod(client: () => LanguageClient | undefined): Promise<void> {
-  const running = client();
+export async function goToSuperMethod(client: (uri: vscode.Uri | undefined) => LanguageClient | undefined): Promise<void> {
   const editor = vscode.window.activeTextEditor;
+  const running = client(editor?.document.uri);
   if (!running) {
     void vscode.window.showInformationMessage("oxabl: the language server is not running.");
     return;
