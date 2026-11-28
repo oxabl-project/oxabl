@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.15.0...oxabl_vscode-v0.16.0) (2026-11-28)
+
+
+### Features
+
+* **vscode:** start one language server for each workspace folder ([#646](https://github.com/oxabl-project/oxabl/issues/646)) ([264452c](https://github.com/oxabl-project/oxabl/commit/264452c61ca124bdd8724a5f3787087df3d9be60)), closes [#633](https://github.com/oxabl-project/oxabl/issues/633)
+
 ## [0.15.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.14.0...oxabl_vscode-v0.15.0) (2026-11-27)
 
 

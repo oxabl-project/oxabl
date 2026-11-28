@@ -1,5 +1,33 @@
 # Changelog
 
+## [9.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v8.0.0...oxabl_index-v9.0.0) (2026-11-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **lexer:** make Token a 12-byte Copy span and lex from bytes ([#639](https://github.com/oxabl-project/oxabl/issues/639))
+
+### Performance Improvements
+
+* fix fresh completion diff, finish [#630](https://github.com/oxabl-project/oxabl/issues/630) parser presizing, cache daemon pass config, and pre-fill NodeIndexVec ([#636](https://github.com/oxabl-project/oxabl/issues/636)) ([1d55278](https://github.com/oxabl-project/oxabl/commit/1d5527853d07ce13440452a3247dd453e71f1f27))
+* **lexer:** make Token a 12-byte Copy span and lex from bytes ([#639](https://github.com/oxabl-project/oxabl/issues/639)) ([f4e468c](https://github.com/oxabl-project/oxabl/commit/f4e468ca780c3c4cde278ad19ef34ee7af19855d)), closes [#503](https://github.com/oxabl-project/oxabl/issues/503)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 8.0.0 to 9.0.0
+    * oxabl_common bumped from 2.0.0 to 2.0.1
+    * oxabl_lexer bumped from 4.0.0 to 5.0.0
+    * oxabl_parser bumped from 7.0.0 to 8.0.0
+    * oxabl_preprocessor bumped from 0.11.0 to 0.11.1
+    * oxabl_schema bumped from 0.7.0 to 0.7.1
+    * oxabl_semantic bumped from 8.0.0 to 9.0.0
+    * oxabl_workspace bumped from 4.0.0 to 4.0.1
+  * dev-dependencies
+    * oxabl_schema bumped from 0.7.0 to 0.7.1
+
 ## [8.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v7.0.0...oxabl_index-v8.0.0) (2026-11-27)
 
 

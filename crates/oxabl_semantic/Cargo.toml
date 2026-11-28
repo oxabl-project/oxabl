@@ -1,16 +1,16 @@
 [package]
 name = "oxabl_semantic"
-version = "8.0.0"
+version = "9.0.0"
 edition = "2024"
 license = "MIT"
 description = "Semantic analysis for Progress ABL: symbol table, scope tree, resolution, and types"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_semantic"
 
 [dependencies]
-oxabl_ast = { path = "../oxabl_ast", version = "8.0.0" }
-oxabl_common = { path = "../oxabl_common", version = "2.0.0" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "4.0.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.7.0" }
+oxabl_ast = { path = "../oxabl_ast", version = "9.0.0" }
+oxabl_common = { path = "../oxabl_common", version = "2.0.1" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "5.0.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.7.1" }
 bitflags = "2"
 rustc-hash = "2"
 smallvec = { version = "1", features = ["union"] }
@@ -24,9 +24,9 @@ test-counts = []
 [dev-dependencies]
 rust_decimal = "1.40.0"
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "4.0.0" }
-oxabl_parser = { path = "../oxabl_parser", version = "7.0.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.7.0", features = ["test-support"] }
+oxabl_lexer = { path = "../oxabl_lexer", version = "5.0.0" }
+oxabl_parser = { path = "../oxabl_parser", version = "8.0.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.7.1", features = ["test-support"] }
 
 [[bench]]
 name = "semantic_bench"

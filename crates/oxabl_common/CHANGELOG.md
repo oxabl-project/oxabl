@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v2.0.0...oxabl_common-v2.0.1) (2026-11-28)
+
+
+### Performance Improvements
+
+* **check:** lex and parse an unexpanded root once for the format check and the analysis ([#648](https://github.com/oxabl-project/oxabl/issues/648)) ([d9981f8](https://github.com/oxabl-project/oxabl/commit/d9981f8b7112cac7becd879647466617f37156d6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 8.0.0 to 9.0.0
+
 ## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.6.0...oxabl_common-v2.0.0) (2026-11-27)
 
 

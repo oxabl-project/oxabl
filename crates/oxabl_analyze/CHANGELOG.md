@@ -1,5 +1,37 @@
 # Changelog
 
+## [7.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v6.0.0...oxabl_analyze-v7.0.0) (2026-11-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** fold each name of a program once into a dense id ([#649](https://github.com/oxabl-project/oxabl/issues/649))
+
+### Performance Improvements
+
+* **check:** lex and parse an unexpanded root once for the format check and the analysis ([#648](https://github.com/oxabl-project/oxabl/issues/648)) ([d9981f8](https://github.com/oxabl-project/oxabl/commit/d9981f8b7112cac7becd879647466617f37156d6))
+* **daemon:** lex and parse a buffer once for each revision ([#650](https://github.com/oxabl-project/oxabl/issues/650)) ([2f77c39](https://github.com/oxabl-project/oxabl/commit/2f77c3978c1edc904aba71fa37814986fa737098))
+* fix fresh completion diff, finish [#630](https://github.com/oxabl-project/oxabl/issues/630) parser presizing, cache daemon pass config, and pre-fill NodeIndexVec ([#636](https://github.com/oxabl-project/oxabl/issues/636)) ([1d55278](https://github.com/oxabl-project/oxabl/commit/1d5527853d07ce13440452a3247dd453e71f1f27))
+* **semantic:** fold each name of a program once into a dense id ([#649](https://github.com/oxabl-project/oxabl/issues/649)) ([ee0bbc3](https://github.com/oxabl-project/oxabl/commit/ee0bbc316e17d84fdf38b45f2b4dfdcace6c0caf))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 8.0.0 to 9.0.0
+    * oxabl_common bumped from 2.0.0 to 2.0.1
+    * oxabl_lexer bumped from 4.0.0 to 5.0.0
+    * oxabl_lint bumped from 8.0.0 to 9.0.0
+    * oxabl_parser bumped from 7.0.0 to 8.0.0
+    * oxabl_preprocessor bumped from 0.11.0 to 0.11.1
+    * oxabl_schema bumped from 0.7.0 to 0.7.1
+    * oxabl_semantic bumped from 8.0.0 to 9.0.0
+    * oxabl_workspace bumped from 4.0.0 to 4.0.1
+  * dev-dependencies
+    * oxabl_index bumped from 8.0.0 to 9.0.0
+    * oxabl_schema bumped from 0.7.0 to 0.7.1
+
 ## [6.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v5.0.0...oxabl_analyze-v6.0.0) (2026-11-27)
 
 

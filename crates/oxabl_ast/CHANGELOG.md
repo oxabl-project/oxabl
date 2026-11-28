@@ -1,5 +1,18 @@
 # Changelog
 
+## [9.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v8.0.0...oxabl_ast-v9.0.0) (2026-11-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** fold each name of a program once into a dense id ([#649](https://github.com/oxabl-project/oxabl/issues/649))
+
+### Performance Improvements
+
+* **ast:** make Expression Copy and intern names in a hash table of ids ([#643](https://github.com/oxabl-project/oxabl/issues/643)) ([b89fe4b](https://github.com/oxabl-project/oxabl/commit/b89fe4b0b97dabfac0172448a8c2cc181d700f0e))
+* fix fresh completion diff, finish [#630](https://github.com/oxabl-project/oxabl/issues/630) parser presizing, cache daemon pass config, and pre-fill NodeIndexVec ([#636](https://github.com/oxabl-project/oxabl/issues/636)) ([1d55278](https://github.com/oxabl-project/oxabl/commit/1d5527853d07ce13440452a3247dd453e71f1f27))
+* **semantic:** fold each name of a program once into a dense id ([#649](https://github.com/oxabl-project/oxabl/issues/649)) ([ee0bbc3](https://github.com/oxabl-project/oxabl/commit/ee0bbc316e17d84fdf38b45f2b4dfdcace6c0caf))
+
 ## [8.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v7.0.0...oxabl_ast-v8.0.0) (2026-11-27)
 
 

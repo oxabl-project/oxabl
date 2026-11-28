@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.1](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.11.0...oxabl_preprocessor-v0.11.1) (2026-11-28)
+
+
+### Performance Improvements
+
+* **preprocessor:** find the trigger bytes with memchr ([#641](https://github.com/oxabl-project/oxabl/issues/641)) ([e3576dc](https://github.com/oxabl-project/oxabl/commit/e3576dcac4a9d885903b28e0284850918352dae3))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 2.0.0 to 2.0.1
+    * oxabl_ast bumped from 8.0.0 to 9.0.0
+    * oxabl_workspace bumped from 4.0.0 to 4.0.1
+
 ## [0.11.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.10.0...oxabl_preprocessor-v0.11.0) (2026-11-27)
 
 
