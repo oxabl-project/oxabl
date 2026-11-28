@@ -20,6 +20,7 @@ reads the disk, but outside the measured part.
 | Bench | Input | Surface |
 | --- | --- | --- |
 | `check/file` | `resources/lsp_bench.p` and its two includes | `oxabl check <file>`: the lint run, then the format check, on a new pipeline |
+| `check/identity_root` | the parser fixtures that expand to themselves and format, four times (about 100 KB, no include, no directive) | `oxabl check <file>` of a root that the raw unit serves: the analysis and the format check share one lex and one parse (`docs/design/shared-unit.md`). The other `check/*` benches have roots with includes, which the unit does not serve, so they show the change only through the roots that expand to themselves |
 | `check/workspace` | the 300 roots of the generated `ci` workspace: no finding, no drift | `oxabl check <dir>`: one pipeline for the walk |
 | `check/workspace_include_findings` | the same, with 100 unused variables in each hot include (42,700 findings in includes, about 140 for each root) | `oxabl check <dir>` where shared includes have findings: the fold of include findings (`IncludeRows::add` in `oxabl_analyze`). Each row has 1 expansion, so no finding joins an earlier row. `oxabl check` of this workspace with the release binary: `IncludeRows::add` was 7.4% of the run with a key of a path and a message, and is 1.3% with a key of plain data |
 | `check/include_findings_repeated` | one root with 60 procedures that each include a file of 100 unused variables: 100 rows with 60 expansions each | the fold where a finding joins an earlier row (5,900 of the 6,000 findings). `IncludeRows::add` is 6.7% of `oxabl check` of the same input with the old key and 2.0% with the new one. That gain is too small for CodSpeed to report as a change |
@@ -351,6 +352,24 @@ tell a finding from a failure. A run fails when a command exits with another
 status, or writes a line to stderr that starts with `error:` (an analysis or
 formatting failure, a file it cannot read). A failed run gives numbers for
 less work, which look like a gain.
+
+### The raw unit of a root
+
+A root that expands to itself (no include, no directive, no reference) is lexed
+and parsed once for its analysis and its format check (`RawUnit`,
+`docs/design/shared-unit.md`, third slice). Instructions, callgrind, release
+binary, base `edee92a0`: `check big.p` 586.5 M to 484.9 M (−17.3%); `check -j 1
+src` of the generated `ci` workspace 722.8 M to 714.6 M (−1.1%, about 30 of 300 roots
+expand to themselves); `check resources/lsp_bench.p -I resources` 44.22 M to
+44.18 M (a root with includes, unchanged). `crates/oxabl/tests/check_lex_parse_counts.rs`
+guards the counts. A change that lexes such a root a second time shows in
+`check-big` of `scripts/bench/cli.sh` as `tokenize` going from 2 full calls to
+3.
+
+TX004 costs 1,099 M instructions on the same `ci` workspace (575 M with the
+default rules): its first pass builds the effects of every root before the lint
+run, and the lint run builds the scopes again. The design is in
+`docs/design/shared-unit.md`, "The TX004 pass" (#251).
 
 ### Read the numbers
 

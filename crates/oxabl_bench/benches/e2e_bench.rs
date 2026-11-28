@@ -5,6 +5,9 @@
 //! - `check/file`: `oxabl check` of `resources/lsp_bench.p` with its includes:
 //!   the lint run and then the format check, the calls of `CheckPass`, on a
 //!   new pipeline (an empty cross-file index), as each `oxabl check` starts.
+//! - `check/identity_root`: a root of about 100 KB that expands to itself (the
+//!   parser fixtures with no directive), so the analysis and the format check
+//!   share one lex and one parse.
 //! - `check/workspace`: the same over the 300 roots of the generated `ci`
 //!   workspace (`oxabl_bench::generate`), with one pipeline for the walk. The
 //!   roots have no finding and no drift.
@@ -33,8 +36,8 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use oxabl_bench::alloc::Counting;
 use oxabl_bench::generate::{Knobs, Preset, generate};
 use oxabl_bench::{bench, fixtures};
-use oxabl_pipeline::{FormatPipeline, LintPipeline, PipelineConfig};
-use oxabl_workspace::FileSystem;
+use oxabl_pipeline::{FormatPipeline, LazyRawUnit, LintPipeline, PipelineConfig};
+use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
@@ -48,9 +51,13 @@ fn check_root(
     path: &Path,
     source: &str,
 ) -> (usize, bool) {
-    let result = lint.with_file(path).run(source);
+    let raw = LazyRawUnit::new(source);
+    let result = lint.with_file(path).run_with_unit(&raw).0;
     assert!(result.failure().is_none(), "{}", path.display());
-    let outcome = format.format(source);
+    let outcome = match raw.made() {
+        Some(raw) => format.format_unit(raw),
+        None => format.format(source),
+    };
     assert!(
         outcome.not_formatted().is_none(),
         "{} formats",
@@ -75,6 +82,36 @@ fn check_walk(
         .sum()
 }
 
+/// The parser fixtures that expand to themselves and format, repeated, as one
+/// root of about 100 KB with no include and no directive: the root that the
+/// raw unit serves, so `oxabl check` lexes and parses it once.
+fn identity_root() -> (InMemoryFileSystem, PipelineConfig, PathBuf, String) {
+    let fs = InMemoryFileSystem::new();
+    let config = PipelineConfig::default();
+    let path = PathBuf::from("/bench/identity.p");
+    let format = FormatPipeline::new(config.style.clone());
+    let lint = LintPipeline::new(&config, &fs);
+    let mut source = String::new();
+    for name in fixtures::MIXED_PARTS {
+        let part = fixtures::resource(name);
+        let identity = lint
+            .with_file(&path)
+            .expand(&part)
+            .expanded()
+            .is_some_and(|expanded| expanded.is_identity());
+        if identity && format.format(&part).not_formatted().is_none() {
+            source.push_str(&part);
+        }
+    }
+    let source = source.repeat(4);
+    assert!(
+        source.len() > 50_000,
+        "{} bytes of identity fixtures",
+        source.len()
+    );
+    (fs, config, path, source)
+}
+
 fn bench_check_and_format(c: &mut Criterion) {
     let (fs, config, path, source) = fixtures::lsp_bench();
     let format = FormatPipeline::new(config.style.clone());
@@ -84,6 +121,13 @@ fn bench_check_and_format(c: &mut Criterion) {
     group.sample_size(10);
     bench(&mut group, "check", "file", || {
         check_walk(&config, &fs, &format, &one)
+    });
+
+    let (id_fs, id_config, id_path, id_source) = identity_root();
+    let id_format = FormatPipeline::new(id_config.style.clone());
+    let id_root = [(id_path, id_source)];
+    bench(&mut group, "check", "identity_root", || {
+        check_walk(&id_config, &id_fs, &id_format, &id_root)
     });
 
     for (name, include_findings) in [("workspace", 0), ("workspace_include_findings", 100)] {

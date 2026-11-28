@@ -82,13 +82,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use oxabl_analyze::{
-    BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
-    ExpandOptions, ExpandedFile, IncludeOrigin, IncludeOriginDiagnostic, PreprocessMode,
-    RuleSelection, SkippedText, UnresolvedInclude, analyze_from_expanded,
-    analyze_from_expanded_inspecting, collect_from_expanded_with_summaries,
+    BranchDirective, CollectSettings, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource,
+    DirectInclude, ExpandOptions, ExpandedFile, IncludeOrigin, IncludeOriginDiagnostic,
+    PreprocessMode, RuleSelection, SkippedText, UnresolvedInclude, analyze_from_expanded,
+    analyze_from_expanded_inspecting, collect_from_expanded_with_summaries, collect_from_parsed,
     expand_source_recording, expand_source_with,
 };
 
+use crate::unit::LazyRawUnit;
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
@@ -1715,7 +1716,7 @@ impl<'a> LintPipeline<'a> {
     /// **Unguarded on purpose** (KTD6), for the same reason as
     /// [`expand`](Self::expand).
     pub fn collect(&self, expansion: &Expansion) -> LintResult {
-        self.collect_selecting(expansion, RuleSelection::All)
+        self.collect_selecting(expansion, RuleSelection::All, None)
     }
 
     /// Phase two without the findings: parse and analyze an [`Expansion`] into a
@@ -1811,7 +1812,7 @@ impl<'a> LintPipeline<'a> {
     pub fn run_context_free(&self, source: &str) -> LintResult {
         match catch_panic(|| {
             let expansion = self.expand(source);
-            let result = self.collect_selecting(&expansion, RuleSelection::ContextFree);
+            let result = self.collect_selecting(&expansion, RuleSelection::ContextFree, None);
             lower_includer_dependent(result, source, &expansion, self.fs)
         }) {
             Ok(result) => result,
@@ -1820,10 +1821,24 @@ impl<'a> LintPipeline<'a> {
     }
 
     /// [`collect`](Self::collect) with a choice of what to report.
-    fn collect_selecting(&self, expansion: &Expansion, selection: RuleSelection) -> LintResult {
+    ///
+    /// With `raw`, an expansion that is the identity reads the tokens and the
+    /// tree of the unit and lexes and parses nothing. Any other expansion, and
+    /// a unit that does not serve the expansion, run on the expanded text as
+    /// before.
+    fn collect_selecting(
+        &self,
+        expansion: &Expansion,
+        selection: RuleSelection,
+        raw: Option<&LazyRawUnit<'_>>,
+    ) -> LintResult {
         let dependency_paths = expansion.dependency_paths().to_vec();
         match &expansion.inner {
             Ok(expanded) => {
+                let unit = raw
+                    .filter(|_| expanded.is_identity())
+                    .and_then(LazyRawUnit::make)
+                    .filter(|unit| unit.serves(expanded));
                 let source_context = if self.file().is_some_and(is_include_fragment) {
                     SourceContext::IncludeFragment
                 } else {
@@ -1841,8 +1856,22 @@ impl<'a> LintPipeline<'a> {
                     .as_ref()
                     .and_then(|s| s.file(self.file().unwrap_or(Path::new(""))))
                     .map(|f| f as &dyn oxabl_lint::CalleeSummaries);
-                let (semantic, diagnostics) = self.with_run_index(|index| {
-                    collect_from_expanded_with_summaries(
+                let (semantic, diagnostics) = self.with_run_index(|index| match unit {
+                    Some(unit) => collect_from_parsed(
+                        expanded,
+                        unit.tokens(),
+                        unit.program(),
+                        index,
+                        &CollectSettings {
+                            schema: &self.config.schema,
+                            schema_loaded: self.config.schema_loaded,
+                            lint_severities: &lint_severities,
+                            source_context,
+                            selection,
+                            summaries: provider,
+                        },
+                    ),
+                    None => collect_from_expanded_with_summaries(
                         expanded,
                         &self.config.schema,
                         self.config.schema_loaded,
@@ -1851,7 +1880,7 @@ impl<'a> LintPipeline<'a> {
                         source_context,
                         selection,
                         provider,
-                    )
+                    ),
                 });
                 LintResult::computed(semantic.map(Box::new), diagnostics, dependency_paths)
             }
@@ -1904,9 +1933,26 @@ impl<'a> LintPipeline<'a> {
         &self,
         source: &str,
     ) -> (LintResult, Option<Vec<IncludeOrigin>>) {
+        self.run_reading(source, None)
+    }
+
+    /// [`run_with_include_origins`](Self::run_with_include_origins) for a
+    /// caller that may hold the [`RawUnit`] of `raw.text()`, which is the text
+    /// to analyse. When the expansion is the identity the run reads the unit's
+    /// tokens and tree, so the text is lexed and parsed once for the run and
+    /// the caller's other stages. The result is the one the plain run gives.
+    pub fn run_with_unit(&self, raw: &LazyRawUnit<'_>) -> (LintResult, Option<Vec<IncludeOrigin>>) {
+        self.run_reading(raw.text(), Some(raw))
+    }
+
+    fn run_reading(
+        &self,
+        source: &str,
+        raw: Option<&LazyRawUnit<'_>>,
+    ) -> (LintResult, Option<Vec<IncludeOrigin>>) {
         match catch_panic(|| {
             let expansion = self.expand(source);
-            let result = self.collect(&expansion);
+            let result = self.collect_selecting(&expansion, RuleSelection::All, raw);
             let result = if self.file().is_some_and(is_include_fragment) {
                 lower_includer_dependent(result, source, &expansion, self.fs)
             } else {
