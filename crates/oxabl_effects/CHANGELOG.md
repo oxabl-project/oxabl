@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.4.0...oxabl_effects-v0.5.0) (2026-11-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **lexer:** make Token a 12-byte Copy span and lex from bytes ([#639](https://github.com/oxabl-project/oxabl/issues/639))
+
+### Performance Improvements
+
+* **lexer:** make Token a 12-byte Copy span and lex from bytes ([#639](https://github.com/oxabl-project/oxabl/issues/639)) ([f4e468c](https://github.com/oxabl-project/oxabl/commit/f4e468ca780c3c4cde278ad19ef34ee7af19855d)), closes [#503](https://github.com/oxabl-project/oxabl/issues/503)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 8.0.0 to 9.0.0
+    * oxabl_flow bumped from 0.6.0 to 0.7.0
+    * oxabl_index bumped from 8.0.0 to 9.0.0
+    * oxabl_lexer bumped from 4.0.0 to 5.0.0
+    * oxabl_schema bumped from 0.7.0 to 0.7.1
+    * oxabl_scope bumped from 0.4.0 to 0.5.0
+  * dev-dependencies
+    * oxabl_parser bumped from 7.0.0 to 8.0.0
+    * oxabl_schema bumped from 0.7.0 to 0.7.1
+
 ## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.3.11...oxabl_effects-v0.4.0) (2026-11-27)
 
 

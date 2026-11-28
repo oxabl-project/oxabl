@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v4.0.0...oxabl_workspace-v4.0.1) (2026-11-28)
+
+
+### Performance Improvements
+
+* **daemon:** share the facts of a workspace pass across its threads and keep the file list ([#647](https://github.com/oxabl-project/oxabl/issues/647)) ([c44af58](https://github.com/oxabl-project/oxabl/commit/c44af589f375ce9e1ab9b9ad3ca6ca89ca8ce792))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 2.0.0 to 2.0.1
+    * oxabl_ast bumped from 8.0.0 to 9.0.0
+
 ## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.8.0...oxabl_workspace-v4.0.0) (2026-11-27)
 
 

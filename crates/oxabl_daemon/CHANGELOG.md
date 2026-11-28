@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.12.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.11.0...oxabl_daemon-v0.12.0) (2026-11-28)
+
+
+### Features
+
+* **vscode:** start one language server for each workspace folder ([#646](https://github.com/oxabl-project/oxabl/issues/646)) ([264452c](https://github.com/oxabl-project/oxabl/commit/264452c61ca124bdd8724a5f3787087df3d9be60)), closes [#633](https://github.com/oxabl-project/oxabl/issues/633)
+
+
+### Performance Improvements
+
+* **daemon:** lex and parse a buffer once for each revision ([#650](https://github.com/oxabl-project/oxabl/issues/650)) ([2f77c39](https://github.com/oxabl-project/oxabl/commit/2f77c3978c1edc904aba71fa37814986fa737098))
+* **daemon:** share the facts of a workspace pass across its threads and keep the file list ([#647](https://github.com/oxabl-project/oxabl/issues/647)) ([c44af58](https://github.com/oxabl-project/oxabl/commit/c44af589f375ce9e1ab9b9ad3ca6ca89ca8ce792))
+* fix fresh completion diff, finish [#630](https://github.com/oxabl-project/oxabl/issues/630) parser presizing, cache daemon pass config, and pre-fill NodeIndexVec ([#636](https://github.com/oxabl-project/oxabl/issues/636)) ([1d55278](https://github.com/oxabl-project/oxabl/commit/1d5527853d07ce13440452a3247dd453e71f1f27))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 6.0.0 to 7.0.0
+    * oxabl_ast bumped from 8.0.0 to 9.0.0
+    * oxabl_common bumped from 2.0.0 to 2.0.1
+    * oxabl_index bumped from 8.0.0 to 9.0.0
+    * oxabl_pipeline bumped from 6.0.0 to 7.0.0
+    * oxabl_semantic bumped from 8.0.0 to 9.0.0
+    * oxabl_workspace bumped from 4.0.0 to 4.0.1
+  * dev-dependencies
+    * oxabl_schema bumped from 0.7.0 to 0.7.1
+    * oxabl_common bumped from 2.0.0 to 2.0.1
+    * oxabl_pipeline bumped from 6.0.0 to 7.0.0
+
 ## [0.11.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.10.0...oxabl_daemon-v0.11.0) (2026-11-27)
 
 
