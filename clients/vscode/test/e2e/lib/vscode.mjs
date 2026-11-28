@@ -30,6 +30,12 @@ function channelLog(profile, session) {
     .join("");
 }
 
+/** The `oxabl` output channel of the newest session. */
+export function outputLog(profile) {
+  const sessions = logSessions(profile);
+  return sessions.length ? channelLog(profile, sessions[sessions.length - 1]) : "";
+}
+
 /** Waits until a session that is not in `before` logs `text` to the `oxabl` output channel. */
 export async function waitForLog(profile, text, before = [], timeout = 30_000) {
   await waitFor(
@@ -214,9 +220,10 @@ function requireLoopbackApi(url) {
  * Starts VS Code on the profile and returns { app, page, close }. `env.OXABL_UPDATE_API_URL` is required.
  * The install directory and the data directory of oxabl are inside the profile, so no scenario
  * meets the `oxabl` of the machine or writes its install record. `untrusted` leaves the workspace
- * untrusted (the settings of the profile must then turn workspace trust on).
+ * untrusted (the settings of the profile must then turn workspace trust on). `target` is the folder
+ * or `.code-workspace` file VS Code opens (default: the profile's workspace folder).
  */
-export async function launch(exe, profile, { open = [], env = {}, named, untrusted = false } = {}) {
+export async function launch(exe, profile, { open = [], env = {}, named, untrusted = false, target = profile.workspace } = {}) {
   const launchEnv = cleanEnv({
     OXABL_INSTALL_DIR: path.join(profile.root, "bin"),
     XDG_DATA_HOME: path.join(profile.root, "data"),
@@ -236,7 +243,7 @@ export async function launch(exe, profile, { open = [], env = {}, named, untrust
       "--disable-gpu",
       "--no-sandbox",
       "--password-store=basic",
-      profile.workspace,
+      target,
       ...open.map((f) => path.join(profile.workspace, f)),
     ],
     env: launchEnv,

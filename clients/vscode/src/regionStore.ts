@@ -131,6 +131,15 @@ export class RegionStore {
     this.entries.delete(uri);
   }
 
+  /** Forget the documents for which `drop` says yes. */
+  deleteWhere(drop: (uri: string) => boolean): void {
+    for (const uri of [...this.entries.keys()]) {
+      if (drop(uri)) {
+        this.entries.delete(uri);
+      }
+    }
+  }
+
   clear(): void {
     this.entries.clear();
   }

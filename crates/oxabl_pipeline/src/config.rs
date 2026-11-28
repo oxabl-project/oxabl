@@ -308,8 +308,8 @@ impl PipelineConfig {
     /// Warnings are non-fatal by construction — a malformed `oxabl.toml` yields
     /// defaults plus one [`ConfigWarning::Config`], never an error.
     pub fn resolve(anchor: &Path, overrides: &ConfigOverrides) -> (Self, Vec<ConfigWarning>) {
-        let (config, warnings, _, _) = resolve_at(anchor, overrides, SchemaLoading::Load);
-        (config, warnings)
+        let resolved = resolve_at(anchor, overrides, SchemaLoading::Load, false);
+        (resolved.config, resolved.warnings)
     }
 
     /// Like [`resolve`](Self::resolve), also returning the [`ConfigInputs`]
@@ -319,8 +319,8 @@ impl PipelineConfig {
         anchor: &Path,
         overrides: &ConfigOverrides,
     ) -> (Self, Vec<ConfigWarning>, ConfigInputs) {
-        let (config, warnings, _, inputs) = resolve_at(anchor, overrides, SchemaLoading::Load);
-        (config, warnings, inputs)
+        let resolved = resolve_at(anchor, overrides, SchemaLoading::Load, false);
+        (resolved.config, resolved.warnings, resolved.inputs)
     }
 
     /// [`resolve`](Self::resolve) for an editor. With no `oxabl.toml` above the
@@ -332,11 +332,17 @@ impl PipelineConfig {
         anchor: &Path,
         overrides: &ConfigOverrides,
     ) -> (Self, Vec<ConfigWarning>) {
-        let (mut config, warnings, found, _) = resolve_at(anchor, overrides, SchemaLoading::Load);
-        if !found {
-            config.features = FeaturesConfig::OFF;
-        }
+        let (config, warnings, _) = resolve_for_editor_at(anchor, overrides, false);
         (config, warnings)
+    }
+
+    /// [`resolve_for_editor`](Self::resolve_for_editor), and the
+    /// [`ConfiguredInputs`] of the same read of `oxabl.toml`.
+    pub fn resolve_for_editor_with_inputs(
+        anchor: &Path,
+        overrides: &ConfigOverrides,
+    ) -> (Self, Vec<ConfigWarning>, ConfiguredInputs) {
+        resolve_for_editor_at(anchor, overrides, true)
     }
 
     /// Resolve everything except the schema, which stays [`Schema::empty`] with
@@ -358,8 +364,8 @@ impl PipelineConfig {
         anchor: &Path,
         overrides: &ConfigOverrides,
     ) -> (Self, Vec<ConfigWarning>) {
-        let (config, warnings, _, _) = resolve_at(anchor, overrides, SchemaLoading::Skip);
-        (config, warnings)
+        let resolved = resolve_at(anchor, overrides, SchemaLoading::Skip, false);
+        (resolved.config, resolved.warnings)
     }
 }
 
@@ -384,13 +390,10 @@ impl ConfigInputs {
     }
 }
 
-/// Collect the filesystem paths that [`resolve_at`] reads for `root` and
-/// `parsed`, without re-parsing any `.df` file.
-fn collect_config_inputs(
-    root: Option<&Path>,
-    parsed: Option<&WorkspaceConfig>,
-    overrides: &ConfigOverrides,
-) -> ConfigInputs {
+/// Collect the filesystem paths that [`resolve_at`] reads for `root` and the
+/// schema `expansion` of its parsed configuration, without re-parsing any `.df`
+/// file.
+fn collect_config_inputs(root: Option<&Path>, expansion: Option<&SchemaExpansion>) -> ConfigInputs {
     let mut paths = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut push_unique = |path: PathBuf| {
@@ -400,13 +403,12 @@ fn collect_config_inputs(
     };
     if let Some(root) = root {
         push_unique(root.join("oxabl.toml"));
-        if let Some(config) = parsed {
-            for entry in schema_entries(config, root, overrides.schema_path.as_ref()) {
-                push_unique(entry);
+        if let Some(expansion) = expansion {
+            for entry in &expansion.entries {
+                push_unique(entry.clone());
             }
-            let mut warnings = Vec::new();
-            for file in schema_files(config, root, overrides.schema_path.as_ref(), &mut warnings) {
-                push_unique(file);
+            for file in &expansion.files {
+                push_unique(file.clone());
             }
         }
     }
@@ -423,9 +425,39 @@ enum SchemaLoading {
     Skip,
 }
 
+/// What [`resolve_at`] found.
+struct Resolution {
+    config: PipelineConfig,
+    warnings: Vec<ConfigWarning>,
+    /// Whether an `oxabl.toml` was found, readable or not.
+    found: bool,
+    /// The paths a daemon stamps to reuse the configuration.
+    inputs: ConfigInputs,
+    /// What the language server's watch filter needs. Empty unless the caller
+    /// asked, and when the file cannot be read.
+    configured: ConfiguredInputs,
+}
+
+/// The `.df` entries of a configuration and the files they expand to.
+struct SchemaExpansion {
+    entries: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+}
+
+impl SchemaExpansion {
+    /// Expand without the warnings of the expansion: [`derive`] reports them.
+    fn of(config: &WorkspaceConfig, root: &Path, schema_path: Option<&PathBuf>) -> Self {
+        SchemaExpansion {
+            entries: schema_entries(config, root, schema_path),
+            files: schema_files(config, root, schema_path, &mut Vec::new()),
+        }
+    }
+}
+
 /// The shared body of the public resolvers: find the root once, read the file
-/// once, hand the parsed value to the derivation. The flag says whether an
-/// `oxabl.toml` was found, readable or not.
+/// once, hand the parsed value to the derivation. With `with_configured`, the
+/// [`ConfiguredInputs`] come from the same parsed value, and share the schema
+/// expansion of the [`ConfigInputs`] when both name the same schema entries.
 ///
 /// Both entry points funnel through here so the one-parse invariant (KTD3) holds
 /// for every caller — a second resolver with its own discovery-and-read would be
@@ -434,7 +466,8 @@ fn resolve_at(
     anchor: &Path,
     overrides: &ConfigOverrides,
     schema: SchemaLoading,
-) -> (PipelineConfig, Vec<ConfigWarning>, bool, ConfigInputs) {
+    with_configured: bool,
+) -> Resolution {
     let start_dir = start_dir(anchor);
 
     let root = find_workspace_root(&start_dir);
@@ -443,33 +476,72 @@ fn resolve_at(
     match parsed {
         // A config exists and parsed: derive everything from that one value.
         Some((root, Ok(config))) => {
-            let inputs = if schema == SchemaLoading::Load {
-                collect_config_inputs(Some(root), Some(&config), overrides)
+            let expansion = (schema == SchemaLoading::Load)
+                .then(|| SchemaExpansion::of(&config, root, overrides.schema_path.as_ref()));
+            let inputs = collect_config_inputs(Some(root), expansion.as_ref());
+            let configured = if with_configured {
+                // The watch filter names the configured schema, not an override.
+                let shared = expansion
+                    .as_ref()
+                    .filter(|_| overrides.schema_path.is_none());
+                configured_inputs_of(&config, root, shared)
             } else {
-                collect_config_inputs(Some(root), None, overrides)
+                ConfiguredInputs::default()
             };
             let (config, warnings) = derive(&config, root, overrides, schema);
-            (config, warnings, true, inputs)
+            Resolution {
+                config,
+                warnings,
+                found: true,
+                inputs,
+                configured,
+            }
         }
         // A config exists but is unreadable or malformed. Degrade every
         // configured surface to its default and report once — not once per
         // surface, which is what the three `resolved_*` helpers do today.
         Some((root, Err(message))) => {
-            let inputs = collect_config_inputs(Some(root), None, overrides);
+            let inputs = collect_config_inputs(Some(root), None);
             let (mut config, mut warnings) =
                 derive(&WorkspaceConfig::defaults(), root, overrides, schema);
             config.features = FeaturesConfig::OFF;
             warnings.insert(0, ConfigWarning::Config(message));
-            (config, warnings, true, inputs)
+            Resolution {
+                config,
+                warnings,
+                found: true,
+                inputs,
+                configured: ConfiguredInputs::default(),
+            }
         }
         // No config anywhere above the anchor: overrides only, silently.
         None => {
-            let inputs = collect_config_inputs(None, None, overrides);
+            let inputs = collect_config_inputs(None, None);
             let (config, warnings) =
                 derive(&WorkspaceConfig::defaults(), &start_dir, overrides, schema);
-            (config, warnings, false, inputs)
+            Resolution {
+                config,
+                warnings,
+                found: false,
+                inputs,
+                configured: ConfiguredInputs::default(),
+            }
         }
     }
+}
+
+/// [`resolve_at`] for an editor: both features are off with no `oxabl.toml`.
+fn resolve_for_editor_at(
+    anchor: &Path,
+    overrides: &ConfigOverrides,
+    with_configured: bool,
+) -> (PipelineConfig, Vec<ConfigWarning>, ConfiguredInputs) {
+    let resolved = resolve_at(anchor, overrides, SchemaLoading::Load, with_configured);
+    let mut config = resolved.config;
+    if !resolved.found {
+        config.features = FeaturesConfig::OFF;
+    }
+    (config, resolved.warnings, resolved.configured)
 }
 
 /// Derive every configuration surface from one already-parsed `config`.
@@ -786,6 +858,57 @@ pub(crate) fn schema_sources(anchor: &Path) -> SchemaSources {
     }
 }
 
+/// What the `oxabl.toml` above an anchor makes the analysis read, besides the
+/// include paths and the files under the workspace root.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfiguredInputs {
+    /// The `.df` files and schema directories, and the directories walked for
+    /// root files, anchored. Each may lie outside the workspace root.
+    pub paths: Vec<PathBuf>,
+    /// A root-relative search path is absolute or leaves the directory of its
+    /// root file, so no fixed list of directories says what the analysis reads.
+    pub unbounded: bool,
+}
+
+/// The [`ConfiguredInputs`] of the parsed `config` whose `oxabl.toml` is in
+/// `root`. Reads the schema directories, and no `.df` file.
+///
+/// The server uses them with the include paths to tell which watched files the
+/// session reads. One boundary is not covered: with `root_relative_include_paths`
+/// such as `["."]`, a class file whose package segments name the directories of
+/// the workspace root itself (`CLASS alpha.Foo:` in `<parent>/alpha`) resolves
+/// the search path from the directory above the root. A file read only there,
+/// by the daemon's workspace pass and by no open buffer, is not a place, so
+/// the server drops its watched-file event.
+fn configured_inputs_of(
+    config: &WorkspaceConfig,
+    root: &Path,
+    shared: Option<&SchemaExpansion>,
+) -> ConfiguredInputs {
+    let mut inputs = ConfiguredInputs::default();
+    let own;
+    let schema = match shared {
+        Some(schema) => schema,
+        None => {
+            own = SchemaExpansion::of(config, root, None);
+            &own
+        }
+    };
+    let sources = &config.workspace.sources;
+    inputs
+        .paths
+        .extend(sources.directories.iter().map(|dir| anchor_to(root, dir)));
+    inputs.paths.extend(schema.entries.iter().cloned());
+    inputs.paths.extend(schema.files.iter().cloned());
+    inputs.unbounded = sources.root_relative_include_paths.iter().any(|path| {
+        path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+    });
+    inputs
+}
+
 /// Resolve like [`resolve_from_config`], but leave the schema empty and
 /// unloaded. [`PipelineConfig::load_schema`] loads it when a run needs it, and
 /// [`configured_schema_files`] names the files without reading them.
@@ -1042,6 +1165,91 @@ mod tests {
                  set its rules to `off` one by one",
             ]
         );
+    }
+
+    fn inputs_at(anchor: &Path) -> ConfiguredInputs {
+        PipelineConfig::resolve_for_editor_with_inputs(anchor, &ConfigOverrides::default()).2
+    }
+
+    /// The daemon's stamps and the watch filter's places come from one read, and
+    /// each keeps its own content: the stamps start with `oxabl.toml` and follow
+    /// the `--schema` override, the places start with the walked directories and
+    /// name the configured schema.
+    #[test]
+    fn the_stamps_and_the_places_keep_their_own_content() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.sources]\ndirectories = [\"src\"]\n\
+             [workspace.schema]\nfiles = [\"db/a.df\"]\n",
+        );
+        std::fs::create_dir(root.join("db")).unwrap();
+        write(root, "db/a.df", "");
+        write(root, "db/b.df", "");
+        let a = root.join("db/a.df");
+        let none = ConfigOverrides::default();
+
+        let (_, _, stamps) = PipelineConfig::resolve_with_inputs(root, &none);
+        assert_eq!(stamps.config_root.as_deref(), Some(root));
+        assert_eq!(stamps.paths, [root.join("oxabl.toml"), a.clone()]);
+        let (_, _, places) = PipelineConfig::resolve_for_editor_with_inputs(root, &none);
+        assert_eq!(places.paths, [root.join("src"), a.clone(), a.clone()]);
+
+        let over = ConfigOverrides {
+            schema_path: Some(root.join("db/b.df")),
+            ..ConfigOverrides::default()
+        };
+        let (_, _, stamps) = PipelineConfig::resolve_with_inputs(root, &over);
+        assert_eq!(
+            stamps.paths,
+            [root.join("oxabl.toml"), root.join("db/b.df")]
+        );
+        let (_, _, places) = PipelineConfig::resolve_for_editor_with_inputs(root, &over);
+        assert_eq!(places.paths, [root.join("src"), a.clone(), a]);
+    }
+
+    #[test]
+    fn configured_inputs_name_the_schema_and_the_walked_directories() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.sources]\ndirectories = [\"src\", \"../other\"]\n\
+             [workspace.schema]\nfiles = [\"db/a.df\"]\n",
+        );
+        std::fs::create_dir(root.join("db")).unwrap();
+        write(root, "db/a.df", "");
+        let inputs = inputs_at(&root.join("main.p"));
+        assert!(!inputs.unbounded);
+        for expected in [
+            root.join("src"),
+            root.join("../other"),
+            root.join("db/a.df"),
+        ] {
+            assert!(inputs.paths.contains(&expected), "{expected:?}: {inputs:?}");
+        }
+
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.sources]\nroot_relative_include_paths = [\"rf\", \"../shared\"]\n",
+        );
+        assert!(inputs_at(root).unbounded, "a path that leaves its file");
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.sources]\nroot_relative_include_paths = [\".\", \"rf\"]\n",
+        );
+        assert!(!inputs_at(root).unbounded);
+        std::fs::remove_file(root.join("oxabl.toml")).unwrap();
+        assert_eq!(inputs_at(root), ConfiguredInputs::default());
     }
 
     /// One call resolves all three configured surfaces — the whole point of

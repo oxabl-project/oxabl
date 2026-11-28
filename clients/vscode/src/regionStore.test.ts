@@ -140,3 +140,14 @@ describe("keepsDecisions", () => {
     expect(keepsDecisions({ range: r(3, 10, 3, 10), text: "2" }, next)).toBe(true);
   });
 });
+
+describe("RegionStore.deleteWhere", () => {
+  it("drops only the documents it names", () => {
+    const store = new RegionStore();
+    store.set("file:///a/x.p", 1, [r(0, 0, 1, 0)]);
+    store.set("file:///b/y.p", 1, [r(2, 0, 3, 0)]);
+    store.deleteWhere((uri) => uri.startsWith("file:///a/"));
+    expect(store.get("file:///a/x.p", 1)).toEqual([]);
+    expect(store.get("file:///b/y.p", 1)).toEqual([r(2, 0, 3, 0)]);
+  });
+});

@@ -32,6 +32,7 @@ import {
   cliUpdateUnmanaged,
 } from "./scenarios/build.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
+import { multiRoot } from "./scenarios/multi-root.mjs";
 import { definition } from "./scenarios/definition.mjs";
 import { references } from "./scenarios/references.mjs";
 import { hierarchy } from "./scenarios/hierarchy.mjs";
@@ -71,6 +72,7 @@ const SCENARIOS = [
   ["expanded-unit", expandedUnit],
   ["inactive-regions", inactiveRegions],
   ["definition", definition],
+  ["multi-root", multiRoot],
   ["references", references],
   ["hierarchy", hierarchy],
   ["reference-lenses", referenceLenses],

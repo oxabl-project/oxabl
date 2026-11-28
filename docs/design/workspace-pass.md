@@ -22,6 +22,33 @@ A request runs a pass when the stored pass is not current
   analyses only the files that changed and the files that read them.
 - `oxabl/reindex`. The pass is full.
 
+A `workspace/didChangeWatchedFiles` event starts a pass only through these
+rules. The server registers plain globs, and a client such as VS Code applies
+them to every workspace folder, so the server of one folder also gets the
+events of the other folders. The server drops an event for a file that the
+session does not read (`WatchScope` in `crates/oxabl_lsp/src/watch_scope.rs`).
+It keeps an event when the path is:
+
+- under the workspace root;
+- under an include path, a `.df` file or schema directory, or a directory of
+  `[workspace.sources].directories`, also when it lies outside the root;
+- an `oxabl.toml` in the root or in a directory above it;
+- a file that an analysis read (an indexed file or an include), an open buffer,
+  a file in the directory of an open buffer, or an include of an open buffer.
+
+A known boundary: with `root_relative_include_paths = ["."]`, a class file whose
+package segments name the directories of the workspace root itself (`CLASS
+alpha.Foo:` in `<parent>/alpha`) searches from the directory above the root. A
+file that only the workspace pass reads there, and no open buffer, is not a
+place, so its event is dropped. Making `["."]` keep every event would defeat
+the filter for the common setup.
+
+A client that declares no root, and a configuration with a
+`root_relative_include_paths` entry that is absolute or leaves the directory of
+its file, keep every event. Without this filter, a `.df` or `oxabl.toml` event
+of a sibling folder re-resolved the configuration, republished the diagnostics
+of every open buffer and made the next pass full.
+
 A pass that completes after a buffer moved is not dropped when the pass read
 every file as the buffers give it now.
 
@@ -213,6 +240,19 @@ build of the daemon writes one line to stderr for each pass when
 - a file changed on disk, and an include that could not be read and then
   reads, give the answers of a new daemon;
 - a pass after a change of `oxabl.toml` that no client reported is full.
+
+`crates/oxabl/tests/watched_files_scope_lsp.rs` sends the events of a sibling
+folder (a program, an include, a `.df` file and an `oxabl.toml`) and checks
+that the server publishes nothing, runs no pass and sends no `workspace/*/refresh`
+request (the session advertises every refresh capability; a control test shows
+that an event for the root's own files does send one). It also checks that an
+event still reaches the session for a file on an include path outside the
+root, for a `.df` file outside the root, for an `oxabl.toml` above the root, and
+for an include in a subdirectory of an open buffer outside the root that no
+configured place names (kept by the include dependencies of the buffer). No
+black-box test shows the registry of files an analysis read (`has_read`) alone:
+an open buffer is analysed in the same session. The place rules are also tested
+one by one in `watch_scope.rs`.
 
 `crates/oxabl/tests/incremental_pass_script_lsp.rs` runs a series of edits
 (a buffer edit, a write, a removal, a buffer opened or closed) through the

@@ -1,20 +1,9 @@
 import * as vscode from "vscode";
-import {
-  LanguageClient,
-  type LanguageClientOptions,
-  type ServerOptions,
-} from "vscode-languageclient/node";
-
 import { CliManager, resolveBinary } from "./binary";
 import { BuildController } from "./builds";
 import { binaryVersion, supportsYield } from "./cli";
-import {
-  inlayHintSettings,
-  referenceLensSettings,
-  outlineSettings,
-  semanticTokenSettings,
-  shouldRestartForConfigChange,
-} from "./config";
+import { Clients, DEACTIVATE_WAIT_MS, readInlayHints, readReferenceLenses, readSemanticTokens } from "./clients";
+import { shouldRestartForConfigChange } from "./config";
 import { ExpandedUnits } from "./expandedUnit";
 import { InactiveRegions } from "./inactiveRegions";
 import { IncluderContexts } from "./includerContext";
@@ -26,9 +15,7 @@ import { installSkill } from "./skill";
 import { goToSuperMethod } from "./superMethod";
 import { registerUpdates } from "./updates";
 
-let client: LanguageClient | undefined;
-/** The version of the binary the running client started with. */
-let clientVersion: string | undefined;
+let clients: Clients;
 let context: vscode.ExtensionContext;
 let log: vscode.LogOutputChannel;
 let builds: BuildController;
@@ -61,22 +48,36 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     storageDir: context.globalStorageUri.fsPath,
     memory: context.workspaceState,
   });
-  expandedUnits = new ExpandedUnits(() => client);
+  clients = new Clients(log, {
+    attach: (client) => inactiveRegions.attach(client),
+    started: (folder) => {
+      includerContexts.show();
+      schema.serverChanged(folder);
+    },
+    stopped: (serves) => {
+      includerContexts.reset(serves);
+      inactiveRegions.reset(serves);
+    },
+    layoutChanged: () => schema.layoutChanged(),
+    loadedFolders: () => schema.loadedFolders(),
+  });
+  expandedUnits = new ExpandedUnits((uri) => clients.forUri(uri));
   inactiveRegions = new InactiveRegions();
   includerContexts = new IncluderContexts(
-    () => client,
+    (uri) => clients.forUri(uri),
     (uri) => expandedUnits.refreshSource(uri),
   );
-  schema = new SchemaBrowser(() => client);
+  schema = new SchemaBrowser(clients);
   context.subscriptions.push(
     log,
+    clients,
     expandedUnits,
     inactiveRegions,
     schema,
     includerContexts,
     vscode.commands.registerCommand("oxabl.showExpandedUnit", () => expandedUnits.show()),
     vscode.commands.registerCommand("oxabl.selectIncluderContext", () => includerContexts.select()),
-    vscode.commands.registerCommand("oxabl.goToSuperMethod", () => goToSuperMethod(() => client)),
+    vscode.commands.registerCommand("oxabl.goToSuperMethod", () => goToSuperMethod((uri) => clients.forUri(uri))),
     vscode.commands.registerCommand(
       SHOW_REFERENCES,
       (uri: string, position: { line: number; character: number }, places: unknown) =>
@@ -95,19 +96,13 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
         void restartServer();
       }
       if (event.affectsConfiguration("oxabl.inlayHints")) {
-        void client?.sendNotification("workspace/didChangeConfiguration", {
-          settings: { oxabl: { inlayHints: readInlayHints() } },
-        });
+        notifyClients({ inlayHints: readInlayHints() });
       }
       if (event.affectsConfiguration("oxabl.semanticTokens")) {
-        void client?.sendNotification("workspace/didChangeConfiguration", {
-          settings: { oxabl: { semanticTokens: readSemanticTokens() } },
-        });
+        notifyClients({ semanticTokens: readSemanticTokens() });
       }
       if (event.affectsConfiguration("oxabl.referenceLenses")) {
-        void client?.sendNotification("workspace/didChangeConfiguration", {
-          settings: { oxabl: { referenceLenses: readReferenceLenses() } },
-        });
+        notifyClients({ referenceLenses: readReferenceLenses() });
       }
       if (event.affectsConfiguration("oxabl.build.enable")) {
         applyBuildEnabled();
@@ -126,13 +121,16 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     log,
     // A client that stopped (crash limit, restart) keeps its initialize
     // result: only a running server completes.
-    () => client?.isRunning() === true && client.initializeResult?.capabilities.completionProvider !== undefined,
+    (document) => {
+      const client = clients.forUri(document.uri);
+      return client?.isRunning() === true && client.initializeResult?.capabilities.completionProvider !== undefined;
+    },
   );
   if (snippets) {
     context.subscriptions.push(snippets);
   }
 
-  await startClient();
+  await clients.startAll();
   void cli.offerInstall();
 }
 
@@ -174,8 +172,8 @@ function applyBuildEnabled(): void {
 /**
  * The binary to build with, or `undefined` when there is none or it cannot
  * build. A binary that predates `--yield` is updated when it is managed. A
- * binary that differs from the one the language server started with restarts
- * the server.
+ * binary that differs from the one a language client started with restarts
+ * the clients.
  */
 async function prepareBinary(): Promise<string | undefined> {
   const found = resolveBinary();
@@ -203,29 +201,12 @@ async function prepareBinary(): Promise<string | undefined> {
     }
     capable.add(`${command}@${version}`);
   }
-  if (client && clientVersion !== undefined && version !== clientVersion) {
-    log.info(`oxabl changed from ${clientVersion} to ${version}; restarting the language server`);
+  const running = clients.differing(version);
+  if (running !== undefined) {
+    log.info(`oxabl changed from ${running} to ${version}; restarting the language server`);
     await restartServer();
   }
   return command;
-}
-
-/** The inlay hint kinds the `oxabl.inlayHints.*` settings turn on, for the server. */
-function readInlayHints(): Record<string, boolean> {
-  const config = vscode.workspace.getConfiguration("oxabl.inlayHints");
-  return inlayHintSettings((kind) => config.get<boolean>(kind));
-}
-
-/** The `oxabl.semanticTokens.enable` setting, for the server. */
-function readSemanticTokens(): { enable: boolean } {
-  const config = vscode.workspace.getConfiguration("oxabl.semanticTokens");
-  return semanticTokenSettings(config.get<boolean>("enable"));
-}
-
-/** The `oxabl.referenceLenses.enable` setting, for the server. */
-function readReferenceLenses(): { enable: boolean } {
-  const config = vscode.workspace.getConfiguration("oxabl.referenceLenses");
-  return referenceLensSettings(config.get<boolean>("enable"));
 }
 
 /** Show the places that a lens counts, in the references view anchored at `position` in `uri`. */
@@ -252,127 +233,24 @@ async function showReferences(
   );
 }
 
-/** The `oxabl.outline.includes` setting, for the server. */
-function readOutline(): { includes: boolean } {
-  const config = vscode.workspace.getConfiguration("oxabl.outline");
-  return outlineSettings(config.get<boolean>("includes"));
-}
-
-/** Start the client if enabled; a no-op (silent) when `oxabl.enable` is false. */
-async function startClient(): Promise<void> {
-  const config = vscode.workspace.getConfiguration("oxabl");
-  if (!config.get<boolean>("enable", true)) {
-    return;
-  }
-
-  const discovery = resolveBinary();
-
-  // Highlighting needs no server, so a missing binary is not an error: no message, a log line.
-  if (discovery.kind === "not-found") {
-    log.info(
-      "oxabl executable not found on PATH or in oxabl.server.path; running without the " +
-        "language server (syntax highlighting still works)",
-    );
-    return;
-  }
-
-  // No `transport` field: stdio is the default for an Executable. Setting
-  // `TransportKind.stdio` explicitly makes the client append `--stdio` to argv,
-  // which `oxabl lsp` (no such flag) rejects. `oxabl lsp` already speaks LSP
-  // over stdin/stdout.
-  const serverOptions: ServerOptions = {
-    command: discovery.command,
-    args: ["lsp"],
-  };
-
-  const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: "file", language: "abl" }],
-    outputChannel: log,
-    // Sends a progress token with `initialize`; the server reports a slow daemon start on it.
-    progressOnInitialization: true,
-    initializationOptions: {
-      inlayHints: readInlayHints(),
-      semanticTokens: readSemanticTokens(),
-      referenceLenses: readReferenceLenses(),
-      outline: readOutline(),
-    },
-    synchronize: {
-      // The server watches these itself, but forwarding the events lets live
-      // reload work even when the client owns the file watcher (#90 / U2).
-      fileEvents: [
-        vscode.workspace.createFileSystemWatcher("**/oxabl.toml"),
-        vscode.workspace.createFileSystemWatcher("**/*.df"),
-        vscode.workspace.createFileSystemWatcher("**/*.i"),
-      ],
-    },
-  };
-
-  clientVersion = await binaryVersion(discovery.command);
-  client = new LanguageClient("oxabl", "oxabl language server", serverOptions, clientOptions);
-  inactiveRegions.attach(client);
-
-  try {
-    await client.start();
-  } catch (err) {
-    // R8: a spawn/handshake failure surfaces as a clear message, not a crash.
-    const detail = err instanceof Error ? err.message : String(err);
-    void vscode.window.showErrorMessage(
-      `oxabl: failed to start the language server (\`${discovery.command} lsp\`): ${detail}`,
-    );
-    client = undefined;
-  }
-  includerContexts.reset();
-  schema.serverChanged();
-}
-
-/** Stop the running client, if any. Safe to call when nothing is running. */
-async function stopClient(): Promise<void> {
-  if (!client) {
-    return;
-  }
-  const running = client;
-  client = undefined;
-  clientVersion = undefined;
-  includerContexts.reset();
-  inactiveRegions.reset();
-  try {
-    await running.stop();
-  } catch {
-    // Already stopped/never fully started — nothing to clean up.
+/** Send `settings` to every language client as a configuration change. */
+function notifyClients(settings: Record<string, unknown>): void {
+  for (const client of clients.all()) {
+    void client.sendNotification("workspace/didChangeConfiguration", { settings: { oxabl: settings } });
   }
 }
 
 /**
- * Command `oxabl.restartServer`: stop the current client (if any) and start a
- * fresh one, re-running binary discovery so a newly-installed or repathed
- * `oxabl` is picked up without a window reload (#105). Clears the language
- * client's crash-cap state as a side effect. No-ops gracefully when the server
- * was never running or `oxabl.enable` is false.
+ * Command `oxabl.restartServer`: stop the clients and start fresh ones,
+ * re-running binary discovery so a newly-installed or repathed `oxabl` is
+ * picked up without a window reload (#105). Clears the language client's
+ * crash-cap state as a side effect. No-ops gracefully when the server was
+ * never running or `oxabl.enable` is false.
  */
 function restartServer(): Promise<void> {
-  // One restart at a time: a second request waits for the first, so two
-  // quick changes of a setting cannot start two clients.
-  const run = restarting.then(doRestartServer, doRestartServer);
-  restarting = run.catch(() => undefined);
-  return run;
-}
-
-let restarting: Promise<void> = Promise.resolve();
-
-async function doRestartServer(): Promise<void> {
-  await stopClient();
-
-  const config = vscode.workspace.getConfiguration("oxabl");
-  if (!config.get<boolean>("enable", true)) {
-    void vscode.window.showInformationMessage(
-      "oxabl is disabled (`oxabl.enable` is false); the language server was not started.",
-    );
-    return;
-  }
-
-  await startClient();
+  return clients.restart();
 }
 
 export async function deactivate(): Promise<void> {
-  await Promise.all([builds?.dispose(), stopClient()]);
+  await Promise.all([builds?.dispose(), clients?.stopAll(DEACTIVATE_WAIT_MS)]);
 }

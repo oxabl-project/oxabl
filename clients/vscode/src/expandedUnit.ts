@@ -61,7 +61,8 @@ export class ExpandedUnits implements vscode.Disposable, vscode.TextDocumentCont
   private readonly diagnostics = vscode.languages.createDiagnosticCollection("oxabl-expanded");
   private readonly subscriptions: vscode.Disposable[];
 
-  constructor(private readonly client: () => LanguageClient | undefined) {
+  /** `client` gives the client that serves a document. */
+  constructor(private readonly client: (uri: vscode.Uri | undefined) => LanguageClient | undefined) {
     const selector = { scheme: SCHEME };
     const config = vscode.workspace.createFileSystemWatcher("**/oxabl.toml");
     this.subscriptions = [
@@ -113,7 +114,7 @@ export class ExpandedUnits implements vscode.Disposable, vscode.TextDocumentCont
   /** Command `oxabl.showExpandedUnit`. */
   async show(): Promise<void> {
     const document = vscode.window.activeTextEditor?.document;
-    if (!this.client()) {
+    if (!this.client(document?.uri)) {
       void vscode.window.showInformationMessage("oxabl: the language server is not running.");
       return;
     }
@@ -160,7 +161,7 @@ export class ExpandedUnits implements vscode.Disposable, vscode.TextDocumentCont
   }
 
   private async ask(source: vscode.Uri): Promise<ExpandedAnswer | undefined> {
-    const client = this.client();
+    const client = this.client(source);
     if (!client) {
       return undefined;
     }

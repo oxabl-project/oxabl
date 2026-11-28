@@ -29,7 +29,8 @@ export function ownerRoot(file: string, roots: Iterable<string>): string | undef
 /** Whether `file` is `dir` or below it. */
 export function isInside(file: string, dir: string): boolean {
   const rel = path.relative(dir, file);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  // A child named `..cache` is inside: only `..` and `..<sep>…` leave `dir`.
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
 /** A change under `.git` or under a directory the build writes is no input. */
