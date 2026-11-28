@@ -296,6 +296,10 @@ pub(crate) struct KeptPass {
     /// The discovered files, in the order of discovery. A pass that keeps the
     /// list of the one before shares it.
     files: Arc<Vec<PathBuf>>,
+    /// Whether the walk that produced `files` met a symbolic link below the
+    /// root. Watchers do not reliably report changes behind a symlinked
+    /// directory, so a list with this set is not kept across passes.
+    walk_met_link: bool,
     entries: HashMap<PathBuf, Entry>,
     /// Whether the `SHARED` producer map was built, and so each entry has its
     /// `shared` names. When it was not, no analysis read it.
@@ -573,7 +577,19 @@ fn parallel<T: Send>(files: &[PathBuf], jobs: usize, work: impl Fn(&Path) -> T +
 }
 
 /// Analyse every file of `files`.
-pub(crate) fn full_pass(context: &PassContext<'_>, files: Arc<Vec<PathBuf>>) -> Built {
+/// The root file list handed to a pass, and whether the walk that produced it
+/// met a symbolic link below the root.
+#[derive(Clone)]
+pub(crate) struct PassList {
+    pub files: Arc<Vec<PathBuf>>,
+    pub walk_met_link: bool,
+}
+
+pub(crate) fn full_pass(context: &PassContext<'_>, list: PassList) -> Built {
+    let PassList {
+        files,
+        walk_met_link,
+    } = list;
     context.progress.set_total(files.len());
     let (producers, sink) = context.lazy_producers(&files);
     let analysed = context.analyse(&files, &Producers::Lazy(&producers));
@@ -585,6 +601,7 @@ pub(crate) fn full_pass(context: &PassContext<'_>, files: Arc<Vec<PathBuf>>) -> 
         .collect();
     kept.install(&files, analysed, None, &seen);
     kept.files = files;
+    kept.walk_met_link = walk_met_link;
     kept.take_lazy_scans(&sink, &seen);
     let analysed = kept.files.len();
     kept.finish(context.config, analysed, None)
@@ -597,6 +614,7 @@ impl KeptPass {
             table: Arc::new(PathTable::default()),
             inputs: Vec::new(),
             files: Arc::new(Vec::new()),
+            walk_met_link: false,
             entries: HashMap::new(),
             scanned: false,
             tables: Arc::from([]),
@@ -607,6 +625,12 @@ impl KeptPass {
     /// The files of the pass: the list that the next pass may keep.
     pub fn files(&self) -> &Arc<Vec<PathBuf>> {
         &self.files
+    }
+
+    /// Whether the walk that produced `files` met a symbolic link below the
+    /// root.
+    pub fn walk_met_link(&self) -> bool {
+        self.walk_met_link
     }
 
     /// Whether a pass over `config` can start from this one.
@@ -804,6 +828,7 @@ impl KeptPass {
             table: Arc::clone(&self.table),
             inputs: self.inputs.clone(),
             files: Arc::new(Vec::new()),
+            walk_met_link: false,
             entries: self
                 .entries
                 .iter()
@@ -1056,18 +1081,57 @@ pub(crate) enum Refreshed {
 }
 
 /// Start from `previous` and analyse only what changed.
+/// Drop any file from a kept list that moved and no longer exists in either
+/// `overlay` or `disk`. When a watching client misses a delete, this heals
+/// the list on the next pass instead of leaving a phantom symbol row and an
+/// unanalysed count.
+fn drop_missing_from_kept_list(
+    files: &mut Arc<Vec<PathBuf>>,
+    kept: &mut KeptPass,
+    again: &mut Vec<PathBuf>,
+    overlay: &Overlay,
+    disk: &EncodedFileSystem,
+) {
+    let gone: HashSet<PathBuf> = again
+        .iter()
+        .filter(|path| !overlay.contains_key(*path) && !disk.exists(path))
+        .cloned()
+        .collect();
+    if gone.is_empty() {
+        return;
+    }
+    let remaining: Vec<PathBuf> = files
+        .iter()
+        .filter(|path| !gone.contains(*path))
+        .cloned()
+        .collect();
+    *files = Arc::new(remaining);
+    for path in &gone {
+        kept.entries.remove(path);
+    }
+    again.retain(|path| !gone.contains(path));
+}
+
 pub(crate) fn incremental_pass(
     context: &PassContext<'_>,
     previous: &KeptPass,
-    files: Arc<Vec<PathBuf>>,
+    list: PassList,
     overlay: &Overlay,
     disk: &EncodedFileSystem,
 ) -> Refreshed {
+    let PassList {
+        mut files,
+        walk_met_link,
+    } = list;
     let mut kept = previous.start(&files);
     let changed = kept.changed_inputs(overlay, disk);
-    let again = kept.to_analyse(&files, &changed);
+    let mut again = kept.to_analyse(&files, &changed);
+    if Arc::ptr_eq(&files, &previous.files) {
+        drop_missing_from_kept_list(&mut files, &mut kept, &mut again, overlay, disk);
+    }
     if again.is_empty() && (Arc::ptr_eq(&files, &previous.files) || files == previous.files) {
         kept.files = files;
+        kept.walk_met_link = walk_met_link;
         kept.graph = previous.graph.clone();
         return Refreshed::Same(Arc::new(kept));
     }
@@ -1089,6 +1153,7 @@ pub(crate) fn incremental_pass(
     let seen = context.fs.inner().take();
     kept.install(&again, analysed, scans, &seen);
     kept.files = files;
+    kept.walk_met_link = walk_met_link;
     if let Some(sink) = sink {
         kept.take_lazy_scans(&sink, &seen);
     }

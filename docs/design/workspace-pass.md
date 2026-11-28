@@ -141,10 +141,15 @@ before when all of these are true:
 - a client watches the files. The language server registers
   `workspace/didChangeWatchedFiles` for a client that announced
   `workspace.didChangeWatchedFiles.dynamicRegistration`, and counts the client
-  in its session (`Session::watch_files`). A client that cannot register a
-  watch sends no event, so nothing tells a pass that its list is stale, and
-  each pass walks. The count ends with the client, or when the client refuses
-  the registration;
+  in its session (`Session::watch_files`) once the client confirms the
+  registration. A client that cannot register a watch, refuses it, or never
+  confirms it sends no event, so nothing tells a pass that its list is stale,
+  and each pass walks. The count ends when the server detaches (including on
+  unwind via `Drop`);
+- the walk that produced the list met no symbolic link below the root
+  (`KeptPass::walk_met_link`). Client file watchers do not reliably follow
+  symlinked directories and `WatchScope` drops events spelled with paths outside
+  the root, so a tree with a symlinked entry below the root always walks;
 - the watch names every extension of the root files. It has one glob for each
   of `oxabl_workspace::ROOT_EXTENSIONS`. A configuration with another
   `root_extensions` entry makes each pass walk. The globs are the same for
@@ -172,16 +177,18 @@ reference lenses. The other requests (`workspace/symbol`, `oxabl/impact` and
 the includer contexts) run `ensure_workspace` and read the pass as it is, so
 they see a file that came or went through an event only.
 
-A file that came or went with no event, from a client that watches the files,
-is not in the pass that follows a move of the buffers. It is found by the
-freshness check of a references request. A watch has a latency, so an event
-can arrive after the pass that an edit started: that pass keeps the old list,
-and the pass that the event makes stale walks. A file with an extension that
-differs from the glob in its letter case (`A.P`) is also in the walk and not in
-the watch of a client that matches globs by case.
+A file that came with no event, from a client that watches the files, is not in
+the pass that follows a move of the buffers. It is found by the freshness check
+of a references request. A watch also has startup and delivery latency: a file
+created while the client is setting up its watcher or right before an edit may
+miss that pass, and the pass that the event makes stale walks. A file with an
+extension that differs from the glob in its letter case (`A.P`) is also in the
+walk and not in the watch of a client that matches globs by case.
 
-A file that went and is still in the list reads as an input that changed, and
-the pass analyses it again: it has no part.
+A file that went without an event heals on the next pass that runs: its input
+reads as moved and no longer exists on disk or in the open buffers, so the pass
+drops it from the kept list, removes its graph edges and symbol rows, and does
+not leave it counted as unanalysed.
 
 A kept list also makes the pass cheaper in two places. `incremental_pass`
 compares the new list with the old one by pointer, and `KeptPass::start` does

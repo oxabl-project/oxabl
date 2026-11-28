@@ -1091,6 +1091,11 @@ fn serve_initialized(
     host: SessionHost,
     already_attached: bool,
 ) -> Result<bool> {
+    if !already_attached {
+        host.with(|sessions| {
+            sessions.for_root(&session_root).attach(true);
+        });
+    }
     let mut server = Server::new(
         connection,
         options,
@@ -1099,11 +1104,6 @@ fn serve_initialized(
         session_root,
         host,
     );
-    if !already_attached {
-        server.host.with(|sessions| {
-            sessions.for_root(&server.session_root).attach(true);
-        });
-    }
     let result = server.main_loop();
     server.detach();
     result
@@ -1353,6 +1353,9 @@ struct Server<'c> {
     /// Whether this server told its session that the client watches the files
     /// (`Session::watch_files`), so that it takes the count back at the end.
     file_watch_counted: bool,
+    /// Whether [`Self::detach`] has already run, so [`Drop`] does not run it
+    /// a second time after a normal exit.
+    detached: bool,
     /// The `window/workDoneProgress/create` requests that wait for the client.
     progress_creations: std::sync::Arc<work_progress::Creations>,
 }
@@ -1450,6 +1453,7 @@ impl<'c> Server<'c> {
             work_done_progress,
             watches_files,
             file_watch_counted: false,
+            detached: false,
             progress_creations: Default::default(),
         }
     }
@@ -2018,19 +2022,22 @@ impl<'c> Server<'c> {
             params,
         };
         let _ = self.connection.sender.send(Message::Request(request));
-        if self.watches_files && !self.file_watch_counted {
+    }
+
+    /// The client's answer to the watch registration. Count the watcher only
+    /// once the client confirms it; a client that refuses or never answers
+    /// sends no events.
+    fn file_watch_answered(&mut self, response: &Response) {
+        if response.id != RequestId::from(FILE_WATCH_ID.to_string()) {
+            return;
+        }
+        if response.error.is_some() {
+            self.file_watch_ended();
+        } else if self.watches_files && !self.file_watch_counted {
             self.file_watch_counted = true;
             self.host.with(|sessions| {
                 sessions.for_root(&self.session_root).watch_files();
             });
-        }
-    }
-
-    /// The client's answer to the watch registration. A client that refuses it
-    /// sends no events.
-    fn file_watch_answered(&mut self, response: &Response) {
-        if response.id == RequestId::from(FILE_WATCH_ID.to_string()) && response.error.is_some() {
-            self.file_watch_ended();
         }
     }
 
@@ -2455,6 +2462,9 @@ impl<'c> Server<'c> {
     }
 
     fn detach(&mut self) {
+        if std::mem::replace(&mut self.detached, true) {
+            return;
+        }
         let keys: Vec<String> = self
             .documents
             .uris()
@@ -2641,6 +2651,12 @@ impl<'c> Server<'c> {
             .sender
             .send(Message::Response(response))
             .context("sending LSP response")
+    }
+}
+
+impl Drop for Server<'_> {
+    fn drop(&mut self) {
+        self.detach();
     }
 }
 

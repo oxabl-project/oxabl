@@ -48,7 +48,7 @@ use oxabl_daemon_protocol::{
 };
 use oxabl_pipeline::{EdgeKind, Expansion, LintResult, ReverseGraph};
 use oxabl_semantic::{SymbolFlags, SymbolKind as SemanticSymbolKind};
-use oxabl_workspace::{FileSystem, discover_path_in};
+use oxabl_workspace::{FileSystem, discover_path_in, discover_path_in_detailed};
 
 use crate::dispatch::{ClientContext, Dispatch, MethodError};
 use crate::pass::{self, OverlayFileSystem};
@@ -1159,32 +1159,56 @@ type PassOutput = (
 
 /// The graph, the symbol rows, the kept parts and the count of files analysed.
 /// Incremental from `previous` when the `SHARED` producers allow it.
+struct PassFiles<'a> {
+    root: &'a Path,
+    list: pass::PassList,
+    list_kept: bool,
+}
+
 fn run_pass(
     context: &pass::PassContext<'_>,
     previous: Option<&WorkspaceSnapshot>,
-    files: Arc<Vec<PathBuf>>,
+    pass_files: PassFiles<'_>,
     overlay: &HashMap<PathBuf, Arc<str>>,
     disk: &oxabl_workspace::EncodedFileSystem,
-) -> PassOutput {
+) -> Result<PassOutput, MethodError> {
+    let PassFiles {
+        root,
+        list,
+        list_kept,
+    } = pass_files;
     let refreshed = match previous {
         Some(previous) => {
-            pass::incremental_pass(context, &previous.kept, Arc::clone(&files), overlay, disk)
+            pass::incremental_pass(context, &previous.kept, list.clone(), overlay, disk)
         }
         None => pass::Refreshed::Full,
     };
     match (refreshed, previous) {
-        (pass::Refreshed::Same(kept), Some(previous)) => (
+        (pass::Refreshed::Same(kept), Some(previous)) => Ok((
             Arc::clone(&previous.graph),
             Arc::clone(&previous.symbols),
             kept,
             0,
-        ),
+        )),
         (pass::Refreshed::Built(built), _) => {
-            (built.graph, built.symbols, built.kept, built.analysed)
+            Ok((built.graph, built.symbols, built.kept, built.analysed))
         }
         _ => {
-            let built = pass::full_pass(context, files);
-            (built.graph, built.symbols, built.kept, built.analysed)
+            // A full pass that started with a kept list walks fresh, so any
+            // file that came or went without an event is never carried into
+            // the full pass.
+            let list = if list_kept {
+                let found = discover_path_in_detailed(root, &context.config.root_extensions)
+                    .map_err(MethodError::internal)?;
+                pass::PassList {
+                    files: Arc::new(found.files),
+                    walk_met_link: found.reached_by_link,
+                }
+            } else {
+                list
+            };
+            let built = pass::full_pass(context, list);
+            Ok((built.graph, built.symbols, built.kept, built.analysed))
         }
     }
 }
@@ -1239,6 +1263,47 @@ fn resolve_pass_config(
 /// Run a pass. With `previous`, analyse only the files that changed since it
 /// ran (see [`crate::pass`]); the pass is full when the configuration, the
 /// schema or the `SHARED` producers are not the same.
+/// Reuse the previous pass's file list when watching is active, the config
+/// was reused, all root extensions are watched, and the earlier walk met no
+/// symbolic link below the root; otherwise walk `root`.
+fn resolve_pass_files(
+    root: &Path,
+    config: &Arc<oxabl_pipeline::PipelineConfig>,
+    start: PassStart<'_>,
+    reused_config: bool,
+) -> Result<pass::PassList, MethodError> {
+    let PassStart { previous, list } = start;
+    let kept_list = previous
+        .filter(|previous| {
+            list.keep
+                && reused_config
+                && Arc::ptr_eq(&previous.config, config)
+                && watch_covers(&config.root_extensions)
+                && !previous.kept.walk_met_link()
+        })
+        .map(|previous| {
+            debug_assert_eq!(
+                previous.config.root_extensions, config.root_extensions,
+                "a kept list is the list of the same extensions"
+            );
+            Arc::clone(previous.kept.files())
+        });
+    match kept_list {
+        Some(files) => Ok(pass::PassList {
+            files,
+            walk_met_link: false,
+        }),
+        None => {
+            let found = discover_path_in_detailed(root, &config.root_extensions)
+                .map_err(MethodError::internal)?;
+            Ok(pass::PassList {
+                files: Arc::new(found.files),
+                walk_met_link: found.reached_by_link,
+            })
+        }
+    }
+}
+
 fn build_workspace_from(
     root: &Path,
     overlay: HashMap<PathBuf, Arc<str>>,
@@ -1249,30 +1314,7 @@ fn build_workspace_from(
     let PassStart { previous, list } = start;
     let started = Instant::now();
     let (config, config_stamps, reused_config) = resolve_pass_config(root, generations, previous);
-    // The same configuration gives the same extensions, so the list of the
-    // pass before is the list of a walk, unless a file came or went. A file
-    // with an extension that the watch does not name sends no event.
-    let kept_list = previous
-        .filter(|previous| {
-            list.keep
-                && reused_config
-                && Arc::ptr_eq(&previous.config, &config)
-                && watch_covers(&config.root_extensions)
-        })
-        .map(|previous| {
-            debug_assert_eq!(
-                previous.config.root_extensions, config.root_extensions,
-                "a kept list is the list of the same extensions"
-            );
-            Arc::clone(previous.kept.files())
-        });
-    let files = match kept_list {
-        Some(files) => files,
-        None => Arc::new(
-            discover_path_in(root, &config.root_extensions).map_err(MethodError::internal)?,
-        ),
-    };
-    let discovered_files = files.len();
+    let pass_list = resolve_pass_files(root, &config, start, reused_config)?;
     let disk = config.file_system();
     let fs = pass::pass_file_system(overlay.clone(), config.file_system());
     let collect = |path: &Path, expansion: &Expansion, result: &LintResult, fs: &dyn FileSystem| {
@@ -1294,8 +1336,20 @@ fn build_workspace_from(
             && previous.generations.schema == generations.schema
             && previous.kept.same_config(&config)
     });
-    let list_kept = previous.is_some_and(|previous| Arc::ptr_eq(previous.kept.files(), &files));
-    let (graph, symbols, kept, analysed) = run_pass(&context, previous, files, &overlay, &disk);
+    let list_kept =
+        previous.is_some_and(|previous| Arc::ptr_eq(previous.kept.files(), &pass_list.files));
+    let (graph, symbols, kept, analysed) = run_pass(
+        &context,
+        previous,
+        PassFiles {
+            root,
+            list: pass_list,
+            list_kept,
+        },
+        &overlay,
+        &disk,
+    )?;
+    let discovered_files = kept.files().len();
     report_pass_counts(analysed, discovered_files, &kept, list_kept);
 
     let tracked_files = graph.tracked_files();
@@ -2303,6 +2357,61 @@ mod tests {
 
         assert!(watch_covers(&["p".to_string(), "CLS".to_string()]));
         assert!(!watch_covers(&["p".to_string(), "t".to_string()]));
+    }
+
+    /// A file deleted without an event heals on the next pass that runs: it is
+    /// dropped from the kept list, leaves no symbol row, and does not count as
+    /// unanalysed.
+    #[test]
+    fn a_missed_delete_is_dropped_from_a_kept_list() {
+        let mut kept = Kept::new(SOURCES_CONFIG);
+        std::fs::write(kept.root.join("b.p"), "PROCEDURE gone:\nEND PROCEDURE.\n")
+            .expect("write b.p");
+        kept.session(|session| session.watch_files());
+        let first = kept.pass_after_edit();
+        assert_eq!(names(&first), ["a.p", "b.p"]);
+
+        // Delete b.p on disk without notifying the session, then edit a.p.
+        std::fs::remove_file(kept.root.join("b.p")).expect("remove b.p");
+        let after = kept.pass_after_edit();
+        assert_eq!(names(&after), ["a.p"]);
+        assert_eq!(after.discovered_files, 1);
+        assert!(
+            after.graph.unanalysed().is_empty(),
+            "a deleted file must not stay unanalysed: {:?}",
+            after.graph.unanalysed()
+        );
+        assert!(
+            after
+                .symbols
+                .iter()
+                .all(|row| row.name != "b" && row.name != "gone"),
+            "the deleted file leaves no symbol row"
+        );
+        // The reduced list is kept by the pass after it.
+        let again = kept.pass_after_edit();
+        assert!(Arc::ptr_eq(after.kept.files(), again.kept.files()));
+    }
+
+    /// A walk that followed a symbolic link below the root does not keep its
+    /// list, because watchers do not report files behind a symlinked directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_pass_walks_when_the_tree_has_a_symlinked_directory() {
+        let mut kept = Kept::new(SOURCES_CONFIG);
+        let outside = tempfile::tempdir().expect("outside directory");
+        std::fs::write(outside.path().join("ext1.p"), "MESSAGE \"one\".\n").expect("write ext1.p");
+        std::os::unix::fs::symlink(outside.path(), kept.root.join("linked"))
+            .expect("symlink directory");
+        kept.session(|session| session.watch_files());
+
+        let first = kept.pass_after_edit();
+        assert!(first.kept.walk_met_link());
+        assert_eq!(names(&first), ["a.p", "ext1.p"]);
+
+        std::fs::write(outside.path().join("ext2.p"), "MESSAGE \"two\".\n").expect("write ext2.p");
+        let second = kept.pass_after_edit();
+        assert_eq!(names(&second), ["a.p", "ext1.p", "ext2.p"]);
     }
 
     #[test]

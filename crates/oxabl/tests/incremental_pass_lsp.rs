@@ -132,9 +132,17 @@ fn start(ws: &Workspace) -> Session {
     start_as(ws, false)
 }
 
+/// How the test client answers `client/registerCapability` for file watchers.
+#[derive(Clone, Copy)]
+enum WatchReply {
+    None,
+    Accept,
+    Refuse,
+}
+
 /// A session whose client says, when `watching`, that it takes a dynamic
-/// registration of `workspace/didChangeWatchedFiles`.
-fn start_as(ws: &Workspace, watching: bool) -> Session {
+/// registration of `workspace/didChangeWatchedFiles` and replies with `reply`.
+fn start_with_watch(ws: &Workspace, watching: bool, reply: WatchReply) -> Session {
     let params = json!({
         "capabilities": {
             "textDocument": {"codeLens": {"dynamicRegistration": false}},
@@ -149,9 +157,39 @@ fn start_as(ws: &Workspace, watching: bool) -> Session {
         env: &[("OXABL_TEST_PASS_COUNTS", "1")],
         ..Launch::default()
     };
-    Session::launch_with(&ws.root, params, launch, |_| {})
-        .await_initialize()
-        .0
+    let (mut session, early) =
+        Session::launch_with(&ws.root, params, launch, |_| {}).await_initialize();
+    if !matches!(reply, WatchReply::None) {
+        let req = early
+            .into_iter()
+            .find(|m| m["method"] == json!("client/registerCapability"))
+            .unwrap_or_else(|| {
+                session.wait_for(|m| m["method"] == json!("client/registerCapability"))
+            });
+        let id = req["id"].clone();
+        let response = match reply {
+            WatchReply::Accept => json!({"jsonrpc": "2.0", "id": id, "result": null}),
+            WatchReply::Refuse => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32601, "message": "watch registration refused"}
+            }),
+            WatchReply::None => unreachable!(),
+        };
+        session.send(response);
+    }
+    session
+}
+
+/// A session whose client says, when `watching`, that it takes a dynamic
+/// registration of `workspace/didChangeWatchedFiles`.
+fn start_as(ws: &Workspace, watching: bool) -> Session {
+    let reply = if watching {
+        WatchReply::Accept
+    } else {
+        WatchReply::None
+    };
+    start_with_watch(ws, watching, reply)
 }
 
 /// A session with every file of `ws` open, with the text of its buffer.
@@ -624,6 +662,44 @@ fn only_a_client_that_watches_the_files_has_its_file_list_kept() {
         };
         assert_eq!(lists_kept(&session), expected, "watching: {watching}");
     }
+}
+
+/// A client that announces dynamic registration but refuses the watch request
+/// does not have its file list kept.
+#[test]
+fn a_client_that_refuses_watch_registration_does_not_keep_the_file_list() {
+    let mut ws = Workspace::new();
+    let mut session = start_with_watch(&ws, true, WatchReply::Refuse);
+    session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+    let _ = symbol_names(&mut session, "x");
+    touch(&mut session, &mut ws, 2);
+    let _ = symbol_names(&mut session, "x");
+    assert_eq!(lists_kept(&session), vec![false, false]);
+}
+
+/// A deleted file whose watch event was missed heals on the next pass that
+/// runs, even though the file list was kept.
+#[test]
+fn a_missed_delete_is_dropped_from_a_kept_list_on_the_next_pass() {
+    let mut ws = Workspace::new();
+    std::fs::create_dir_all(ws.path("fresh")).unwrap();
+    std::fs::write(
+        ws.path("fresh/new.p"),
+        "PROCEDURE newProc:\nEND PROCEDURE.\n",
+    )
+    .unwrap();
+    let mut session = start_as(&ws, true);
+    session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+    assert_eq!(symbol_names(&mut session, "new"), ["new", "newProc"]);
+
+    // Remove the file without sending a DELETED event, then edit main.p.
+    std::fs::remove_file(ws.path("fresh/new.p")).unwrap();
+    touch(&mut session, &mut ws, 2);
+    assert!(
+        symbol_names(&mut session, "new").is_empty(),
+        "the rows of a deleted file are dropped even without a DELETED event"
+    );
+    assert_eq!(lists_kept(&session), vec![false, true]);
 }
 
 /// An event alone makes the stored pass stale: no edit has to follow it. A

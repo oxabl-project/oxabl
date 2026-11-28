@@ -22,8 +22,9 @@ pub use config::{
     normalize_run_extension, normalize_run_extensions,
 };
 pub use discovery::{
-    ROOT_EXTENSIONS, discover_path, discover_path_in, is_include_fragment, is_root_file,
-    is_root_file_in, walk_directory, walk_directory_in, walk_include_fragments,
+    DiscoveredPath, ROOT_EXTENSIONS, discover_path, discover_path_in, discover_path_in_detailed,
+    is_include_fragment, is_root_file, is_root_file_in, walk_directory, walk_directory_in,
+    walk_include_fragments,
 };
 pub use encoding::{DecodedSource, SourceDecoding, SourceEncoding};
 pub use encrypted::{
