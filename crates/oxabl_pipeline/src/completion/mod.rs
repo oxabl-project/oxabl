@@ -14,6 +14,7 @@ mod base;
 mod case;
 mod context;
 mod keywords;
+mod listing_cache;
 mod members;
 mod names;
 mod paths;
@@ -30,6 +31,7 @@ use oxabl_semantic::{ScopeId, ScopeKind};
 use oxabl_style::KeywordCase;
 use oxabl_workspace::{DirEntry, FileSystem};
 
+pub use listing_cache::{CachedListing, LISTING_TTL, ListingCache, MAX_LISTINGS};
 pub use members::{ClassMemo, MemoView, member_documentation};
 pub use oxabl_lexer::Token;
 pub use tokens::Prior;

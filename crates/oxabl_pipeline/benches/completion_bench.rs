@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use oxabl_pipeline::completion::{
-    ClassMemo, CompletionBase, CompletionRequest, FreshListing, Prior, complete, lex, wants_base,
+    CachedListing, ClassMemo, CompletionBase, CompletionRequest, DirListing, FreshListing,
+    ListingCache, Prior, complete, lex, wants_base,
 };
 use oxabl_pipeline::{LintPipeline, PipelineConfig};
 use oxabl_schema::test_support::schema_from_df;
@@ -187,7 +188,9 @@ fn bench_completion(c: &mut Criterion) {
 
 /// The files of `RUN` with one include path entry of 20,000 programs, named
 /// three times in the include path, and a small document: what one request
-/// pays to list and filter a large directory, with no cache.
+/// pays to list and filter a large directory. `fresh` lists the directory for
+/// each request, as the CLI does; `warm` reads the daemon's listing cache,
+/// warm, which is what the editor sees.
 fn bench_large_directory(c: &mut Criterion) {
     const PROGRAMS: usize = 20_000;
     let mut fs = InMemoryFileSystem::new();
@@ -203,14 +206,24 @@ fn bench_large_directory(c: &mut Criterion) {
         ],
         ..PipelineConfig::default()
     };
-    let listing = FreshListing(&fs);
+    let fresh = FreshListing(&fs);
+    let cache = ListingCache::default();
+    let cached = CachedListing {
+        fs: &fs,
+        cache: &cache,
+    };
     let path = PathBuf::from("/ws/small.p");
     let run = LintPipeline::new(&config, &fs).with_define_record(true);
     let handle = run.with_file(&path);
     let none = |_| None;
     let mut group = c.benchmark_group("completion");
     group.sample_size(20);
-    for (name, typed) in [("run_large", "RUN "), ("run_large_word", "RUN prog1")] {
+    for (label, name, typed, listing) in [
+        ("fresh", "run_large", "RUN ", &fresh as &dyn DirListing),
+        ("fresh", "run_large_word", "RUN prog1", &fresh),
+        ("warm", "run_large", "RUN ", &cached),
+        ("warm", "run_large_word", "RUN prog1", &cached),
+    ] {
         let text = format!("DEFINE VARIABLE total AS INTEGER NO-UNDO.\n{typed}");
         let expansion = handle.expand(&text);
         let model = Arc::new(
@@ -226,7 +239,7 @@ fn bench_large_directory(c: &mut Criterion) {
             snippets: true,
             trigger: None,
             config: &config,
-            listing: &listing,
+            listing,
         };
         let tokens = lex(&text);
         let ask = || {
@@ -244,7 +257,7 @@ fn bench_large_directory(c: &mut Criterion) {
             complete(&request, Some(&base)).map_or(0, |list| list.items.len())
         };
         assert!(ask() > 0, "{name}: no items");
-        group.bench_function(format!("fresh/{name}"), |b| b.iter(|| black_box(ask())));
+        group.bench_function(format!("{label}/{name}"), |b| b.iter(|| black_box(ask())));
     }
     group.finish();
 }
