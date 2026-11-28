@@ -12,6 +12,7 @@ use crate::PreprocVarTable;
 use crate::condition::{
     Environment, Gap, evaluate, find_var_ref, last_var_ref, skip_comment, visit_ref_names,
 };
+use crate::scan;
 use crate::span_tree::{
     BranchDirective, BranchState, DefineDirective, DefineSite, ElidedKind, ElidedReference,
     IfBranch, IncludeArguments, PreprocessedFile, ResolvedInclude, SkippedBranch, SkippedInclude,
@@ -593,25 +594,20 @@ impl ProcessContext<'_> {
         // source in sits in a decided region.
         let base_decided = self.region_decided;
 
+        // The next quote at or after the scan position, kept between plain
+        // stretches so a file with few quotes is not searched again from each
+        // trigger byte.
+        let mut next_quote: Option<usize> = None;
+
         while i < len {
             // Inside a block comment: only track `/*` / `*/` to keep depth.
             if comment_depth > 0 {
-                if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    comment_depth -= 1;
-                    i += 2;
-                    continue;
-                }
-                if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                    comment_depth += 1;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
+                (i, comment_depth) = scan::skip_comment_body(bytes, i, comment_depth);
                 continue;
             }
 
             // Opening a new block comment: skip `/*` and bump depth.
-            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
                 comment_depth = 1;
                 i += 2;
                 continue;
@@ -619,11 +615,8 @@ impl ProcessContext<'_> {
 
             // Line comment: `// ...` runs to the next newline. Skip the whole
             // line so any `{...}` or `&...` inside is treated as text.
-            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-                i += 2;
-                while i < len && bytes[i] != b'\n' {
-                    i += 1;
-                }
+            if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+                i = scan::skip_line(bytes, i + 2);
                 continue;
             }
 
@@ -1157,22 +1150,6 @@ impl ProcessContext<'_> {
                     }
                     i += 1;
                 }
-                b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
-                    // Line comment — skip to end of line
-                    while i < len && bytes[i] != b'\n' {
-                        i += 1;
-                    }
-                }
-                b'/' if i + 1 < len && bytes[i + 1] == b'*' => {
-                    // Block comment — skip to */
-                    i += 2;
-                    while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                        i += 1;
-                    }
-                    if i + 1 < len {
-                        i += 2; // skip */
-                    }
-                }
                 b'\'' | b'"' => {
                     // String literal — skip to matching quote so `{file.i}`
                     // include refs inside strings stay literal text, but still
@@ -1183,6 +1160,11 @@ impl ProcessContext<'_> {
                     let quote = bytes[i];
                     i += 1;
                     while i < len {
+                        // Every other byte is plain text inside the string.
+                        i = scan::next_string_trigger(bytes, i, quote, emitting);
+                        if i >= len {
+                            break;
+                        }
                         if bytes[i] == b'~' && i + 1 < len {
                             i += 2; // ABL tilde escape
                         } else if bytes[i] == quote {
@@ -1232,9 +1214,7 @@ impl ProcessContext<'_> {
                 }
                 _ => {
                     i += 1;
-                    while i < len && !SCAN_STOP[bytes[i] as usize] {
-                        i += 1;
-                    }
+                    i = scan::next_plain_stop(bytes, i, &mut next_quote);
                 }
             }
         }
@@ -3363,18 +3343,6 @@ fn in_list_position(bytes: &[u8], start: usize, end: usize) -> bool {
     matches!(before, Some(b'(' | b',')) || matches!(after, Some(b',' | b')'))
 }
 
-/// The bytes the body scan of `process_source` acts on outside a comment.
-/// Every other byte is plain text it steps over.
-const SCAN_STOP: [bool; 256] = {
-    let mut stop = [false; 256];
-    stop[b'&' as usize] = true;
-    stop[b'{' as usize] = true;
-    stop[b'/' as usize] = true;
-    stop[b'\'' as usize] = true;
-    stop[b'"' as usize] = true;
-    stop
-};
-
 /// Where a reference is expanded: the include depth and the arguments of the
 /// include it is in.
 #[derive(Clone, Copy)]
@@ -3478,6 +3446,10 @@ impl BraceMatches {
         let mut counted = 1;
         let mut i = open + 1;
         while i < bytes.len() && counted > 0 {
+            let Some(offset) = memchr::memchr3(b'~', b'{', b'}', &bytes[i..]) else {
+                break;
+            };
+            i += offset;
             match bytes[i] {
                 b'~' => {
                     i += 1;
@@ -3489,7 +3461,8 @@ impl BraceMatches {
                     opens.push((i, false));
                     counted += 1;
                 }
-                b'}' => {
+                // The only other byte `memchr3` stops at is `}`.
+                _ => {
                     while let Some(&(at, true)) = opens.last() {
                         self.found.insert(at, Some(i));
                         opens.pop();
@@ -3499,7 +3472,6 @@ impl BraceMatches {
                         counted -= 1;
                     }
                 }
-                _ => {}
             }
             i += 1;
         }
@@ -7340,5 +7312,73 @@ DEFINE VARIABLE ghProp AS HANDLE NO-UNDO.
             .unwrap();
         assert!(result.to_text().contains("{missing.i}"));
         assert!(result.elided.is_empty());
+    }
+
+    /// The byte by byte scan of `BraceMatches::find`, one scan for each `{`.
+    fn brace_matches_by_bytes(source: &str) -> FxHashMap<usize, Option<usize>> {
+        let bytes = source.as_bytes();
+        let mut found = FxHashMap::default();
+        for start in (0..bytes.len()).filter(|&at| bytes[at] == b'{') {
+            if found.contains_key(&start) {
+                continue;
+            }
+            let mut opens = vec![(start, false)];
+            let mut counted = 1;
+            let mut i = start + 1;
+            while i < bytes.len() && counted > 0 {
+                match bytes[i] {
+                    b'~' => {
+                        i += 1;
+                        if bytes.get(i) == Some(&b'{') {
+                            opens.push((i, true));
+                        }
+                    }
+                    b'{' => {
+                        opens.push((i, false));
+                        counted += 1;
+                    }
+                    b'}' => {
+                        while let Some(&(at, true)) = opens.last() {
+                            found.insert(at, Some(i));
+                            opens.pop();
+                        }
+                        if let Some((at, _)) = opens.pop() {
+                            found.insert(at, Some(i));
+                            counted -= 1;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            for (at, _) in opens {
+                found.insert(at, None);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn brace_matches_agree_with_the_byte_scan() {
+        let alphabet = ["{", "}", "~", "&", "a", "é", "'"];
+        let mut texts = vec![String::new()];
+        for _ in 0..7 {
+            let mut longer = Vec::new();
+            for text in &texts {
+                let expected = brace_matches_by_bytes(text);
+                let mut matches = BraceMatches::default();
+                for open in (0..text.len()).filter(|&at| text.as_bytes()[at] == b'{') {
+                    assert_eq!(
+                        matches.find(text, open),
+                        expected[&open],
+                        "{text:?} at {open}"
+                    );
+                }
+                for symbol in alphabet {
+                    longer.push(format!("{text}{symbol}"));
+                }
+            }
+            texts = longer;
+        }
     }
 }

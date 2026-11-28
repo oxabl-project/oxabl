@@ -1,5 +1,6 @@
 mod condition;
 mod preprocessor;
+mod scan;
 mod span_tree;
 mod var_table;
 
