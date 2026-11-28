@@ -216,10 +216,10 @@ fn a_literal_target_with_exactly_one_matching_file_resolves() {
     // stumble onto a workspace program through ordinary scope resolution.
     assert!(
         sem.scope_tree
-            .resolve(
+            .resolve_name(
                 oxabl_semantic::ScopeId::ROOT,
                 oxabl_semantic::NamespaceId::Procedures,
-                &OxablAtom::from("post-order.p"),
+                "post-order.p",
             )
             .is_none(),
         "a synthesized program symbol stays out of the scope tree"

@@ -193,7 +193,7 @@ length of the source asks for 34,174 bytes for the slice.
 A `const` assertion holds the size of each type that a file has many of:
 `Token` (12 bytes), `NameId` (4), `ExprId` (4), `ExprList`
 (8), `Identifier` (12), `Literal` (32), `Expression` (48), `Statement` (192),
-`Scope` (48), `BindingMap` (144) and `Symbol` (64). A type that grows does not
+`Scope` (48), `BindingMap` (80) and `Symbol` (64), and `FoldedNameId` is 4. A type that grows does not
 compile. `Expression` is also `Copy` and has no drop glue. To see the sizes of the
 variants:
 
@@ -731,3 +731,43 @@ The rest of `Set::insert` comes from the names that the semantic passes fold
 and intern (`fold_atom`), and from `IndexName::new`. A cache of atoms in front
 of the set, for each thread or for the process, did not lower the CPU: its own
 lookup is a cache miss too, and the atoms it keeps make the lists longer.
+
+### Folded names
+
+The resolve and null passes look names up case-insensitively. They used to fold
+each name for each lookup: `fold_atom` in `oxabl_semantic` (a stack copy, a hash,
+a thread-local cache and an atom clone) and `lookup` in `oxabl_nulls` (a stack
+copy and a hash of a `String`). `FoldedNames` (`oxabl_ast`) folds the names of a
+program's `NamePool` once into a dense `FoldedNameId`. The scope tree is keyed by
+the id and a lookup by `NameId` is an array index. The semantic table sits on the
+table of the built-in handles (`FoldedNames::with_base`), so it does not copy it.
+
+Callgrind, release build, `-j 1`, base `edee92a0` against this change
+(`scripts/bench/cli.sh --tools callgrind`; the benches run once under
+`valgrind --tool=callgrind <bench> --test <filter>`):
+
+| Input | Base | Change |
+| --- | --- | --- |
+| `check lsp_bench.p` | 44,467,636 | 43,368,345 (−2.5%) |
+| `check -j 1 src` of `ci` | 723,103,503 | 724,130,447 (+0.1%) |
+| `semantic/large/*` (`large_bench`) | 631,471,908 | 630,101,594 (−0.2%) |
+| `nulls/branchy/*` (`nulls_bench`) | 466,954,010 | 358,321,235 (−23.3%) |
+| `hints/many_procedures` (`hints_bench`) | 3,846,924,292 | 3,846,948,980 (0.0%) |
+
+The semantic gain is small, and `check src` is the same within the noise of a
+rebuild (two builds of the same tree differ by 0.3%). `fold_atom` was 2.8% of
+`check src`, and the table costs about as much to build (1.3% of `check src`:
+every name of the pool is hashed once, also the ones that no lookup asks for)
+as the lookups it replaces cost. The atoms that remain are the ones that the public API needs: a `Symbol`
+and a `Resolution` name a thing by `OxablAtom`, and so do the schema and the class
+index. They come from a per-pass cache by id (`AtomCache`), not from the
+thread-local cache. The global atom set is still entered for each declared name
+and each miss, so this change does not close the issue of the lock on many
+cores.
+
+`oxabl_scope` is not on folded names. Its words come from tokens, not from the
+pool, so each reference word would be interned once for each use (hash, probe
+and compare) in place of a 32-byte inline copy. Measured on `hints/many_procedures`
+that cost 48 M more instructions in `collect` and saved 16 M in `resolve`, a net
+loss of 0.8%, so the words stay `Folded`. Making the resolve maps ids is the
+change that would pay for the interning.

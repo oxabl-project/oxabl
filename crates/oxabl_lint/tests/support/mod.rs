@@ -366,9 +366,10 @@ pub fn assert_synthesized(sem: &Semantic, sym: SymbolId, ns: NamespaceId) {
     );
     assert_eq!(symbol.declared_in, ScopeId::ROOT);
     assert_eq!(symbol.namespace, ns);
+    let name = sem.scope_tree.names().lookup(&symbol.name);
     for (scope, _) in sem.scope_tree.iter() {
         assert_ne!(
-            sem.scope_tree.get(scope).get_in(ns, &symbol.name),
+            name.and_then(|name| sem.scope_tree.get(scope).get_in(ns, name)),
             Some(sym),
             "a synthesized symbol must never be bound in the scope tree"
         );

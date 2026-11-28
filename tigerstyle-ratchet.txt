@@ -121,4 +121,3 @@ oxabl_semantic clippy::cast_possible_truncation 13
 oxabl_semantic clippy::expect_used 2
 oxabl_semantic clippy::too_many_arguments 18
 oxabl_semantic clippy::too_many_lines 14
-oxabl_semantic unsafe_code 2

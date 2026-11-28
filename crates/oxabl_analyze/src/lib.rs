@@ -477,9 +477,13 @@ fn scopes_json(sem: &Semantic) -> Value {
                 .bindings
                 .iter()
                 .flat_map(|(ns, map)| {
-                    map.iter().map(move |(name, sym)| BindingRow {
+                    // A map past eight names has no order of its own: the
+                    // dump follows the declaration order.
+                    let mut bound: Vec<_> = map.iter().collect();
+                    bound.sort_unstable_by_key(|(_, sym)| sym.raw());
+                    bound.into_iter().map(move |(name, sym)| BindingRow {
                         namespace: namespace_str(ns),
-                        name: name.as_ref().to_string(),
+                        name: sem.scope_tree.names().text(name).to_string(),
                         symbol: sym.raw(),
                     })
                 })

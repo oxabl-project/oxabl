@@ -132,7 +132,7 @@ impl Engine<'_, '_, '_, '_> {
                     .get(*ns)
                     .into_iter()
                     .flat_map(|map| map.iter())
-                    .map(|(name, sym)| (name.as_ref(), sym))
+                    .map(|(name, sym)| (tree.names().text(name), sym))
                     .collect();
                 bound.sort_unstable_by_key(|(_, sym)| sym.raw());
                 for (name, sym) in bound {
