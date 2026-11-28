@@ -249,7 +249,7 @@ impl Navigation<'_, '_> {
             StatementKind::Method { name, .. } => (UnitKind::Method, name),
             _ => return None,
         };
-        let source = Source::new(&self.expanded.text, &parsed.tokens, &parsed.program.pools);
+        let source = Source::new(&self.expanded.text, parsed.tokens, &parsed.program.pools);
         let elsewhere = match &found.statement.kind {
             StatementKind::Method { .. } => method_elsewhere(
                 &source,
@@ -339,8 +339,8 @@ impl Navigation<'_, '_> {
         }
         let parsed = self.parsed();
         let folding = self.folding();
-        let source = Source::new(&self.expanded.text, &parsed.tokens, &parsed.program.pools)
-            .folded(&folding);
+        let source =
+            Source::new(&self.expanded.text, parsed.tokens, &parsed.program.pools).folded(&folding);
         let found = find_declaration(&parsed.program.statements, symbol.name_span)?;
         let mut out = source.declaration(&found)?;
         if found.field.is_none()
@@ -472,7 +472,7 @@ impl Navigation<'_, '_> {
     /// The statement whose head holds the token at `virt`.
     fn statement_hover(&self, virt: u32) -> Option<String> {
         let parsed = self.parsed();
-        let source = Source::new(&self.expanded.text, &parsed.tokens, &parsed.program.pools);
+        let source = Source::new(&self.expanded.text, parsed.tokens, &parsed.program.pools);
         let words: Vec<&Token> = parsed
             .tokens
             .iter()

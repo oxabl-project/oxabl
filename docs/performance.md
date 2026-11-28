@@ -604,7 +604,7 @@ names and the expressions of a program in its pools (`AstPools`).
 | `navigation/definitions` | 5,363 | 8.9 MB | 3.8 MB |
 | `navigation/links` | 2,965 | 2.5 MB | 1.2 MB |
 | `workspace_symbols/query` | 5,395 | 0.6 MB | 0.5 MB |
-| `daemon_cycle/features_on_one_revision` | 19,822 | 28.2 MB | 5.4 MB |
+| `daemon_cycle/features_on_one_revision` | 17,093 | 16.0 MB | 1.5 MB |
 | `lexer/large_mixed/lsp_bench` | 1 | 1.2 MB | 1.2 MB |
 | `lexer/large_mixed/1mb` | 1 | 10.1 MB | 10.1 MB |
 | `parser/large_mixed/lsp_bench` | 894 | 1.9 MB | 1.2 MB |

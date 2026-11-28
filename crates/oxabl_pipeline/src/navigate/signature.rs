@@ -515,7 +515,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         let folding = self.nav.folding();
         let source = Source::new(
             &self.nav.expanded.text,
-            &parsed.tokens,
+            parsed.tokens,
             &parsed.program.pools,
         )
         .folded(&folding);
@@ -666,7 +666,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         let folding = self.nav.folding();
         let source = Source::new(
             &self.nav.expanded.text,
-            &parsed.tokens,
+            parsed.tokens,
             &parsed.program.pools,
         )
         .folded(&folding);
@@ -701,7 +701,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
         let parsed = self.nav.parsed();
         let source = Source::new(
             &self.nav.expanded.text,
-            &parsed.tokens,
+            parsed.tokens,
             &parsed.program.pools,
         );
         class_of(&source, &parsed.program.statements).map(|(_, name, _)| name)
@@ -727,7 +727,7 @@ impl<'n, 's, 'a> Resolver<'n, 's, 'a> {
             let folding = self.nav.folding();
             let source = Source::new(
                 &self.nav.expanded.text,
-                &parsed.tokens,
+                parsed.tokens,
                 &parsed.program.pools,
             )
             .folded(&folding);

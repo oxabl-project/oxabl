@@ -171,7 +171,13 @@ request returns only the hints in its range.
 - The analysis of the database hints holds no snapshot of the session
   database. A write to the database waits for every snapshot to drop, so an
   analysis that held one would delay the next keystroke, and an edit of any
-  other buffer would cancel it.
+  other buffer would cancel it. For a file read alone, the worker first takes a
+  short snapshot to read the expanded unit of the open buffer
+  (`oxabl_daemon::db::buffer_unit`, `docs/design/shared-unit.md`), and drops it
+  before the analysis. When no other request made the unit, the worker makes it
+  under the snapshot; its parse stops at the next statement when a write waits.
+  When the unit is not there (other text, a cancelled read), the worker
+  expands, lexes and parses the text itself, as before.
 - The parameter-name hints read other files, so their analysis does hold a
   snapshot, and the two things above are true of it. A write waits until the
   snapshot drops; it is a few ms to tens of ms for a file of 7,000 lines. A

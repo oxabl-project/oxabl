@@ -18,6 +18,8 @@ use oxabl_ast::{
 use oxabl_common::{InternalPanic, catch_panic, panic_if_injected, panic_sites};
 use oxabl_lexer::{Kind, Token};
 
+use crate::RawUnit;
+
 /// What a symbol declares. A client maps it to its own symbol kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OutlineKind {
@@ -100,15 +102,33 @@ const TRIGGER_NAME_MAX: usize = 80;
 /// the JSON of one that is deeper is more than a JSON reader accepts.
 pub(crate) const MAX_DEPTH: usize = 32;
 
+/// [`outline`] for a caller that holds the [`RawUnit`] of the text: the text
+/// is not lexed or parsed again. The answer and the panic guard are those of
+/// `outline(unit.text())`.
+pub fn outline_of(unit: &RawUnit) -> Result<Vec<OutlineSymbol>, InternalPanic> {
+    catch_panic(|| {
+        panic_if_injected(panic_sites::OUTLINE, unit.text());
+        outline_parsed(unit.text(), unit.tokens(), unit.program()).0
+    })
+}
+
 fn outline_inner(source: &str) -> (Vec<OutlineSymbol>, bool) {
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source)
         .without_comments()
         .parse_program();
+    outline_parsed(source, &tokens, &program)
+}
+
+fn outline_parsed(
+    source: &str,
+    tokens: &[Token],
+    program: &oxabl_parser::Program,
+) -> (Vec<OutlineSymbol>, bool) {
     let mut walker = Walker {
         source,
         pools: &program.pools,
-        tokens: &tokens,
+        tokens,
         defined_functions: HashSet::new(),
         prototypes: Vec::new(),
         open: Vec::new(),

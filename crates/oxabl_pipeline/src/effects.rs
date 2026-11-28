@@ -16,7 +16,7 @@ use oxabl_index::{
 use oxabl_lint::CalleeSummaries;
 use oxabl_semantic::AnalysisContext;
 
-use crate::{Expansion, LintPipeline, PipelineConfig, ROOT_FILE_ID};
+use crate::{ExpandedUnit, Expansion, LintPipeline, PipelineConfig, ROOT_FILE_ID};
 
 fn key(path: &Path) -> PathBuf {
     if path.as_os_str().is_empty() {
@@ -182,16 +182,31 @@ fn direct(
     config: &PipelineConfig,
     path: &Path,
     expansion: &Expansion,
+    unit: Option<&ExpandedUnit>,
     index: &BatchIndex<'_>,
 ) -> Option<Direct> {
     let expanded = expansion.expanded()?;
     let text = expanded.text.as_str();
-    let tokens = oxabl_lexer::tokenize(text);
-    let program = oxabl_parser::Parser::new(&tokens, text)
-        .without_comments()
-        .parse_program();
+    let parsed;
+    let (tokens, program) = match unit {
+        Some(unit) => {
+            assert!(
+                unit.expanded().text == expanded.text,
+                "the unit is not the unit of the expansion"
+            );
+            (unit.tokens(), unit.program())
+        }
+        None => {
+            let tokens = oxabl_lexer::tokenize(text);
+            let program = oxabl_parser::Parser::new(&tokens, text)
+                .without_comments()
+                .parse_program();
+            parsed = (tokens, program);
+            (parsed.0.as_slice(), &parsed.1)
+        }
+    };
     let mut ctx = AnalysisContext::new(ROOT_FILE_ID, text, &config.schema, &program.pools)
-        .with_tokens(&tokens)
+        .with_tokens(tokens)
         .with_parse_recovered(!program.errors.is_empty())
         .with_elided(expanded.elided_offsets())
         .with_elided_includes(expanded.elided_include_offsets())
@@ -269,7 +284,20 @@ impl LintPipeline<'_> {
         expansion: &Expansion,
         known: &[PathBuf],
     ) -> WorkspaceEffects {
-        self.summaries_from(self.file().map(|root| (root, expansion)), known, 1)
+        self.summaries_from(self.file().map(|root| (root, expansion, None)), known, 1)
+    }
+
+    /// [`build_effect_summaries`](Self::build_effect_summaries) that reads the
+    /// tokens and the tree of `unit`, the unit of `expansion`, for the root:
+    /// the root is not lexed or parsed again.
+    pub fn build_effect_summaries_of(
+        &self,
+        expansion: &Expansion,
+        unit: &ExpandedUnit,
+        known: &[PathBuf],
+    ) -> WorkspaceEffects {
+        let root = self.file().map(|root| (root, expansion, Some(unit)));
+        self.summaries_from(root, known, 1)
     }
 
     /// Build the summaries of `known` and the programs they reach, every file
@@ -291,7 +319,7 @@ impl LintPipeline<'_> {
 
     fn summaries_from(
         &self,
-        root: Option<(&Path, &Expansion)>,
+        root: Option<(&Path, &Expansion, Option<&ExpandedUnit>)>,
         known: &[PathBuf],
         threads: usize,
     ) -> WorkspaceEffects {
@@ -299,7 +327,7 @@ impl LintPipeline<'_> {
         let index = BatchIndex::new(self.file_system(), &config.include_paths)
             .with_run_extensions(&config.run_extensions)
             .with_preprocessor(&config.preprocessor);
-        let mut paths: Vec<PathBuf> = root.map(|(p, _)| p.to_path_buf()).into_iter().collect();
+        let mut paths: Vec<PathBuf> = root.map(|(p, _, _)| p.to_path_buf()).into_iter().collect();
         paths.extend(
             known
                 .iter()
@@ -311,13 +339,13 @@ impl LintPipeline<'_> {
         let index = self.effect_index(&index);
         let load = |path: &PathBuf| {
             oxabl_common::catch_panic(|| {
-                if let Some((_, expansion)) = root.filter(|(r, _)| *path == key(r)) {
-                    direct(config, path, expansion, index)
+                if let Some((_, expansion, unit)) = root.filter(|(r, _, _)| *path == key(r)) {
+                    direct(config, path, expansion, unit, index)
                 } else {
                     fs.read(path).ok().and_then(|text| {
                         let run = LintPipeline::new(config, fs).with_preprocess(preprocess);
                         let handle = run.with_file(path);
-                        direct(config, path, &handle.expand(&text), index)
+                        direct(config, path, &handle.expand(&text), None, index)
                     })
                 }
             })

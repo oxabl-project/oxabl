@@ -1259,6 +1259,80 @@ fn declared_workspace_root(init: &InitializeParams) -> Option<PathBuf> {
         .and_then(uri_to_path)
 }
 
+/// A request that only a test build answers: what this process lexed and
+/// parsed so far, so a test can see that the features of one revision of a
+/// buffer lex and parse it once.
+const TEST_LEX_PARSE_METHOD: &str = "oxabl/testLexParseCounts";
+
+/// The answer to [`TEST_LEX_PARSE_METHOD`]: the counts of the lexer and the
+/// parser, or an error when the build does not count.
+fn test_lex_parse_counts(id: RequestId) -> Response {
+    match oxabl_pipeline::lex_parse_counts() {
+        Some((lexed, parses, parsed)) => Response::new_ok(
+            id,
+            serde_json::json!({"lexedBytes": lexed, "parses": parses, "parsedBytes": parsed}),
+        ),
+        None => Response::new_err(
+            id,
+            ErrorCode::MethodNotFound as i32,
+            "oxabl-lsp: this build does not count what it lexes and parses".to_string(),
+        ),
+    }
+}
+
+/// Reads the raw unit of an open buffer (`oxabl_daemon::db::buffer_raw_unit`),
+/// so the outline (both on the main loop and in `outline_includes`), the
+/// folding and selection ranges, reference lenses and Format Document of one
+/// revision share one lex and parse. It takes a short snapshot of its own and
+/// drops it before returning, relying on `buffer_raw_unit`'s cancellation catch
+/// and exact text check when concurrent writes occur. A buffer with other text,
+/// or a unit that could not be made, falls back to the text alone.
+#[derive(Clone)]
+pub(crate) struct RawUnits {
+    host: SessionHost,
+    session_root: PathBuf,
+}
+
+impl RawUnits {
+    /// The raw unit of the open buffer `uri` when its text is `text`.
+    pub(crate) fn of(
+        &self,
+        uri: &Uri,
+        text: &str,
+    ) -> Option<std::sync::Arc<oxabl_pipeline::RawUnit>> {
+        let (snapshot, buffer) = self.host.with(|sessions| {
+            let session = sessions.get(&self.session_root)?;
+            Some((session.database().clone(), session.buffer(uri.as_str())?))
+        })?;
+        oxabl_daemon::db::buffer_raw_unit(&snapshot, buffer, text)
+    }
+
+    /// The outline of `text`, the text of the open buffer `uri`.
+    pub(crate) fn outline(
+        &self,
+        uri: &Uri,
+        text: &str,
+    ) -> Result<Vec<oxabl_pipeline::OutlineSymbol>, oxabl_common::InternalPanic> {
+        match self.of(uri, text) {
+            Some(unit) => oxabl_pipeline::outline_of(&unit),
+            None => oxabl_pipeline::outline(text),
+        }
+    }
+
+    /// The folding and selection syntax of `text`, the text of the open
+    /// buffer `uri`.
+    pub(crate) fn syntax(
+        &self,
+        uri: &Uri,
+        text: &str,
+    ) -> Result<oxabl_pipeline::DocumentSyntax, oxabl_common::InternalPanic> {
+        match self.of(uri, text) {
+            Some(unit) => oxabl_pipeline::document_syntax_of(&unit),
+            None => oxabl_pipeline::document_syntax(text),
+        }
+    }
+}
+
 /// The running LSP server: negotiated session state, the open-buffer store, the
 /// coarse salsa substrate, per-URI debounce timers, and the watcher's schema /
 /// include dependency bookkeeping.
@@ -1564,6 +1638,10 @@ impl<'c> Server<'c> {
                                 self.handle_schema(req)?;
                             } else if req.method == schema::TABLE_METHOD {
                                 self.handle_schema_table(req)?;
+                            } else if oxabl_common::INJECTION_ENABLED
+                                && req.method == TEST_LEX_PARSE_METHOD
+                            {
+                                self.respond(test_lex_parse_counts(req.id))?;
                             } else if req.method == WorkspaceSymbolRequest::METHOD {
                                 workspace_symbol::spawn(
                                     req,
@@ -2514,12 +2592,31 @@ impl<'c> Server<'c> {
         let edits: Vec<TextEdit> = serde_json::from_value::<DocumentFormattingParams>(req.params)
             .ok()
             .filter(|_| self.features.format)
-            .and_then(|params| self.documents.get(&params.text_document.uri))
-            .map(|doc| {
-                crate::formatting::compute_formatting_edits(doc, &self.formatter, &self.encoding)
+            .and_then(|params| {
+                let uri = params.text_document.uri;
+                Some((self.documents.get(&uri)?, uri))
+            })
+            .map(|(doc, uri)| {
+                let text = doc.rope.to_string();
+                let unit = self.raw_units().of(&uri, &text);
+                crate::formatting::compute_formatting_edits_of(
+                    doc,
+                    &text,
+                    unit.as_deref(),
+                    &self.formatter,
+                    &self.encoding,
+                )
             })
             .unwrap_or_default();
         self.respond(Response::new_ok(req.id, edits))
+    }
+
+    /// The reader of the raw units of this session's open buffers.
+    pub(crate) fn raw_units(&self) -> RawUnits {
+        RawUnits {
+            host: self.host.clone(),
+            session_root: self.session_root.clone(),
+        }
     }
 
     /// `textDocument/documentSymbol`: the outline of the open buffer's raw
@@ -2543,9 +2640,10 @@ impl<'c> Server<'c> {
         if self.outline_settings.includes && self.handle_document_symbol_includes(&req.id, &uri) {
             return Ok(());
         }
+        let units = self.raw_units();
         let outline = self
             .outlines
-            .get_or_compute(&uri, doc.version, || oxabl_pipeline::outline(&doc.text()));
+            .get_or_compute(&uri, doc.version, || units.outline(&uri, &doc.text()));
         let response = match outline {
             Ok(symbols) => Response::new_ok(
                 req.id,
@@ -2583,9 +2681,10 @@ impl<'c> Server<'c> {
         let Some(doc) = self.documents.get(&uri) else {
             return self.respond(Response::new_ok(req.id, serde_json::Value::Null));
         };
-        let syntax = self.syntax.get_or_compute(&uri, doc.version, || {
-            oxabl_pipeline::document_syntax(&doc.text())
-        });
+        let units = self.raw_units();
+        let syntax = self
+            .syntax
+            .get_or_compute(&uri, doc.version, || units.syntax(&uri, &doc.text()));
         let response = match syntax {
             Ok(syntax) => Response::new_ok(
                 req.id,
@@ -2629,9 +2728,10 @@ impl<'c> Server<'c> {
                 crate::position::position_to_byte(&doc.rope, *position, &self.encoding) as u32
             })
             .collect();
-        let syntax = self.syntax.get_or_compute(&uri, doc.version, || {
-            oxabl_pipeline::document_syntax(&doc.text())
-        });
+        let units = self.raw_units();
+        let syntax = self
+            .syntax
+            .get_or_compute(&uri, doc.version, || units.syntax(&uri, &doc.text()));
         let response = match syntax {
             Ok(syntax) => Response::new_ok(
                 req.id,

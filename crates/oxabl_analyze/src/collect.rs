@@ -2009,12 +2009,7 @@ pub fn collect_from_parsed(
         selection,
         summaries,
     } = *settings;
-    assert!(
-        tokens
-            .last()
-            .is_some_and(|t| t.kind == Kind::Eof && t.end as usize == expanded.text.len()),
-        "the tokens do not end at the end of the expanded text"
-    );
+    assert_tokens_end(tokens, expanded);
     let root = expanded.root;
     let mut out = CollectedDiagnostics::default();
     let everything = selection == RuleSelection::All;
@@ -2137,6 +2132,25 @@ pub fn collect_from_parsed(
     )
 }
 
+/// An expanded file together with its pre-lexed tokens and parsed program.
+#[derive(Clone, Copy)]
+pub struct ParsedExpanded<'a> {
+    pub expanded: &'a ExpandedFile,
+    pub tokens: &'a [Token],
+    pub program: &'a Program,
+}
+
+/// The one check a `*_from_parsed` function makes of the tokens it is given:
+/// that they end at the end of the expanded text.
+fn assert_tokens_end(tokens: &[Token], expanded: &ExpandedFile) {
+    assert!(
+        tokens
+            .last()
+            .is_some_and(|t| t.kind == Kind::Eof && t.end as usize == expanded.text.len()),
+        "the tokens do not end at the end of the expanded text"
+    );
+}
+
 fn is_encrypted_note(d: &Diagnostic) -> bool {
     d.code.0 == oxabl_workspace::ENCRYPTED_CODE
 }
@@ -2238,11 +2252,42 @@ pub fn database_hints_from_expanded(
     let program = Parser::new(&tokens, &expanded.text)
         .without_comments()
         .parse_program();
+    database_hints_from_parsed(
+        ParsedExpanded {
+            expanded,
+            tokens: &tokens,
+            program: &program,
+        },
+        schema,
+        schema_loaded,
+        source_context,
+        kinds,
+    )
+}
+
+/// [`database_hints_from_expanded`] for a caller that holds the tokens and
+/// the tree of `expanded.text`, with the contract of [`collect_from_parsed`].
+pub fn database_hints_from_parsed(
+    parsed: ParsedExpanded<'_>,
+    schema: &Schema,
+    schema_loaded: bool,
+    source_context: SourceContext,
+    kinds: oxabl_lint::hints::HintKinds,
+) -> Vec<oxabl_lint::hints::DatabaseHint> {
+    let ParsedExpanded {
+        expanded,
+        tokens,
+        program,
+    } = parsed;
+    if kinds.none() {
+        return Vec::new();
+    }
+    assert_tokens_end(tokens, expanded);
     let include_spans = expanded.include_spans();
     let ctx = lint_context(
         expanded,
         &program.pools,
-        &tokens,
+        tokens,
         &include_spans,
         schema,
         schema_loaded,
@@ -2423,6 +2468,30 @@ pub fn analyze_for_navigation_checked(
     )
 }
 
+/// [`analyze_for_navigation_checked`] for a caller that holds the tokens and
+/// the tree of `expanded.text`, with the contract of [`collect_from_parsed`].
+pub fn analyze_for_navigation_parsed(
+    parsed: ParsedExpanded<'_>,
+    schema: &Schema,
+    schema_loaded: bool,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+) -> (Semantic, Option<VirtualSpan>) {
+    let ParsedExpanded {
+        expanded,
+        tokens,
+        program,
+    } = parsed;
+    assert_tokens_end(tokens, expanded);
+    analyze_program(
+        (expanded, program),
+        (schema, schema_loaded),
+        index,
+        source_context,
+        true,
+    )
+}
+
 /// What reads the parse of an analysis: the statements with their pools, the
 /// text and the tokens.
 type ParseInspector<'a> = dyn FnMut(&[Statement], &AstPools, &str, &[Token]) + 'a;
@@ -2443,17 +2512,13 @@ fn analyze_expanded(
     let program = parser.parse_program();
     let parsed = timing.map(|t| t.elapsed());
     inspect(&program.statements, &program.pools, &expanded.text, &tokens);
-    let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema, &program.pools)
-        .with_index(index)
-        .with_source_context(source_context)
-        .with_sites(record_sites)
-        .with_unclosed_blocks(&program.unclosed_blocks);
-    ctx.schema_loaded = schema_loaded;
-    let sem = analyze_file_untyped(&program.statements, &ctx);
-    let recovered = program
-        .errors
-        .first()
-        .map(|error| VirtualSpan::new(error.span.start, error.span.end));
+    let (sem, recovered) = analyze_program(
+        (expanded, &program),
+        (schema, schema_loaded),
+        index,
+        source_context,
+        record_sites,
+    );
     let analyzed = timing.map(|t| t.elapsed());
     drop(program);
     drop(tokens);
@@ -2466,6 +2531,29 @@ fn analyze_expanded(
             (t.elapsed() - analyzed.unwrap()).as_nanos()
         );
     }
+    (sem, recovered)
+}
+
+/// The untyped semantic pass over a parsed expansion, and where the parser
+/// first recovered from an error.
+fn analyze_program(
+    (expanded, program): (&ExpandedFile, &Program),
+    (schema, schema_loaded): (&Schema, bool),
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+    record_sites: bool,
+) -> (Semantic, Option<VirtualSpan>) {
+    let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema, &program.pools)
+        .with_index(index)
+        .with_source_context(source_context)
+        .with_sites(record_sites)
+        .with_unclosed_blocks(&program.unclosed_blocks);
+    ctx.schema_loaded = schema_loaded;
+    let sem = analyze_file_untyped(&program.statements, &ctx);
+    let recovered = program
+        .errors
+        .first()
+        .map(|error| VirtualSpan::new(error.span.start, error.span.end));
     (sem, recovered)
 }
 

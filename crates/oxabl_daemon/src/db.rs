@@ -107,7 +107,8 @@ use oxabl_index::hierarchy::{ClassFile, ClassFiles, LookupMemo, SubtypeIndex};
 use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, IncludeContext, index_file_at, program_signatures_at};
 use oxabl_pipeline::{
-    Expansion, HintKinds, InlayHint, LintPipeline, NavigationModel, PipelineConfig,
+    ExpandedUnit, Expansion, HintKinds, InlayHint, LintPipeline, NavigationModel, PipelineConfig,
+    RawUnit,
 };
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
@@ -1012,6 +1013,143 @@ pub(crate) fn expanded_text(db: &dyn AblDatabase, buffer: Buffer) -> Expansion {
     }
 }
 
+/// The buffer's text as written, lexed and parsed once for each revision: the
+/// outline, the folding and selection ranges and Format Document read it.
+/// When the expansion is the identity, it is the raw unit that
+/// [`expanded_unit`] made; otherwise it does not make the expanded unit.
+/// `None` when the lexer or the parser panicked; a
+/// reader then runs on the text alone, and its own guard reports the panic.
+/// The parse stops at a statement when an edit waits. `no_eq`: a unit is never
+/// compared.
+/// Cheap zero-I/O pre-check: returns `false` when `text` contains a `{` or `&`
+/// outside comments and quoted strings (so it almost certainly expands an
+/// include, reference, or directive). Returning `false` lets `raw_unit` parse
+/// the raw text directly without invoking disk-I/O preprocessing on the LSP
+/// main loop.
+fn may_expand_to_itself(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if !bytes.iter().any(|&b| b == b'{' || b == b'&') {
+        return true;
+    }
+    let mut i = 0usize;
+    let mut block_depth = 0u32;
+    let mut quote: Option<u8> = None;
+    for _ in 0..bytes.len() {
+        if i >= bytes.len() {
+            break;
+        }
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'~' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if block_depth > 0 {
+            if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                block_depth = block_depth.saturating_add(1);
+                i += 2;
+                continue;
+            }
+            if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                block_depth -= 1;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            block_depth = 1;
+            i += 2;
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            match bytes[i + 2..].iter().position(|&b| b == b'\n') {
+                Some(off) => i += 2 + off + 1,
+                None => break,
+            }
+            continue;
+        }
+        if b == b'"' || b == b'\'' {
+            quote = Some(b);
+            i += 1;
+            continue;
+        }
+        if b == b'{' || b == b'&' {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+#[salsa::tracked(returns(clone), no_eq, lru = 16)]
+pub(crate) fn raw_unit(db: &dyn AblDatabase, buffer: Buffer) -> Option<Arc<RawUnit>> {
+    let text = buffer.text(db);
+    if may_expand_to_itself(text.as_str()) {
+        // `expanded_text` calls unguarded `LintPipeline::expand`; catch any
+        // preprocessor panic here (letting `salsa::Cancelled` unwind) so raw
+        // features such as outline and folding still work on the buffer text.
+        let identity = oxabl_common::catch_panic(|| {
+            expanded_text(db, buffer)
+                .expanded()
+                .is_some_and(|expanded| expanded.is_identity())
+        })
+        .unwrap_or(false);
+        if identity {
+            // When the expansion is the identity, reuse `expanded_unit`'s raw
+            // unit directly; if its parse panicked (`None`), do not re-run the
+            // same panicking parse here.
+            let unit = expanded_unit(db, buffer)?;
+            if let Some(raw) = unit.raw()
+                && raw.text() == text.as_str()
+            {
+                return Some(Arc::clone(raw));
+            }
+            return None;
+        }
+    }
+    let text: Arc<str> = Arc::from(text.as_str());
+    // `catch_panic` lets a `Cancelled` unwind pass: its payload is not a message.
+    oxabl_common::catch_panic(|| RawUnit::parse_between(text, || db.unwind_if_revision_cancelled()))
+        .ok()
+        .map(Arc::new)
+}
+
+/// The expansion of the buffer, lexed and parsed once for each revision: the
+/// diagnostics, the navigation model and the database inlay hints read it.
+/// When the expansion is the identity, the unit is a raw unit of the text,
+/// with its comment table, and [`raw_unit`] gives it too: the buffer is lexed
+/// and parsed once. It reads only [`expanded_text`], so an edit that leaves
+/// the expansion equal does not run it or the queries that read it. `None`
+/// when the preprocessing failed or the lexer or the parser panicked; a reader
+/// then runs on the expansion alone, as before the unit existed. `no_eq`: a
+/// unit is never compared; the queries that read it compare their own
+/// results.
+#[salsa::tracked(returns(clone), no_eq, lru = 16)]
+pub(crate) fn expanded_unit(db: &dyn AblDatabase, buffer: Buffer) -> Option<Arc<ExpandedUnit>> {
+    let expansion = expanded_text(db, buffer);
+    let expanded = Arc::new(expansion.expanded()?.clone());
+    db.unwind_if_revision_cancelled();
+    let checkpoint = || db.unwind_if_revision_cancelled();
+    // `catch_panic` lets a `Cancelled` unwind pass: its payload is not a message.
+    let unit = if expanded.is_identity() {
+        let text: Arc<str> = Arc::from(expanded.text.as_str());
+        oxabl_common::catch_panic(|| RawUnit::parse_between(text, checkpoint))
+            .ok()
+            .and_then(|raw| ExpandedUnit::of_raw(expanded, Arc::new(raw)))
+    } else {
+        oxabl_common::catch_panic(|| ExpandedUnit::parse_between(expanded, checkpoint)).ok()
+    };
+    unit.map(Arc::new)
+}
+
 /// Read and existence dependencies of a summary graph, including search misses.
 struct SummaryFs {
     inner: Arc<dyn FileSystem>,
@@ -1053,8 +1191,16 @@ fn effect_summaries(
     let run = LintPipeline::new(&db.config().pipeline, &fs).with_preprocess(db.config().preprocess);
     let path = buffer.path(db).as_deref().unwrap_or(Path::new(""));
     let handle = run.with_file(path);
-    let expansion = handle.expand(buffer.text(db));
-    let summaries = handle.build_effect_summaries(&expansion, &[]);
+    // The expansion and the unit that the diagnostics read. The includes of
+    // the expansion are its own reads; the summaries read the rest.
+    let expansion = expanded_text(db, buffer);
+    let summaries = match expanded_unit(db, buffer) {
+        Some(unit) => handle.build_effect_summaries_of(&expansion, &unit, &[]),
+        None => handle.build_effect_summaries(&expansion, &[]),
+    };
+    // Only callee reads (and callee includes/misses) come through `SummaryFs`.
+    // The buffer's own includes invalidate `expanded_text` via buffer retrigger
+    // (as for `diagnostics`), not through `disk_revision` here.
     for path in fs.paths.lock().unwrap_or_else(|e| e.into_inner()).iter() {
         let file = db.config().index.file_for(db, path);
         let _revision = file.disk_revision(db);
@@ -1127,7 +1273,11 @@ fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> Co
     } else {
         handle
     };
-    handle.collect(&expansion).into_diagnostics()
+    match expanded_unit(db, buffer) {
+        Some(unit) => handle.collect_unit(&expansion, &unit),
+        None => handle.collect(&expansion),
+    }
+    .into_diagnostics()
 }
 
 /// The navigation analysis of a buffer: the resolve pass with its sites
@@ -1148,7 +1298,10 @@ pub(crate) fn navigation_model(
     let handle = run
         .with_file(buffer.path(db).as_deref().unwrap_or(Path::new("")))
         .with_index(&index);
-    handle.navigation_model(&expansion).map(Arc::new)
+    match expanded_unit(db, buffer) {
+        Some(unit) => Some(Arc::new(handle.navigation_model_of(&unit))),
+        None => handle.navigation_model(&expansion).map(Arc::new),
+    }
 }
 
 /// Render cached effect summaries on a worker snapshot. Cancellation returns no answer.
@@ -1206,6 +1359,18 @@ impl HintSource {
     /// Empty when the selected root cannot be read, fails to preprocess, or
     /// no longer includes the file.
     pub fn hints(&self, kinds: HintKinds) -> (Vec<InlayHint>, Vec<PathBuf>) {
+        self.hints_over(kinds, None)
+    }
+
+    /// [`hints`](Self::hints) over `unit`, the expansion and the unit of the
+    /// open buffer of the file that [`buffer_unit`] gave for this text: the
+    /// text is not expanded, lexed or parsed again. A source with a context
+    /// does not read `unit`.
+    pub fn hints_over(
+        &self,
+        kinds: HintKinds,
+        unit: Option<(Expansion, Arc<ExpandedUnit>)>,
+    ) -> (Vec<InlayHint>, Vec<PathBuf>) {
         let config = &self.config;
         let site = oxabl_common::panic_sites::LSP_INLAY_HINTS;
         match &self.context {
@@ -1213,11 +1378,13 @@ impl HintSource {
                 oxabl_common::hold_if_injected(site, &self.text);
                 let run = config.lint_pipeline();
                 let handle = run.with_file(&self.file);
-                let expansion = handle.expand(&self.text);
-                (
-                    handle.database_hints(&self.text, &expansion, kinds),
-                    Vec::new(),
-                )
+                let hints = match unit {
+                    Some((expansion, unit)) => {
+                        handle.database_hints_of(&self.text, &expansion, &unit, kinds)
+                    }
+                    None => handle.database_hints(&self.text, &handle.expand(&self.text), kinds),
+                };
+                (hints, Vec::new())
             }
             Some((root, overlay)) => {
                 let fs = OverlayFs {
@@ -1262,8 +1429,49 @@ impl HintSource {
     }
 }
 
+/// The expansion and the expanded unit of the open `buffer` when its text is
+/// `text`, for a reader that analyses them after it drops the snapshot (the
+/// database inlay hints, [`HintSource::hints_over`]). The unit is made here
+/// when no other request made it; its parse stops when an edit waits. `None`
+/// when the buffer has other text, its preprocessing failed, the lexer or the
+/// parser panicked, or a write cancelled the read.
+pub fn buffer_unit(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    text: &str,
+) -> Option<(Expansion, Arc<ExpandedUnit>)> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        if buffer.text(snapshot).as_str() != text {
+            return None;
+        }
+        let unit = expanded_unit(snapshot, buffer)?;
+        Some((expanded_text(snapshot, buffer), unit))
+    }))
+    .ok()
+    .flatten()
+}
+
+/// The raw unit of the open `buffer` when its text is `text`: the outline,
+/// the folding and selection ranges and Format Document of one revision read
+/// one lex and parse. `None` when the buffer has other text, the lexer or the
+/// parser panicked, or a write cancelled the read.
+pub fn buffer_raw_unit(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    text: &str,
+) -> Option<Arc<RawUnit>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        if buffer.text(snapshot).as_str() != text {
+            return None;
+        }
+        raw_unit(snapshot, buffer)
+    }))
+    .ok()
+    .flatten()
+}
+
 /// Keep the results of at most `buffers` buffers in each query keyed by a buffer
-/// (the `lru` of [`expanded_text`], [`effect_summaries`] and [`diagnostics`]).
+/// (the `lru` of [`expanded_text`], [`raw_unit`], [`expanded_unit`], [`effect_summaries`], [`diagnostics`] and [`navigation_model`]).
 ///
 /// Salsa cannot remove an input, so without a bound the results of a closed
 /// buffer stay in memory for good. The least recently used go first, and a
@@ -1271,6 +1479,8 @@ impl HintSource {
 pub fn set_buffer_capacity(db: &mut AnalysisDatabase, buffers: usize) {
     let buffers = buffers.max(1);
     expanded_text::set_lru_capacity(db, buffers);
+    raw_unit::set_lru_capacity(db, buffers);
+    expanded_unit::set_lru_capacity(db, buffers);
     effect_summaries::set_lru_capacity(db, buffers);
     diagnostics::set_lru_capacity(db, buffers);
     navigation_model::set_lru_capacity(db, buffers);
@@ -1420,7 +1630,7 @@ pub fn compute_context_diagnostics(
 /// One root's expanded compilation unit, analysed, with the text of every file
 /// it read.
 #[derive(Debug, Clone)]
-pub struct ExpandedUnit {
+pub struct ExpansionInspection {
     pub root: PathBuf,
     pub expansion: Expansion,
     /// Every finding of the root's analysis: root-origin ones in `diagnostics`,
@@ -1431,7 +1641,7 @@ pub struct ExpandedUnit {
     pub sources: HashMap<PathBuf, Arc<str>>,
 }
 
-impl ExpandedUnit {
+impl ExpansionInspection {
     /// The root and every include its expansion read.
     pub fn dependencies(&self) -> Vec<PathBuf> {
         let mut paths = vec![self.root.clone()];
@@ -1443,12 +1653,12 @@ impl ExpandedUnit {
 /// Expand and analyse `root` with `overlay` over the configured file system,
 /// for inspection. `Ok(Err(reason))` when the root cannot be read or its
 /// preprocessing failed. `None` when a concurrent write cancelled the read.
-pub fn compute_expanded_unit(
+pub fn compute_expansion_inspection(
     snapshot: &AnalysisDatabase,
     schema: SchemaHandle,
     root: &Path,
     overlay: HashMap<PathBuf, Arc<str>>,
-) -> Option<Result<ExpandedUnit, String>> {
+) -> Option<Result<ExpansionInspection, String>> {
     salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
         analyse_root(snapshot, schema, root, overlay, |_| None).map_err(|(reason, _)| reason)
     }))
@@ -1456,7 +1666,7 @@ pub fn compute_expanded_unit(
 }
 
 /// The shared run of [`compute_context_diagnostics`] and
-/// [`compute_expanded_unit`]. `refuse` can stop it after the expansion. A
+/// [`compute_expansion_inspection`]. `refuse` can stop it after the expansion. A
 /// failure carries its reason and the paths read so far.
 fn analyse_root(
     snapshot: &AnalysisDatabase,
@@ -1464,7 +1674,7 @@ fn analyse_root(
     root: &Path,
     overlay: HashMap<PathBuf, Arc<str>>,
     refuse: impl FnOnce(&Expansion) -> Option<String>,
-) -> Result<ExpandedUnit, (String, Vec<PathBuf>)> {
+) -> Result<ExpansionInspection, (String, Vec<PathBuf>)> {
     let _revision = schema.revision(snapshot);
     let config = snapshot.config();
     let fs = OverlayFs {
@@ -1500,7 +1710,7 @@ fn analyse_root(
             sources.insert(path.clone(), text);
         }
     }
-    Ok(ExpandedUnit {
+    Ok(ExpansionInspection {
         root: root.to_path_buf(),
         expansion,
         diagnostics,
@@ -1713,6 +1923,28 @@ pub fn compute_parameter_hints(
     with_navigation(snapshot, schema, root, overlay, |unit| {
         unit.navigation.parameter_hints(&unit.spelled(file))
     })
+}
+
+/// The parameter-name hints of the open `buffer`, its own root, from the same
+/// cached analysis as [`compute_highlights`] and with the same conditions.
+pub fn compute_buffer_parameter_hints(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+    overlay: HashMap<PathBuf, Arc<str>>,
+) -> Option<Result<Vec<oxabl_pipeline::InlayHint>, String>> {
+    let mut hints = Vec::new();
+    let answer = cached_navigation(
+        snapshot,
+        buffer,
+        schema,
+        Some(overlay),
+        |navigation, root| {
+            hints = navigation.parameter_hints(root);
+            NavigationAnswer::default()
+        },
+    )?;
+    Some(answer.map(|_| hints))
 }
 
 /// One compilation unit analysed for navigation, as [`with_navigation`] hands
@@ -2027,7 +2259,7 @@ pub fn compute_highlights(
             },
         );
     }
-    cached_navigation(snapshot, buffer, schema, |navigation, root| {
+    cached_navigation(snapshot, buffer, schema, None, |navigation, root| {
         NavigationAnswer {
             highlights: navigation.highlights(root, offset),
             ..NavigationAnswer::default()
@@ -2044,7 +2276,7 @@ pub fn compute_semantic_tokens(
     schema: SchemaHandle,
     range: Option<(u32, u32)>,
 ) -> Option<Result<NavigationAnswer, String>> {
-    cached_navigation(snapshot, buffer, schema, |navigation, root| {
+    cached_navigation(snapshot, buffer, schema, None, |navigation, root| {
         NavigationAnswer {
             tokens: navigation.semantic_tokens(root, to_span(range)),
             ..NavigationAnswer::default()
@@ -2059,7 +2291,7 @@ pub fn compute_links(
     buffer: Buffer,
     schema: SchemaHandle,
 ) -> Option<Result<NavigationAnswer, String>> {
-    cached_navigation(snapshot, buffer, schema, |navigation, _root| {
+    cached_navigation(snapshot, buffer, schema, None, |navigation, _root| {
         NavigationAnswer {
             links: navigation.links(),
             ..NavigationAnswer::default()
@@ -2077,6 +2309,7 @@ fn cached_navigation(
     snapshot: &AnalysisDatabase,
     buffer: Buffer,
     schema: SchemaHandle,
+    overlay: Option<HashMap<PathBuf, Arc<str>>>,
     answer: impl FnOnce(&oxabl_pipeline::Navigation<'_, '_>, &Path) -> NavigationAnswer,
 ) -> Option<Result<NavigationAnswer, String>> {
     salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
@@ -2096,9 +2329,21 @@ fn cached_navigation(
                 .file_by_id(id)
                 .map(|file| file.path(snapshot).clone())
         };
-        let run = config.lint_pipeline();
+        let overlay_fs = overlay.map(|overlay| OverlayFs {
+            overlay,
+            inner: Arc::clone(&config.fs),
+        });
+        let fs: &dyn FileSystem = match &overlay_fs {
+            Some(overlay_fs) => overlay_fs,
+            None => &*config.fs,
+        };
+        let run = LintPipeline::new(&config.pipeline, fs).with_preprocess(config.preprocess);
         let handle = run.with_file(&root).with_index(&index);
-        let Some(navigation) = handle.navigation_with(&expansion, model, &file_of) else {
+        let navigation = match expanded_unit(snapshot, buffer) {
+            Some(unit) => handle.navigation_with_unit(&expansion, &unit, model, &file_of),
+            None => handle.navigation_with(&expansion, model, &file_of),
+        };
+        let Some(navigation) = navigation else {
             return Err("its preprocessing failed".to_string());
         };
         let mut answer = answer(&navigation, &root);
@@ -2487,6 +2732,55 @@ mod tests {
             "an equal expansion must backdate and skip parse/semantic/lint, got {log:?}"
         );
         assert_eq!(first, second);
+    }
+
+    /// A buffer that expands to itself has one unit: the raw unit that the
+    /// outline reads is the one the diagnostics made, and a byte-identical
+    /// edit makes neither again.
+    #[test]
+    fn an_identity_buffer_is_lexed_and_parsed_once_for_its_revision() {
+        let executed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut db = AnalysisDatabase::recording(
+            config_with(oxabl_workspace::InMemoryFileSystem::new()),
+            Arc::clone(&executed),
+        );
+        let text = "DEFINE VARIABLE x AS INTEGER NO-UNDO.\nMESSAGE x.\n".to_string();
+        let buffer = Buffer::new(&db, text.clone(), Some(PathBuf::from("/src/main.p")));
+        let schema = SchemaHandle::new(&db, 0);
+
+        compute_diagnostics(&db, buffer, schema).unwrap();
+        let raw = buffer_raw_unit(&db, buffer, &text).expect("a raw unit");
+        let unit = buffer_unit(&db, buffer, &text).expect("an expanded unit").1;
+        assert!(
+            unit.raw().is_some_and(|made| Arc::ptr_eq(made, &raw)),
+            "the outline reads the unit that the diagnostics made"
+        );
+        assert!(buffer_raw_unit(&db, buffer, "other text").is_none());
+        let made = |log: &[String]| {
+            log.iter()
+                .filter(|e| e.contains("expanded_unit") || e.contains("raw_unit"))
+                .count()
+        };
+        assert_eq!(
+            made(&executed.lock().unwrap()),
+            2,
+            "{:?}",
+            executed.lock().unwrap()
+        );
+
+        executed.lock().unwrap().clear();
+        buffer.set_text(&mut db).to(text.clone());
+        compute_diagnostics(&db, buffer, schema).unwrap();
+        let again = buffer_raw_unit(&db, buffer, &text).expect("a raw unit");
+        assert!(
+            Arc::ptr_eq(&again, &raw),
+            "a byte-identical edit keeps the unit"
+        );
+        let log = executed.lock().unwrap();
+        assert!(
+            !log.iter().any(|e| e.contains("expanded_unit")),
+            "a byte-identical edit does not make the expanded unit again: {log:?}"
+        );
     }
 
     #[test]

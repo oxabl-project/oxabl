@@ -19,7 +19,7 @@ use oxabl_analyze::{
 };
 use oxabl_common::{Diagnostic, FileId, Severity};
 use oxabl_daemon::canonical_path;
-use oxabl_daemon::db::{ExpandedUnit, compute_expanded_unit};
+use oxabl_daemon::db::{ExpansionInspection, compute_expansion_inspection};
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
 
@@ -140,7 +140,7 @@ impl Server<'_> {
                 let sender = sender.clone();
                 move || {
                     let answered = oxabl_common::catch_panic(|| {
-                        compute_expanded_unit(&snapshot, schema, &root, overlay)
+                        compute_expansion_inspection(&snapshot, schema, &root, overlay)
                             .map(|unit| answer(&root, mode, unit, &encoding))
                     });
                     let response = match answered {
@@ -173,7 +173,7 @@ impl Server<'_> {
 fn answer(
     root: &Path,
     mode: &'static str,
-    unit: Result<ExpandedUnit, String>,
+    unit: Result<ExpansionInspection, String>,
     encoding: &PositionEncodingKind,
 ) -> Answer {
     let unit = match unit {
@@ -200,7 +200,7 @@ fn answer(
         }
     };
     let Some(expanded) = unit.expansion.expanded() else {
-        // `compute_expanded_unit` refuses a failed expansion, so this is not reached.
+        // `compute_expansion_inspection` refuses a failed expansion, so this is not reached.
         return answer(
             root,
             mode,
@@ -273,7 +273,7 @@ enum Event {
 }
 
 struct Renderer<'a> {
-    unit: &'a ExpandedUnit,
+    unit: &'a ExpansionInspection,
     expanded: &'a ExpandedFile,
     mode: &'static str,
     encoding: &'a PositionEncodingKind,
@@ -287,7 +287,7 @@ struct Renderer<'a> {
 
 impl<'a> Renderer<'a> {
     fn new(
-        unit: &'a ExpandedUnit,
+        unit: &'a ExpansionInspection,
         expanded: &'a ExpandedFile,
         mode: &'static str,
         encoding: &'a PositionEncodingKind,

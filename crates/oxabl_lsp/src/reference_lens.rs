@@ -306,9 +306,10 @@ impl Server<'_> {
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
+        let units = self.raw_units();
         let outline = self
             .outlines
-            .get_or_compute(uri, doc.version, || oxabl_pipeline::outline(&doc.text()));
+            .get_or_compute(uri, doc.version, || units.outline(uri, &doc.text()));
         // An outline that failed is unknown, not empty: no lens.
         let Ok(symbols) = outline else {
             return Vec::new();
@@ -494,11 +495,12 @@ impl Server<'_> {
             Kind::Symbol => selected,
         };
         let wanted = (asked.data.kind, asked.data.offset);
+        let units = self.raw_units();
         let mut lenses: Vec<(Kind, u32)> = match self.documents.get(&asked.uri) {
             Some(doc) => self
                 .outlines
                 .get_or_compute(&asked.uri, doc.version, || {
-                    oxabl_pipeline::outline(&doc.text())
+                    units.outline(&asked.uri, &doc.text())
                 })
                 .map(|symbols| lens_sites(&asked.path, symbols))
                 .unwrap_or_default(),

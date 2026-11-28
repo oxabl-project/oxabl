@@ -12,6 +12,8 @@ use oxabl_ast::{
 use oxabl_common::{InternalPanic, catch_panic, panic_if_injected, panic_sites};
 use oxabl_lexer::{Kind, Token};
 
+use crate::RawUnit;
+
 /// The LSP folding-range kind, without a dependency on a client protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FoldKind {
@@ -52,15 +54,29 @@ pub fn document_syntax(source: &str) -> Result<DocumentSyntax, InternalPanic> {
     })
 }
 
+/// [`document_syntax`] for a caller that holds the [`RawUnit`] of the text:
+/// the text is not lexed or parsed again. The answer and the panic guard are
+/// those of `document_syntax(unit.text())`.
+pub fn document_syntax_of(unit: &RawUnit) -> Result<DocumentSyntax, InternalPanic> {
+    catch_panic(|| {
+        panic_if_injected(panic_sites::SYNTAX, unit.text());
+        DocumentSyntax::of_parsed(unit.text(), unit.tokens(), unit.program())
+    })
+}
+
 impl DocumentSyntax {
     fn new(source: &str) -> Self {
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source)
             .without_comments()
             .parse_program();
+        DocumentSyntax::of_parsed(source, &tokens, &program)
+    }
+
+    fn of_parsed(source: &str, tokens: &[Token], program: &oxabl_parser::Program) -> Self {
         let mut builder = Builder {
             source,
-            tokens: &tokens,
+            tokens,
             breaks: line_breaks(source),
             folds: Vec::new(),
             statements: Vec::new(),

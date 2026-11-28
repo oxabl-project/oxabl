@@ -29,7 +29,7 @@
 //!   answers depending on which surface asked.
 
 use lsp_types::{Position, PositionEncodingKind, Range, TextEdit};
-use oxabl_pipeline::{FormatOutcome, FormatPipeline};
+use oxabl_pipeline::{FormatOutcome, FormatPipeline, RawUnit};
 
 use crate::document::Document;
 use crate::position::byte_to_position;
@@ -55,7 +55,27 @@ pub fn compute_formatting_edits(
     pipeline: &FormatPipeline,
     encoding: &PositionEncodingKind,
 ) -> Vec<TextEdit> {
-    match pipeline.format(&doc.rope.to_string()) {
+    compute_formatting_edits_of(doc, &doc.rope.to_string(), None, pipeline, encoding)
+}
+
+/// [`compute_formatting_edits`] where `text` is the text of `doc` and `unit`,
+/// when given, is the raw unit of `text`: the text is not lexed or parsed
+/// again.
+pub fn compute_formatting_edits_of(
+    doc: &Document,
+    text: &str,
+    unit: Option<&RawUnit>,
+    pipeline: &FormatPipeline,
+    encoding: &PositionEncodingKind,
+) -> Vec<TextEdit> {
+    let outcome = match unit {
+        Some(unit) => {
+            assert_eq!(unit.text(), text, "the unit is not the unit of the text");
+            pipeline.format_unit(unit)
+        }
+        None => pipeline.format(text),
+    };
+    match outcome {
         FormatOutcome::Reformatted(formatted) => {
             let end = byte_to_position(&doc.rope, doc.rope.len_bytes(), encoding);
             vec![TextEdit {

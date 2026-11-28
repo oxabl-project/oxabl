@@ -16,7 +16,7 @@ pub use oxabl_lint::hints::HintKinds;
 use oxabl_semantic::SourceContext;
 use oxabl_workspace::is_include_fragment;
 
-use crate::{Expansion, LintPipeline};
+use crate::{ExpandedUnit, Expansion, LintPipeline};
 
 /// The kind of a hint, which a client can turn off on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -86,16 +86,46 @@ impl LintPipeline<'_> {
         expansion: &Expansion,
         kinds: HintKinds,
     ) -> Vec<InlayHint> {
+        self.database_hints_over(source, expansion, None, kinds)
+    }
+
+    /// [`database_hints`](Self::database_hints) over the tokens and the tree
+    /// of `unit`, the unit of `expansion`, which is not lexed or parsed again.
+    ///
+    /// **Unguarded** (KTD6), like [`collect`](Self::collect).
+    pub fn database_hints_of(
+        &self,
+        source: &str,
+        expansion: &Expansion,
+        unit: &ExpandedUnit,
+        kinds: HintKinds,
+    ) -> Vec<InlayHint> {
+        self.database_hints_over(source, expansion, Some(unit), kinds)
+    }
+
+    fn database_hints_over(
+        &self,
+        source: &str,
+        expansion: &Expansion,
+        unit: Option<&ExpandedUnit>,
+        kinds: HintKinds,
+    ) -> Vec<InlayHint> {
         let Some(expanded) = expansion.expanded() else {
             return Vec::new();
         };
+        if let Some(unit) = unit {
+            assert!(
+                unit.expanded().text == expanded.text,
+                "the unit is not the unit of the expansion"
+            );
+        }
         let fragment = self.file().is_some_and(is_include_fragment);
         let note = fragment.then_some(
             " Read from this include alone: a file that includes it can change this, for \
              example with a temp-table of the same name. Select an include context to read it \
              in a root file.",
         );
-        let placed = self.place_hints(expanded, kinds, note, |span| {
+        let placed = self.place_hints((expanded, unit), kinds, note, |span| {
             expanded.resolve_root_span(span)
         });
         let placed = if fragment && !placed.is_empty() {
@@ -148,7 +178,7 @@ impl LintPipeline<'_> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let note = format!(" Read in `{root}`, the selected include context.");
-        let placed = self.place_hints(expanded, kinds, Some(&note), |span| {
+        let placed = self.place_hints((expanded, None), kinds, Some(&note), |span| {
             let (path, span, _) = expanded.resolve_include_span(span)?;
             (same_file_key(path) == include).then_some(span)
         });
@@ -157,10 +187,11 @@ impl LintPipeline<'_> {
 
     /// The hints of `kinds` placed by `place`, which maps an expanded span to
     /// the shown file's bytes. The index kind needs no rule; each other kind
-    /// is computed only where its rule is on.
+    /// is computed only where its rule is on. `unit`, when given, holds the
+    /// tokens and the tree of `expanded`.
     fn place_hints(
         &self,
-        expanded: &oxabl_analyze::ExpandedFile,
+        (expanded, unit): (&oxabl_analyze::ExpandedFile, Option<&ExpandedUnit>),
         kinds: HintKinds,
         note: Option<&str>,
         place: impl Fn(Span) -> Option<Span>,
@@ -186,13 +217,28 @@ impl LintPipeline<'_> {
         } else {
             SourceContext::CompilationUnit
         };
-        let facts = oxabl_analyze::database_hints_from_expanded(
-            expanded,
-            &self.config().schema,
-            self.config().schema_loaded,
-            source_context,
-            kinds,
-        );
+        let schema = &self.config().schema;
+        let loaded = self.config().schema_loaded;
+        let facts = match unit {
+            Some(unit) => oxabl_analyze::database_hints_from_parsed(
+                oxabl_analyze::ParsedExpanded {
+                    expanded,
+                    tokens: unit.tokens(),
+                    program: unit.program(),
+                },
+                schema,
+                loaded,
+                source_context,
+                kinds,
+            ),
+            None => oxabl_analyze::database_hints_from_expanded(
+                expanded,
+                schema,
+                loaded,
+                source_context,
+                kinds,
+            ),
+        };
         let text = expanded.text.as_str();
         let start = |span: Span| {
             place(Span {
