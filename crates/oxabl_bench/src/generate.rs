@@ -703,7 +703,7 @@ impl Writer<'_> {
             out,
             "{ind}DEFINE {access}TEMP-TABLE {name} NO-UNDO\n{ind}    \
              FIELD id AS INTEGER\n{ind}    \
-             FIELD label AS CHARACTER\n{ind}    \
+             FIELD notes AS CHARACTER\n{ind}    \
              FIELD amount AS DECIMAL\n{ind}    \
              INDEX pk IS PRIMARY UNIQUE id."
         )
@@ -805,7 +805,7 @@ impl Writer<'_> {
                     out,
                     "{ind}CREATE {tt}.\n\
                      {ind}ASSIGN {tt}.id = {k}\n\
-                     {ind}       {tt}.label = \"row {k}\".\n\
+                     {ind}       {tt}.notes = \"row {k}\".\n\
                      {ind}FOR EACH {tt} WHERE {tt}.id > 0:\n\
                      {ind}    {p}-total = {p}-total + {tt}.amount.\n\
                      {ind}END."

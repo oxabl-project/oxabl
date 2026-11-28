@@ -199,10 +199,13 @@ CARGO_INCREMENTAL=0 cargo +nightly rustc -q -p oxabl_ast --lib --target-dir targ
 `scripts/bench/gen-workspace` writes a synthetic ABL workspace. The same knobs
 give the same files, byte for byte, on one platform (the file sizes use
 floating point, so another libm can differ). Every file is synthetic. Every
-root preprocesses and parses with no finding, and `oxabl format` changes no
+root preprocesses and parses with no finding, `oxabl format` changes no
 root and no include (`crates/oxabl_bench/tests/generate.rs`, on `ci` and a
-small `erp`). `--include-findings N` writes N unused variables in each hot
-include, so each root that reads one has findings in an include.
+small `erp`), and no generated declaration uses a reserved ABL keyword as a
+name (`no_generated_name_is_a_reserved_keyword`, on `ci`, `medium` and
+`erp`): the OpenEdge compiler rejects such a name. `--include-findings N`
+writes N unused variables in each hot include, so each root that reads one
+has findings in an include.
 
 ```sh
 scripts/bench/gen-workspace --preset erp --stats          # the shape, no files

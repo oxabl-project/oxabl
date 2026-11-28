@@ -1,14 +1,19 @@
 //! The generated workspace is deterministic, has the shape its knobs ask for,
 //! and every root of it preprocesses and parses with no finding.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::OnceLock;
 
 use oxabl_analyze::DiagnosticSource;
-use oxabl_bench::fixtures::in_memory;
-use oxabl_bench::generate::{Dist, Hot, Knobs, Preset, generate};
+use oxabl_bench::fixtures::{self, in_memory};
+use oxabl_bench::generate::{Dist, Hot, Knobs, Preset, Workspace, generate};
+use oxabl_common::FileId;
+use oxabl_lexer::tokenize;
+use oxabl_parser::Parser;
 use oxabl_pipeline::{FormatPipeline, LintPipeline};
+use oxabl_schema::{Schema, parse_df};
+use oxabl_semantic::{AnalysisContext, SymbolKind, declare_pass};
 
 /// Every feature of the ERP preset, at a size a test can analyse.
 fn small_erp() -> Knobs {
@@ -180,7 +185,7 @@ fn fingerprint(knobs: &Knobs) -> u64 {
 fn the_ci_workspace_does_not_change() {
     assert_eq!(
         fingerprint(&Preset::Ci.knobs()),
-        7_321_140_975_358_348_576,
+        4_926_732_877_128_225_756,
         "the ci workspace changed"
     );
 }
@@ -401,4 +406,223 @@ fn every_root_parses_with_no_finding_and_no_drift() {
         let found = findings(&knobs);
         assert!(found.is_empty(), "{name}: {found:?}");
     }
+}
+
+/// Every official ABL reserved keyword and every legal prefix abbreviation of
+/// one, lowercased, from `resources/abl_reserved_keywords.txt`.
+fn reserved_keywords() -> BTreeSet<String> {
+    let path = fixtures::resources_dir().join("abl_reserved_keywords.txt");
+    let content = std::fs::read_to_string(&path).expect("abl_reserved_keywords.txt");
+    let mut reserved = BTreeSet::new();
+    for line in content.lines().skip(1) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, "  ");
+        let name = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+        let abbrev = parts
+            .next()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty());
+        if name.is_empty() {
+            continue;
+        }
+        let hyphenated = name.replace(' ', "-");
+        reserved.insert(name.clone());
+        reserved.insert(hyphenated.clone());
+        if let Some(min) = abbrev {
+            for (full, prefix) in [(&name, min.clone()), (&hyphenated, min.replace(' ', "-"))] {
+                if full.starts_with(&prefix) {
+                    for end in prefix.len()..=full.len() {
+                        reserved.insert(full[..end].to_string());
+                    }
+                }
+            }
+        }
+    }
+    // `abl_keyword_index.html` spells `CURRENT-DATE` as `CURRENT_DATE`.
+    reserved.insert("current_date".to_string());
+    assert!(reserved.len() >= 439, "expected official reserved list");
+    assert!(reserved.contains("label"));
+    assert!(reserved.contains("status"));
+    assert!(reserved.contains("def"));
+    reserved
+}
+
+struct ReservedCheck<'a> {
+    reserved: &'a BTreeSet<String>,
+    hits: BTreeMap<String, String>,
+    checked: usize,
+}
+
+impl<'a> ReservedCheck<'a> {
+    fn new(reserved: &'a BTreeSet<String>) -> Self {
+        Self {
+            reserved,
+            hits: BTreeMap::new(),
+            checked: 0,
+        }
+    }
+
+    fn check(&mut self, preset: &str, path: &str, kind: &str, name: &str) {
+        if name.is_empty() {
+            return;
+        }
+        self.checked += 1;
+        let lower = name.to_ascii_lowercase();
+        for part in std::iter::once(lower.as_str()).chain(lower.split('.')) {
+            if self.reserved.contains(part) {
+                self.hits
+                    .entry(part.to_string())
+                    .or_insert_with(|| format!("{preset}: {path} declares {kind} `{name}`"));
+            }
+        }
+    }
+
+    fn check_schema(&mut self, workspace: &Workspace, preset: &str) {
+        let df = workspace.file("schema/app.df").expect("schema/app.df");
+        let outcome = parse_df(&df.text, FileId::new(0));
+        assert!(
+            outcome.diagnostics.is_empty(),
+            "{preset}: schema diagnostics {:?}",
+            outcome.diagnostics
+        );
+        assert!(!outcome.tables.is_empty(), "{preset}: empty schema");
+        for table in &outcome.tables {
+            self.check(preset, &df.path, "table", &table.display_name);
+        }
+        for pf in &outcome.fields {
+            self.check(preset, &df.path, "schema field", &pf.field.display_name);
+        }
+        for pi in &outcome.indexes {
+            self.check(preset, &df.path, "schema index", &pi.index.display_name);
+        }
+        for seq in &outcome.sequences {
+            self.check(preset, &df.path, "sequence", &seq.display_name);
+        }
+    }
+
+    fn check_declared_symbols(&mut self, workspace: &Workspace, preset: &str) {
+        let empty_schema = Schema::default();
+        let before = self.checked;
+        for file in workspace
+            .files
+            .iter()
+            .filter(|f| f.root || f.path.ends_with(".i"))
+        {
+            let tokens = tokenize(&file.text);
+            let program = Parser::new(&tokens, &file.text).parse_program();
+            assert!(
+                program.is_ok(),
+                "{preset}: {} parse errors: {:?}",
+                file.path,
+                program.errors
+            );
+            let ctx =
+                AnalysisContext::new(FileId::new(0), &file.text, &empty_schema, &program.pools);
+            let (_tree, symbols, _diags, _rev) = declare_pass(&program.statements, &ctx);
+            for (_id, sym) in symbols.iter() {
+                if sym.kind == SymbolKind::BuiltIn {
+                    continue;
+                }
+                let kind = format!("{:?}", sym.kind);
+                self.check(preset, &file.path, &kind, sym.name.as_ref());
+            }
+        }
+        assert!(
+            self.checked > before,
+            "{preset}: no declared symbols checked"
+        );
+    }
+
+    fn scan_declaration_line(&mut self, line: &str, preset: &str, path: &str) {
+        let t = line.trim();
+        for (prefix, kind) in [
+            ("FIELD ", "field"),
+            ("INDEX ", "index"),
+            ("DATA-RELATION ", "data-relation"),
+            ("PROCEDURE ", "procedure"),
+            ("FUNCTION ", "function"),
+            ("CLASS ", "class"),
+            ("&SCOPED-DEFINE ", "scoped-define"),
+            ("&GLOBAL-DEFINE ", "global-define"),
+        ] {
+            if let Some(rest) = t.strip_prefix(prefix) {
+                self.check(preset, path, kind, first_word(rest));
+            }
+        }
+        if t.starts_with("DEFINE ") {
+            for (marker, kind) in [
+                (" VARIABLE ", "variable"),
+                (" PARAMETER ", "parameter"),
+                (" PROPERTY ", "property"),
+                (" TEMP-TABLE ", "temp-table"),
+                (" BUFFER ", "buffer"),
+                (" DATASET ", "dataset"),
+            ] {
+                if let Some((_, rest)) = t.split_once(marker) {
+                    self.check(preset, path, kind, first_word(rest));
+                }
+            }
+        }
+        if let Some(rest) = t.strip_prefix("METHOD ") {
+            let mut words = rest.split_whitespace();
+            if let Some(head) = words.nth(2) {
+                self.check(preset, path, "method", first_word(head));
+            }
+        }
+        if let Some((_, params)) = t.split_once('(')
+            && let Some((inside, _)) = params.split_once(')')
+        {
+            for param in inside.split(',') {
+                let p = param.trim();
+                for dir in ["INPUT ", "OUTPUT ", "INPUT-OUTPUT "] {
+                    if let Some(rest) = p.strip_prefix(dir) {
+                        self.check(preset, path, "parameter", first_word(rest));
+                    }
+                }
+            }
+        }
+    }
+
+    fn scan_workspace(&mut self, workspace: &Workspace, preset: &str) {
+        let before = self.checked;
+        self.check_schema(workspace, preset);
+        for file in workspace
+            .files
+            .iter()
+            .filter(|f| f.root || f.path.ends_with(".i"))
+        {
+            for line in file.text.lines() {
+                self.scan_declaration_line(line, preset, &file.path);
+            }
+        }
+        assert!(self.checked > before, "{preset}: no declarations scanned");
+    }
+}
+
+fn first_word(rest: &str) -> &str {
+    rest.split(|c: char| c.is_whitespace() || matches!(c, ':' | '(' | '.' | ','))
+        .next()
+        .unwrap_or("")
+}
+
+#[test]
+fn no_generated_name_is_a_reserved_keyword() {
+    let reserved = reserved_keywords();
+    let mut check = ReservedCheck::new(&reserved);
+    let ci = generate(&Preset::Ci.knobs());
+    let small = generate(&small_erp());
+    let medium = generate(&Preset::Medium.knobs());
+    check.check_declared_symbols(&ci, "ci");
+    check.check_declared_symbols(&small, "small erp");
+    check.scan_workspace(&ci, "ci");
+    check.scan_workspace(&medium, "medium");
+    check.scan_workspace(erp(), "erp");
+    assert!(
+        check.hits.is_empty(),
+        "generated reserved keyword names: {:#?}",
+        check.hits
+    );
 }
