@@ -48,7 +48,7 @@ use oxabl_daemon_protocol::{
 };
 use oxabl_pipeline::{EdgeKind, Expansion, LintResult, ReverseGraph};
 use oxabl_semantic::{SymbolFlags, SymbolKind as SemanticSymbolKind};
-use oxabl_workspace::{FileSystem, discover_path_in};
+use oxabl_workspace::{FileSystem, discover_path_in, discover_path_in_detailed};
 
 use crate::dispatch::{ClientContext, Dispatch, MethodError};
 use crate::pass::{self, OverlayFileSystem};
@@ -720,7 +720,10 @@ fn ensure_workspace(
                 && let Some(workspace) = session.workspace()
             {
                 let current = session.generations();
-                if workspace.generations == current {
+                // A client said that files came or went since the pass walked:
+                // the pass is not current, whatever the buffers did.
+                let files_current = workspace.files_epoch == session.files_epoch();
+                if files_current && workspace.generations == current {
                     // The snapshot travels out of the critical section that checked
                     // it. Re-reading it afterwards was a second lock acquisition
                     // guarded by an `expect` on a condition the first one had
@@ -731,7 +734,8 @@ fn ensure_workspace(
                 // differently in them (an open of a file with its disk text, an
                 // edit of a file no analysis read, an edit undone): the pass is
                 // current.
-                if workspace.generations.config == current.config
+                if files_current
+                    && workspace.generations.config == current.config
                     && workspace.generations.schema == current.schema
                 {
                     let overlay = session.buffer_overlay();
@@ -751,12 +755,26 @@ fn ensure_workspace(
             // installs or discards as it would have; what it no longer does is keep
             // this request waiting on a slot a poller can re-win forever.
             let progress = session.begin_workspace_pass();
+            let previous = session.workspace().filter(|_| refresh != Refresh::Full);
+            // Only a pass that follows a move of the buffers keeps the list of
+            // files, and only while a client says when files come or go. A pass
+            // that the references requests asked for (`Refresh::Again`) walks,
+            // because their freshness check may have seen a file come or go.
+            let list = FileList {
+                keep: refresh == Refresh::IfMoved
+                    && session.files_watched()
+                    && previous
+                        .as_ref()
+                        .is_some_and(|previous| previous.files_epoch == session.files_epoch()),
+                epoch: session.files_epoch(),
+            };
             WorkspacePreparation::Build(
                 session.root().to_path_buf(),
                 session.buffer_overlay(),
                 session.generations(),
                 progress,
-                session.workspace().filter(|_| refresh != Refresh::Full),
+                previous,
+                list,
             )
         });
 
@@ -771,7 +789,7 @@ fn ensure_workspace(
                 parked = true;
                 parks += 1;
             }
-            WorkspacePreparation::Build(root, overlay, generations, progress, previous) => {
+            WorkspacePreparation::Build(root, overlay, generations, progress, previous, list) => {
                 attempts += 1;
                 let attempt = PassAttempt {
                     number: attempts,
@@ -784,7 +802,10 @@ fn ensure_workspace(
                     generations,
                     progress,
                     attempt,
-                    previous.as_ref(),
+                    PassStart {
+                        previous: previous.as_ref(),
+                        list,
+                    },
                 )? {
                     return Ok(workspace);
                 }
@@ -867,9 +888,9 @@ fn run_claimed_pass(
     generations: SessionGenerations,
     progress: WorkspaceProgress,
     attempt: PassAttempt,
-    previous: Option<&WorkspaceSnapshot>,
+    start: PassStart<'_>,
 ) -> Result<Option<WorkspaceSnapshot>, MethodError> {
-    let outcome = match build_workspace_from(root, overlay, generations, &progress, previous) {
+    let outcome = match build_workspace_from(root, overlay, generations, &progress, start) {
         Ok(mut workspace) => {
             progress.complete();
             host.with(|sessions| {
@@ -981,13 +1002,14 @@ fn run_claimed_workspace_pass(
     root: &Path,
     progress: WorkspaceProgress,
 ) -> Result<Option<WorkspaceSnapshot>, MethodError> {
-    let (owned_root, overlay, generations, previous) = host.with(|sessions| {
+    let (owned_root, overlay, generations, previous, epoch) = host.with(|sessions| {
         let session = sessions.for_root(root);
         (
             session.root().to_path_buf(),
             session.buffer_overlay(),
             session.generations(),
             session.workspace(),
+            session.files_epoch(),
         )
     });
     // Never the final attempt. This pass is started by a freshness poll and
@@ -1004,7 +1026,11 @@ fn run_claimed_workspace_pass(
             number: 1,
             is_final: false,
         },
-        previous.as_ref(),
+        PassStart {
+            previous: previous.as_ref(),
+            // A poll found the workspace stale: walk for the files.
+            list: FileList::walk(epoch),
+        },
     )
 }
 
@@ -1026,7 +1052,60 @@ enum WorkspacePreparation {
         SessionGenerations,
         WorkspaceProgress,
         Option<WorkspaceSnapshot>,
+        FileList,
     ),
+}
+
+/// What a pass starts from: the pass before it, if any, and where it takes
+/// its list of files from.
+struct PassStart<'p> {
+    previous: Option<&'p WorkspaceSnapshot>,
+    list: FileList,
+}
+
+/// Where a pass takes its list of files from.
+///
+/// A walk of the workspace costs a directory listing for each directory, and a
+/// pass after an edit of a buffer finds the same files as the pass before it.
+/// So that pass keeps the list, while all of these hold:
+///
+/// - a client watches the files of the workspace
+///   ([`Session::watch_files`](crate::Session::watch_files)), so that it hears
+///   of a file that came or went;
+/// - the extensions of the root files are all in the watch
+///   ([`oxabl_workspace::ROOT_EXTENSIONS`]);
+/// - no client said that files came or went since the pass before
+///   ([`Session::note_files_changed`](crate::Session::note_files_changed));
+/// - the configuration is the one of the pass before, and the pass is not full.
+///
+/// A pass that `reference_graph` forces (`Refresh::Again`) walks. Of the
+/// requests, only the references, call hierarchy and lens requests check that
+/// the list is fresh; the others (`workspace/symbol`, `oxabl/impact`, the
+/// includer contexts) read the pass as it is.
+#[derive(Debug, Clone, Copy)]
+struct FileList {
+    /// Take the list of the pass before, if its configuration is the same.
+    keep: bool,
+    /// The [`Session::files_epoch`](crate::Session) the pass is claimed at.
+    epoch: u64,
+}
+
+impl FileList {
+    /// A pass that walks for its files.
+    fn walk(epoch: u64) -> Self {
+        FileList { keep: false, epoch }
+    }
+}
+
+/// Whether a client's watch of the files sends an event for each file with one
+/// of `extensions` (`**/*.<ext>` for each of
+/// [`oxabl_workspace::ROOT_EXTENSIONS`]).
+fn watch_covers(extensions: &[String]) -> bool {
+    extensions.iter().all(|ext| {
+        oxabl_workspace::ROOT_EXTENSIONS
+            .iter()
+            .any(|watched| watched.eq_ignore_ascii_case(ext))
+    })
 }
 
 /// The thread count a workspace pass is limited to; 0 means no limit.
@@ -1059,7 +1138,16 @@ fn build_workspace(
     generations: SessionGenerations,
     progress: &WorkspaceProgress,
 ) -> Result<WorkspaceSnapshot, MethodError> {
-    build_workspace_from(root, overlay, generations, progress, None)
+    build_workspace_from(
+        root,
+        overlay,
+        generations,
+        progress,
+        PassStart {
+            previous: None,
+            list: FileList::walk(0),
+        },
+    )
 }
 
 type PassOutput = (
@@ -1071,44 +1159,70 @@ type PassOutput = (
 
 /// The graph, the symbol rows, the kept parts and the count of files analysed.
 /// Incremental from `previous` when the `SHARED` producers allow it.
+struct PassFiles<'a> {
+    root: &'a Path,
+    list: pass::PassList,
+    list_kept: bool,
+}
+
 fn run_pass(
     context: &pass::PassContext<'_>,
     previous: Option<&WorkspaceSnapshot>,
-    files: Vec<PathBuf>,
+    pass_files: PassFiles<'_>,
     overlay: &HashMap<PathBuf, Arc<str>>,
     disk: &oxabl_workspace::EncodedFileSystem,
-) -> PassOutput {
+) -> Result<PassOutput, MethodError> {
+    let PassFiles {
+        root,
+        list,
+        list_kept,
+    } = pass_files;
     let refreshed = match previous {
         Some(previous) => {
-            pass::incremental_pass(context, &previous.kept, files.clone(), overlay, disk)
+            pass::incremental_pass(context, &previous.kept, list.clone(), overlay, disk)
         }
         None => pass::Refreshed::Full,
     };
     match (refreshed, previous) {
-        (pass::Refreshed::Same(kept), Some(previous)) => (
+        (pass::Refreshed::Same(kept), Some(previous)) => Ok((
             Arc::clone(&previous.graph),
             Arc::clone(&previous.symbols),
             kept,
             0,
-        ),
+        )),
         (pass::Refreshed::Built(built), _) => {
-            (built.graph, built.symbols, built.kept, built.analysed)
+            Ok((built.graph, built.symbols, built.kept, built.analysed))
         }
         _ => {
-            let built = pass::full_pass(context, files);
-            (built.graph, built.symbols, built.kept, built.analysed)
+            // A full pass that started with a kept list walks fresh, so any
+            // file that came or went without an event is never carried into
+            // the full pass.
+            let list = if list_kept {
+                let found = discover_path_in_detailed(root, &context.config.root_extensions)
+                    .map_err(MethodError::internal)?;
+                pass::PassList {
+                    files: Arc::new(found.files),
+                    walk_met_link: found.reached_by_link,
+                }
+            } else {
+                list
+            };
+            let built = pass::full_pass(context, list);
+            Ok((built.graph, built.symbols, built.kept, built.analysed))
         }
     }
 }
 
 /// Test builds only: write how many files a pass analysed.
-fn report_pass_counts(analysed: usize, discovered: usize, kept: &pass::KeptPass) {
+fn report_pass_counts(analysed: usize, discovered: usize, kept: &pass::KeptPass, list_kept: bool) {
     if oxabl_common::INJECTION_ENABLED && std::env::var_os("OXABL_TEST_PASS_COUNTS").is_some() {
         use std::io::Write;
         let _ = writeln!(
             io::stderr(),
-            "oxabl-test: workspace pass analysed {analysed} of {discovered} files, kept {} bytes",
-            kept.estimated_heap_bytes()
+            "oxabl-test: workspace pass analysed {analysed} of {discovered} files, kept {} bytes, \
+             file list {}",
+            kept.estimated_heap_bytes(),
+            if list_kept { "kept" } else { "walked" }
         );
     }
 }
@@ -1149,17 +1263,58 @@ fn resolve_pass_config(
 /// Run a pass. With `previous`, analyse only the files that changed since it
 /// ran (see [`crate::pass`]); the pass is full when the configuration, the
 /// schema or the `SHARED` producers are not the same.
+/// Reuse the previous pass's file list when watching is active, the config
+/// was reused, all root extensions are watched, and the earlier walk met no
+/// symbolic link below the root; otherwise walk `root`.
+fn resolve_pass_files(
+    root: &Path,
+    config: &Arc<oxabl_pipeline::PipelineConfig>,
+    start: PassStart<'_>,
+    reused_config: bool,
+) -> Result<pass::PassList, MethodError> {
+    let PassStart { previous, list } = start;
+    let kept_list = previous
+        .filter(|previous| {
+            list.keep
+                && reused_config
+                && Arc::ptr_eq(&previous.config, config)
+                && watch_covers(&config.root_extensions)
+                && !previous.kept.walk_met_link()
+        })
+        .map(|previous| {
+            debug_assert_eq!(
+                previous.config.root_extensions, config.root_extensions,
+                "a kept list is the list of the same extensions"
+            );
+            Arc::clone(previous.kept.files())
+        });
+    match kept_list {
+        Some(files) => Ok(pass::PassList {
+            files,
+            walk_met_link: false,
+        }),
+        None => {
+            let found = discover_path_in_detailed(root, &config.root_extensions)
+                .map_err(MethodError::internal)?;
+            Ok(pass::PassList {
+                files: Arc::new(found.files),
+                walk_met_link: found.reached_by_link,
+            })
+        }
+    }
+}
+
 fn build_workspace_from(
     root: &Path,
     overlay: HashMap<PathBuf, Arc<str>>,
     generations: SessionGenerations,
     progress: &WorkspaceProgress,
-    previous: Option<&WorkspaceSnapshot>,
+    start: PassStart<'_>,
 ) -> Result<WorkspaceSnapshot, MethodError> {
+    let PassStart { previous, list } = start;
     let started = Instant::now();
     let (config, config_stamps, reused_config) = resolve_pass_config(root, generations, previous);
-    let files = discover_path_in(root, &config.root_extensions).map_err(MethodError::internal)?;
-    let discovered_files = files.len();
+    let pass_list = resolve_pass_files(root, &config, start, reused_config)?;
     let disk = config.file_system();
     let fs = pass::pass_file_system(overlay.clone(), config.file_system());
     let collect = |path: &Path, expansion: &Expansion, result: &LintResult, fs: &dyn FileSystem| {
@@ -1181,8 +1336,21 @@ fn build_workspace_from(
             && previous.generations.schema == generations.schema
             && previous.kept.same_config(&config)
     });
-    let (graph, symbols, kept, analysed) = run_pass(&context, previous, files, &overlay, &disk);
-    report_pass_counts(analysed, discovered_files, &kept);
+    let list_kept =
+        previous.is_some_and(|previous| Arc::ptr_eq(previous.kept.files(), &pass_list.files));
+    let (graph, symbols, kept, analysed) = run_pass(
+        &context,
+        previous,
+        PassFiles {
+            root,
+            list: pass_list,
+            list_kept,
+        },
+        &overlay,
+        &disk,
+    )?;
+    let discovered_files = kept.files().len();
+    report_pass_counts(analysed, discovered_files, &kept, list_kept);
 
     let tracked_files = graph.tracked_files();
     Ok(WorkspaceSnapshot {
@@ -1194,6 +1362,7 @@ fn build_workspace_from(
         generations,
         pass_millis: started.elapsed().as_millis() as u64,
         root: root.to_path_buf(),
+        files_epoch: list.epoch,
         // The count discovery produced, captured before the pipeline widened it with
         // include targets from outside the tree.
         discovered_files,
@@ -1993,6 +2162,258 @@ mod tests {
         let _ = parked.join();
     }
 
+    /// The files of a pass, by name.
+    fn names(workspace: &WorkspaceSnapshot) -> Vec<String> {
+        workspace
+            .kept
+            .files()
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_pass_keeps_the_file_list_until_it_is_asked_to_walk() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let root = dir.path();
+        std::fs::write(
+            root.join("oxabl.toml"),
+            "[workspace]\nname = \"test\"\n[workspace.sources]\ninclude_paths = [\".\"]\n",
+        )
+        .expect("write oxabl.toml");
+        std::fs::write(root.join("a.p"), "MESSAGE \"one\".\n").expect("write a.p");
+        let host = SessionHost::new();
+        let generations = host.with(|sessions| sessions.for_root(root).generations());
+        let pass = |previous: Option<&WorkspaceSnapshot>, list: FileList, generations| {
+            build_workspace_from(
+                root,
+                HashMap::new(),
+                generations,
+                &WorkspaceProgress::default(),
+                PassStart { previous, list },
+            )
+            .expect("the pass succeeds")
+        };
+        let first = pass(None, FileList::walk(0), generations);
+        assert_eq!(names(&first), ["a.p"]);
+
+        // A file that came, and a pass that keeps the list: the list is the
+        // one of the pass before, shared and not copied.
+        std::fs::write(root.join("b.p"), "MESSAGE \"two\".\n").expect("write b.p");
+        let keep = FileList {
+            keep: true,
+            epoch: 0,
+        };
+        let kept = pass(Some(&first), keep, generations);
+        assert!(Arc::ptr_eq(first.kept.files(), kept.kept.files()));
+        assert_eq!(kept.discovered_files, 1);
+
+        // The same pass, asked to walk: it finds the file, and it records the
+        // epoch it was asked at.
+        let walked = pass(Some(&kept), FileList::walk(1), generations);
+        assert_eq!(names(&walked), ["a.p", "b.p"]);
+        assert_eq!(walked.discovered_files, 2);
+        assert_eq!(walked.files_epoch, 1);
+
+        // A new configuration generation is not a configuration to keep a list
+        // under, whatever the pass is asked.
+        std::fs::write(root.join("c.p"), "MESSAGE \"three\".\n").expect("write c.p");
+        let moved = SessionGenerations {
+            config: generations.config + 1,
+            ..generations
+        };
+        let reconfigured = pass(Some(&walked), keep, moved);
+        assert_eq!(names(&reconfigured), ["a.p", "b.p", "c.p"]);
+    }
+
+    /// A workspace with `a.p` and a pass over it, started through
+    /// `ensure_workspace`, and the means to move its buffer.
+    struct Kept {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        host: SessionHost,
+        edits: usize,
+    }
+
+    impl Kept {
+        fn new(config: &str) -> Kept {
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let root = crate::session::canonical_root(dir.path()).expect("the root exists");
+            std::fs::write(root.join("oxabl.toml"), config).expect("write oxabl.toml");
+            std::fs::write(root.join("a.p"), "MESSAGE \"one\".\n").expect("write a.p");
+            Kept {
+                _dir: dir,
+                root,
+                host: SessionHost::new(),
+                edits: 0,
+            }
+        }
+
+        /// A pass after an edit of the open buffer.
+        fn pass_after_edit(&mut self) -> WorkspaceSnapshot {
+            self.edits += 1;
+            let a = self.root.join("a.p");
+            let key = a.to_string_lossy().into_owned();
+            let text = format!("MESSAGE \"edit {}\".\n", self.edits);
+            self.host.with(|sessions| {
+                sessions
+                    .for_root(&self.root)
+                    .set_buffer(&key, text, Some(a.clone()));
+            });
+            self.pass()
+        }
+
+        fn pass(&self) -> WorkspaceSnapshot {
+            ensure_workspace(&self.host, &self.root, Refresh::IfMoved).expect("a pass")
+        }
+
+        fn session<T>(&self, work: impl FnOnce(&mut crate::Session) -> T) -> T {
+            self.host
+                .with(|sessions| work(sessions.for_root(&self.root)))
+        }
+    }
+
+    const SOURCES_CONFIG: &str =
+        "[workspace]\nname = \"test\"\n[workspace.sources]\ninclude_paths = [\".\"]\n";
+
+    /// `ensure_workspace` hands a pass the list of the pass before it only
+    /// while a client watches the files and no client said that files came or
+    /// went.
+    #[test]
+    fn an_event_about_files_makes_the_next_pass_walk() {
+        let mut kept = Kept::new(SOURCES_CONFIG);
+        kept.session(|session| session.watch_files());
+        let first = kept.pass_after_edit();
+        assert_eq!(names(&first), ["a.p"]);
+
+        std::fs::write(kept.root.join("b.p"), "MESSAGE \"two\".\n").expect("write b.p");
+        let second = kept.pass_after_edit();
+        assert!(
+            Arc::ptr_eq(first.kept.files(), second.kept.files()),
+            "an edit of a buffer keeps the list of files"
+        );
+
+        kept.session(|session| session.note_files_changed());
+        let third = kept.pass_after_edit();
+        assert_eq!(names(&third), ["a.p", "b.p"]);
+
+        // The list is kept again until the next event.
+        let fourth = kept.pass_after_edit();
+        assert!(Arc::ptr_eq(third.kept.files(), fourth.kept.files()));
+    }
+
+    /// An event is enough to make the stored pass stale: no edit has to follow.
+    #[test]
+    fn an_event_alone_makes_the_stored_pass_stale() {
+        let mut kept = Kept::new(SOURCES_CONFIG);
+        kept.session(|session| session.watch_files());
+        let first = kept.pass_after_edit();
+        assert!(
+            Arc::ptr_eq(first.kept.files(), kept.pass().kept.files()),
+            "no event, no edit: the stored pass is current"
+        );
+
+        std::fs::write(kept.root.join("b.p"), "MESSAGE \"two\".\n").expect("write b.p");
+        kept.session(|session| session.note_files_changed());
+        assert_eq!(names(&kept.pass()), ["a.p", "b.p"]);
+    }
+
+    /// With no client that watches the files, nothing says that a file came or
+    /// went, so each pass walks.
+    #[test]
+    fn a_pass_walks_when_no_client_watches_the_files() {
+        let mut kept = Kept::new(SOURCES_CONFIG);
+        assert_eq!(names(&kept.pass_after_edit()), ["a.p"]);
+        std::fs::write(kept.root.join("b.p"), "MESSAGE \"two\".\n").expect("write b.p");
+        assert_eq!(names(&kept.pass_after_edit()), ["a.p", "b.p"]);
+
+        // A watch that began after the pass moves the epoch: the first pass
+        // that follows walks, and then the list is kept.
+        std::fs::write(kept.root.join("c.p"), "MESSAGE \"three\".\n").expect("write c.p");
+        kept.session(|session| session.watch_files());
+        let walked = kept.pass_after_edit();
+        assert_eq!(names(&walked), ["a.p", "b.p", "c.p"]);
+        assert!(Arc::ptr_eq(
+            walked.kept.files(),
+            kept.pass_after_edit().kept.files()
+        ));
+
+        // The watch ends with its client.
+        kept.session(|session| session.unwatch_files());
+        std::fs::write(kept.root.join("d.p"), "MESSAGE \"four\".\n").expect("write d.p");
+        assert_eq!(names(&kept.pass_after_edit()), ["a.p", "b.p", "c.p", "d.p"]);
+    }
+
+    /// A root extension that the watch does not name sends no event, so the
+    /// list is walked.
+    #[test]
+    fn a_pass_walks_when_a_root_extension_is_not_watched() {
+        let config = format!("{SOURCES_CONFIG}root_extensions = [\"p\", \"t\"]\n");
+        let mut kept = Kept::new(&config);
+        kept.session(|session| session.watch_files());
+        assert_eq!(names(&kept.pass_after_edit()), ["a.p"]);
+        std::fs::write(kept.root.join("b.t"), "MESSAGE \"two\".\n").expect("write b.t");
+        assert_eq!(names(&kept.pass_after_edit()), ["a.p", "b.t"]);
+
+        assert!(watch_covers(&["p".to_string(), "CLS".to_string()]));
+        assert!(!watch_covers(&["p".to_string(), "t".to_string()]));
+    }
+
+    /// A file deleted without an event heals on the next pass that runs: it is
+    /// dropped from the kept list, leaves no symbol row, and does not count as
+    /// unanalysed.
+    #[test]
+    fn a_missed_delete_is_dropped_from_a_kept_list() {
+        let mut kept = Kept::new(SOURCES_CONFIG);
+        std::fs::write(kept.root.join("b.p"), "PROCEDURE gone:\nEND PROCEDURE.\n")
+            .expect("write b.p");
+        kept.session(|session| session.watch_files());
+        let first = kept.pass_after_edit();
+        assert_eq!(names(&first), ["a.p", "b.p"]);
+
+        // Delete b.p on disk without notifying the session, then edit a.p.
+        std::fs::remove_file(kept.root.join("b.p")).expect("remove b.p");
+        let after = kept.pass_after_edit();
+        assert_eq!(names(&after), ["a.p"]);
+        assert_eq!(after.discovered_files, 1);
+        assert!(
+            after.graph.unanalysed().is_empty(),
+            "a deleted file must not stay unanalysed: {:?}",
+            after.graph.unanalysed()
+        );
+        assert!(
+            after
+                .symbols
+                .iter()
+                .all(|row| row.name != "b" && row.name != "gone"),
+            "the deleted file leaves no symbol row"
+        );
+        // The reduced list is kept by the pass after it.
+        let again = kept.pass_after_edit();
+        assert!(Arc::ptr_eq(after.kept.files(), again.kept.files()));
+    }
+
+    /// A walk that followed a symbolic link below the root does not keep its
+    /// list, because watchers do not report files behind a symlinked directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_pass_walks_when_the_tree_has_a_symlinked_directory() {
+        let mut kept = Kept::new(SOURCES_CONFIG);
+        let outside = tempfile::tempdir().expect("outside directory");
+        std::fs::write(outside.path().join("ext1.p"), "MESSAGE \"one\".\n").expect("write ext1.p");
+        std::os::unix::fs::symlink(outside.path(), kept.root.join("linked"))
+            .expect("symlink directory");
+        kept.session(|session| session.watch_files());
+
+        let first = kept.pass_after_edit();
+        assert!(first.kept.walk_met_link());
+        assert_eq!(names(&first), ["a.p", "ext1.p"]);
+
+        std::fs::write(outside.path().join("ext2.p"), "MESSAGE \"two\".\n").expect("write ext2.p");
+        let second = kept.pass_after_edit();
+        assert_eq!(names(&second), ["a.p", "ext1.p", "ext2.p"]);
+    }
+
     #[test]
     fn incremental_pass_reuses_config_until_config_or_schema_changes() {
         let dir = tempfile::tempdir().expect("a temporary directory");
@@ -2018,7 +2439,10 @@ mod tests {
             HashMap::new(),
             generations,
             &WorkspaceProgress::default(),
-            None,
+            PassStart {
+                previous: None,
+                list: FileList::walk(0),
+            },
         )
         .expect("first pass succeeds");
         assert!(first.config.schema.table("Customer").is_some());
@@ -2031,7 +2455,10 @@ mod tests {
             overlay,
             generations,
             &WorkspaceProgress::default(),
-            Some(&first),
+            PassStart {
+                previous: Some(&first),
+                list: FileList::walk(0),
+            },
         )
         .expect("second pass succeeds");
         assert!(
@@ -2052,7 +2479,10 @@ mod tests {
             HashMap::new(),
             generations,
             &WorkspaceProgress::default(),
-            Some(&second),
+            PassStart {
+                previous: Some(&second),
+                list: FileList::walk(0),
+            },
         )
         .expect("third pass succeeds");
         assert!(

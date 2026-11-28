@@ -1077,6 +1077,9 @@ struct Negotiated {
     folding_range_limit: Option<usize>,
     /// Whether the client takes `window/workDoneProgress/create`.
     work_done_progress: bool,
+    /// Whether the client takes a dynamic registration of
+    /// `workspace/didChangeWatchedFiles`.
+    watches_files: bool,
 }
 
 fn serve_initialized(
@@ -1088,6 +1091,11 @@ fn serve_initialized(
     host: SessionHost,
     already_attached: bool,
 ) -> Result<bool> {
+    if !already_attached {
+        host.with(|sessions| {
+            sessions.for_root(&session_root).attach(true);
+        });
+    }
     let mut server = Server::new(
         connection,
         options,
@@ -1096,11 +1104,6 @@ fn serve_initialized(
         session_root,
         host,
     );
-    if !already_attached {
-        server.host.with(|sessions| {
-            sessions.for_root(&server.session_root).attach(true);
-        });
-    }
     let result = server.main_loop();
     server.detach();
     result
@@ -1169,6 +1172,13 @@ fn finish_handshake(
         .as_ref()
         .and_then(|c| c.work_done_progress)
         .unwrap_or(false);
+    let watches_files = init
+        .capabilities
+        .workspace
+        .as_ref()
+        .and_then(|c| c.did_change_watched_files.as_ref())
+        .and_then(|c| c.dynamic_registration)
+        .unwrap_or(false);
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
@@ -1221,6 +1231,7 @@ fn finish_handshake(
             related_information,
             folding_range_limit,
             work_done_progress,
+            watches_files,
         },
         workspace_root,
     ))
@@ -1336,6 +1347,15 @@ struct Server<'c> {
     schema_requests: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Whether the client takes `window/workDoneProgress/create`.
     work_done_progress: bool,
+    /// Whether the client takes a dynamic registration of
+    /// `workspace/didChangeWatchedFiles`.
+    watches_files: bool,
+    /// Whether this server told its session that the client watches the files
+    /// (`Session::watch_files`), so that it takes the count back at the end.
+    file_watch_counted: bool,
+    /// Whether [`Self::detach`] has already run, so [`Drop`] does not run it
+    /// a second time after a normal exit.
+    detached: bool,
     /// The `window/workDoneProgress/create` requests that wait for the client.
     progress_creations: std::sync::Arc<work_progress::Creations>,
 }
@@ -1366,6 +1386,9 @@ struct ComputeResult {
     config_generation: u64,
 }
 
+/// The id of the registration of the file watchers.
+const FILE_WATCH_ID: &str = "oxabl-file-watchers";
+
 impl<'c> Server<'c> {
     fn new(
         connection: &'c Connection,
@@ -1386,6 +1409,7 @@ impl<'c> Server<'c> {
             related_information,
             folding_range_limit,
             work_done_progress,
+            watches_files,
         } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         let (context_events, context_results) = crossbeam_channel::unbounded();
@@ -1427,6 +1451,9 @@ impl<'c> Server<'c> {
             references: references::InFlight::default(),
             schema_requests: Default::default(),
             work_done_progress,
+            watches_files,
+            file_watch_counted: false,
+            detached: false,
             progress_creations: Default::default(),
         }
     }
@@ -1560,6 +1587,7 @@ impl<'c> Server<'c> {
                             self.handle_notification(not);
                         }
                         Message::Response(response) => {
+                            self.file_watch_answered(&response);
                             self.progress_creations.answered(&response);
                         }
                     }
@@ -1962,7 +1990,13 @@ impl<'c> Server<'c> {
     /// The list comes from [`oxabl_workspace::ROOT_EXTENSIONS`] rather than being
     /// spelled out here, so the watch cannot drift from the one root-file policy
     /// the discovery walk and the index's own search both use.
-    fn register_file_watchers(&self) {
+    ///
+    /// A client that takes the registration is a watcher of the session: the
+    /// daemon keeps the file list of a workspace pass only while one is
+    /// attached (`Session::watch_files`). Only the extensions of
+    /// [`oxabl_workspace::ROOT_EXTENSIONS`] are watched, so the daemon walks
+    /// again when the configuration names another one.
+    fn register_file_watchers(&mut self) {
         let mut watchers = vec![
             serde_json::json!({ "globPattern": "**/*.i" }),
             serde_json::json!({ "globPattern": "**/*.df" }),
@@ -1975,7 +2009,7 @@ impl<'c> Server<'c> {
         );
         let params = serde_json::json!({
             "registrations": [{
-                "id": "oxabl-file-watchers",
+                "id": FILE_WATCH_ID,
                 "method": "workspace/didChangeWatchedFiles",
                 "registerOptions": {
                     "watchers": watchers
@@ -1983,11 +2017,37 @@ impl<'c> Server<'c> {
             }]
         });
         let request = Request {
-            id: RequestId::from("oxabl-file-watchers".to_string()),
+            id: RequestId::from(FILE_WATCH_ID.to_string()),
             method: "client/registerCapability".to_string(),
             params,
         };
         let _ = self.connection.sender.send(Message::Request(request));
+    }
+
+    /// The client's answer to the watch registration. Count the watcher only
+    /// once the client confirms it; a client that refuses or never answers
+    /// sends no events.
+    fn file_watch_answered(&mut self, response: &Response) {
+        if response.id != RequestId::from(FILE_WATCH_ID.to_string()) {
+            return;
+        }
+        if response.error.is_some() {
+            self.file_watch_ended();
+        } else if self.watches_files && !self.file_watch_counted {
+            self.file_watch_counted = true;
+            self.host.with(|sessions| {
+                sessions.for_root(&self.session_root).watch_files();
+            });
+        }
+    }
+
+    /// The client does not watch the files (any more).
+    fn file_watch_ended(&mut self) {
+        if std::mem::take(&mut self.file_watch_counted) {
+            self.host.with(|sessions| {
+                sessions.for_root(&self.session_root).unwatch_files();
+            });
+        }
     }
 
     /// Resolve the one [`PipelineConfig`] for a document `path` and install it in
@@ -2092,6 +2152,24 @@ impl<'c> Server<'c> {
             .send(Message::Notification(notification));
     }
 
+    /// A file came or went: the next workspace pass walks for its files, and
+    /// does not keep the list of the pass before.
+    fn note_files_that_came_or_went(&self, params: &DidChangeWatchedFilesParams) {
+        let came_or_went = params.changes.iter().any(|event| {
+            matches!(
+                event.typ,
+                lsp_types::FileChangeType::CREATED | lsp_types::FileChangeType::DELETED
+            )
+        });
+        if came_or_went {
+            self.host.with(|sessions| {
+                if let Some(session) = sessions.get_mut(&self.session_root) {
+                    session.note_files_changed();
+                }
+            });
+        }
+    }
+
     /// React to `workspace/didChangeWatchedFiles`: `.df` changes hot-reload the
     /// schema (R16); `oxabl.toml` changes re-resolve include paths + `[lint]`
     /// config (R17); `*.i` changes re-trigger the buffers that depend on them
@@ -2118,6 +2196,7 @@ impl<'c> Server<'c> {
         }
         // A file on disk changed: no session generation says so.
         self.reference_cache.clear();
+        self.note_files_that_came_or_went(&params);
         oxabl_daemon::hierarchy::forget_subtype_index(&self.host, &self.session_root);
         let mut schema_changed = false;
         let mut config_changed = false;
@@ -2383,6 +2462,9 @@ impl<'c> Server<'c> {
     }
 
     fn detach(&mut self) {
+        if std::mem::replace(&mut self.detached, true) {
+            return;
+        }
         let keys: Vec<String> = self
             .documents
             .uris()
@@ -2395,6 +2477,7 @@ impl<'c> Server<'c> {
             }
             session.detach(true);
         });
+        self.file_watch_ended();
     }
 
     /// Send a `textDocument/publishDiagnostics` notification.
@@ -2571,6 +2654,12 @@ impl<'c> Server<'c> {
     }
 }
 
+impl Drop for Server<'_> {
+    fn drop(&mut self) {
+        self.detach();
+    }
+}
+
 /// Best-effort conversion of a `file:` URI to a filesystem path. Returns `None`
 /// for non-`file` schemes (the server simply skips workspace config for those).
 ///
@@ -2669,6 +2758,7 @@ mod tests {
                 related_information: false,
                 folding_range_limit: None,
                 work_done_progress: false,
+                watches_files: false,
             },
             std::time::Duration::from_millis(10),
             None,

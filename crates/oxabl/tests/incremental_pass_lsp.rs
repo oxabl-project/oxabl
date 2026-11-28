@@ -5,7 +5,7 @@
 //!
 //! A test build of the daemon writes one line to stderr for each pass when
 //! `OXABL_TEST_PASS_COUNTS` is set: `oxabl-test: workspace pass analysed <n>
-//! of <m> files, kept <bytes> bytes`.
+//! of <m> files, kept <bytes> bytes, file list <kept|walked>`.
 
 #![cfg(unix)]
 
@@ -129,10 +129,27 @@ impl Workspace {
 }
 
 fn start(ws: &Workspace) -> Session {
+    start_as(ws, false)
+}
+
+/// How the test client answers `client/registerCapability` for file watchers.
+#[derive(Clone, Copy)]
+enum WatchReply {
+    None,
+    Accept,
+    Refuse,
+}
+
+/// A session whose client says, when `watching`, that it takes a dynamic
+/// registration of `workspace/didChangeWatchedFiles` and replies with `reply`.
+fn start_with_watch(ws: &Workspace, watching: bool, reply: WatchReply) -> Session {
     let params = json!({
         "capabilities": {
             "textDocument": {"codeLens": {"dynamicRegistration": false}},
-            "workspace": {"codeLens": {"refreshSupport": true}}
+            "workspace": {
+                "codeLens": {"refreshSupport": true},
+                "didChangeWatchedFiles": {"dynamicRegistration": watching}
+            }
         },
         "initializationOptions": {"referenceLenses": {"enable": true}}
     });
@@ -140,9 +157,39 @@ fn start(ws: &Workspace) -> Session {
         env: &[("OXABL_TEST_PASS_COUNTS", "1")],
         ..Launch::default()
     };
-    Session::launch_with(&ws.root, params, launch, |_| {})
-        .await_initialize()
-        .0
+    let (mut session, early) =
+        Session::launch_with(&ws.root, params, launch, |_| {}).await_initialize();
+    if !matches!(reply, WatchReply::None) {
+        let req = early
+            .into_iter()
+            .find(|m| m["method"] == json!("client/registerCapability"))
+            .unwrap_or_else(|| {
+                session.wait_for(|m| m["method"] == json!("client/registerCapability"))
+            });
+        let id = req["id"].clone();
+        let response = match reply {
+            WatchReply::Accept => json!({"jsonrpc": "2.0", "id": id, "result": null}),
+            WatchReply::Refuse => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32601, "message": "watch registration refused"}
+            }),
+            WatchReply::None => unreachable!(),
+        };
+        session.send(response);
+    }
+    session
+}
+
+/// A session whose client says, when `watching`, that it takes a dynamic
+/// registration of `workspace/didChangeWatchedFiles`.
+fn start_as(ws: &Workspace, watching: bool) -> Session {
+    let reply = if watching {
+        WatchReply::Accept
+    } else {
+        WatchReply::None
+    };
+    start_with_watch(ws, watching, reply)
 }
 
 /// A session with every file of `ws` open, with the text of its buffer.
@@ -164,6 +211,17 @@ fn passes(session: &Session) -> Vec<(usize, usize)> {
             let words: Vec<&str> = rest.split_whitespace().collect();
             (words[0].parse().unwrap(), words[2].parse().unwrap())
         })
+        .collect()
+}
+
+/// Whether each pass the daemon of `session` ran so far kept the file list of
+/// the pass before (`true`) or walked for it (`false`).
+fn lists_kept(session: &Session) -> Vec<bool> {
+    session
+        .stderr()
+        .lines()
+        .filter(|line| line.starts_with("oxabl-test: workspace pass analysed "))
+        .map(|line| line.ends_with("file list kept"))
         .collect()
 }
 
@@ -478,6 +536,218 @@ fn a_file_changed_on_disk_is_analysed_again() {
         &changed,
         &fresh_answers_in(&ws, &["main.p"]),
         "a change on disk",
+    );
+}
+
+/// The threads of a pass share the facts of the files they reach, so most
+/// analyses of a program that many files run take its facts from another
+/// thread's read. Each of them still has to list the program as an input.
+#[test]
+fn a_program_that_many_files_run_is_analysed_again_for_each_of_them() {
+    const CALLERS: usize = 60;
+    let mut ws = Workspace::new();
+    for n in 0..CALLERS {
+        let path = ws.path(&format!("caller/c{n}.p"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("RUN lib/util.p.\nMESSAGE \"{n}\".\n")).unwrap();
+    }
+    let mut session = start(&ws);
+    session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+    let _ = answers_in(&mut session, &ws, &["main.p"]);
+    let seen = passes(&session).len();
+
+    let text = format!("{}PROCEDURE extra:\nEND PROCEDURE.\n", UTIL);
+    std::fs::write(ws.path("lib/util.p"), &text).unwrap();
+    ws.texts.insert("lib/util.p", text);
+    let changed = answers_in(&mut session, &ws, &["main.p"]);
+
+    let runs = passes(&session);
+    let &(analysed, _) = runs[seen..].last().expect("the change ran a pass");
+    // The program, its two callers in the base workspace and the new callers.
+    assert_eq!(
+        analysed,
+        CALLERS + 3,
+        "every file that runs the program was analysed again: {runs:?}"
+    );
+    assert_same(
+        &changed,
+        &fresh_answers_in(&ws, &["main.p"]),
+        "a change of a program that many files run",
+    );
+}
+
+/// The names of the workspace symbols that match `query`.
+fn symbol_names(session: &mut Session, query: &str) -> Vec<String> {
+    let answer = session.request("workspace/symbol", json!({"query": query}));
+    assert!(answer.get("error").is_none(), "symbol gave {answer}");
+    answer["result"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|row| row["name"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// The client says that files came (`1`) or went (`3`).
+fn watched(session: &mut Session, ws: &Workspace, names: &[&str], kind: u8) {
+    let changes: Vec<Value> = names
+        .iter()
+        .map(|name| json!({"uri": file_uri(&ws.path(name)), "type": kind}))
+        .collect();
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeWatchedFiles",
+        "params": {"changes": changes}
+    }));
+}
+
+/// An edit of the open `main.p`, which makes the next request run a pass.
+fn touch(session: &mut Session, ws: &mut Workspace, version: u64) {
+    let text = format!("{}MESSAGE \"{version}\".\n", ws.texts["main.p"]);
+    edit(session, ws, "main.p", text, version);
+}
+
+/// A client that watches the files keeps the list of files of the pass before
+/// across an edit of a buffer, so a file that came or went is in the next pass
+/// only when the client said so. `workspace/symbol` asks for a pass and checks
+/// no walk of its own.
+#[test]
+fn a_file_that_the_client_says_came_or_went_is_in_the_next_pass() {
+    let mut ws = Workspace::new();
+    let mut session = start_as(&ws, true);
+    session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+    assert!(symbol_names(&mut session, "newProc").is_empty());
+
+    let new = "PROCEDURE newProc:\nEND PROCEDURE.\n";
+    std::fs::create_dir_all(ws.path("fresh")).unwrap();
+    std::fs::write(ws.path("fresh/new.p"), new).unwrap();
+    watched(&mut session, &ws, &["fresh/new.p"], 1);
+    touch(&mut session, &mut ws, 2);
+    assert_eq!(symbol_names(&mut session, "newProc"), ["newProc"]);
+    // The file has a row of its own, named for the file: the row that a pass
+    // that still lists a deleted file would leave.
+    assert_eq!(symbol_names(&mut session, "new"), ["new", "newProc"]);
+
+    std::fs::remove_file(ws.path("fresh/new.p")).unwrap();
+    watched(&mut session, &ws, &["fresh/new.p"], 3);
+    touch(&mut session, &mut ws, 3);
+    assert!(
+        symbol_names(&mut session, "new").is_empty(),
+        "the rows of a file that is gone are gone"
+    );
+}
+
+/// Only a client that registered a watch of the files has its file list kept:
+/// without one, nothing tells the daemon that a file came or went.
+#[test]
+fn only_a_client_that_watches_the_files_has_its_file_list_kept() {
+    for watching in [true, false] {
+        let mut ws = Workspace::new();
+        let mut session = start_as(&ws, watching);
+        session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+        let _ = symbol_names(&mut session, "x");
+        touch(&mut session, &mut ws, 2);
+        let _ = symbol_names(&mut session, "x");
+        watched(&mut session, &ws, &["main.p"], 1);
+        touch(&mut session, &mut ws, 3);
+        let _ = symbol_names(&mut session, "x");
+        touch(&mut session, &mut ws, 4);
+        let _ = symbol_names(&mut session, "x");
+
+        // The first pass has no list to keep; an event makes the pass walk.
+        let expected = if watching {
+            vec![false, true, false, true]
+        } else {
+            vec![false; 4]
+        };
+        assert_eq!(lists_kept(&session), expected, "watching: {watching}");
+    }
+}
+
+/// A client that announces dynamic registration but refuses the watch request
+/// does not have its file list kept.
+#[test]
+fn a_client_that_refuses_watch_registration_does_not_keep_the_file_list() {
+    let mut ws = Workspace::new();
+    let mut session = start_with_watch(&ws, true, WatchReply::Refuse);
+    session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+    let _ = symbol_names(&mut session, "x");
+    touch(&mut session, &mut ws, 2);
+    let _ = symbol_names(&mut session, "x");
+    assert_eq!(lists_kept(&session), vec![false, false]);
+}
+
+/// A deleted file whose watch event was missed heals on the next pass that
+/// runs, even though the file list was kept.
+#[test]
+fn a_missed_delete_is_dropped_from_a_kept_list_on_the_next_pass() {
+    let mut ws = Workspace::new();
+    std::fs::create_dir_all(ws.path("fresh")).unwrap();
+    std::fs::write(
+        ws.path("fresh/new.p"),
+        "PROCEDURE newProc:\nEND PROCEDURE.\n",
+    )
+    .unwrap();
+    let mut session = start_as(&ws, true);
+    session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+    assert_eq!(symbol_names(&mut session, "new"), ["new", "newProc"]);
+
+    // Remove the file without sending a DELETED event, then edit main.p.
+    std::fs::remove_file(ws.path("fresh/new.p")).unwrap();
+    touch(&mut session, &mut ws, 2);
+    assert!(
+        symbol_names(&mut session, "new").is_empty(),
+        "the rows of a deleted file are dropped even without a DELETED event"
+    );
+    assert_eq!(lists_kept(&session), vec![false, true]);
+}
+
+/// An event alone makes the stored pass stale: no edit has to follow it. A
+/// deleted folder arrives as one event for the folder, with no extension.
+#[test]
+fn an_event_about_files_alone_runs_the_next_pass() {
+    let ws = Workspace::new();
+    let mut session = start_as(&ws, true);
+    session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+    assert!(symbol_names(&mut session, "newProc").is_empty());
+
+    std::fs::create_dir_all(ws.path("fresh")).unwrap();
+    std::fs::write(
+        ws.path("fresh/new.p"),
+        "PROCEDURE newProc:\nEND PROCEDURE.\n",
+    )
+    .unwrap();
+    watched(&mut session, &ws, &["fresh/new.p"], 1);
+    assert_eq!(symbol_names(&mut session, "newProc"), ["newProc"]);
+
+    std::fs::remove_dir_all(ws.path("fresh")).unwrap();
+    watched(&mut session, &ws, &["fresh"], 3);
+    assert!(symbol_names(&mut session, "new").is_empty());
+}
+
+/// A client that does not take a registration of the watch sends no event,
+/// so each pass walks and sees a change that is only on disk.
+#[test]
+fn a_client_with_no_watch_sees_a_file_that_came_or_went() {
+    let mut ws = Workspace::new();
+    let mut session = start_as(&ws, false);
+    session.open(&ws.path("main.p"), &ws.texts["main.p"]);
+    assert!(symbol_names(&mut session, "newProc").is_empty());
+
+    std::fs::create_dir_all(ws.path("fresh")).unwrap();
+    std::fs::write(
+        ws.path("fresh/new.p"),
+        "PROCEDURE newProc:\nEND PROCEDURE.\n",
+    )
+    .unwrap();
+    touch(&mut session, &mut ws, 2);
+    assert_eq!(symbol_names(&mut session, "newProc"), ["newProc"]);
+
+    std::fs::remove_file(ws.path("fresh/new.p")).unwrap();
+    touch(&mut session, &mut ws, 3);
+    assert!(
+        symbol_names(&mut session, "new").is_empty(),
+        "the rows of a file that is gone are gone"
     );
 }
 

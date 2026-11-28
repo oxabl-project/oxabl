@@ -149,7 +149,19 @@ pub fn walk_include_fragments(dir: &Path) -> Vec<PathBuf> {
     walk_matching(dir, is_include_fragment)
 }
 
+/// The files a workspace walk found, and whether the walk met a symbolic link
+/// below the root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredPath {
+    pub files: Vec<PathBuf>,
+    pub reached_by_link: bool,
+}
+
 fn walk_matching(dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    walk_matching_detailed(dir, wanted).files
+}
+
+fn walk_matching_detailed(dir: &Path, wanted: impl Fn(&Path) -> bool) -> DiscoveredPath {
     let mut reached_by_link = false;
     let mut files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .follow_links(true)
@@ -169,7 +181,10 @@ fn walk_matching(dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     // walk gave it, and the canonical path of every file would cost a
     // `realpath` for nothing.
     if !reached_by_link {
-        return files;
+        return DiscoveredPath {
+            files,
+            reached_by_link: false,
+        };
     }
 
     // Dedupe *after* sorting so the surviving spelling of a doubly-reachable
@@ -177,7 +192,10 @@ fn walk_matching(dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     // to reach first.
     let mut seen: HashSet<PathBuf> = HashSet::new();
     files.retain(|path| seen.insert(std::fs::canonicalize(path).unwrap_or_else(|_| path.clone())));
-    files
+    DiscoveredPath {
+        files,
+        reached_by_link: true,
+    }
 }
 
 /// Resolve one user-supplied path into the set of files to process.
@@ -204,12 +222,24 @@ pub fn discover_path_in<E: AsRef<str>>(
     path: &Path,
     extensions: &[E],
 ) -> Result<Vec<PathBuf>, String> {
+    discover_path_in_detailed(path, extensions).map(|found| found.files)
+}
+
+/// [`discover_path_in`], also reporting whether the walk met a symbolic link
+/// below the root.
+pub fn discover_path_in_detailed<E: AsRef<str>>(
+    path: &Path,
+    extensions: &[E],
+) -> Result<DiscoveredPath, String> {
     if !path.exists() {
         return Err(format!("Path does not exist: {}", path.display()));
     }
 
     if path.is_file() {
-        return Ok(vec![path.to_path_buf()]);
+        return Ok(DiscoveredPath {
+            files: vec![path.to_path_buf()],
+            reached_by_link: false,
+        });
     }
 
     if !path.is_dir() {
@@ -219,7 +249,9 @@ pub fn discover_path_in<E: AsRef<str>>(
         ));
     }
 
-    Ok(walk_directory_in(path, extensions))
+    Ok(walk_matching_detailed(path, |file| {
+        is_root_file_in(file, extensions)
+    }))
 }
 
 #[cfg(test)]

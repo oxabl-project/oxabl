@@ -150,6 +150,14 @@ pub struct Session {
     /// replaced is not published — the buffer version cannot catch that, because
     /// the text did not move.
     config_generation: u64,
+    /// Bumped when a client says that files were created, deleted or renamed
+    /// on disk ([`note_files_changed`](Self::note_files_changed)). A pass that
+    /// ran at an older value walks the workspace again for its file list.
+    files_epoch: u64,
+    /// How many attached clients have registered a watch of the files of the
+    /// workspace, so that they tell the daemon about each created or deleted
+    /// file ([`watch_files`](Self::watch_files)).
+    file_watchers: u32,
     /// How many clients are attached. Two clients on one root share this session
     /// rather than holding an index each, which is the resource sharing the daemon
     /// exists for.
@@ -309,6 +317,9 @@ pub(crate) struct WorkspaceSnapshot {
     pub superseded: Option<SupersededPass>,
     /// The root this pass walked, so freshness can walk it again.
     pub root: PathBuf,
+    /// The [`Session::files_epoch`] that the file list of this pass was taken
+    /// at, whether the pass walked for it or kept the list of the pass before.
+    pub files_epoch: u64,
     /// How many files discovery found when this pass ran.
     ///
     /// The *discovered* count, deliberately not the tracked one. The tracked set is
@@ -549,6 +560,8 @@ impl Session {
             closed: HashMap::new(),
             buffer_paths: HashMap::new(),
             config_generation: 0,
+            files_epoch: 0,
+            file_watchers: 0,
             clients: 0,
             editor_clients: 0,
             buffer_generation: 0,
@@ -587,6 +600,41 @@ impl Session {
 
     pub fn config_generation(&self) -> u64 {
         self.config_generation
+    }
+
+    /// A file was created, deleted or renamed on disk: the next workspace pass
+    /// walks the workspace for its files, and does not take the list of the
+    /// pass before.
+    pub fn note_files_changed(&mut self) {
+        self.files_epoch += 1;
+    }
+
+    /// The value that [`note_files_changed`](Self::note_files_changed) moves.
+    pub fn files_epoch(&self) -> u64 {
+        self.files_epoch
+    }
+
+    /// A client registered a watch of the files of the workspace: it will say
+    /// when a file is created or deleted. The first watcher moves the epoch,
+    /// because no event was heard before it.
+    pub fn watch_files(&mut self) {
+        if self.file_watchers == 0 {
+            self.files_epoch += 1;
+        }
+        self.file_watchers += 1;
+    }
+
+    /// A client that [`watch_files`](Self::watch_files) went, or its watch was
+    /// refused.
+    pub fn unwatch_files(&mut self) {
+        debug_assert!(self.file_watchers > 0, "an unwatch with no watch");
+        self.file_watchers = self.file_watchers.saturating_sub(1);
+    }
+
+    /// Whether some client says when files come or go. Without one, nothing
+    /// tells a pass that its list of files is stale, so each pass walks.
+    pub fn files_watched(&self) -> bool {
+        self.file_watchers > 0
     }
 
     pub fn clients(&self) -> u32 {

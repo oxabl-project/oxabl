@@ -330,8 +330,9 @@ fn kept_bytes(session: &Session) -> Vec<usize> {
     session
         .stderr()
         .lines()
-        .filter_map(|line| line.rsplit_once("kept "))
-        .filter_map(|(_, rest)| rest.strip_suffix(" bytes")?.parse().ok())
+        .filter(|line| line.starts_with("oxabl-test: workspace pass analysed "))
+        .filter_map(|line| line.rsplit_once(", kept ")?.1.split_once(" bytes"))
+        .filter_map(|(bytes, _)| bytes.parse().ok())
         .collect()
 }
 
