@@ -377,6 +377,10 @@ python3 -I scripts/bench/callgrind_summary.py target/check.out      # the summar
 
 To count only one stage, use `--toggle-collect='*parse_program*'`.
 
+## Other parsers
+
+`scripts/bench/compare/compare.sh` parses one tree with oxabl and with the two maintained Proparse lines (Riverside's, which its VS Code extension bundles, and Consultingwerk's), and prints the wall time, the peak RSS and the failed files of each. `scripts/bench/compare/README.md` says what each harness calls and how to read the numbers: compare warm JVM passes, give the failed files of each tool, and run on a tree that compiles.
+
 ## The schema load
 
 A process that loads the `.df` files of `[workspace.schema]` parses them, or
