@@ -144,6 +144,8 @@ pub mod panic_sites {
     pub const ANALYZE: &str = "analyze";
     /// The shared `format_source` pipeline.
     pub const FORMAT: &str = "format";
+    /// The lex and the parse of a unit (`oxabl_pipeline::RawUnit`).
+    pub const UNIT: &str = "unit";
     /// The language server's diagnostics query.
     pub const LSP_DIAGNOSTICS: &str = "lsp.diagnostics";
     /// The language server's include-dependency query — a separate site so a

@@ -155,6 +155,52 @@ fn check_exits_1_not_4_when_one_files_analysis_panics() {
     );
 }
 
+/// A panic in the lex or the parse of a root that expands to itself is
+/// contained once. The analysis and the format check each report it as a
+/// failure, as when each stage lexed the text on its own: exit 1, two failure
+/// entries, and one panic message from the default hook.
+#[test]
+fn a_lex_or_parse_panic_in_an_identity_root_fails_both_stages_and_panics_once() {
+    let (_dir, file) = one_file("panics.p", &panicking(panic_sites::UNIT));
+    let (exit, stdout, stderr) = run(&[s("check"), s("--json"), file.as_os_str()]);
+    let display = file.display();
+    assert_eq!(exit, Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "error: analysis failed on {display}: internal error: injected test panic at unit"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "error: formatting failed on {display}: internal error: injected test panic at unit"
+        )),
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("panicked at").count(),
+        1,
+        "the text is lexed and parsed once: {stderr}"
+    );
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["failures"].as_array().map(Vec::len), Some(2));
+
+    // The same two failures as one injected panic in each stage.
+    let both = format!(
+        "/* OXABL-TEST-PANIC:{} */\n{}",
+        panic_sites::FORMAT,
+        panicking(panic_sites::ANALYZE)
+    );
+    let (_dir2, other) = one_file("panics.p", &both);
+    let (exit2, stdout2, _stderr2) = run(&[s("check"), s("--json"), other.as_os_str()]);
+    assert_eq!(exit2, exit);
+    let other_report: serde_json::Value = serde_json::from_str(&stdout2).unwrap();
+    assert_eq!(
+        other_report["failures"].as_array().map(Vec::len),
+        report["failures"].as_array().map(Vec::len)
+    );
+}
+
 /// And the walk really does continue: a panicking file plus a clean one still
 /// reports the clean file, and a panicking file plus a *finding* file still
 /// reports the finding.

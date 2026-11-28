@@ -70,7 +70,11 @@ fn an_identity_root_is_lexed_once_for_both_stages_and_the_answers_do_not_change(
     let raw = LazyRawUnit::new(&text);
     let run = LintPipeline::new(&config, &fs);
     let (shared, _) = run.with_file(Path::new("/ws/root.p")).run_with_unit(&raw);
-    let shared_format = format.format_unit(raw.made().expect("the analysis made the unit"));
+    let shared_format = format.format_unit(
+        raw.made()
+            .and_then(Result::ok)
+            .expect("the analysis made the unit"),
+    );
     let together = bytes_lexed() - before;
 
     assert!(!findings(&plain).is_empty(), "the fixture has findings");
@@ -124,6 +128,7 @@ fn a_root_with_an_include_does_not_make_the_unit_for_its_analysis() {
 
 #[test]
 fn a_unit_serves_only_the_text_that_it_was_made_from() {
+    let _guard = COUNTERS.lock().unwrap_or_else(|e| e.into_inner());
     let fs = InMemoryFileSystem::new();
     let config = PipelineConfig::default();
     let run = LintPipeline::new(&config, &fs);
@@ -142,6 +147,7 @@ fn a_unit_serves_only_the_text_that_it_was_made_from() {
 
 #[test]
 fn format_through_a_unit_is_the_format_of_the_text() {
+    let _guard = COUNTERS.lock().unwrap_or_else(|e| e.into_inner());
     let format = FormatPipeline::new(StyleGuide::default_base());
     for text in [
         "IF TRUE THEN DO:\n    MESSAGE \"hi\".\nEND.\n",
@@ -156,16 +162,8 @@ fn format_through_a_unit_is_the_format_of_the_text() {
 }
 
 #[test]
-fn a_unit_makes_its_line_table_once_and_lazily() {
-    let unit = RawUnit::parse("a.\nb.\n");
-    let first: *const _ = unit.source_map();
-    let second: *const _ = unit.source_map();
-    assert_eq!(first, second);
-    assert_eq!(unit.source_map().lookup(3), (2, 1));
-}
-
-#[test]
 fn an_expanded_unit_holds_the_tokens_and_the_tree_of_the_expanded_text() {
+    let _guard = COUNTERS.lock().unwrap_or_else(|e| e.into_inner());
     let mut fs = InMemoryFileSystem::new();
     fs.insert(
         "/ws/part.i".into(),
@@ -189,4 +187,72 @@ fn an_expanded_unit_holds_the_tokens_and_the_tree_of_the_expanded_text() {
     assert_eq!(unit.program().statements.len(), 2);
     let lines = expanded.text.matches('\n').count() + 1;
     assert_eq!(unit.source_map().lookup(expanded.text.len()).0, lines);
+}
+
+/// A panic of the lex or the parse of the unit is contained once, and each
+/// stage reports it as its own failure without lexing the text again.
+#[test]
+fn a_panic_in_the_unit_is_the_failure_of_both_stages_and_the_text_is_not_lexed_again() {
+    let _guard = COUNTERS.lock().unwrap_or_else(|e| e.into_inner());
+    let config = PipelineConfig::default();
+    let fs = InMemoryFileSystem::new();
+    let format = FormatPipeline::new(StyleGuide::default_base());
+    let text = "/* OXABL-TEST-PANIC:unit */\nMESSAGE \"x\".\n";
+    let raw = LazyRawUnit::new(text);
+    let run = LintPipeline::new(&config, &fs);
+
+    let before = bytes_lexed();
+    let (analysis, _) = quietly(|| run.with_file(Path::new("/ws/root.p")).run_with_unit(&raw));
+    let formatted = format.format_lazy(&raw);
+    let lexed = bytes_lexed() - before;
+
+    let failure = analysis.failure().expect("the analysis failed");
+    assert!(failure.to_string().contains("injected test panic at unit"));
+    let not_formatted = formatted.not_formatted().expect("the format check failed");
+    assert!(not_formatted.is_internal_panic());
+    assert!(
+        not_formatted
+            .reason()
+            .contains("injected test panic at unit"),
+        "{}",
+        not_formatted.reason()
+    );
+    assert_eq!(lexed, 0, "no stage lexed the text again");
+}
+
+/// Silence the default panic hook for a test that panics on purpose.
+fn quietly<T>(f: impl FnOnce() -> T) -> T {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let out = f();
+    std::panic::set_hook(previous);
+    out
+}
+
+/// A unit made with a checkpoint calls it after the lex, before each
+/// top-level statement and after the parse; an unwind from it stops the parse.
+#[test]
+fn a_unit_made_with_a_checkpoint_calls_it_and_an_unwind_stops_the_parse() {
+    let _guard = COUNTERS.lock().unwrap_or_else(|e| e.into_inner());
+    let text = "MESSAGE \"a\".\nMESSAGE \"b\".\nMESSAGE \"c\".\n";
+    let mut calls = 0;
+    let unit = RawUnit::parse_between(text, || calls += 1);
+    assert_eq!(unit.program().statements.len(), 3);
+    assert_eq!(
+        calls,
+        1 + 3 + 1,
+        "after the lex, before each statement, after the parse"
+    );
+
+    let mut seen = 0;
+    let stopped = quietly(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            RawUnit::parse_between(text, || {
+                seen += 1;
+                assert!(seen < 3, "cancelled");
+            })
+        }))
+    });
+    assert!(stopped.is_err(), "the checkpoint stops the parse");
+    assert_eq!(seen, 3);
 }

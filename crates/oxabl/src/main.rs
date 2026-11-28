@@ -2411,11 +2411,9 @@ impl CheckPass<'_> {
             // drift answer and `format --check`'s cannot disagree (KTD7). With
             // no unit (the root does not expand to itself, the analysis is
             // off, or the lexer or the parser panicked) the text goes through
-            // `format`, whose own guard reports a panic.
-            let outcome = match raw.made() {
-                Some(raw) => self.format.format_unit(raw),
-                None => self.format.format(&source),
-            };
+            // `format`, whose own guard reports a panic. A unit that the
+            // analysis could not make reports its panic here too.
+            let outcome = self.format.format_lazy(&raw);
             if outcome.changed() {
                 unit.drifted = Some(display);
             } else if let Some(not_formatted) = outcome.not_formatted() {

@@ -54,10 +54,7 @@ fn check_root(
     let raw = LazyRawUnit::new(source);
     let result = lint.with_file(path).run_with_unit(&raw).0;
     assert!(result.failure().is_none(), "{}", path.display());
-    let outcome = match raw.made() {
-        Some(raw) => format.format_unit(raw),
-        None => format.format(source),
-    };
+    let outcome = format.format_lazy(&raw);
     assert!(
         outcome.not_formatted().is_none(),
         "{} formats",
@@ -108,6 +105,23 @@ fn identity_root() -> (InMemoryFileSystem, PipelineConfig, PathBuf, String) {
         source.len() > 50_000,
         "{} bytes of identity fixtures",
         source.len()
+    );
+    // Each part is an identity root, but the bench runs the joined text: it
+    // must be one too, and the analysis must make the unit for it, or the
+    // bench would measure the old path.
+    assert!(
+        lint.with_file(&path)
+            .expand(&source)
+            .expanded()
+            .is_some_and(|expanded| expanded.is_identity()),
+        "the joined fixtures expand to themselves"
+    );
+    let raw = LazyRawUnit::new(&source);
+    let result = lint.with_file(&path).run_with_unit(&raw).0;
+    assert!(result.failure().is_none(), "the joined fixtures analyse");
+    assert!(
+        matches!(raw.made(), Some(Ok(_))),
+        "the analysis makes the unit of the joined fixtures"
     );
     (fs, config, path, source)
 }

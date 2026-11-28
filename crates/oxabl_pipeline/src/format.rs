@@ -47,7 +47,7 @@ use oxabl_common::{catch_panic, panic_if_injected, panic_sites};
 use oxabl_formatter::{FormatFailure, format_with_tokens, try_format_source};
 use oxabl_style::StyleGuide;
 
-use crate::RawUnit;
+use crate::{LazyRawUnit, RawUnit};
 
 /// The shared formatting decision — the one model every client renders (R5).
 ///
@@ -277,6 +277,19 @@ impl FormatPipeline {
             Ok(Ok(formatted)) => FormatOutcome::Reformatted(formatted),
             Ok(Err(bail)) => FormatOutcome::DidNotFormat(FormatFailure::Bail(bail).into()),
             Err(panic) => FormatOutcome::DidNotFormat(FormatFailure::Panic(panic).into()),
+        }
+    }
+
+    /// [`format`](Self::format) for a caller whose other stage may have made
+    /// the unit of the text: a unit is read, a contained panic of its lex or
+    /// parse is the failure, and with no unit the text is formatted alone.
+    pub fn format_lazy(&self, raw: &LazyRawUnit<'_>) -> FormatOutcome {
+        match raw.made() {
+            Some(Ok(unit)) => self.format_unit(unit),
+            Some(Err(panic)) => {
+                FormatOutcome::DidNotFormat(FormatFailure::Panic(panic.clone()).into())
+            }
+            None => self.format(raw.text()),
         }
     }
 }

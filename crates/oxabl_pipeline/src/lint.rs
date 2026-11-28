@@ -1835,10 +1835,16 @@ impl<'a> LintPipeline<'a> {
         let dependency_paths = expansion.dependency_paths().to_vec();
         match &expansion.inner {
             Ok(expanded) => {
-                let unit = raw
+                let unit = match raw
                     .filter(|_| expanded.is_identity())
-                    .and_then(LazyRawUnit::make)
-                    .filter(|unit| unit.serves(expanded));
+                    .map(LazyRawUnit::make)
+                {
+                    Some(Ok(unit)) => Some(unit).filter(|unit| unit.serves(expanded)),
+                    // The lex or the parse of the text panicked: the analysis
+                    // of the same text would panic the same way.
+                    Some(Err(panic)) => return LintResult::failed(panic.clone()),
+                    None => None,
+                };
                 let source_context = if self.file().is_some_and(is_include_fragment) {
                     SourceContext::IncludeFragment
                 } else {
@@ -1941,6 +1947,7 @@ impl<'a> LintPipeline<'a> {
     /// to analyse. When the expansion is the identity the run reads the unit's
     /// tokens and tree, so the text is lexed and parsed once for the run and
     /// the caller's other stages. The result is the one the plain run gives.
+    /// A panic of the lex or the parse of the unit is the failure of the run.
     pub fn run_with_unit(&self, raw: &LazyRawUnit<'_>) -> (LintResult, Option<Vec<IncludeOrigin>>) {
         self.run_reading(raw.text(), Some(raw))
     }

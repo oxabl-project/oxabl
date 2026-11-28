@@ -106,7 +106,9 @@ fn a_root_that_expands_to_itself_is_lexed_and_parsed_once_for_its_analysis_and_i
 
     let (counts, stdout) = counted(tmp.path(), &["check", "-j", "1", "root.p"]);
     assert!(
-        stdout.contains("checked 1 file: no findings, no drift"),
+        stdout
+            .lines()
+            .any(|line| line == "checked 1 file: no findings, no drift"),
         "the fixture must be clean: {stdout}"
     );
     // One lex of the file for both stages, and the short texts the passes lex
@@ -142,14 +144,16 @@ fn a_root_that_expands_to_itself_is_lexed_and_parsed_once_for_its_analysis_and_i
 #[test]
 fn a_root_is_lexed_and_parsed_once_for_either_stage_alone() {
     let source = program("r", 60);
-    for (name, toml) in [
+    for (name, toml, summary) in [
         (
             "format only",
             "[workspace]\nname = \"counts\"\n\n[workspace.features]\ndiagnostics = false\n",
+            "checked 1 file: diagnostics off, no drift",
         ),
         (
             "analysis only",
             "[workspace]\nname = \"counts\"\n\n[workspace.features]\nformat = false\n",
+            "checked 1 file: no findings, format off",
         ),
     ] {
         let tmp = TempDir::new().unwrap();
@@ -159,7 +163,7 @@ fn a_root_is_lexed_and_parsed_once_for_either_stage_alone() {
         let size = fs::read(tmp.path().join("root.p")).unwrap().len();
         let (counts, stdout) = counted(tmp.path(), &["check", "-j", "1", "root.p"]);
         assert!(
-            stdout.contains("no drift") || stdout.contains("no findings"),
+            stdout.lines().any(|line| line == summary),
             "{name}: {stdout}"
         );
         assert!(
@@ -181,7 +185,9 @@ fn a_root_with_an_include_is_lexed_and_parsed_as_written_and_as_expanded() {
 
     let (counts, stdout) = counted(tmp.path(), &["check", "-j", "1", "-I", ".", "root.p"]);
     assert!(
-        stdout.contains("no findings, no drift"),
+        stdout
+            .lines()
+            .any(|line| line == "checked 1 file: no findings, no drift"),
         "the root must be clean and formatted: {stdout}"
     );
     let expanded = include.len() + root.len();

@@ -19,14 +19,22 @@
 //! # Names
 //!
 //! `oxabl_daemon::db` has an `ExpandedUnit` of its own: an inspection type that
-//! holds a root's expansion for a debug request. It is not this type, and the
-//! two never meet in one module. This crate sits beneath the daemon, so the
-//! daemon names this one with its path.
+//! holds a root's expansion for a debug request. It is not this type. This
+//! crate sits beneath the daemon, so the daemon names this one with its path
+//! until the slice that gives the daemon these units renames the daemon type.
+//!
+//! # Cancellation
+//!
+//! [`RawUnit::parse`] and [`ExpandedUnit::parse`] never stop. A client whose
+//! request an edit may cancel (the daemon) must make a unit with
+//! [`RawUnit::parse_between`] or [`ExpandedUnit::parse_between`]: they call its
+//! checkpoint after the lex, before each top-level statement and after the
+//! parse, as `collect_from_expanded_with_summaries` does.
 
 use std::sync::{Arc, OnceLock};
 
 use oxabl_analyze::ExpandedFile;
-use oxabl_common::{InternalPanic, SourceMap, catch_panic};
+use oxabl_common::{InternalPanic, SourceMap, catch_panic, panic_if_injected, panic_sites};
 use oxabl_lexer::{Token, tokenize};
 use oxabl_parser::{Parser, Program};
 
@@ -49,9 +57,19 @@ impl RawUnit {
     /// Unguarded: a panic of the lexer or the parser unwinds to the caller.
     /// Use [`RawUnit::try_parse`] where a panic must become a value.
     pub fn parse(text: impl Into<Arc<str>>) -> Self {
+        Self::parse_between(text, || {})
+    }
+
+    /// [`RawUnit::parse`], calling `between` after the lex, before each
+    /// top-level statement and after the parse. A caller that may stop
+    /// waiting unwinds from it. Unguarded, like [`RawUnit::parse`].
+    pub fn parse_between(text: impl Into<Arc<str>>, mut between: impl FnMut()) -> Self {
         let text = text.into();
+        panic_if_injected(panic_sites::UNIT, &text);
         let tokens = tokenize(&text);
-        let program = Parser::new(&tokens, &text).parse_program();
+        between();
+        let program = Parser::new(&tokens, &text).parse_program_between(&mut between);
+        between();
         RawUnit {
             text,
             tokens,
@@ -110,10 +128,18 @@ impl ExpandedUnit {
     ///
     /// Unguarded, like [`RawUnit::parse`].
     pub fn parse(expanded: Arc<ExpandedFile>) -> Self {
+        Self::parse_between(expanded, || {})
+    }
+
+    /// [`ExpandedUnit::parse`], calling `between` as
+    /// [`RawUnit::parse_between`] does.
+    pub fn parse_between(expanded: Arc<ExpandedFile>, mut between: impl FnMut()) -> Self {
         let tokens = tokenize(&expanded.text);
+        between();
         let program = Parser::new(&tokens, &expanded.text)
             .without_comments()
-            .parse_program();
+            .parse_program_between(&mut between);
+        between();
         ExpandedUnit {
             expanded,
             tokens,
@@ -154,12 +180,12 @@ impl ExpandedUnit {
 /// here, so it pays no copy of its text and keeps no second token vector and
 /// tree alive during its analysis (rule 3 of the design).
 ///
-/// [`make`](Self::make) gives `None` when the lexer or the parser panicked.
-/// The stage then runs on the text alone, as before the unit existed, and its
-/// own guard reports the panic the way it always did.
+/// When the lexer or the parser panics, the unit keeps the contained
+/// [`InternalPanic`]. Each stage reports it as its own failure and none lexes
+/// or parses the text again: the text would panic the same way.
 pub struct LazyRawUnit<'t> {
     text: &'t str,
-    unit: OnceLock<Option<RawUnit>>,
+    unit: OnceLock<Result<RawUnit, InternalPanic>>,
 }
 
 impl<'t> LazyRawUnit<'t> {
@@ -176,16 +202,17 @@ impl<'t> LazyRawUnit<'t> {
         self.text
     }
 
-    /// The unit, made on the first call; `None` after a panic.
-    pub fn make(&self) -> Option<&RawUnit> {
+    /// The unit, made on the first call; the contained panic of the lexer or
+    /// the parser when it panicked.
+    pub fn make(&self) -> Result<&RawUnit, &InternalPanic> {
         self.unit
-            .get_or_init(|| RawUnit::try_parse(self.text).ok())
+            .get_or_init(|| RawUnit::try_parse(self.text))
             .as_ref()
     }
 
-    /// The unit if a stage made it. Makes nothing.
-    pub fn made(&self) -> Option<&RawUnit> {
-        self.unit.get().and_then(Option::as_ref)
+    /// What a stage made, if one did: the unit, or the panic. Makes nothing.
+    pub fn made(&self) -> Option<Result<&RawUnit, &InternalPanic>> {
+        self.unit.get().map(Result::as_ref)
     }
 }
 

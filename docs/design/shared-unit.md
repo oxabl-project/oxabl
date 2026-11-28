@@ -121,9 +121,17 @@ parse with the table are equal to those of a parse without it
 analysis can read a `RawUnit`.
 
 `oxabl_daemon::db` has an `ExpandedUnit` of its own, an inspection type for a
-debug request. It is a different type. The pipeline type keeps the name that
-this design gave it: the daemon names it by its path, and the inspection type
-does not take part in the daemon's queries (slice 5).
+debug request. It is a different type. Until slice 5 the daemon names the
+pipeline type by its path. Slice 5 renames the daemon's inspection type, so
+that its new `expanded_unit` query, the `compute_expanded_unit` function and the
+language server's `expanded_unit` module each have one meaning.
+
+`RawUnit::parse` and `ExpandedUnit::parse` never stop. A request that an edit
+may cancel makes its unit with `RawUnit::parse_between` or
+`ExpandedUnit::parse_between`. They call a checkpoint after the lex, before each
+top-level statement and after the parse, as `collect_from_expanded_with_summaries`
+does with `WorkspaceIndex::checkpoint`. The daemon must use them (slice 5):
+`edit_waits_lsp.rs` fails when a large root cannot be stopped.
 
 `LazyRawUnit` holds the text of a root and the `RawUnit` that a stage may make
 for it. See the next section for why the unit is not made up front.
@@ -157,9 +165,12 @@ instructions. So a root that expands to itself is lexed and parsed once, by the
 analysis, and any other root costs what it cost before: one lex and parse of the
 expansion, then one raw lex and parse for the format check. With the analysis
 off, the format check formats the text alone, once. The lexer or the parser can
-panic: a `RawUnit` that panics is not made (`LazyRawUnit::make` gives `None`)
-and each stage runs on the text alone, so its own guard reports the panic as
-before.
+panic: `LazyRawUnit` keeps the contained panic. The analysis fails the run with
+it, and the format check reports it as an internal panic
+(`FormatPipeline::format_lazy`). Neither stage lexes the text again, because it
+would panic the same way. `check` then reports two failures and exits 1, and the
+default hook prints one panic message for the root. The test site
+`OXABL-TEST-PANIC:unit` in `RawUnit::parse_between` reaches this path.
 
 The `ExpandedUnit` for a root with includes is not used by `check` yet. The
 analysis of such a root still lexes and parses its expansion inside
